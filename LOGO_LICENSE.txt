@@ -1,0 +1,15 @@
+Solers Engine Logo
+Source assets:
+- F:\CodeHub\solers\branding\source\solers.png
+- F:\CodeHub\solers\branding\source\solers02.png
+
+The Solers logo assets in this fork are derived from the Solers project logo
+provided in the workspace by the Solers project owner. They are used for the
+Solers Engine distribution branding and are not part of the upstream Godot
+Engine logo set.
+
+Upstream Godot Engine Logo
+Copyright (c) 2017 Andrea Calabró
+
+This work is licensed under the Creative Commons Attribution 4.0 International
+license (CC BY 4.0 International): https://creativecommons.org/licenses/by/4.0/

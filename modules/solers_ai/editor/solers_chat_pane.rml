@@ -1,0 +1,59 @@
+<rml>
+<head>
+	<title>Solers Agent Chat</title>
+	<link type="text/rcss" href="solers_chat.rcss"/>
+</head>
+<body id="solers-chat-root">
+	<section class="solers-chat-pane">
+		<header class="topbar">
+			<button id="panel-toggle" class="control-button icon-only top-icon-button" aria-label="Solers panel">
+				<img class="icon-img" src="solers://icon/panel"/>
+			</button>
+			<span class="topbar-spacer"></span>
+			<button id="new-chat-button" class="control-button icon-only top-icon-button" aria-label="New chat">
+				<img class="icon-img" src="solers://icon/message-plus"/>
+			</button>
+			<button id="more-button" class="control-button icon-only top-icon-button" aria-label="More">
+				<img class="icon-img" src="solers://icon/more-vertical"/>
+			</button>
+		</header>
+		<main id="messages" class="timeline" data-slot="messages">
+			<section class="empty-state">
+				<img class="empty-logo" src="solers://logo" alt="Solers"/>
+				<h1>The AI-native game engine</h1>
+				<p>Describe a world, mechanic, or workflow. Solers turns intent into scenes, scripts, and playable systems.</p>
+			</section>
+		</main>
+		<footer id="composer-root" class="composer">
+			<div class="composer-input-wrap">
+				<textarea id="composer-input" rows="1" placeholder="Ask for follow-up changes"></textarea>
+			</div>
+			<div class="composer-actions">
+				<div class="composer-left">
+					<button class="control-button icon-only composer-icon-button" aria-label="Attach context">
+						<img class="icon-img" src="solers://icon/plus"/>
+					</button>
+					<button class="control-button icon-only composer-icon-button access-icon" aria-label="Full access">
+						<img class="icon-img" src="solers://icon/shield-orange"/>
+					</button>
+					<button class="control-button select-chip access-select" aria-label="Access mode">
+						<span class="select-label">Full access</span>
+						<img class="chevron-img" src="solers://icon/chevron-orange"/>
+					</button>
+				</div>
+				<span class="composer-spacer"></span>
+				<div class="composer-right">
+					<button class="control-button select-chip model-select" aria-label="Model">
+						<span class="model-number">5.5</span>
+						<span class="select-label muted-label">Extra High</span>
+						<img class="chevron-img" src="solers://icon/chevron"/>
+					</button>
+					<button id="send-button" class="control-button send-button" aria-label="Send">
+						<img class="send-img" src="solers://icon/send-circle"/>
+					</button>
+				</div>
+			</div>
+		</footer>
+	</section>
+</body>
+</rml>

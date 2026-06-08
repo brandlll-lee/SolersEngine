@@ -1,0 +1,12 @@
+Solers AI UI Icons
+
+The Solers AI panel uses a small set of embedded SVG path icons modeled on
+Lucide's 24px outline icon style.
+
+Lucide
+Copyright (c) Lucide Contributors
+License: ISC
+Source: https://lucide.dev/license
+
+The embedded SVG paths are used as local UI assets so the native editor module
+does not need to ship an npm package or runtime icon dependency.

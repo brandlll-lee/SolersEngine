@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2017-2022 Rémi Verschelde <remi@godotengine.org> -->
+<component type="desktop">
+  <id>ai.solers.Engine</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Solers Engine</name>
+  <summary>AI-native Godot-compatible 2D and 3D game engine</summary>
+  <launchable type="desktop-id">ai.solers.Engine.desktop</launchable>
+  <description>
+    <p>
+      Solers is an AI-native, Godot-compatible, multi-platform 2D and 3D game
+      engine distribution built for natural-language-driven game creation.
+    </p>
+    <p>
+      Solers preserves standard Godot project compatibility while adding a native
+      AI operator layer for scene, script, resource, runtime, and export workflows.
+    </p>
+  </description>
+  <screenshots>
+    <screenshot type="default" width="1279" height="758">
+      <caption>3D project loaded in the Solers Engine editor</caption>
+      <image>https://docs.godotengine.org/en/stable/_images/introduction_editor.webp</image>
+    </screenshot>
+  </screenshots>
+  <url type="homepage">https://solers.ai</url>
+  <url type="bugtracker">https://github.com/godotengine/godot/issues</url>
+  <url type="faq">https://docs.godotengine.org/en/latest/about/faq.html</url>
+  <url type="help">https://docs.godotengine.org</url>
+  <url type="donation">https://fund.godotengine.org</url>
+  <url type="translate">https://hosted.weblate.org/projects/godot-engine/godot</url>
+  <developer_name>Solers contributors</developer_name>
+  <update_contact>akien_at_godotengine_dot_org</update_contact>
+</component>
