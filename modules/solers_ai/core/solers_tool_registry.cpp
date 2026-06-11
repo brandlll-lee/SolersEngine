@@ -32,6 +32,7 @@
 
 #include "core/object/class_db.h"
 #include "modules/solers_ai/core/solers_action_timeline.h"
+#include "modules/solers_ai/core/solers_builtin_tool_catalog.h"
 #include "modules/solers_ai/core/solers_editor_operator.h"
 #include "modules/solers_ai/core/solers_observation_service.h"
 #include "modules/solers_ai/core/solers_resource_service.h"
@@ -50,6 +51,8 @@ void SolersToolRegistry::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_rpc_server", "rpc_server"), &SolersToolRegistry::set_rpc_server);
 	ClassDB::bind_method(D_METHOD("register_default_tools"), &SolersToolRegistry::register_default_tools);
 	ClassDB::bind_method(D_METHOD("list_tools"), &SolersToolRegistry::list_tools);
+	ClassDB::bind_method(D_METHOD("get_model_tool_name", "name"), &SolersToolRegistry::get_model_tool_name);
+	ClassDB::bind_method(D_METHOD("resolve_model_tool_name", "model_name"), &SolersToolRegistry::resolve_model_tool_name);
 	ClassDB::bind_method(D_METHOD("call_tool", "name", "args"), &SolersToolRegistry::call_tool);
 	ClassDB::bind_method(D_METHOD("get_tool_count"), &SolersToolRegistry::get_tool_count);
 }
@@ -61,13 +64,51 @@ Dictionary SolersToolRegistry::_object_schema() const {
 	return schema;
 }
 
+String SolersToolRegistry::_make_model_tool_name(const StringName &p_name) {
+	const String name = String(p_name);
+	String out;
+	bool previous_was_separator = false;
+	for (int i = 0; i < name.length(); i++) {
+		const char32_t c = name[i];
+		const bool allowed = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+		if (allowed) {
+			out += String::chr(c);
+			previous_was_separator = false;
+		} else if (!previous_was_separator) {
+			out += "_";
+			previous_was_separator = true;
+		}
+	}
+	out = out.strip_edges();
+	while (out.begins_with("_")) {
+		out = out.substr(1);
+	}
+	while (out.ends_with("_")) {
+		out = out.substr(0, out.length() - 1);
+	}
+	if (out.is_empty()) {
+		return "tool";
+	}
+	return out;
+}
+
 void SolersToolRegistry::_register_tool(const ToolDefinition &p_definition) {
-	tools[p_definition.name] = p_definition;
+	ToolDefinition definition = p_definition;
+	if (definition.model_name.is_empty()) {
+		definition.model_name = _make_model_tool_name(definition.name);
+	}
+	const StringName model_name = StringName(definition.model_name);
+	if (model_name_index.has(model_name) && model_name_index[model_name] != definition.name) {
+		ERR_FAIL_MSG(vformat("Solers model tool name collision: %s maps to both %s and %s.", definition.model_name, model_name_index[model_name], definition.name));
+	}
+	tools[definition.name] = definition;
+	model_name_index[model_name] = definition.name;
 }
 
 Dictionary SolersToolRegistry::_tool_to_dictionary(const ToolDefinition &p_definition) const {
 	Dictionary tool;
 	tool["name"] = p_definition.name;
+	tool["model_name"] = p_definition.model_name;
 	tool["description"] = p_definition.description;
 	tool["permission"] = permission_manager ? permission_manager->get_permission_name(p_definition.permission) : "observe";
 	tool["mutation_kind"] = p_definition.mutation_kind;
@@ -131,448 +172,58 @@ void SolersToolRegistry::set_rpc_server(SolersRpcServer *p_rpc_server) {
 
 void SolersToolRegistry::register_default_tools() {
 	tools.clear();
+	model_name_index.clear();
 
 	const Dictionary object_schema = _object_schema();
-
-	ToolDefinition project_info;
-	project_info.name = "project.get_info";
-	project_info.description = "Read the current Godot project metadata and Solers engine distribution info.";
-	project_info.input_schema = object_schema;
-	project_info.output_schema = object_schema;
-	_register_tool(project_info);
-
-	ToolDefinition project_settings;
-	project_settings.name = "project.get_settings_summary";
-	project_settings.description = "Read a compact summary of high-signal project settings.";
-	project_settings.input_schema = object_schema;
-	project_settings.output_schema = object_schema;
-	_register_tool(project_settings);
-
-	ToolDefinition project_files;
-	project_files.name = "project.list_files";
-	project_files.description = "List project files under res:// with bounded count and hidden-cache filtering.";
-	project_files.input_schema = object_schema;
-	project_files.output_schema = object_schema;
-	_register_tool(project_files);
-
-	ToolDefinition project_search;
-	project_search.name = "project.search_files";
-	project_search.description = "Search project file paths under res:// by case-insensitive substring.";
-	project_search.input_schema = object_schema;
-	project_search.output_schema = object_schema;
-	_register_tool(project_search);
-
-	ToolDefinition project_read;
-	project_read.name = "project.read_file";
-	project_read.description = "Read a project file from res:// with project-root boundary and byte limits.";
-	project_read.input_schema = object_schema;
-	project_read.output_schema = object_schema;
-	_register_tool(project_read);
-
-	ToolDefinition project_write;
-	project_write.name = "project.write_file";
-	project_write.description = "Write a project text file with path safety, file checkpointing, optional script validation, and EditorFileSystem refresh.";
-	project_write.permission = SolersPermissionManager::PERMISSION_EDIT_FILES;
-	project_write.mutation_kind = "file_write";
-	project_write.requires_approval = true;
-	project_write.input_schema = object_schema;
-	project_write.output_schema = object_schema;
-	_register_tool(project_write);
-
-	ToolDefinition script_read;
-	script_read.name = "script.read";
-	script_read.description = "Read a script file from res:// with project-root boundary and byte limits.";
-	script_read.input_schema = object_schema;
-	script_read.output_schema = object_schema;
-	_register_tool(script_read);
-
-	ToolDefinition script_write;
-	script_write.name = "script.write";
-	script_write.description = "Write or overwrite a script file after language validation and file checkpointing.";
-	script_write.permission = SolersPermissionManager::PERMISSION_EDIT_FILES;
-	script_write.mutation_kind = "file_write";
-	script_write.requires_approval = true;
-	script_write.input_schema = object_schema;
-	script_write.output_schema = object_schema;
-	_register_tool(script_write);
-
-	ToolDefinition script_patch;
-	script_patch.name = "script.patch";
-	script_patch.description = "Apply an exact text replacement to a script or text file with optional sha256 guard, checkpointing, and validation.";
-	script_patch.permission = SolersPermissionManager::PERMISSION_EDIT_FILES;
-	script_patch.mutation_kind = "file_patch";
-	script_patch.requires_approval = true;
-	script_patch.input_schema = object_schema;
-	script_patch.output_schema = object_schema;
-	_register_tool(script_patch);
-
-	ToolDefinition script_create;
-	script_create.name = "script.create";
-	script_create.description = "Create a script file after language validation and EditorFileSystem refresh.";
-	script_create.permission = SolersPermissionManager::PERMISSION_EDIT_FILES;
-	script_create.mutation_kind = "file_write";
-	script_create.requires_approval = true;
-	script_create.input_schema = object_schema;
-	script_create.output_schema = object_schema;
-	_register_tool(script_create);
-
-	ToolDefinition script_validate;
-	script_validate.name = "script.validate";
-	script_validate.description = "Validate script source through Godot's registered ScriptLanguage implementation.";
-	script_validate.input_schema = object_schema;
-	script_validate.output_schema = object_schema;
-	_register_tool(script_validate);
-
-	ToolDefinition script_open;
-	script_open.name = "script.open_in_editor";
-	script_open.description = "Open a script resource in Godot's ScriptEditor at a requested line and column.";
-	script_open.mutation_kind = "editor_ui";
-	script_open.input_schema = object_schema;
-	script_open.output_schema = object_schema;
-	_register_tool(script_open);
-
-	ToolDefinition open_scenes;
-	open_scenes.name = "scene.get_open_scenes";
-	open_scenes.description = "Read open editor scenes and lightweight root-node summaries.";
-	open_scenes.input_schema = object_schema;
-	open_scenes.output_schema = object_schema;
-	_register_tool(open_scenes);
-
-	ToolDefinition scene_open;
-	scene_open.name = "scene.open";
-	scene_open.description = "Open an existing scene file in the Godot editor.";
-	scene_open.permission = SolersPermissionManager::PERMISSION_EDIT_SCENE;
-	scene_open.mutation_kind = "editor_scene_state";
-	scene_open.requires_approval = true;
-	scene_open.input_schema = object_schema;
-	scene_open.output_schema = object_schema;
-	_register_tool(scene_open);
-
-	ToolDefinition scene_create;
-	scene_create.name = "scene.create";
-	scene_create.description = "Create a new edited scene with an instantiable Node root through Godot editor state.";
-	scene_create.permission = SolersPermissionManager::PERMISSION_EDIT_SCENE;
-	scene_create.mutation_kind = "editor_scene_state";
-	scene_create.requires_approval = true;
-	scene_create.input_schema = object_schema;
-	scene_create.output_schema = object_schema;
-	_register_tool(scene_create);
-
-	ToolDefinition scene_tree;
-	scene_tree.name = "scene.get_tree";
-	scene_tree.description = "Read the current edited scene tree with bounded depth and child limits.";
-	scene_tree.input_schema = object_schema;
-	scene_tree.output_schema = object_schema;
-	_register_tool(scene_tree);
-
-	ToolDefinition selection;
-	selection.name = "selection.get_nodes";
-	selection.description = "Read the current editor node selection.";
-	selection.input_schema = object_schema;
-	selection.output_schema = object_schema;
-	_register_tool(selection);
-
-	ToolDefinition node_properties;
-	node_properties.name = "node.get_properties";
-	node_properties.description = "Read bounded editor/storage properties for a node in the edited scene tree.";
-	node_properties.input_schema = object_schema;
-	node_properties.output_schema = object_schema;
-	_register_tool(node_properties);
-
-	ToolDefinition runtime_status;
-	runtime_status.name = "runtime.get_status";
-	runtime_status.description = "Read whether the editor is currently playing a scene and which scene is active.";
-	runtime_status.input_schema = object_schema;
-	runtime_status.output_schema = object_schema;
-	_register_tool(runtime_status);
-
-	ToolDefinition runtime_logs;
-	runtime_logs.name = "runtime.get_logs";
-	runtime_logs.description = "Read recent Godot editor/runtime output log messages captured by the editor Output dock.";
-	runtime_logs.input_schema = object_schema;
-	runtime_logs.output_schema = object_schema;
-	_register_tool(runtime_logs);
-
-	ToolDefinition runtime_screenshot;
-	runtime_screenshot.name = "runtime.capture_screenshot";
-	runtime_screenshot.description = "Capture the current Solers editor viewport to PNG for visual verification. In v0.1 this is editor-visible viewport capture.";
-	runtime_screenshot.permission = SolersPermissionManager::PERMISSION_RUN_PROJECT;
-	runtime_screenshot.mutation_kind = "runtime_artifact";
-	runtime_screenshot.requires_approval = true;
-	runtime_screenshot.input_schema = object_schema;
-	runtime_screenshot.output_schema = object_schema;
-	_register_tool(runtime_screenshot);
-
-	ToolDefinition editor_screenshot;
-	editor_screenshot.name = "editor.capture_screenshot";
-	editor_screenshot.description = "Capture the current Solers editor viewport to PNG.";
-	editor_screenshot.permission = SolersPermissionManager::PERMISSION_RUN_PROJECT;
-	editor_screenshot.mutation_kind = "runtime_artifact";
-	editor_screenshot.requires_approval = true;
-	editor_screenshot.input_schema = object_schema;
-	editor_screenshot.output_schema = object_schema;
-	_register_tool(editor_screenshot);
-
-	ToolDefinition editor_snapshot;
-	editor_snapshot.name = "editor.get_snapshot";
-	editor_snapshot.description = "Read a combined project, scene, selection, and runtime snapshot.";
-	editor_snapshot.input_schema = object_schema;
-	editor_snapshot.output_schema = object_schema;
-	_register_tool(editor_snapshot);
-
-	ToolDefinition editor_logs;
-	editor_logs.name = "editor.get_logs";
-	editor_logs.description = "Read recent Solers/Godot editor log messages and severity counts.";
-	editor_logs.input_schema = object_schema;
-	editor_logs.output_schema = object_schema;
-	_register_tool(editor_logs);
-
-	ToolDefinition timeline_list;
-	timeline_list.name = "timeline.list_actions";
-	timeline_list.description = "Read recent Solers tool and action timeline events.";
-	timeline_list.input_schema = object_schema;
-	timeline_list.output_schema = object_schema;
-	_register_tool(timeline_list);
-
-	ToolDefinition timeline_rollback;
-	timeline_rollback.name = "timeline.rollback_last";
-	timeline_rollback.description = "Rollback the newest Godot editor UndoRedo action. v0.1 maps this to EditorUndoRedoManager::undo.";
-	timeline_rollback.permission = SolersPermissionManager::PERMISSION_EDIT_SCENE;
-	timeline_rollback.mutation_kind = "editor_undo_redo";
-	timeline_rollback.requires_approval = true;
-	timeline_rollback.input_schema = object_schema;
-	timeline_rollback.output_schema = object_schema;
-	_register_tool(timeline_rollback);
-
-	ToolDefinition validation_project_scripts;
-	validation_project_scripts.name = "validation.validate_project_scripts";
-	validation_project_scripts.description = "Validate all project scripts supported by registered Godot ScriptLanguage implementations.";
-	validation_project_scripts.input_schema = object_schema;
-	validation_project_scripts.output_schema = object_schema;
-	_register_tool(validation_project_scripts);
-
-	ToolDefinition validation_assert_no_errors;
-	validation_assert_no_errors.name = "validation.assert_no_errors";
-	validation_assert_no_errors.description = "Run the v0.1 validation baseline and report whether supported project scripts have no language errors.";
-	validation_assert_no_errors.input_schema = object_schema;
-	validation_assert_no_errors.output_schema = object_schema;
-	_register_tool(validation_assert_no_errors);
-
-	ToolDefinition validation_read_errors;
-	validation_read_errors.name = "validation.read_editor_errors";
-	validation_read_errors.description = "Read recent editor/runtime log messages filtered to errors and warnings for agent verification.";
-	validation_read_errors.input_schema = object_schema;
-	validation_read_errors.output_schema = object_schema;
-	_register_tool(validation_read_errors);
-
-	ToolDefinition validation_scene_smoke;
-	validation_scene_smoke.name = "validation.run_scene_smoke";
-	validation_scene_smoke.description = "Run the v0.1 non-blocking scene smoke baseline: validate scripts, inspect current scene state, and report runtime readiness.";
-	validation_scene_smoke.permission = SolersPermissionManager::PERMISSION_RUN_PROJECT;
-	validation_scene_smoke.mutation_kind = "runtime_only";
-	validation_scene_smoke.requires_approval = true;
-	validation_scene_smoke.input_schema = object_schema;
-	validation_scene_smoke.output_schema = object_schema;
-	_register_tool(validation_scene_smoke);
-
-	ToolDefinition resource_info;
-	resource_info.name = "resource.get_info";
-	resource_info.description = "Read resource type, UID, import state, and dependency metadata for a res:// resource.";
-	resource_info.input_schema = object_schema;
-	resource_info.output_schema = object_schema;
-	_register_tool(resource_info);
-
-	ToolDefinition export_list_presets;
-	export_list_presets.name = "export.list_presets";
-	export_list_presets.description = "List Godot export platforms and export presets from the current project.";
-	export_list_presets.input_schema = object_schema;
-	export_list_presets.output_schema = object_schema;
-	_register_tool(export_list_presets);
-
-	ToolDefinition export_validate_presets;
-	export_validate_presets.name = "export.validate_presets";
-	export_validate_presets.description = "Validate configured export presets without exporting build artifacts.";
-	export_validate_presets.input_schema = object_schema;
-	export_validate_presets.output_schema = object_schema;
-	_register_tool(export_validate_presets);
-
-	ToolDefinition provider_get;
-	provider_get.name = "provider.get_config";
-	provider_get.description = "Read Solers BYOK provider configuration metadata with secrets redacted.";
-	provider_get.input_schema = object_schema;
-	provider_get.output_schema = object_schema;
-	_register_tool(provider_get);
-
-	ToolDefinition provider_list;
-	provider_list.name = "provider.list_profiles";
-	provider_list.description = "List built-in Solers provider profiles, default endpoints, local/remote policy flags, and advertised feature families.";
-	provider_list.input_schema = object_schema;
-	provider_list.output_schema = object_schema;
-	_register_tool(provider_list);
-
-	ToolDefinition provider_validate;
-	provider_validate.name = "provider.validate_config";
-	provider_validate.description = "Validate Solers provider configuration without making a network request.";
-	provider_validate.input_schema = object_schema;
-	provider_validate.output_schema = object_schema;
-	_register_tool(provider_validate);
-
-	ToolDefinition provider_set;
-	provider_set.name = "provider.set_config";
-	provider_set.description = "Set Solers BYOK provider configuration in local EditorSettings. Secrets are not written to project files or timeline content.";
-	provider_set.permission = SolersPermissionManager::PERMISSION_NETWORK;
-	provider_set.mutation_kind = "editor_settings";
-	provider_set.requires_approval = true;
-	provider_set.input_schema = object_schema;
-	provider_set.output_schema = object_schema;
-	_register_tool(provider_set);
-
-	ToolDefinition approvals_list;
-	approvals_list.name = "approvals.list_pending";
-	approvals_list.description = "Read pending Solers user approval requests.";
-	approvals_list.input_schema = object_schema;
-	approvals_list.output_schema = object_schema;
-	_register_tool(approvals_list);
-
-	ToolDefinition rpc_status;
-	rpc_status.name = "rpc.get_status";
-	rpc_status.description = "Read Solers local JSONL RPC loopback server status.";
-	rpc_status.input_schema = object_schema;
-	rpc_status.output_schema = object_schema;
-	_register_tool(rpc_status);
-
-	ToolDefinition rpc_start;
-	rpc_start.name = "rpc.start";
-	rpc_start.description = "Start the explicit opt-in Solers JSONL RPC loopback server on 127.0.0.1 with session token authentication.";
-	rpc_start.permission = SolersPermissionManager::PERMISSION_NETWORK;
-	rpc_start.mutation_kind = "network_listener";
-	rpc_start.requires_approval = true;
-	rpc_start.input_schema = object_schema;
-	rpc_start.output_schema = object_schema;
-	_register_tool(rpc_start);
-
-	ToolDefinition rpc_stop;
-	rpc_stop.name = "rpc.stop";
-	rpc_stop.description = "Stop the Solers local JSONL RPC loopback server and disconnect clients.";
-	rpc_stop.mutation_kind = "network_listener";
-	rpc_stop.input_schema = object_schema;
-	rpc_stop.output_schema = object_schema;
-	_register_tool(rpc_stop);
-
-	ToolDefinition node_add;
-	node_add.name = "node.add";
-	node_add.description = "Add a Node under the edited scene tree through EditorUndoRedoManager.";
-	node_add.permission = SolersPermissionManager::PERMISSION_EDIT_SCENE;
-	node_add.mutation_kind = "editor_undo_redo";
-	node_add.requires_approval = true;
-	node_add.input_schema = object_schema;
-	node_add.output_schema = object_schema;
-	_register_tool(node_add);
-
-	ToolDefinition node_set_properties;
-	node_set_properties.name = "node.set_properties";
-	node_set_properties.description = "Set Node properties through EditorUndoRedoManager.";
-	node_set_properties.permission = SolersPermissionManager::PERMISSION_EDIT_SCENE;
-	node_set_properties.mutation_kind = "editor_undo_redo";
-	node_set_properties.requires_approval = true;
-	node_set_properties.input_schema = object_schema;
-	node_set_properties.output_schema = object_schema;
-	_register_tool(node_set_properties);
-
-	ToolDefinition node_reparent;
-	node_reparent.name = "node.reparent";
-	node_reparent.description = "Reparent a Node in the edited scene tree through EditorUndoRedoManager.";
-	node_reparent.permission = SolersPermissionManager::PERMISSION_EDIT_SCENE;
-	node_reparent.mutation_kind = "editor_undo_redo";
-	node_reparent.requires_approval = true;
-	node_reparent.input_schema = object_schema;
-	node_reparent.output_schema = object_schema;
-	_register_tool(node_reparent);
-
-	ToolDefinition node_attach_script;
-	node_attach_script.name = "node.attach_script";
-	node_attach_script.description = "Attach an existing Script resource to a Node through EditorUndoRedoManager.";
-	node_attach_script.permission = SolersPermissionManager::PERMISSION_EDIT_SCENE;
-	node_attach_script.mutation_kind = "editor_undo_redo";
-	node_attach_script.requires_approval = true;
-	node_attach_script.input_schema = object_schema;
-	node_attach_script.output_schema = object_schema;
-	_register_tool(node_attach_script);
-
-	ToolDefinition node_connect_signal;
-	node_connect_signal.name = "node.connect_signal";
-	node_connect_signal.description = "Connect a Node signal to a target Node method with persistent connection flags.";
-	node_connect_signal.permission = SolersPermissionManager::PERMISSION_EDIT_SCENE;
-	node_connect_signal.mutation_kind = "editor_undo_redo";
-	node_connect_signal.requires_approval = true;
-	node_connect_signal.input_schema = object_schema;
-	node_connect_signal.output_schema = object_schema;
-	_register_tool(node_connect_signal);
-
-	ToolDefinition node_list_connections;
-	node_list_connections.name = "node.list_signal_connections";
-	node_list_connections.description = "List persistent and runtime signal connections for a Node.";
-	node_list_connections.input_schema = object_schema;
-	node_list_connections.output_schema = object_schema;
-	_register_tool(node_list_connections);
-
-	ToolDefinition node_remove;
-	node_remove.name = "node.remove";
-	node_remove.description = "Remove a Node from the edited scene tree through EditorUndoRedoManager.";
-	node_remove.permission = SolersPermissionManager::PERMISSION_EDIT_SCENE;
-	node_remove.mutation_kind = "editor_undo_redo";
-	node_remove.requires_approval = true;
-	node_remove.input_schema = object_schema;
-	node_remove.output_schema = object_schema;
-	_register_tool(node_remove);
-
-	ToolDefinition scene_save;
-	scene_save.name = "scene.save";
-	scene_save.description = "Save the current edited scene through EditorInterface.";
-	scene_save.permission = SolersPermissionManager::PERMISSION_EDIT_FILES;
-	scene_save.mutation_kind = "editor_save";
-	scene_save.requires_approval = true;
-	scene_save.input_schema = object_schema;
-	scene_save.output_schema = object_schema;
-	_register_tool(scene_save);
-
-	ToolDefinition scene_save_as;
-	scene_save_as.name = "scene.save_as";
-	scene_save_as.description = "Save the current edited scene to a new res:// scene file through EditorInterface.";
-	scene_save_as.permission = SolersPermissionManager::PERMISSION_EDIT_FILES;
-	scene_save_as.mutation_kind = "editor_save";
-	scene_save_as.requires_approval = true;
-	scene_save_as.input_schema = object_schema;
-	scene_save_as.output_schema = object_schema;
-	_register_tool(scene_save_as);
-
-	ToolDefinition runtime_play;
-	runtime_play.name = "runtime.play_current_scene";
-	runtime_play.description = "Run the current edited scene through EditorInterface.";
-	runtime_play.permission = SolersPermissionManager::PERMISSION_RUN_PROJECT;
-	runtime_play.mutation_kind = "runtime_only";
-	runtime_play.requires_approval = true;
-	runtime_play.input_schema = object_schema;
-	runtime_play.output_schema = object_schema;
-	_register_tool(runtime_play);
-
-	ToolDefinition runtime_stop;
-	runtime_stop.name = "runtime.stop";
-	runtime_stop.description = "Stop scene playback through EditorInterface.";
-	runtime_stop.permission = SolersPermissionManager::PERMISSION_RUN_PROJECT;
-	runtime_stop.mutation_kind = "runtime_only";
-	runtime_stop.requires_approval = true;
-	runtime_stop.input_schema = object_schema;
-	runtime_stop.output_schema = object_schema;
-	_register_tool(runtime_stop);
+	const Vector<SolersBuiltinToolDefinition> definitions = SolersBuiltinToolCatalog::list_tools();
+	for (int i = 0; i < definitions.size(); i++) {
+		const SolersBuiltinToolDefinition &builtin = definitions[i];
+		ToolDefinition tool;
+		tool.name = builtin.name;
+		tool.description = builtin.description;
+		tool.permission = builtin.permission;
+		tool.mutation_kind = builtin.mutation_kind;
+		tool.requires_approval = builtin.requires_approval;
+		tool.input_schema = object_schema;
+		tool.output_schema = object_schema;
+		_register_tool(tool);
+	}
 }
 
 Array SolersToolRegistry::list_tools() const {
 	Array result;
+	Vector<String> names;
 	for (const KeyValue<StringName, ToolDefinition> &E : tools) {
-		result.push_back(_tool_to_dictionary(E.value));
+		names.push_back(String(E.key));
+	}
+	names.sort();
+	for (int i = 0; i < names.size(); i++) {
+		const ToolDefinition *definition = tools.getptr(StringName(names[i]));
+		if (definition) {
+			result.push_back(_tool_to_dictionary(*definition));
+		}
 	}
 	return result;
+}
+
+String SolersToolRegistry::get_model_tool_name(const StringName &p_name) const {
+	const ToolDefinition *definition = tools.getptr(p_name);
+	if (!definition) {
+		return String();
+	}
+	return definition->model_name;
+}
+
+StringName SolersToolRegistry::resolve_model_tool_name(const String &p_model_name) const {
+	const StringName model_name = StringName(p_model_name);
+	const StringName *canonical = model_name_index.getptr(model_name);
+	if (canonical) {
+		return *canonical;
+	}
+	if (tools.has(model_name)) {
+		return model_name;
+	}
+	return StringName();
 }
 
 Dictionary SolersToolRegistry::call_tool(const StringName &p_name, const Dictionary &p_args) {

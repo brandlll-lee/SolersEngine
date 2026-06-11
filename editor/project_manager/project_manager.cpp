@@ -50,6 +50,9 @@
 #include "editor/project_manager/project_list.h"
 #include "editor/project_manager/project_tag.h"
 #include "editor/project_manager/quick_settings_dialog.h"
+#include "editor/project_manager/solers_pm_cards.h"
+#include "editor/project_manager/solers_pm_ai_view.h"
+#include "editor/project_manager/solers_pm_theme.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
 #include "editor/themes/editor_theme_manager.h"
@@ -59,6 +62,7 @@
 #include "scene/gui/line_edit.h"
 #include "scene/gui/margin_container.h"
 #include "scene/gui/menu_bar.h"
+#include "scene/gui/menu_button.h"
 #include "scene/gui/option_button.h"
 #include "scene/gui/panel_container.h"
 #include "scene/gui/rich_text_label.h"
@@ -79,6 +83,12 @@
 #include "modules/modules_enabled.gen.h" // For gdscript, mono. (For editor help highlighter).
 
 constexpr int GODOT4_CONFIG_VERSION = 5;
+
+// Lucide glyph bodies (24x24 viewBox, white stroke applied by the rasterizer;
+// ISC license — see modules/solers_ai/UI_ICON_LICENSE.txt).
+static const char *SOLERS_LUCIDE_FOLDER = "<path d=\"M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z\"/>";
+static const char *SOLERS_LUCIDE_HEART = "<path d=\"M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z\"/>";
+static const char *SOLERS_LUCIDE_TAG = "<path d=\"M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z\"/><circle cx=\"7.5\" cy=\"7.5\" r=\".5\" fill=\"#FFFFFF\"/>";
 
 ProjectManager *ProjectManager::singleton = nullptr;
 
@@ -203,6 +213,7 @@ void ProjectManager::_update_size_limits() {
 void ProjectManager::_update_theme(bool p_skip_creation) {
 	if (!p_skip_creation) {
 		theme = EditorThemeManager::generate_theme(theme);
+		SolersPMTheme::apply(theme); // Solers: UE-style Project Manager theme overlay.
 		DisplayServer::set_early_window_clear_color_override(true, theme->get_color("background", EditorStringName(Editor)));
 	}
 
@@ -239,10 +250,8 @@ void ProjectManager::_update_theme(bool p_skip_creation) {
 		background_panel->add_theme_style_override(SceneStringName(panel), get_theme_stylebox("Background", EditorStringName(EditorStyles)));
 		main_view_container->add_theme_style_override(SceneStringName(panel), get_theme_stylebox("panel_container", "ProjectManager"));
 
-		title_bar_logo->set_button_icon(get_editor_theme_icon("TitleBarLogo"));
-
-		_set_main_view_icon(MAIN_VIEW_PROJECTS, get_editor_theme_icon("ProjectList"));
-		_set_main_view_icon(MAIN_VIEW_ASSETLIB, get_editor_theme_icon("AssetLib"));
+		// Solers: top view tabs are text-only with an accent underline (UE tab
+		// language) — icons here are a Godot-ism that breaks the minimal chrome.
 
 		// Project list.
 		{
@@ -260,20 +269,32 @@ void ProjectManager::_update_theme(bool p_skip_creation) {
 			search_box->set_right_icon(get_editor_theme_icon("Search"));
 			quick_settings_button->set_button_icon(get_editor_theme_icon("Tools"));
 
-			// Sidebar.
-			create_btn->set_button_icon(get_editor_theme_icon("Add"));
-			import_btn->set_button_icon(get_editor_theme_icon("Load"));
-			scan_btn->set_button_icon(get_editor_theme_icon("Search"));
-			open_btn->set_button_icon(get_editor_theme_icon("Edit"));
+			// Bottom command bar — text-only, exactly like Unreal's footer
+			// actions (Create/Cancel). Icon-and-text rows are the single
+			// loudest Godot tell, so the chrome drops them entirely. Only the
+			// split-button chevron survives (it is the affordance itself).
 			open_options_btn->set_button_icon(get_editor_theme_icon("Collapse"));
-			run_btn->set_button_icon(get_editor_theme_icon("Play"));
-			rename_btn->set_button_icon(get_editor_theme_icon("Rename"));
-			duplicate_btn->set_button_icon(get_editor_theme_icon("Duplicate"));
-			manage_tags_btn->set_button_icon(get_editor_theme_icon("Script"));
-			erase_btn->set_button_icon(get_editor_theme_icon("Remove"));
-			erase_missing_btn->set_button_icon(get_editor_theme_icon("Clear"));
 			create_tag_btn->set_button_icon(get_editor_theme_icon("Add"));
-			donate_btn->set_button_icon(get_editor_theme_icon("Heart"));
+
+			// Solers: view toggle + left navigation icons — strictly monochrome.
+			view_list_btn->set_button_icon(SolersPMTheme::mono_icon(get_editor_theme_icon("FileList")));
+			view_grid_btn->set_button_icon(SolersPMTheme::mono_icon(get_editor_theme_icon("FileThumbnail")));
+			if (library_more_btn) {
+				library_more_btn->set_button_icon(SolersPMTheme::mono_icon(get_editor_theme_icon("GuiTabMenuHl")));
+			}
+			if (selection_more_btn) {
+				selection_more_btn->set_button_icon(SolersPMTheme::mono_icon(get_editor_theme_icon("GuiTabMenuHl")));
+			}
+			// Left rail: Lucide stroke glyphs (white at source, state-tinted by the
+			// card) — modern line iconography instead of chunky editor SVGs.
+			if (nav_all_card) {
+				Ref<Texture2D> folder_glyph = SolersPMTheme::lucide_icon(SOLERS_LUCIDE_FOLDER);
+				nav_all_card->set_icon(folder_glyph.is_valid() ? folder_glyph : SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Folder"))));
+			}
+			if (nav_fav_card) {
+				Ref<Texture2D> heart_glyph = SolersPMTheme::lucide_icon(SOLERS_LUCIDE_HEART);
+				nav_fav_card->set_icon(heart_glyph.is_valid() ? heart_glyph : SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Heart"))));
+			}
 
 			tag_error->add_theme_color_override(SceneStringName(font_color), get_theme_color("error_color", EditorStringName(Editor)));
 			tag_edit_error->add_theme_color_override(SceneStringName(font_color), get_theme_color("error_color", EditorStringName(Editor)));
@@ -291,8 +312,7 @@ void ProjectManager::_update_theme(bool p_skip_creation) {
 			erase_missing_btn->add_theme_constant_override("h_separation", h_separation);
 
 			open_btn_container->add_theme_constant_override("separation", 0);
-			open_options_popup->set_item_icon(0, get_editor_theme_icon("Notification"));
-			open_options_popup->set_item_icon(1, get_editor_theme_icon("NodeWarning"));
+			// Solers: text-only menu entries (UE menus carry no status icons).
 		}
 
 		// Dialogs
@@ -315,7 +335,8 @@ Button *ProjectManager::_add_main_view(MainViewTab p_id, const String &p_name, c
 	ERR_FAIL_COND_V(main_view_toggle_map.has(p_id), nullptr);
 
 	Button *toggle_button = memnew(Button);
-	toggle_button->set_flat(true);
+	// Not flat: flat buttons skip *all* state styleboxes, which would swallow
+	// the MainScreenButton accent underline that marks the active view.
 	toggle_button->set_theme_type_variation("MainScreenButton");
 	toggle_button->set_toggle_mode(true);
 	toggle_button->set_button_group(main_view_toggles_group);
@@ -862,15 +883,201 @@ void ProjectManager::_update_project_buttons() {
 	run_btn->set_disabled(empty_selection || is_missing_project_selected);
 
 	erase_missing_btn->set_disabled(!project_list->is_any_project_missing());
+
+	// Solers: contextual action bar — the selection group only exists while a
+	// selection does (hidden, not grayed: UE-style minimal resting chrome).
+	if (selection_bar) {
+		selection_bar->set_visible(!empty_selection);
+	}
+	if (selection_more_btn) {
+		PopupMenu *sel_popup = selection_more_btn->get_popup();
+		const bool sel_invalid = empty_selection || is_missing_project_selected;
+		sel_popup->set_item_disabled(sel_popup->get_item_index(BOTTOM_MENU_RENAME), sel_invalid);
+		sel_popup->set_item_disabled(sel_popup->get_item_index(BOTTOM_MENU_DUPLICATE), sel_invalid);
+		sel_popup->set_item_disabled(sel_popup->get_item_index(BOTTOM_MENU_MANAGE_TAGS), sel_invalid || selected_projects.size() > 1);
+		sel_popup->set_item_disabled(sel_popup->get_item_index(BOTTOM_MENU_ERASE), empty_selection);
+	}
+	_refresh_library_more_menu();
+}
+
+void ProjectManager::_refresh_library_more_menu() {
+	if (!library_more_btn) {
+		return;
+	}
+	PopupMenu *popup = library_more_btn->get_popup();
+	popup->clear();
+	popup->add_item(TTR("Scan Projects"), BOTTOM_MENU_SCAN);
+	popup->set_item_shortcut(popup->get_item_index(BOTTOM_MENU_SCAN), ED_GET_SHORTCUT("project_manager/scan_projects"), true);
+	// Contextual entry: only offered while broken list entries actually exist.
+	if (project_list && project_list->is_any_project_missing()) {
+		popup->add_separator();
+		popup->add_item(TTR("Remove Missing"), BOTTOM_MENU_ERASE_MISSING);
+	}
+}
+
+void ProjectManager::_on_library_more_id_pressed(int p_id) {
+	switch ((BottomBarMenuOption)p_id) {
+		case BOTTOM_MENU_SCAN:
+			_scan_projects();
+			break;
+		case BOTTOM_MENU_ERASE_MISSING:
+			_erase_missing_projects();
+			break;
+		default:
+			break;
+	}
+}
+
+void ProjectManager::_on_selection_more_id_pressed(int p_id) {
+	switch ((BottomBarMenuOption)p_id) {
+		case BOTTOM_MENU_RENAME:
+			_rename_project();
+			break;
+		case BOTTOM_MENU_DUPLICATE:
+			_duplicate_project();
+			break;
+		case BOTTOM_MENU_MANAGE_TAGS:
+			_manage_project_tags();
+			break;
+		case BOTTOM_MENU_ERASE:
+			_erase_project();
+			break;
+		default:
+			break;
+	}
+}
+
+// Solers: view mode (list/grid) + left navigation rail.
+
+void ProjectManager::_set_project_view(int p_mode) {
+	if (!project_list) {
+		return;
+	}
+	project_list->set_display_mode(p_mode);
+	if (EditorSettings::get_singleton()) {
+		EditorSettings::get_singleton()->set("project_manager/view_mode", p_mode);
+		EditorSettings::get_singleton()->save();
+	}
+}
+
+void ProjectManager::_deselect_all_nav_cards() {
+	if (nav_all_card) {
+		nav_all_card->set_selected(false);
+	}
+	if (nav_fav_card) {
+		nav_fav_card->set_selected(false);
+	}
+	if (nav_tag_list) {
+		for (int i = 0; i < nav_tag_list->get_child_count(); ++i) {
+			SolersCategoryCard *c = Object::cast_to<SolersCategoryCard>(nav_tag_list->get_child(i));
+			if (c) {
+				c->set_selected(false);
+			}
+		}
+	}
+}
+
+void ProjectManager::_nav_card_pressed(SolersCategoryCard *p_card, int p_kind, const String &p_tag) {
+	_deselect_all_nav_cards();
+	if (p_card) {
+		p_card->set_selected(true);
+	}
+	switch ((NavCardKind)p_kind) {
+		case NAV_ALL:
+			_nav_all_pressed();
+			break;
+		case NAV_FAVORITES:
+			_nav_favorites_pressed();
+			break;
+		case NAV_TAG:
+			_nav_tag_pressed(p_tag);
+			break;
+	}
+}
+
+void ProjectManager::_nav_all_pressed() {
+	search_box->set_text("");
+	project_list->set_search_term("");
+	project_list->set_favorites_only(false);
+	project_list->sort_projects();
+	project_list->select_first_visible_project();
+	_update_project_buttons();
+}
+
+void ProjectManager::_nav_favorites_pressed() {
+	search_box->set_text("");
+	project_list->set_search_term("");
+	project_list->set_favorites_only(true);
+	project_list->sort_projects();
+	project_list->select_first_visible_project();
+	_update_project_buttons();
+}
+
+void ProjectManager::_nav_tag_pressed(const String &p_tag) {
+	const String term = "tag:" + p_tag;
+	project_list->set_favorites_only(false);
+	search_box->set_text(term);
+	project_list->set_search_term(term);
+	project_list->sort_projects();
+	project_list->select_first_visible_project();
+	_update_project_buttons();
+}
+
+void ProjectManager::_rebuild_nav_tags() {
+	if (!nav_tag_list) {
+		return;
+	}
+	for (int i = nav_tag_list->get_child_count() - 1; i >= 0; --i) {
+		nav_tag_list->get_child(i)->queue_free();
+	}
+	const PackedStringArray tags = project_list->get_all_tags();
+	const Ref<Texture2D> tag_glyph = SolersPMTheme::lucide_icon(SOLERS_LUCIDE_TAG, 15);
+	for (const String &tag : tags) {
+		// Monochrome rail: one calm Lucide tag glyph for every entry. Per-tag
+		// rainbow hues read as toy-like next to UE's restrained chrome.
+		SolersCategoryCard *c = memnew(SolersCategoryCard);
+		c->configure(tag.capitalize(), tag_glyph, Color());
+		c->set_pressed_callback(callable_mp(this, &ProjectManager::_nav_card_pressed).bind(c, (int)NAV_TAG, tag));
+		nav_tag_list->add_child(c);
+	}
+}
+
+void ProjectManager::_bottom_bar_separator(HBoxContainer *p_bar) {
+	VSeparator *sep = memnew(VSeparator);
+	p_bar->add_child(sep);
 }
 
 void ProjectManager::_open_options_popup() {
+	// The bar hugs the window bottom, so the combo menu opens *upwards* —
+	// opening down would get clamped by the screen edge back over the button.
 	Rect2 rect = open_btn_container->get_screen_rect();
-	rect.position.y += rect.size.height;
 	open_options_popup->set_size(Size2(rect.size.width, 0));
+	rect.position.y -= open_options_popup->get_contents_minimum_size().y + 2 * EDSCALE;
 	open_options_popup->set_position(rect.position);
 
 	open_options_popup->popup();
+}
+
+void ProjectManager::_position_overflow_popup(PopupMenu *p_popup, Control *p_anchor) {
+	if (!p_popup || !p_anchor) {
+		return;
+	}
+	p_popup->reset_size();
+	const Rect2 anchor = p_anchor->get_screen_rect();
+	Point2 pos = anchor.position;
+	// Above the anchor (the bar sits at the window bottom).
+	pos.y -= p_popup->get_size().y + 2 * EDSCALE;
+	// Keep the menu inside the window: right-align when the anchor is near the
+	// right edge (the selection "⋯"), left-align otherwise (the library "⋯").
+	Window *win = get_window();
+	if (win) {
+		const float win_right = win->get_position().x + win->get_size().x;
+		const float overflow = (pos.x + p_popup->get_size().x) - (win_right - 8 * EDSCALE);
+		if (overflow > 0) {
+			pos.x = anchor.get_end().x - p_popup->get_size().x;
+		}
+	}
+	p_popup->set_position(pos);
 }
 
 void ProjectManager::_open_recovery_mode_ask(bool manual) {
@@ -1400,6 +1607,7 @@ ProjectManager::ProjectManager() {
 
 		EditorThemeManager::initialize();
 		theme = EditorThemeManager::generate_theme();
+		SolersPMTheme::apply(theme); // Solers: UE-style Project Manager theme overlay.
 		DisplayServer::set_early_window_clear_color_override(true, theme->get_color(SNAME("background"), EditorStringName(Editor)));
 
 		set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
@@ -1440,11 +1648,9 @@ ProjectManager::ProjectManager() {
 		left_hbox->set_stretch_ratio(1.0);
 		title_bar->add_child(left_hbox);
 
-		title_bar_logo = memnew(Button);
-		title_bar_logo->set_flat(true);
-		title_bar_logo->set_tooltip_text(TTR("About Godot"));
-		left_hbox->add_child(title_bar_logo);
-		title_bar_logo->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_show_about));
+		// Solers: the Godot wordmark/logo is intentionally removed from the
+		// top-left of the project manager. `left_hbox` stays as a left spacer so
+		// the centered view toggles remain balanced. `title_bar_logo` stays null.
 
 		bool global_menu = !bool(EDITOR_GET("interface/editor/use_embedded_menu")) && NativeMenu::get_singleton()->has_feature(NativeMenu::FEATURE_GLOBAL_MENU);
 		if (global_menu) {
@@ -1519,29 +1725,12 @@ ProjectManager::ProjectManager() {
 		local_projects_vb->set_name("LocalProjectsTab");
 		_add_main_view(MAIN_VIEW_PROJECTS, TTRC("Projects"), Ref<Texture2D>(), local_projects_vb);
 
-		// Project list's top bar.
+		// Project list's top bar: search, sort and the list/grid view toggle.
+		// (Create/Import/Scan now live in the bottom action bar.)
 		{
 			HBoxContainer *hb = memnew(HBoxContainer);
 			hb->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 			local_projects_vb->add_child(hb);
-
-			create_btn = memnew(Button);
-			create_btn->set_text(TTRC("Create"));
-			create_btn->set_shortcut(ED_SHORTCUT("project_manager/new_project", TTRC("New Project"), KeyModifierMask::CMD_OR_CTRL | Key::N));
-			create_btn->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_new_project));
-			hb->add_child(create_btn);
-
-			import_btn = memnew(Button);
-			import_btn->set_text(TTRC("Import"));
-			import_btn->set_shortcut(ED_SHORTCUT("project_manager/import_project", TTRC("Import Project"), KeyModifierMask::CMD_OR_CTRL | Key::I));
-			import_btn->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_import_project));
-			hb->add_child(import_btn);
-
-			scan_btn = memnew(Button);
-			scan_btn->set_text(TTRC("Scan"));
-			scan_btn->set_shortcut(ED_SHORTCUT("project_manager/scan_projects", TTRC("Scan Projects"), KeyModifierMask::CMD_OR_CTRL | Key::S));
-			scan_btn->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_scan_projects));
-			hb->add_child(scan_btn);
 
 			loading_label = memnew(Label(TTRC("Loading, please wait...")));
 			loading_label->set_accessibility_live(DisplayServer::AccessibilityLiveMode::LIVE_ASSERTIVE);
@@ -1575,13 +1764,73 @@ ProjectManager::ProjectManager() {
 			filter_option->add_item(TTRC("Name"));
 			filter_option->add_item(TTRC("Path"));
 			filter_option->add_item(TTRC("Tags"));
+
+			hb->add_child(memnew(VSeparator));
+
+			// View mode toggle (list / grid).
+			view_mode_group.instantiate();
+
+			view_list_btn = memnew(Button);
+			view_list_btn->set_toggle_mode(true);
+			view_list_btn->set_button_group(view_mode_group);
+			view_list_btn->set_tooltip_text(TTRC("List View"));
+			view_list_btn->set_accessibility_name(TTRC("List View"));
+			view_list_btn->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_set_project_view).bind((int)ProjectList::DISPLAY_LIST));
+			hb->add_child(view_list_btn);
+
+			view_grid_btn = memnew(Button);
+			view_grid_btn->set_toggle_mode(true);
+			view_grid_btn->set_button_group(view_mode_group);
+			view_grid_btn->set_tooltip_text(TTRC("Grid View"));
+			view_grid_btn->set_accessibility_name(TTRC("Grid View"));
+			view_grid_btn->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_set_project_view).bind((int)ProjectList::DISPLAY_GRID));
+			hb->add_child(view_grid_btn);
 		}
 
-		// Project list and its sidebar.
+		// Project list body: left navigation rail + the project list/grid panel.
 		{
 			HBoxContainer *project_list_hbox = memnew(HBoxContainer);
 			local_projects_vb->add_child(project_list_hbox);
 			project_list_hbox->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+
+			// Left navigation rail — custom-drawn UE-style category cards.
+			nav_panel = memnew(VBoxContainer);
+			nav_panel->set_custom_minimum_size(Size2(208, 0) * EDSCALE);
+			nav_panel->add_theme_constant_override("separation", 3 * EDSCALE);
+			project_list_hbox->add_child(nav_panel);
+
+			{
+				Label *lib_header = memnew(Label(TTRC("LIBRARY")));
+				lib_header->set_theme_type_variation("PMNavHeader");
+				nav_panel->add_child(lib_header);
+			}
+
+			nav_all_card = memnew(SolersCategoryCard);
+			nav_all_card->configure(TTRC("All Projects"), Ref<Texture2D>(), Color(0.16f, 0.34f, 0.62f));
+			nav_all_card->set_selected(true);
+			nav_all_card->set_pressed_callback(callable_mp(this, &ProjectManager::_nav_card_pressed).bind(nav_all_card, (int)NAV_ALL, String()));
+			nav_panel->add_child(nav_all_card);
+
+			nav_fav_card = memnew(SolersCategoryCard);
+			nav_fav_card->configure(TTRC("Favorites"), Ref<Texture2D>(), Color(0.62f, 0.36f, 0.12f));
+			nav_fav_card->set_pressed_callback(callable_mp(this, &ProjectManager::_nav_card_pressed).bind(nav_fav_card, (int)NAV_FAVORITES, String()));
+			nav_panel->add_child(nav_fav_card);
+
+			{
+				Label *tags_header = memnew(Label(TTRC("TAGS")));
+				tags_header->set_theme_type_variation("PMNavHeader");
+				nav_panel->add_child(tags_header);
+			}
+
+			ScrollContainer *nav_tags_scroll = memnew(ScrollContainer);
+			nav_tags_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
+			nav_tags_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+			nav_panel->add_child(nav_tags_scroll);
+
+			nav_tag_list = memnew(VBoxContainer);
+			nav_tag_list->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+			nav_tag_list->add_theme_constant_override("separation", 2 * EDSCALE);
+			nav_tags_scroll->add_child(nav_tag_list);
 
 			project_list_panel = memnew(PanelContainer);
 			project_list_panel->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -1592,6 +1841,7 @@ ProjectManager::ProjectManager() {
 			project_list_panel->add_child(project_list);
 			project_list->connect(ProjectList::SIGNAL_LIST_CHANGED, callable_mp(this, &ProjectManager::_update_project_buttons));
 			project_list->connect(ProjectList::SIGNAL_LIST_CHANGED, callable_mp(this, &ProjectManager::_update_list_placeholder));
+			project_list->connect(ProjectList::SIGNAL_LIST_CHANGED, callable_mp(this, &ProjectManager::_rebuild_nav_tags));
 			project_list->connect(ProjectList::SIGNAL_SELECTION_CHANGED, callable_mp(this, &ProjectManager::_update_project_buttons));
 			project_list->connect(ProjectList::SIGNAL_PROJECT_ASK_OPEN, callable_mp(this, &ProjectManager::_open_selected_projects_check_recovery_mode));
 			project_list->connect(ProjectList::SIGNAL_MENU_OPTION_SELECTED, callable_mp(this, &ProjectManager::_project_list_menu_option));
@@ -1645,35 +1895,148 @@ ProjectManager::ProjectManager() {
 				empty_list_placeholder->add_child(empty_list_online_warning);
 			}
 
-			// The side bar with the edit, run, rename, etc. buttons.
-			VBoxContainer *project_list_sidebar = memnew(VBoxContainer);
-			project_list_sidebar->set_custom_minimum_size(Size2(120, 120));
-			project_list_hbox->add_child(project_list_sidebar);
+		} // Project list body.
 
-			project_list_sidebar->add_child(memnew(HSeparator));
+		// Bottom action bar — UE-grade progressive disclosure. Resting state shows
+		// only [Create] [Import] [⋯]; the selection group [⋯][Run][Edit▾] exists
+		// only while a project is selected. Low-frequency actions collapse into
+		// the two overflow menus (and the per-project right-click context menu),
+		// with all keyboard shortcuts preserved through global popup shortcuts.
+		{
+			PanelContainer *bottom_bar_panel = memnew(PanelContainer);
+			bottom_bar_panel->set_theme_type_variation("PMBottomBarPanel");
+			local_projects_vb->add_child(bottom_bar_panel);
 
-			ScrollContainer *sidebar_scroll_containter = memnew(ScrollContainer);
-			sidebar_scroll_containter->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
-			sidebar_scroll_containter->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-			project_list_sidebar->add_child(sidebar_scroll_containter);
-			VBoxContainer *sidebar_buttons_containter = memnew(VBoxContainer);
-			sidebar_scroll_containter->add_child(sidebar_buttons_containter);
+			HBoxContainer *bottom_bar = memnew(HBoxContainer);
+			bottom_bar->set_theme_type_variation("PMBottomBar");
+			bottom_bar_panel->add_child(bottom_bar);
 
+			// --- Library actions (always visible) ---
+			create_btn = memnew(Button);
+			create_btn->set_text(TTRC("Create"));
+			create_btn->set_shortcut(ED_SHORTCUT("project_manager/new_project", TTRC("New Project"), KeyModifierMask::CMD_OR_CTRL | Key::N));
+			create_btn->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_new_project));
+			bottom_bar->add_child(create_btn);
+
+			import_btn = memnew(Button);
+			import_btn->set_text(TTRC("Import"));
+			import_btn->set_shortcut(ED_SHORTCUT("project_manager/import_project", TTRC("Import Project"), KeyModifierMask::CMD_OR_CTRL | Key::I));
+			import_btn->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_import_project));
+			bottom_bar->add_child(import_btn);
+
+			// Hidden logic anchors: dialogs and update paths still reference these,
+			// but the visible entry points are the overflow menus below.
+			scan_btn = memnew(Button);
+			scan_btn->set_text(TTRC("Scan"));
+			scan_btn->set_shortcut(ED_SHORTCUT("project_manager/scan_projects", TTRC("Scan Projects"), KeyModifierMask::CMD_OR_CTRL | Key::S));
+			scan_btn->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_scan_projects));
+			bottom_bar->add_child(scan_btn);
+			scan_btn->hide();
+
+			erase_missing_btn = memnew(Button);
+			erase_missing_btn->set_text(TTRC("Remove Missing"));
+			erase_missing_btn->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_erase_missing_projects));
+			bottom_bar->add_child(erase_missing_btn);
+			erase_missing_btn->hide();
+
+			donate_btn = memnew(Button);
+			donate_btn->set_text(TTRC("Donate"));
+			donate_btn->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_open_donate_page));
+			bottom_bar->add_child(donate_btn);
+			// Solers: hidden — Unreal's command bar carries no donate entry.
+			donate_btn->hide();
+
+			// Library overflow (⋯): scanning and cleanup; "Remove Missing" only
+			// materializes when missing projects actually exist (contextual UI).
+			library_more_btn = memnew(MenuButton);
+			library_more_btn->set_flat(false);
+			library_more_btn->set_accessibility_name(TTRC("Library Options"));
+			library_more_btn->set_tooltip_text(TTRC("Library maintenance"));
+			bottom_bar->add_child(library_more_btn);
+			library_more_btn->get_popup()->connect(SceneStringName(id_pressed), callable_mp(this, &ProjectManager::_on_library_more_id_pressed));
+			library_more_btn->get_popup()->connect("about_to_popup", callable_mp(this, &ProjectManager::_position_overflow_popup).bind(library_more_btn->get_popup(), (Control *)library_more_btn));
+			_refresh_library_more_menu();
+
+			// Spacer pushes the selection actions to the right edge.
+			Control *bottom_spacer = memnew(Control);
+			bottom_spacer->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+			bottom_bar->add_child(bottom_spacer);
+
+			// --- Selection actions (visible only while a selection exists) ---
+			selection_bar = memnew(HBoxContainer);
+			bottom_bar->add_child(selection_bar);
+
+			// Hidden logic anchors (dialog wiring + button-state updates).
+			manage_tags_btn = memnew(Button);
+			manage_tags_btn->set_text(TTRC("Manage Tags"));
+			manage_tags_btn->set_shortcut(ED_SHORTCUT("project_manager/project_tags", TTRC("Manage Tags"), KeyModifierMask::CMD_OR_CTRL | Key::T));
+			selection_bar->add_child(manage_tags_btn);
+			manage_tags_btn->hide();
+
+			rename_btn = memnew(Button);
+			rename_btn->set_text(TTRC("Rename"));
+			// The F2 shortcut isn't overridden with Enter on macOS as Enter is already used to edit a project.
+			rename_btn->set_shortcut(ED_SHORTCUT("project_manager/rename_project", TTRC("Rename Project"), Key::F2));
+			rename_btn->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_rename_project));
+			selection_bar->add_child(rename_btn);
+			rename_btn->hide();
+
+			duplicate_btn = memnew(Button);
+			duplicate_btn->set_text(TTRC("Duplicate"));
+			duplicate_btn->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_duplicate_project));
+			selection_bar->add_child(duplicate_btn);
+			duplicate_btn->hide();
+
+			erase_btn = memnew(Button);
+			erase_btn->set_text(TTRC("Remove"));
+			erase_btn->set_shortcut(ED_SHORTCUT("project_manager/remove_project", TTRC("Remove Project"), Key::KEY_DELETE));
+			erase_btn->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_erase_project));
+			selection_bar->add_child(erase_btn);
+			erase_btn->hide();
+
+			// Selection overflow (⋯): occasional per-project operations. The
+			// destructive Remove sits last, behind a separator — physically
+			// isolated from Run/Edit (also mirrored in the right-click menu).
+			selection_more_btn = memnew(MenuButton);
+			selection_more_btn->set_flat(false);
+			selection_more_btn->set_accessibility_name(TTRC("Project Options"));
+			selection_more_btn->set_tooltip_text(TTRC("More project actions"));
+			selection_bar->add_child(selection_more_btn);
+			{
+				PopupMenu *sel_popup = selection_more_btn->get_popup();
+				sel_popup->add_item(TTRC("Rename"), BOTTOM_MENU_RENAME);
+				sel_popup->set_item_shortcut(sel_popup->get_item_index(BOTTOM_MENU_RENAME), ED_GET_SHORTCUT("project_manager/rename_project"), true);
+				sel_popup->add_item(TTRC("Duplicate"), BOTTOM_MENU_DUPLICATE);
+				sel_popup->add_item(TTRC("Manage Tags"), BOTTOM_MENU_MANAGE_TAGS);
+				sel_popup->set_item_shortcut(sel_popup->get_item_index(BOTTOM_MENU_MANAGE_TAGS), ED_GET_SHORTCUT("project_manager/project_tags"), true);
+				sel_popup->add_separator();
+				sel_popup->add_item(TTRC("Remove from List"), BOTTOM_MENU_ERASE);
+				sel_popup->set_item_shortcut(sel_popup->get_item_index(BOTTOM_MENU_ERASE), ED_GET_SHORTCUT("project_manager/remove_project"), true);
+				sel_popup->connect(SceneStringName(id_pressed), callable_mp(this, &ProjectManager::_on_selection_more_id_pressed));
+				sel_popup->connect("about_to_popup", callable_mp(this, &ProjectManager::_position_overflow_popup).bind(sel_popup, (Control *)selection_more_btn));
+			}
+
+			run_btn = memnew(Button);
+			run_btn->set_text(TTRC("Run"));
+			run_btn->set_shortcut(ED_SHORTCUT("project_manager/run_project", TTRC("Run Project"), KeyModifierMask::CMD_OR_CTRL | Key::R));
+			run_btn->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_run_project));
+			selection_bar->add_child(run_btn);
+
+			// Primary action: Edit (+ options popup) as a segmented button.
 			open_btn_container = memnew(HBoxContainer);
-			open_btn_container->set_anchors_preset(Control::PRESET_FULL_RECT);
-			sidebar_buttons_containter->add_child(open_btn_container);
+			open_btn_container->add_theme_constant_override("separation", 0);
+			selection_bar->add_child(open_btn_container);
 
 			open_btn = memnew(Button);
 			open_btn->set_text(TTRC("Edit"));
+			open_btn->set_theme_type_variation("PMPrimaryButtonLeft"); // UE blue combo CTA, label segment.
 			open_btn->set_shortcut(ED_SHORTCUT("project_manager/edit_project", TTRC("Edit Project"), KeyModifierMask::CMD_OR_CTRL | Key::E));
 			open_btn->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_open_selected_projects_check_recovery_mode));
-			open_btn->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 			open_btn_container->add_child(open_btn);
-
-			open_btn_container->add_child(memnew(VSeparator));
 
 			open_options_btn = memnew(Button);
 			open_options_btn->set_accessibility_name(TTRC("Options"));
+			open_options_btn->set_theme_type_variation("PMPrimaryButtonRight"); // Chevron segment.
 			open_options_btn->set_icon_alignment(HorizontalAlignment::HORIZONTAL_ALIGNMENT_CENTER);
 			open_options_btn->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_open_options_popup));
 			open_btn_container->add_child(open_options_btn);
@@ -1683,47 +2046,6 @@ ProjectManager::ProjectManager() {
 			open_options_popup->add_item(TTRC("Edit in recovery mode"));
 			open_options_popup->connect(SceneStringName(id_pressed), callable_mp(this, &ProjectManager::_on_open_options_selected));
 			open_options_btn->add_child(open_options_popup);
-
-			open_btn_container->set_custom_minimum_size(Size2(120, open_btn->get_combined_minimum_size().y));
-
-			run_btn = memnew(Button);
-			run_btn->set_text(TTRC("Run"));
-			run_btn->set_shortcut(ED_SHORTCUT("project_manager/run_project", TTRC("Run Project"), KeyModifierMask::CMD_OR_CTRL | Key::R));
-			run_btn->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_run_project));
-			sidebar_buttons_containter->add_child(run_btn);
-
-			rename_btn = memnew(Button);
-			rename_btn->set_text(TTRC("Rename"));
-			// The F2 shortcut isn't overridden with Enter on macOS as Enter is already used to edit a project.
-			rename_btn->set_shortcut(ED_SHORTCUT("project_manager/rename_project", TTRC("Rename Project"), Key::F2));
-			rename_btn->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_rename_project));
-			sidebar_buttons_containter->add_child(rename_btn);
-
-			duplicate_btn = memnew(Button);
-			duplicate_btn->set_text(TTRC("Duplicate"));
-			duplicate_btn->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_duplicate_project));
-			sidebar_buttons_containter->add_child(duplicate_btn);
-
-			manage_tags_btn = memnew(Button);
-			manage_tags_btn->set_text(TTRC("Manage Tags"));
-			manage_tags_btn->set_shortcut(ED_SHORTCUT("project_manager/project_tags", TTRC("Manage Tags"), KeyModifierMask::CMD_OR_CTRL | Key::T));
-			sidebar_buttons_containter->add_child(manage_tags_btn);
-
-			erase_btn = memnew(Button);
-			erase_btn->set_text(TTRC("Remove"));
-			erase_btn->set_shortcut(ED_SHORTCUT("project_manager/remove_project", TTRC("Remove Project"), Key::KEY_DELETE));
-			erase_btn->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_erase_project));
-			sidebar_buttons_containter->add_child(erase_btn);
-
-			erase_missing_btn = memnew(Button);
-			erase_missing_btn->set_text(TTRC("Remove Missing"));
-			erase_missing_btn->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_erase_missing_projects));
-			sidebar_buttons_containter->add_child(erase_missing_btn);
-
-			donate_btn = memnew(Button);
-			donate_btn->set_text(TTRC("Donate"));
-			donate_btn->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_open_donate_page));
-			project_list_sidebar->add_child(donate_btn);
 		}
 	}
 
@@ -1739,6 +2061,13 @@ ProjectManager::ProjectManager() {
 		Button *asset_library_toggle = _add_main_view(MAIN_VIEW_ASSETLIB, TTRC("Asset Library"), Ref<Texture2D>(), asset_library_filler);
 		asset_library_toggle->set_disabled(true);
 		asset_library_toggle->set_tooltip_text(TTRC("Asset Library not available (due to using Web editor, or because SSL support disabled)."));
+	}
+
+	// Solers: BYOK AI model configuration view.
+	{
+		SolersPMAIView *ai_view = memnew(SolersPMAIView);
+		ai_view->set_name("AIModelsTab");
+		_add_main_view(MAIN_VIEW_AI, TTRC("AI Models"), Ref<Texture2D>(), ai_view);
 	}
 
 	// Footer bar.
@@ -1959,6 +2288,19 @@ ProjectManager::ProjectManager() {
 				}
 			}
 		}
+		// Solers: apply the saved view mode (defaults to the UE-style grid)
+		// before the first population so items build into the correct layout.
+		int saved_view = ProjectList::DISPLAY_GRID;
+		if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("project_manager/view_mode")) {
+			saved_view = (int)EditorSettings::get_singleton()->get("project_manager/view_mode");
+		}
+		project_list->set_display_mode(saved_view);
+		if (saved_view == ProjectList::DISPLAY_GRID) {
+			view_grid_btn->set_pressed_no_signal(true);
+		} else {
+			view_list_btn->set_pressed_no_signal(true);
+		}
+
 		project_list->update_project_list();
 		initialized = true;
 	}

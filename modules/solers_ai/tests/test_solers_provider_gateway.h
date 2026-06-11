@@ -33,9 +33,10 @@
 #include "tests/test_macros.h"
 
 #include "modules/solers_ai/core/solers_agent_orchestrator.h"
-#include "modules/solers_ai/core/solers_chat_ui_spec.h"
 #include "modules/solers_ai/core/solers_provider_gateway.h"
 #include "modules/solers_ai/core/solers_provider_registry.h"
+#include "modules/solers_ai/core/solers_tool_registry.h"
+#include "modules/solers_ai/llm/solers_llm_message.h"
 #include "modules/solers_ai/protocol/solers_mcp_adapter.h"
 
 namespace TestSolersProviderGateway {
@@ -176,44 +177,51 @@ TEST_CASE("[SolersAgentOrchestrator] fails executor phase when tool registry is 
 	CHECK(error.get("code", String()) == "TOOL_REGISTRY_UNAVAILABLE");
 }
 
-TEST_CASE("[SolersChatUISpec] exposes RmlUi-ready chat surface assets") {
-	const String rml = SolersChatUISpec::get_chat_pane_rml();
-	const String rcss = SolersChatUISpec::get_chat_pane_rcss();
-	Array timeline = SolersChatUISpec::get_mock_timeline();
+TEST_CASE("[SolersToolRegistry] exposes deterministic builtin tool metadata") {
+	SolersToolRegistry registry;
+	registry.register_default_tools();
 
-	CHECK(rml.contains("id=\"solers-chat-root\""));
-	CHECK(rml.contains("data-slot=\"messages\""));
-	CHECK(rml.contains("top-icon-button"));
-	CHECK(rml.contains("id=\"composer-root\""));
-	CHECK(rml.contains("composer-input-wrap"));
-	CHECK(rml.contains("composer-actions"));
-	CHECK(rml.contains("composer-left"));
-	CHECK(rml.contains("composer-right"));
-	CHECK(rml.contains("select-chip"));
-	CHECK(rml.contains("model-number"));
-	CHECK(rml.contains("empty-state"));
-	CHECK(rml.contains("solers://logo"));
-	CHECK(rml.contains("solers://icon/plus"));
-	CHECK(rml.contains("solers://icon/send-circle"));
-	CHECK_FALSE(rml.contains("<svg"));
-	CHECK_FALSE(rml.contains("composer-bar"));
-	CHECK_FALSE(rml.contains("project-title"));
-	CHECK_FALSE(rml.contains("objective-row"));
-	CHECK_FALSE(rml.contains("Snake Game"));
-	CHECK_FALSE(rml.contains(String::utf8("贪吃蛇")));
-	CHECK(rml.contains("The AI-native game engine"));
-	CHECK(rml.contains("Describe a world, mechanic, or workflow."));
-	CHECK(rml.contains("Ask for follow-up changes"));
+	Array tools = registry.list_tools();
+	REQUIRE(tools.size() > 20);
 
-	CHECK(rcss.contains(".solers-chat-pane"));
-	CHECK(rcss.contains("border: 0;"));
-	CHECK(rcss.contains(".control-button"));
-	CHECK(rcss.contains(".icon-img"));
-	CHECK(rcss.contains(".send-button"));
-	CHECK(rcss.contains("caret-color"));
-	CHECK_FALSE(rcss.contains("#ffffff0c"));
+	String previous;
+	bool found_patch = false;
+	bool found_snapshot = false;
+	for (int i = 0; i < tools.size(); i++) {
+		Dictionary tool = tools[i];
+		const String name = tool.get("name", String());
+		const String model_name = tool.get("model_name", String());
+		CHECK_FALSE(name.is_empty());
+		CHECK_FALSE(model_name.is_empty());
+		for (int c = 0; c < model_name.length(); c++) {
+			const char32_t ch = model_name[c];
+			const bool allowed = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-';
+			CHECK(allowed);
+		}
+		CHECK(previous.is_empty() || previous <= name);
+		previous = name;
 
-	CHECK(timeline.is_empty());
+		if (name == "script.patch") {
+			found_patch = true;
+			CHECK(tool.get("requires_approval", false));
+			CHECK(tool.get("mutation_kind", String()) == "file_patch");
+		} else if (name == "editor.get_snapshot") {
+			found_snapshot = true;
+			CHECK_FALSE((bool)tool.get("requires_approval", true));
+			CHECK(model_name == "editor_get_snapshot");
+		}
+	}
+	CHECK(found_patch);
+	CHECK(found_snapshot);
+	CHECK(registry.get_model_tool_name("editor.get_snapshot") == "editor_get_snapshot");
+	CHECK(registry.resolve_model_tool_name("editor_get_snapshot") == StringName("editor.get_snapshot"));
+}
+
+TEST_CASE("[SolersLLMEvent] represents streaming reasoning as canonical events") {
+	Dictionary event = SolersLLMEvent::reasoning_delta("Inspecting the scene tree.");
+
+	CHECK(event.get("kind", String()) == String(SolersLLMEventKind::REASONING_DELTA));
+	CHECK(event.get("text", String()) == "Inspecting the scene tree.");
 }
 
 } // namespace TestSolersProviderGateway

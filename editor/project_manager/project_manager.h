@@ -41,6 +41,7 @@ class EditorTitleBar;
 class HFlowContainer;
 class LineEdit;
 class MarginContainer;
+class MenuButton;
 class OptionButton;
 class PanelContainer;
 class PopupMenu;
@@ -48,6 +49,7 @@ class ProjectDialog;
 class ProjectList;
 class QuickSettingsDialog;
 class RichTextLabel;
+class SolersCategoryCard;
 class TabContainer;
 class VBoxContainer;
 
@@ -97,6 +99,7 @@ class ProjectManager : public Control {
 	enum MainViewTab {
 		MAIN_VIEW_PROJECTS,
 		MAIN_VIEW_ASSETLIB,
+		MAIN_VIEW_AI, // Solers: BYOK AI model configuration.
 		MAIN_VIEW_MAX
 	};
 
@@ -151,6 +154,45 @@ class ProjectManager : public Control {
 	Label *sort_label = nullptr;
 	OptionButton *filter_option = nullptr;
 	PanelContainer *project_list_panel = nullptr;
+
+	// Solers: view mode toggle (list / grid).
+	Ref<ButtonGroup> view_mode_group;
+	Button *view_list_btn = nullptr;
+	Button *view_grid_btn = nullptr;
+	void _set_project_view(int p_mode);
+
+	// Solers: left navigation rail — custom-drawn UE-style category cards.
+	enum NavCardKind { NAV_ALL, NAV_FAVORITES, NAV_TAG };
+	VBoxContainer *nav_panel = nullptr;
+	VBoxContainer *nav_tag_list = nullptr;
+	SolersCategoryCard *nav_all_card = nullptr;
+	SolersCategoryCard *nav_fav_card = nullptr;
+	void _nav_card_pressed(SolersCategoryCard *p_card, int p_kind, const String &p_tag);
+	void _deselect_all_nav_cards();
+	void _nav_all_pressed();
+	void _nav_favorites_pressed();
+	void _nav_tag_pressed(const String &p_tag);
+	void _rebuild_nav_tags();
+	void _bottom_bar_separator(HBoxContainer *p_bar);
+
+	// Solers: progressive-disclosure bottom bar. Low-frequency actions live in
+	// two overflow menus; the selection group only exists while a selection does.
+	enum BottomBarMenuOption {
+		BOTTOM_MENU_SCAN,
+		BOTTOM_MENU_ERASE_MISSING,
+		BOTTOM_MENU_RENAME,
+		BOTTOM_MENU_DUPLICATE,
+		BOTTOM_MENU_MANAGE_TAGS,
+		BOTTOM_MENU_ERASE,
+	};
+	void _on_library_more_id_pressed(int p_id);
+	void _on_selection_more_id_pressed(int p_id);
+	void _refresh_library_more_menu();
+	void _position_overflow_popup(PopupMenu *p_popup, Control *p_anchor);
+
+	MenuButton *library_more_btn = nullptr;
+	MenuButton *selection_more_btn = nullptr;
+	HBoxContainer *selection_bar = nullptr;
 
 	Button *create_btn = nullptr;
 	Button *import_btn = nullptr;

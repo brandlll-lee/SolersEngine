@@ -36,6 +36,7 @@ class SolersDock;
 class SolersActionTimeline;
 class SolersAgentOrchestrator;
 class SolersAgentRuntime;
+class SolersAgentSession;
 class SolersEditorOperator;
 class SolersFileCheckpoint;
 class SolersMCPAdapter;
@@ -56,6 +57,7 @@ class SolersEditorPlugin : public EditorPlugin {
 	SolersActionTimeline *action_timeline = nullptr;
 	SolersAgentOrchestrator *agent_orchestrator = nullptr;
 	SolersAgentRuntime *agent_runtime = nullptr;
+	SolersAgentSession *agent_session = nullptr;
 	SolersEditorOperator *editor_operator = nullptr;
 	SolersFileCheckpoint *file_checkpoint = nullptr;
 	SolersMCPAdapter *mcp_adapter = nullptr;

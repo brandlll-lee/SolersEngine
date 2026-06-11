@@ -38,12 +38,16 @@
 #include "editor/file_system/editor_paths.h"
 #include "editor/project_manager/project_manager.h"
 #include "editor/project_manager/project_tag.h"
+#include "editor/project_manager/solers_pm_theme.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
 #include "scene/gui/button.h"
 #include "scene/gui/dialogs.h"
+#include "scene/gui/flow_container.h"
 #include "scene/gui/label.h"
 #include "scene/gui/line_edit.h"
+#include "scene/gui/margin_container.h"
+#include "scene/gui/panel_container.h"
 #include "scene/gui/popup_menu.h"
 #include "scene/gui/progress_bar.h"
 #include "scene/gui/texture_button.h"
@@ -60,8 +64,14 @@ void ProjectListItemControl::_notification(int p_what) {
 			}
 
 			project_title->begin_bulk_theme_override();
-			project_title->add_theme_font_override(SceneStringName(font), get_theme_font(SNAME("title"), EditorStringName(EditorFonts)));
-			project_title->add_theme_font_size_override(SceneStringName(font_size), get_theme_font_size(SNAME("title_size"), EditorStringName(EditorFonts)));
+			project_title->add_theme_font_override(SceneStringName(font), get_theme_font(SNAME("bold"), EditorStringName(EditorFonts)));
+			if (is_card) {
+				// UE caption type: compact bold label, one step above body text —
+				// the oversized "title" font is a Godot-ism on a template tile.
+				project_title->add_theme_font_size_override(SceneStringName(font_size), MAX(10, (int)(13 * EDSCALE)));
+			} else {
+				project_title->add_theme_font_size_override(SceneStringName(font_size), get_theme_font_size(SNAME("title_size"), EditorStringName(EditorFonts)));
+			}
 			project_title->add_theme_color_override(SceneStringName(font_color), get_theme_color(SceneStringName(font_color), SNAME("ProjectList")));
 			project_title->end_bulk_theme_override();
 
@@ -70,10 +80,11 @@ void ProjectListItemControl::_notification(int p_what) {
 
 			favorite_focus_color = get_theme_color(SNAME("accent_color"), EditorStringName(Editor));
 			_update_favorite_button_focus_color();
+			// Monochrome star — the gold Favorites glyph is stock-Godot color noise.
 			if (is_favorite) {
-				favorite_button->set_texture_normal(get_editor_theme_icon(SNAME("Favorites")));
+				favorite_button->set_texture_normal(SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Favorites"))));
 			} else {
-				favorite_button->set_texture_normal(get_editor_theme_icon(SNAME("Unfavorite")));
+				favorite_button->set_texture_normal(SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Unfavorite"))));
 			}
 
 			if (project_is_missing) {
@@ -137,19 +148,53 @@ void ProjectListItemControl::_notification(int p_what) {
 		} break;
 
 		case NOTIFICATION_DRAW: {
-			if (is_selected && is_hovering) {
-				draw_style_box(get_theme_stylebox(SNAME("hover_pressed"), SNAME("ProjectList")), Rect2(Point2(), get_size()));
-			} else if (is_selected) {
-				draw_style_box(get_theme_stylebox(SNAME("selected"), SNAME("ProjectList")), Rect2(Point2(), get_size()));
-			} else if (is_hovering) {
-				draw_style_box(get_theme_stylebox(SNAME("hovered"), SNAME("ProjectList")), Rect2(Point2(), get_size()));
+			const Rect2 box(Point2(), get_size());
+			if (is_card) {
+				// Solers: each grid item is a hard-edged UE template tile drawn
+				// behind its child widgets; hover/selection swap the 1px outline.
+				StringName card_sb = SNAME("solers_card");
+				if (is_selected) {
+					card_sb = SNAME("solers_card_selected");
+				} else if (is_hovering) {
+					card_sb = SNAME("solers_card_hover");
+				}
+				draw_style_box(get_theme_stylebox(card_sb, SNAME("ProjectList")), box);
+
+				// UE caption band: fill everything below the image well. Idle/hover
+				// use a faintly lifted strip; selection floods it with accent blue
+				// (the signature UE "selected template" treatment).
+				if (card_thumb != nullptr) {
+					StringName cap_col_name = SNAME("solers_caption");
+					if (is_selected) {
+						cap_col_name = SNAME("solers_caption_selected");
+					} else if (is_hovering) {
+						cap_col_name = SNAME("solers_caption_hover");
+					}
+					const float inset = MAX(1.0f, EDSCALE); // Keep the 1px tile outline visible.
+					const float cap_y = card_thumb->get_global_rect().get_end().y - get_global_rect().position.y;
+					const Rect2 cap_rect(inset, cap_y, box.size.x - 2.0f * inset, box.size.y - cap_y - inset);
+					if (cap_rect.size.y > 0) {
+						draw_rect(cap_rect, get_theme_color(cap_col_name, SNAME("ProjectList")));
+					}
+				}
+			} else {
+				if (is_selected && is_hovering) {
+					draw_style_box(get_theme_stylebox(SNAME("hover_pressed"), SNAME("ProjectList")), box);
+				} else if (is_selected) {
+					draw_style_box(get_theme_stylebox(SNAME("selected"), SNAME("ProjectList")), box);
+				} else if (is_hovering) {
+					draw_style_box(get_theme_stylebox(SNAME("hovered"), SNAME("ProjectList")), box);
+				}
 			}
 			// Due to how this control works, we can't rely on the built-in way of checking for focus visibility.
 			if (has_focus() && !is_focus_hidden) {
-				draw_style_box(get_theme_stylebox(SNAME("focus"), SNAME("ProjectList")), Rect2(Point2(), get_size()));
+				draw_style_box(get_theme_stylebox(SNAME("focus"), SNAME("ProjectList")), box);
 			}
 
-			draw_line(Point2(0, get_size().y + 1), Point2(get_size().x, get_size().y + 1), get_theme_color(SNAME("guide_color"), SNAME("ProjectList")));
+			// Solers: row separators only make sense in the dense list layout.
+			if (!is_card) {
+				draw_line(Point2(0, get_size().y + 1), Point2(get_size().x, get_size().y + 1), get_theme_color(SNAME("guide_color"), SNAME("ProjectList")));
+			}
 		} break;
 	}
 }
@@ -158,8 +203,18 @@ ProjectList *ProjectListItemControl::get_list() const {
 	if (!is_inside_tree()) {
 		return nullptr;
 	}
-	ProjectList *pl = Object::cast_to<ProjectList>(get_parent()->get_parent());
-	return pl;
+	// Solers: items may be nested one level deeper (content_root → vbox/grid),
+	// so resolve the owning ProjectList by walking up ancestors instead of
+	// assuming a fixed depth.
+	Node *n = get_parent();
+	while (n) {
+		ProjectList *pl = Object::cast_to<ProjectList>(n);
+		if (pl) {
+			return pl;
+		}
+		n = n->get_parent();
+	}
+	return nullptr;
 }
 
 void ProjectListItemControl::_accessibility_action_scroll_into_view(const Variant &p_data) {
@@ -246,8 +301,13 @@ void ProjectListItemControl::set_project_icon(const Ref<Texture2D> &p_icon) {
 	// The default project icon is 128×128 to look crisp on hiDPI displays,
 	// but we want the actual displayed size to be 64×64 on loDPI displays.
 	project_icon->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
-	project_icon->set_custom_minimum_size(Size2(64, 64) * EDSCALE);
 	project_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+	if (!is_card) {
+		project_icon->set_custom_minimum_size(Size2(64, 64) * EDSCALE);
+	} else {
+		// In card layout the icon fills the thumbnail panel above the title.
+		project_icon->set_custom_minimum_size(Size2(0, 0));
+	}
 
 	project_icon->set_texture(p_icon);
 }
@@ -309,10 +369,10 @@ void ProjectListItemControl::set_selected(bool p_selected, bool p_hide_focus) {
 void ProjectListItemControl::set_is_favorite(bool p_favorite) {
 	is_favorite = p_favorite;
 	if (p_favorite) {
-		favorite_button->set_texture_normal(get_editor_theme_icon(SNAME("Favorites")));
+		favorite_button->set_texture_normal(SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Favorites"))));
 		favorite_button->set_accessibility_name(TTRC("Remove from Favorites"));
 	} else {
-		favorite_button->set_texture_normal(get_editor_theme_icon(SNAME("Unfavorite")));
+		favorite_button->set_texture_normal(SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Unfavorite"))));
 		favorite_button->set_accessibility_name(TTRC("Add to Favorites"));
 	}
 }
@@ -353,10 +413,20 @@ void ProjectListItemControl::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("request_menu"));
 }
 
-ProjectListItemControl::ProjectListItemControl() {
+ProjectListItemControl::ProjectListItemControl(bool p_card_mode) {
+	is_card = p_card_mode;
 	set_focus_mode(FocusMode::FOCUS_ALL);
 	set_auto_translate_mode(AUTO_TRANSLATE_MODE_DISABLED);
 
+	if (is_card) {
+		_build_card_layout();
+	} else {
+		_build_row_layout();
+	}
+}
+
+// Solers: classic dense horizontal row (the original Godot layout).
+void ProjectListItemControl::_build_row_layout() {
 	// Left spacer.
 	add_child(memnew(Control));
 
@@ -462,6 +532,165 @@ ProjectListItemControl::ProjectListItemControl() {
 
 	// Right spacer.
 	add_child(memnew(Control));
+}
+
+// Solers: UE-style vertical thumbnail card for the grid layout. Uses the exact
+// same member widgets/signals as the row layout, so selection, favorites, the
+// context menu and asynchronous icon loading all work identically.
+void ProjectListItemControl::_build_card_layout() {
+	set_h_size_flags(SIZE_SHRINK_BEGIN);
+	set_v_size_flags(SIZE_SHRINK_BEGIN);
+	set_custom_minimum_size(Size2(236, 0) * EDSCALE);
+
+	// UE template tiles run the artwork edge-to-edge: only a 1px inset so the
+	// self-drawn outline (NOTIFICATION_DRAW) stays visible around the content.
+	const int tile_inset = MAX(1, (int)EDSCALE);
+	MarginContainer *card_margin = memnew(MarginContainer);
+	card_margin->set_h_size_flags(SIZE_EXPAND_FILL);
+	card_margin->set_v_size_flags(SIZE_EXPAND_FILL);
+	card_margin->add_theme_constant_override("margin_left", tile_inset);
+	card_margin->add_theme_constant_override("margin_right", tile_inset);
+	card_margin->add_theme_constant_override("margin_top", tile_inset);
+	card_margin->add_theme_constant_override("margin_bottom", tile_inset);
+	add_child(card_margin);
+
+	main_vbox = memnew(VBoxContainer);
+	main_vbox->set_h_size_flags(SIZE_EXPAND_FILL);
+	main_vbox->set_v_size_flags(SIZE_EXPAND_FILL);
+	// No gap: the caption band must sit flush under the image well, UE-style.
+	main_vbox->add_theme_constant_override("separation", 0);
+	card_margin->add_child(main_vbox);
+
+	// Thumbnail panel (large icon) — the tile's near-black image well.
+	{
+		PanelContainer *thumb = memnew(PanelContainer);
+		thumb->set_theme_type_variation("PMCardThumb");
+		thumb->set_custom_minimum_size(Size2(0, 132) * EDSCALE);
+		thumb->set_mouse_filter(MOUSE_FILTER_PASS);
+		main_vbox->add_child(thumb);
+		card_thumb = thumb;
+
+		// Present the project icon as a restrained 56px mark centered in the
+		// near-black well — "logo on dark", not a full-bleed cartoon. This is
+		// how an icon-only thumbnail can read premium next to UE's artwork.
+		project_icon = memnew(TextureRect);
+		project_icon->set_name("ProjectIcon");
+		project_icon->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
+		project_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+		project_icon->set_custom_minimum_size(Size2(56, 56) * EDSCALE);
+		project_icon->set_h_size_flags(SIZE_SHRINK_CENTER);
+		project_icon->set_v_size_flags(SIZE_SHRINK_CENTER);
+		project_icon->set_mouse_filter(MOUSE_FILTER_PASS);
+		thumb->add_child(project_icon);
+	}
+
+	// Caption band content. The band's *fill* is painted by NOTIFICATION_DRAW
+	// (idle strip / accent blue on selection); here we only lay out the text
+	// rows with UE's tight label padding.
+	MarginContainer *caption_margin = memnew(MarginContainer);
+	caption_margin->set_h_size_flags(SIZE_EXPAND_FILL);
+	caption_margin->set_v_size_flags(SIZE_EXPAND_FILL);
+	caption_margin->add_theme_constant_override("margin_left", 10 * EDSCALE);
+	caption_margin->add_theme_constant_override("margin_right", 8 * EDSCALE);
+	caption_margin->add_theme_constant_override("margin_top", 6 * EDSCALE);
+	caption_margin->add_theme_constant_override("margin_bottom", 8 * EDSCALE);
+	main_vbox->add_child(caption_margin);
+
+	VBoxContainer *caption_vbox = memnew(VBoxContainer);
+	caption_vbox->set_h_size_flags(SIZE_EXPAND_FILL);
+	caption_vbox->add_theme_constant_override("separation", 2 * EDSCALE);
+	caption_margin->add_child(caption_vbox);
+
+	// Title row: name + unsupported-features warning + favorite toggle.
+	{
+		HBoxContainer *title_hb = memnew(HBoxContainer);
+		caption_vbox->add_child(title_hb);
+
+		project_title = memnew(Label);
+		project_title->set_focus_mode(FOCUS_ACCESSIBILITY);
+		project_title->set_name("ProjectName");
+		project_title->set_h_size_flags(SIZE_EXPAND_FILL);
+		project_title->set_clip_text(true);
+		title_hb->add_child(project_title);
+
+		project_unsupported_features = memnew(TextureRect);
+		project_unsupported_features->set_name("ProjectUnsupportedFeatures");
+		project_unsupported_features->set_stretch_mode(TextureRect::STRETCH_KEEP_CENTERED);
+		title_hb->add_child(project_unsupported_features);
+		project_unsupported_features->hide();
+
+		favorite_button = memnew(TextureButton);
+		favorite_button->set_name("FavoriteButton");
+		favorite_button->set_tooltip_text(TTRC("Toggle Favorite"));
+		favorite_button->set_auto_translate_mode(AUTO_TRANSLATE_MODE_ALWAYS);
+		favorite_button->set_mouse_filter(MOUSE_FILTER_PASS);
+		favorite_button->set_v_size_flags(SIZE_SHRINK_CENTER);
+		title_hb->add_child(favorite_button);
+		favorite_button->connect(SceneStringName(pressed), callable_mp(this, &ProjectListItemControl::_favorite_button_pressed));
+		favorite_button->connect(SceneStringName(focus_entered), callable_mp(this, &ProjectListItemControl::_update_favorite_button_focus_color));
+		favorite_button->connect(SceneStringName(focus_exited), callable_mp(this, &ProjectListItemControl::_update_favorite_button_focus_color));
+	}
+
+	// Path row: explore button + path.
+	{
+		HBoxContainer *path_hb = memnew(HBoxContainer);
+		path_hb->set_h_size_flags(SIZE_EXPAND_FILL);
+		caption_vbox->add_child(path_hb);
+
+		explore_button = memnew(Button);
+		explore_button->set_name("ExploreButton");
+		explore_button->set_tooltip_auto_translate_mode(AUTO_TRANSLATE_MODE_ALWAYS);
+		explore_button->set_mouse_filter(MOUSE_FILTER_PASS);
+		explore_button->set_tooltip_text(TTRC("Open in file manager"));
+		explore_button->set_flat(true);
+		path_hb->add_child(explore_button);
+		explore_button->connect(SceneStringName(pressed), callable_mp(this, &ProjectListItemControl::_explore_button_pressed));
+
+		project_path = memnew(Label);
+		project_path->set_name("ProjectPath");
+		project_path->set_focus_mode(FOCUS_ACCESSIBILITY);
+		project_path->set_structured_text_bidi_override(TextServer::STRUCTURED_TEXT_FILE);
+		project_path->set_clip_text(true);
+		project_path->set_h_size_flags(SIZE_EXPAND_FILL);
+		project_path->set_modulate(Color(1, 1, 1, 0.5));
+		path_hb->add_child(project_path);
+	}
+
+	// Meta row: last edited + project version.
+	{
+		HBoxContainer *meta_hb = memnew(HBoxContainer);
+		meta_hb->set_h_size_flags(SIZE_EXPAND_FILL);
+		caption_vbox->add_child(meta_hb);
+
+		last_edited_info = memnew(Label);
+		last_edited_info->set_focus_mode(FOCUS_ACCESSIBILITY);
+		last_edited_info->set_name("LastEditedInfo");
+		last_edited_info->set_mouse_filter(MOUSE_FILTER_PASS);
+		last_edited_info->set_tooltip_auto_translate_mode(AUTO_TRANSLATE_MODE_ALWAYS);
+		last_edited_info->set_tooltip_text(TTRC("Last edited timestamp"));
+		last_edited_info->set_modulate(Color(1, 1, 1, 0.5));
+		last_edited_info->set_h_size_flags(SIZE_EXPAND_FILL);
+		meta_hb->add_child(last_edited_info);
+
+		project_version = memnew(Label);
+		project_version->set_focus_mode(FOCUS_ACCESSIBILITY);
+		project_version->set_name("ProjectVersion");
+		project_version->set_mouse_filter(MOUSE_FILTER_PASS);
+		meta_hb->add_child(project_version);
+	}
+
+	// Tags.
+	tag_container = memnew(HBoxContainer);
+	caption_vbox->add_child(tag_container);
+
+	if (DisplayServer::get_singleton()->is_touchscreen_available()) {
+		touch_menu_button = memnew(Button);
+		touch_menu_button->set_theme_type_variation(SceneStringName(FlatButton));
+		touch_menu_button->set_v_size_flags(SIZE_SHRINK_CENTER);
+		caption_vbox->add_child(touch_menu_button);
+		touch_menu_button->set_mouse_filter(MOUSE_FILTER_PASS);
+		touch_menu_button->connect(SceneStringName(pressed), callable_mp(this, &ProjectListItemControl::_request_menu));
+	}
 }
 
 struct ProjectListComparator {
@@ -851,6 +1080,11 @@ void ProjectList::sort_projects() {
 			item_visible = !missing_tags && (search_term.is_empty() || item.project_name.containsn(search_term) || search_path.containsn(search_term));
 		}
 
+		// Solers: left-nav "Favorites" filter narrows the visible set further.
+		if (_favorites_only && !item.favorite) {
+			item_visible = false;
+		}
+
 		item.control->set_visible(item_visible);
 	}
 
@@ -1027,13 +1261,15 @@ void ProjectList::ensure_project_visible(int p_index) {
 }
 
 void ProjectList::_create_project_item_control(int p_index) {
-	// Will be added last in the list, so make sure indexes match
-	ERR_FAIL_COND(p_index != project_list_vbox->get_child_count());
+	Container *parent = _active_items_parent();
+
+	// Will be added last in the active container, so make sure indexes match.
+	ERR_FAIL_COND(p_index != parent->get_child_count());
 
 	Item &item = _projects.write[p_index];
 	ERR_FAIL_COND(item.control != nullptr); // Already created
 
-	ProjectListItemControl *hb = memnew(ProjectListItemControl);
+	ProjectListItemControl *hb = memnew(ProjectListItemControl(_display_mode == DISPLAY_GRID));
 	hb->add_theme_constant_override("separation", 10 * EDSCALE);
 
 	hb->set_project_title(!item.missing ? item.project_name : TTR("Missing Project"));
@@ -1056,7 +1292,7 @@ void ProjectList::_create_project_item_control(int p_index) {
 #endif
 	hb->connect("request_menu", callable_mp(this, &ProjectList::_open_menu).bind(hb));
 
-	project_list_vbox->add_child(hb);
+	parent->add_child(hb);
 	item.control = hb;
 }
 
@@ -1470,6 +1706,95 @@ void ProjectList::set_order_option(int p_option, bool p_save) {
 	sort_projects();
 }
 
+// Solers: layout (list/grid) + favorites filtering + tag discovery.
+
+Container *ProjectList::_active_items_parent() const {
+	return _items_parent ? _items_parent : (Container *)project_list_vbox;
+}
+
+void ProjectList::_rebuild_item_controls() {
+	// Recreate the item controls for the active layout WITHOUT re-reading
+	// projects from disk (so toggling the view stays cheap). Selection state in
+	// `_selected_project_paths` is preserved and re-applied below.
+	for (int i = 0; i < _projects.size(); ++i) {
+		if (_projects[i].control) {
+			memdelete(_projects.write[i].control);
+			_projects.write[i].control = nullptr;
+		}
+	}
+
+	for (int i = 0; i < _projects.size(); ++i) {
+		_create_project_item_control(i);
+	}
+
+	sort_projects(); // Applies order + visibility + child order; restarts icon coroutine.
+
+	for (int i = 0; i < _projects.size(); ++i) {
+		if (_selected_project_paths.has(_projects[i].path)) {
+			_projects.write[i].control->set_selected(true, true);
+		}
+	}
+
+	set_v_scroll(0);
+	queue_accessibility_update();
+}
+
+void ProjectList::set_display_mode(int p_mode) {
+	DisplayMode mode = (DisplayMode)p_mode;
+	if (mode == _display_mode) {
+		return;
+	}
+	_display_mode = mode;
+
+	if (mode == DISPLAY_GRID) {
+		project_list_vbox->hide();
+		project_grid->show();
+		_items_parent = project_grid;
+	} else {
+		project_grid->hide();
+		project_list_vbox->show();
+		_items_parent = project_list_vbox;
+	}
+
+	// Only rebuild when item controls already exist. During initial setup the
+	// controls have not been created yet (load_project_list() only fills data),
+	// so update_project_list() will build them directly into the active
+	// container — rebuilding here would double-create and assert.
+	bool has_controls = false;
+	for (const Item &it : _projects) {
+		if (it.control) {
+			has_controls = true;
+			break;
+		}
+	}
+	if (has_controls) {
+		_rebuild_item_controls();
+	}
+}
+
+void ProjectList::set_favorites_only(bool p_enabled) {
+	if (_favorites_only == p_enabled) {
+		return;
+	}
+	_favorites_only = p_enabled;
+	sort_projects();
+}
+
+PackedStringArray ProjectList::get_all_tags() const {
+	HashSet<String> seen;
+	PackedStringArray out;
+	for (const Item &item : _projects) {
+		for (const String &tag : item.tags) {
+			if (!seen.has(tag)) {
+				seen.insert(tag);
+				out.push_back(tag);
+			}
+		}
+	}
+	out.sort();
+	return out;
+}
+
 // Global menu integration.
 
 void ProjectList::update_dock_menu() {
@@ -1530,9 +1855,23 @@ void ProjectList::_bind_methods() {
 ProjectList::ProjectList() {
 	set_follow_focus(true);
 
+	// Solers: single scroll content holding both the row and grid containers.
+	content_root = memnew(VBoxContainer);
+	content_root->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	add_child(content_root);
+
 	project_list_vbox = memnew(VBoxContainer);
 	project_list_vbox->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	add_child(project_list_vbox);
+	content_root->add_child(project_list_vbox);
+
+	project_grid = memnew(HFlowContainer);
+	project_grid->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	project_grid->add_theme_constant_override("h_separation", 12 * EDSCALE);
+	project_grid->add_theme_constant_override("v_separation", 12 * EDSCALE);
+	project_grid->hide();
+	content_root->add_child(project_grid);
+
+	_items_parent = project_list_vbox;
 
 	_config_path = EditorPaths::get_singleton()->get_data_dir().path_join("projects.cfg");
 	_migrate_config();

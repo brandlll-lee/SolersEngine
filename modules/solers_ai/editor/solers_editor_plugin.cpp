@@ -35,6 +35,7 @@
 #include "modules/solers_ai/core/solers_action_timeline.h"
 #include "modules/solers_ai/core/solers_agent_orchestrator.h"
 #include "modules/solers_ai/core/solers_agent_runtime.h"
+#include "modules/solers_ai/core/solers_agent_session.h"
 #include "modules/solers_ai/core/solers_editor_operator.h"
 #include "modules/solers_ai/core/solers_file_checkpoint.h"
 #include "modules/solers_ai/core/solers_observation_service.h"
@@ -65,6 +66,7 @@ void SolersEditorPlugin::_notification(int p_what) {
 			action_timeline = memnew(SolersActionTimeline);
 			agent_orchestrator = memnew(SolersAgentOrchestrator);
 			agent_runtime = memnew(SolersAgentRuntime);
+			agent_session = memnew(SolersAgentSession);
 			editor_operator = memnew(SolersEditorOperator);
 			file_checkpoint = memnew(SolersFileCheckpoint);
 			mcp_adapter = memnew(SolersMCPAdapter);
@@ -96,6 +98,13 @@ void SolersEditorPlugin::_notification(int p_what) {
 			agent_runtime->set_observation_service(observation_service);
 			agent_runtime->set_tool_registry(tool_registry);
 
+			// Single real agent loop (BYOK end-to-end). The legacy runtime and
+			// orchestrator above are retained only for the local loopback probe
+			// and MCP debugging; live chat now flows through the session.
+			agent_session->set_action_timeline(action_timeline);
+			agent_session->set_settings_service(settings_service);
+			agent_session->set_tool_registry(tool_registry);
+
 			agent_orchestrator->set_action_timeline(action_timeline);
 			agent_orchestrator->set_provider_gateway(provider_gateway);
 			agent_orchestrator->set_tool_registry(tool_registry);
@@ -111,6 +120,7 @@ void SolersEditorPlugin::_notification(int p_what) {
 
 			dock = memnew(SolersDock);
 			dock->set_services(observation_service, tool_registry, action_timeline, permission_manager, agent_runtime, mcp_adapter, rpc_server, settings_service);
+			dock->set_agent_session(agent_session);
 			EditorNode::get_singleton()->set_solers_ai_panel(dock);
 			set_process(true);
 		} break;
@@ -118,6 +128,9 @@ void SolersEditorPlugin::_notification(int p_what) {
 		case NOTIFICATION_PROCESS: {
 			if (rpc_server) {
 				rpc_server->poll();
+			}
+			if (agent_session) {
+				agent_session->poll();
 			}
 		} break;
 
@@ -182,6 +195,10 @@ void SolersEditorPlugin::_notification(int p_what) {
 			if (agent_runtime) {
 				memdelete(agent_runtime);
 				agent_runtime = nullptr;
+			}
+			if (agent_session) {
+				memdelete(agent_session);
+				agent_session = nullptr;
 			}
 			if (agent_orchestrator) {
 				memdelete(agent_orchestrator);

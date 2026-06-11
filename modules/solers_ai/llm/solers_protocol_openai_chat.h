@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  solers_rml_chat_surface.h                                             */
+/*  solers_protocol_openai_chat.h                                         */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -30,45 +30,23 @@
 
 #pragma once
 
-#include "core/input/input_event.h"
-#include "scene/gui/control.h"
+#include "modules/solers_ai/llm/solers_llm_protocol.h"
 
-class SolersRmlTextInputHandler;
-class SolersRmlComposerChangeListener;
-
-class SolersRmlChatSurface : public Control {
-	GDCLASS(SolersRmlChatSurface, Control);
-	friend class SolersRmlTextInputHandler;
-	friend class SolersRmlComposerChangeListener;
-
-	struct Impl;
-	Impl *impl = nullptr;
-
-	void _ensure_runtime();
-	void _release_runtime();
-	void _reload_document();
-	void _update_context_size();
-	void _set_messages_rml(const String &p_rml);
-	void _sync_composer_layout(bool p_force_context_update);
-	void _mark_composer_layout_dirty();
-	void _set_composer_focused(bool p_focused);
-	void _open_ime_window();
-	void _close_ime_window();
-	void _update_ime_window_position();
-	void _request_rml_update();
-	void _schedule_next_rml_update();
-
-protected:
-	static void _bind_methods();
-	void _notification(int p_what);
-	void gui_input(const Ref<InputEvent> &p_event) override;
+// OpenAI Chat Completions wire protocol (`/chat/completions`, SSE streaming).
+//
+// This single implementation also serves every "OpenAI-compatible" endpoint
+// (relays, Ollama, LM Studio, DeepSeek, Qwen, Together, Groq, ...). They are
+// not separate code paths: a provider profile simply points its base URL at a
+// different host while reusing this exact protocol. No hardcoded provider
+// branches anywhere.
+class SolersOpenAIChatProtocol : public SolersLLMProtocol {
+	Array _lower_messages(const Dictionary &p_request) const;
+	Array _lower_tools(const Array &p_tools) const;
+	static String _map_finish_reason(const String &p_native);
 
 public:
-	void set_animation_suspended(bool p_suspended);
-	void submit_current_prompt();
-	void append_message(const String &p_speaker, const String &p_message);
-	bool is_runtime_ready() const;
-
-	SolersRmlChatSurface();
-	~SolersRmlChatSurface();
+	virtual StringName get_id() const override { return StringName("openai-chat"); }
+	virtual String get_default_path() const override { return "/chat/completions"; }
+	virtual Dictionary build_request_body(const Dictionary &p_request) const override;
+	virtual Array parse_event(Dictionary &r_state, const String &p_event_name, const String &p_data) const override;
 };

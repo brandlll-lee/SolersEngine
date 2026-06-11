@@ -37,6 +37,8 @@
 
 class AcceptDialog;
 class Button;
+class Container;
+class HFlowContainer;
 class Label;
 class PopupMenu;
 class ProjectList;
@@ -47,6 +49,7 @@ class ProjectListItemControl : public HBoxContainer {
 	GDCLASS(ProjectListItemControl, HBoxContainer)
 
 	VBoxContainer *main_vbox = nullptr;
+	Control *card_thumb = nullptr; // Solers: card image well; anchors the caption band.
 	TextureButton *favorite_button = nullptr;
 	Button *explore_button = nullptr;
 
@@ -67,6 +70,10 @@ class ProjectListItemControl : public HBoxContainer {
 	bool is_focus_hidden = false;
 	bool is_hovering = false;
 	bool is_favorite = false;
+	bool is_card = false; // Solers: card (grid) layout vs. row (list) layout.
+
+	void _build_row_layout(); // Solers: classic horizontal row.
+	void _build_card_layout(); // Solers: UE-style vertical thumbnail card.
 
 	void _update_favorite_button_focus_color();
 	void _favorite_button_pressed();
@@ -100,7 +107,9 @@ public:
 	void set_is_missing(bool p_missing);
 	void set_is_grayed(bool p_grayed);
 
-	ProjectListItemControl();
+	bool is_card_layout() const { return is_card; }
+
+	ProjectListItemControl(bool p_card_mode = false);
 };
 
 class ProjectList : public ScrollContainer {
@@ -128,6 +137,12 @@ public:
 		MENU_MANAGE_TAGS,
 		MENU_DUPLICATE,
 		MENU_REMOVE,
+	};
+
+	// Solers: how project items are laid out.
+	enum DisplayMode {
+		DISPLAY_LIST, // Classic dense rows.
+		DISPLAY_GRID, // UE-style thumbnail cards.
 	};
 
 	// Can often be passed by copy.
@@ -213,10 +228,19 @@ private:
 
 	String _search_term;
 	FilterOption _order_option = FilterOption::EDIT_DATE;
+	DisplayMode _display_mode = DisplayMode::DISPLAY_LIST; // Solers.
+	bool _favorites_only = false; // Solers: left-nav "Favorites" filter.
 	HashSet<String> _selected_project_paths;
 	String _last_clicked; // Project key
 
+	// Solers: items live in `content_root`; `project_list_vbox` (rows) and
+	// `project_grid` (cards) coexist there, only the active one is visible and
+	// populated. `_items_parent` points at whichever is active so all the
+	// index-based selection/sort logic keeps working unchanged.
+	VBoxContainer *content_root = nullptr;
 	VBoxContainer *project_list_vbox = nullptr;
+	HFlowContainer *project_grid = nullptr;
+	Container *_items_parent = nullptr;
 	PopupMenu *project_context_menu = nullptr;
 
 	// Projects scan.
@@ -248,6 +272,8 @@ private:
 	// Project list items.
 
 	void _create_project_item_control(int p_index);
+	void _rebuild_item_controls(); // Solers: recreate controls for the active layout (no disk reload).
+	Container *_active_items_parent() const; // Solers.
 	void _toggle_project(int p_index);
 	void _remove_project(int p_index, bool p_update_settings);
 
@@ -327,6 +353,13 @@ public:
 	void set_search_term(String p_search_term);
 	void add_search_tag(const String &p_tag);
 	void set_order_option(int p_option, bool p_save);
+
+	// Solers: layout + favorites filtering + tag discovery for the left nav.
+	void set_display_mode(int p_mode);
+	int get_display_mode() const { return (int)_display_mode; }
+	void set_favorites_only(bool p_enabled);
+	bool get_favorites_only() const { return _favorites_only; }
+	PackedStringArray get_all_tags() const;
 
 	// Global menu integration.
 

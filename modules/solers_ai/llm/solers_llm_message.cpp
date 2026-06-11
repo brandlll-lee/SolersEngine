@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  solers_chat_ui_spec.h                                                 */
+/*  solers_llm_message.cpp                                                */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -28,14 +28,21 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#pragma once
+#include "solers_llm_message.h"
 
-#include "core/string/ustring.h"
-#include "core/variant/array.h"
+const char *SolersLLMRole::SYSTEM = "system";
+const char *SolersLLMRole::USER = "user";
+const char *SolersLLMRole::ASSISTANT = "assistant";
+const char *SolersLLMRole::TOOL = "tool";
 
-class SolersChatUISpec {
-public:
-	static String get_chat_pane_rml();
-	static String get_chat_pane_rcss();
-	static Array get_mock_timeline();
-};
+const char *SolersLLMEventKind::TEXT_DELTA = "text_delta";
+const char *SolersLLMEventKind::REASONING_DELTA = "reasoning_delta";
+const char *SolersLLMEventKind::TOOL_CALL = "tool_call";
+const char *SolersLLMEventKind::USAGE = "usage";
+const char *SolersLLMEventKind::FINISH = "finish";
+const char *SolersLLMEventKind::ERROR = "error";
+
+const char *SolersLLMStopReason::END_TURN = "end_turn";
+const char *SolersLLMStopReason::TOOL_USE = "tool_use";
+const char *SolersLLMStopReason::MAX_TOKENS = "max_tokens";
+const char *SolersLLMStopReason::STOP = "stop";

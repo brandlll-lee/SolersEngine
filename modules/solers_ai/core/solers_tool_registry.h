@@ -48,6 +48,7 @@ class SolersToolRegistry : public Object {
 
 	struct ToolDefinition {
 		StringName name;
+		String model_name;
 		String description;
 		SolersPermissionManager::Permission permission = SolersPermissionManager::PERMISSION_OBSERVE;
 		String mutation_kind = "none";
@@ -67,11 +68,14 @@ class SolersToolRegistry : public Object {
 	SolersActionTimeline *action_timeline = nullptr;
 	SolersRpcServer *rpc_server = nullptr;
 
+	static String _make_model_tool_name(const StringName &p_name);
 	void _register_tool(const ToolDefinition &p_definition);
 	Dictionary _tool_to_dictionary(const ToolDefinition &p_definition) const;
 	Dictionary _ok(const Variant &p_data) const;
 	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
 	Dictionary _object_schema() const;
+
+	HashMap<StringName, StringName> model_name_index;
 
 protected:
 	static void _bind_methods();
@@ -88,6 +92,8 @@ public:
 
 	void register_default_tools();
 	Array list_tools() const;
+	String get_model_tool_name(const StringName &p_name) const;
+	StringName resolve_model_tool_name(const String &p_model_name) const;
 	Dictionary call_tool(const StringName &p_name, const Dictionary &p_args);
 	int get_tool_count() const;
 };

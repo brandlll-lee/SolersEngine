@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  solers_provider_registry.h                                             */
+/*  solers_builtin_tool_catalog.h                                         */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -30,27 +30,18 @@
 
 #pragma once
 
-#include "core/object/object.h"
-#include "core/variant/array.h"
-#include "core/variant/dictionary.h"
+#include "core/templates/vector.h"
+#include "modules/solers_ai/core/solers_permission_manager.h"
 
-class SolersProviderRegistry : public Object {
-	GDCLASS(SolersProviderRegistry, Object);
+struct SolersBuiltinToolDefinition {
+	const char *name = nullptr;
+	const char *description = nullptr;
+	SolersPermissionManager::Permission permission = SolersPermissionManager::PERMISSION_OBSERVE;
+	const char *mutation_kind = "none";
+	bool requires_approval = false;
+};
 
-	Dictionary profiles;
-
-	Dictionary _ok(const Variant &p_data) const;
-	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
-	Dictionary _make_profile(const String &p_id, const String &p_label, const String &p_kind, const String &p_default_base_url, const String &p_default_model, bool p_local, bool p_api_key_required, const Array &p_features, const String &p_notes, const String &p_api_key_env = String()) const;
-	void _register_default_profiles();
-
-protected:
-	static void _bind_methods();
-
+class SolersBuiltinToolCatalog {
 public:
-	Dictionary get_provider_profile(const String &p_provider) const;
-	Array list_provider_profiles() const;
-	Dictionary validate_config(const Dictionary &p_config) const;
-
-	SolersProviderRegistry();
+	static Vector<SolersBuiltinToolDefinition> list_tools();
 };

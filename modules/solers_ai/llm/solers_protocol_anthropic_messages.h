@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  solers_provider_registry.h                                             */
+/*  solers_protocol_anthropic_messages.h                                  */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -30,27 +30,25 @@
 
 #pragma once
 
-#include "core/object/object.h"
-#include "core/variant/array.h"
-#include "core/variant/dictionary.h"
+#include "modules/solers_ai/llm/solers_llm_protocol.h"
 
-class SolersProviderRegistry : public Object {
-	GDCLASS(SolersProviderRegistry, Object);
-
-	Dictionary profiles;
-
-	Dictionary _ok(const Variant &p_data) const;
-	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
-	Dictionary _make_profile(const String &p_id, const String &p_label, const String &p_kind, const String &p_default_base_url, const String &p_default_model, bool p_local, bool p_api_key_required, const Array &p_features, const String &p_notes, const String &p_api_key_env = String()) const;
-	void _register_default_profiles();
-
-protected:
-	static void _bind_methods();
+// Anthropic Messages wire protocol (`/v1/messages`, named-event SSE stream).
+//
+// Differs from OpenAI in three structural ways this implementation hides
+// behind the common Protocol seam: `system` is a top-level field (not a
+// message), `max_tokens` is required, and tool results are carried as
+// `tool_result` content blocks inside a user message. The streaming side is a
+// named-event state machine (message_start / content_block_* / message_delta),
+// accumulating `input_json_delta` fragments into each tool call's arguments.
+class SolersAnthropicMessagesProtocol : public SolersLLMProtocol {
+	Array _lower_messages(const Dictionary &p_request) const;
+	Array _lower_tools(const Array &p_tools) const;
+	static String _map_stop_reason(const String &p_native);
 
 public:
-	Dictionary get_provider_profile(const String &p_provider) const;
-	Array list_provider_profiles() const;
-	Dictionary validate_config(const Dictionary &p_config) const;
-
-	SolersProviderRegistry();
+	virtual StringName get_id() const override { return StringName("anthropic-messages"); }
+	virtual String get_default_path() const override { return "/v1/messages"; }
+	virtual Dictionary build_request_body(const Dictionary &p_request) const override;
+	virtual void augment_headers(Dictionary &r_headers, const Dictionary &p_request) const override;
+	virtual Array parse_event(Dictionary &r_state, const String &p_event_name, const String &p_data) const override;
 };

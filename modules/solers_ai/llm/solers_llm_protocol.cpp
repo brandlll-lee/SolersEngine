@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  solers_provider_registry.h                                             */
+/*  solers_llm_protocol.cpp                                               */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -28,29 +28,45 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#pragma once
+#include "solers_llm_protocol.h"
 
-#include "core/object/object.h"
-#include "core/variant/array.h"
-#include "core/variant/dictionary.h"
+#include "solers_protocol_anthropic_messages.h"
+#include "solers_protocol_openai_chat.h"
 
-class SolersProviderRegistry : public Object {
-	GDCLASS(SolersProviderRegistry, Object);
+void SolersLLMProtocolRegistry::register_protocol(SolersLLMProtocol *p_protocol) {
+	ERR_FAIL_NULL(p_protocol);
+	const StringName id = p_protocol->get_id();
+	if (protocols.has(id)) {
+		memdelete(protocols[id]);
+	}
+	protocols[id] = p_protocol;
+}
 
-	Dictionary profiles;
+SolersLLMProtocol *SolersLLMProtocolRegistry::get(const StringName &p_id) const {
+	HashMap<StringName, SolersLLMProtocol *>::ConstIterator it = protocols.find(p_id);
+	return it ? it->value : nullptr;
+}
 
-	Dictionary _ok(const Variant &p_data) const;
-	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
-	Dictionary _make_profile(const String &p_id, const String &p_label, const String &p_kind, const String &p_default_base_url, const String &p_default_model, bool p_local, bool p_api_key_required, const Array &p_features, const String &p_notes, const String &p_api_key_env = String()) const;
-	void _register_default_profiles();
+bool SolersLLMProtocolRegistry::has(const StringName &p_id) const {
+	return protocols.has(p_id);
+}
 
-protected:
-	static void _bind_methods();
+LocalVector<StringName> SolersLLMProtocolRegistry::list_ids() const {
+	LocalVector<StringName> ids;
+	for (const KeyValue<StringName, SolersLLMProtocol *> &kv : protocols) {
+		ids.push_back(kv.key);
+	}
+	return ids;
+}
 
-public:
-	Dictionary get_provider_profile(const String &p_provider) const;
-	Array list_provider_profiles() const;
-	Dictionary validate_config(const Dictionary &p_config) const;
+void SolersLLMProtocolRegistry::register_builtin_protocols() {
+	register_protocol(memnew(SolersOpenAIChatProtocol));
+	register_protocol(memnew(SolersAnthropicMessagesProtocol));
+}
 
-	SolersProviderRegistry();
-};
+SolersLLMProtocolRegistry::~SolersLLMProtocolRegistry() {
+	for (const KeyValue<StringName, SolersLLMProtocol *> &kv : protocols) {
+		memdelete(kv.value);
+	}
+	protocols.clear();
+}

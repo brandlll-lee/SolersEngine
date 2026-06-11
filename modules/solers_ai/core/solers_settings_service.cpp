@@ -31,8 +31,10 @@
 #include "solers_settings_service.h"
 
 #include "core/object/class_db.h"
+#include "core/os/os.h"
 #include "editor/settings/editor_settings.h"
 #include "modules/solers_ai/core/solers_provider_registry.h"
+#include "modules/solers_ai/core/solers_secret_store.h"
 
 void SolersSettingsService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_provider_registry", "provider_registry"), &SolersSettingsService::set_provider_registry);
@@ -75,10 +77,25 @@ Dictionary SolersSettingsService::get_provider_config() const {
 
 	Dictionary data;
 	data["privacy_mode"] = settings->has_setting(_setting_path("privacy_mode")) ? (bool)settings->get_setting(_setting_path("privacy_mode")) : true;
-	data["provider"] = settings->has_setting(_setting_path("provider")) ? String(settings->get_setting(_setting_path("provider"))) : "ollama";
+	const String provider = settings->has_setting(_setting_path("provider")) ? String(settings->get_setting(_setting_path("provider"))) : "ollama";
+	data["provider"] = provider;
 	data["model"] = settings->has_setting(_setting_path("model")) ? String(settings->get_setting(_setting_path("model"))) : String();
 	data["base_url"] = settings->has_setting(_setting_path("base_url")) ? String(settings->get_setting(_setting_path("base_url"))) : String();
-	data["api_key_configured"] = settings->has_setting(_setting_path("api_key")) && !String(settings->get_setting(_setting_path("api_key"))).is_empty();
+
+	// A key counts as configured when stored *or* supplied via the provider's
+	// environment variable (BYOK env fallback).
+	bool key_set = settings->has_setting(_setting_path("api_key")) && !String(settings->get_setting(_setting_path("api_key"))).is_empty();
+	String key_source = key_set ? "settings" : "none";
+	if (!key_set && provider_registry) {
+		const Dictionary profile = provider_registry->get_provider_profile(provider);
+		const String env_name = profile.get("api_key_env", String());
+		if (!env_name.is_empty() && OS::get_singleton()->has_environment(env_name) && !OS::get_singleton()->get_environment(env_name).is_empty()) {
+			key_set = true;
+			key_source = "environment";
+		}
+	}
+	data["api_key_configured"] = key_set;
+	data["api_key_source"] = key_source;
 	data["api_key"] = "<redacted>";
 	if (provider_registry) {
 		Dictionary validation = provider_registry->validate_config(data);
@@ -104,7 +121,8 @@ Dictionary SolersSettingsService::set_provider_config(const Dictionary &p_args) 
 		settings->set_manually(_setting_path("base_url"), String(p_args["base_url"]));
 	}
 	if (p_args.has("api_key")) {
-		settings->set_manually(_setting_path("api_key"), String(p_args["api_key"]));
+		// Never persist plaintext: wrap with DPAPI (Windows) or machine-bound AES.
+		settings->set_manually(_setting_path("api_key"), SolersSecretStore::protect(String(p_args["api_key"])));
 	}
 	EditorSettings::save();
 
@@ -129,4 +147,32 @@ Dictionary SolersSettingsService::validate_provider_config(const Dictionary &p_a
 		config[*K] = p_args[*K];
 	}
 	return provider_registry->validate_config(config);
+}
+
+Dictionary SolersSettingsService::resolve_active_provider() const {
+	Dictionary out;
+	EditorSettings *settings = EditorSettings::get_singleton();
+	if (!settings) {
+		return out;
+	}
+	const String provider = settings->has_setting(_setting_path("provider")) ? String(settings->get_setting(_setting_path("provider"))) : String("openai");
+	out["provider"] = provider;
+	out["model"] = settings->has_setting(_setting_path("model")) ? String(settings->get_setting(_setting_path("model"))) : String();
+	out["base_url"] = settings->has_setting(_setting_path("base_url")) ? String(settings->get_setting(_setting_path("base_url"))) : String();
+	out["privacy_mode"] = settings->has_setting(_setting_path("privacy_mode")) ? (bool)settings->get_setting(_setting_path("privacy_mode")) : true;
+
+	// Stored key (decrypted) → provider env var fallback (OPENAI_API_KEY, ...).
+	String api_key;
+	if (settings->has_setting(_setting_path("api_key"))) {
+		api_key = SolersSecretStore::unprotect(String(settings->get_setting(_setting_path("api_key"))));
+	}
+	if (api_key.is_empty() && provider_registry) {
+		const Dictionary profile = provider_registry->get_provider_profile(provider);
+		const String env_name = profile.get("api_key_env", String());
+		if (!env_name.is_empty() && OS::get_singleton()->has_environment(env_name)) {
+			api_key = OS::get_singleton()->get_environment(env_name);
+		}
+	}
+	out["api_key"] = api_key;
+	return out;
 }

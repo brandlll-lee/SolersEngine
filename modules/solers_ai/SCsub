@@ -8,54 +8,9 @@ env_solers_ai = env_modules.Clone()
 
 module_obj = []
 
-if env.editor_build:
-    rmlui_obj = []
-    rmlui_dir = "#thirdparty/rmlui/"
-    rmlui_sources = []
-    for pattern in [
-        rmlui_dir + "Source/Core/*.cpp",
-        rmlui_dir + "Source/Core/Elements/*.cpp",
-        rmlui_dir + "Source/Core/Layout/*.cpp",
-        rmlui_dir + "Source/Core/FontEngineDefault/*.cpp",
-    ]:
-        rmlui_sources += Glob(pattern)
-
-    env_rmlui = env_solers_ai.Clone()
-    env_rmlui.disable_warnings()
-    env_rmlui.Prepend(
-        CPPPATH=[
-            rmlui_dir + "Include",
-            rmlui_dir + "Source/Core",
-            rmlui_dir + "Source/Core/Elements",
-            rmlui_dir + "Source/Core/Layout",
-            rmlui_dir + "Source/Core/FontEngineDefault",
-            "#thirdparty/freetype/include",
-        ]
-    )
-    env_rmlui.Append(
-        CPPDEFINES=[
-            "RMLUI_STATIC_LIB",
-            ("RMLUI_VERSION", '\\"6.2-dev-solers\\"'),
-            "RMLUI_FONT_ENGINE_FREETYPE",
-            "RMLUI_NO_THIRDPARTY_CONTAINERS",
-        ]
-    )
-    env_rmlui.add_source_files(rmlui_obj, rmlui_sources)
-    env.modules_sources += rmlui_obj
-
-    env_solers_ai.Prepend(CPPPATH=[rmlui_dir + "Include"])
-    env_solers_ai.Append(
-        CPPDEFINES=[
-            "SOLERS_RMLUI_ENABLED",
-            "RMLUI_STATIC_LIB",
-            ("RMLUI_VERSION", '\\"6.2-dev-solers\\"'),
-            "RMLUI_FONT_ENGINE_FREETYPE",
-            "RMLUI_NO_THIRDPARTY_CONTAINERS",
-        ]
-    )
-
 env_solers_ai.add_source_files(module_obj, "*.cpp")
 env_solers_ai.add_source_files(module_obj, "core/*.cpp")
+env_solers_ai.add_source_files(module_obj, "llm/*.cpp")
 env_solers_ai.add_source_files(module_obj, "protocol/*.cpp")
 
 if env.editor_build:

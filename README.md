@@ -59,6 +59,30 @@ Open or create a project, find the **Solers** panel on the left, and start descr
 
 macOS and Linux follow the standard Godot build steps for the same `target=editor` configuration.
 
+### Rebuilding after changes (incremental builds)
+
+After the first build, just re-run the **same** command — SCons rebuilds incrementally, recompiling only the files you changed and relinking. Editing the Solers module (`modules/solers_ai/`) is usually a few seconds of compile plus the final link, **not** a full rebuild.
+
+```powershell
+scons platform=windows target=editor dev_build=yes arch=x86_64
+# `scons` not on PATH? This is exactly equivalent:
+python -m SCons platform=windows target=editor dev_build=yes arch=x86_64
+```
+
+Add `-j<N>` (e.g. `-j16`) to compile across CPU cores.
+
+**Where the build cache lives — check these *before* assuming a from-scratch rebuild is needed:**
+
+- **Signature DB:** `.sconsign5.dblite` in the repo root (generated as `.sconsign<pickle-protocol>.dblite`; the digit comes from Python's pickle version, see `SConstruct`). It is a *hidden, dot-prefixed* file, so directory listers and glob tools that skip dotfiles by default **will not show it** — use `Get-ChildItem -Force` (PowerShell) or `ls -a` to confirm it exists.
+- **Object files:** every `*.obj` is written under **`bin/obj/`** (mirroring the source tree), **not** next to the `.cpp`. An empty `modules/.../*.obj` is expected and does **not** mean the cache was cleared.
+
+If both `.sconsign5.dblite` and `bin/obj/` are present, the next build is incremental and fast. Run `scons --clean` (or delete them) only when you intentionally want a full rebuild.
+
+**Build outputs land in `bin/`:**
+
+- `solers.windows.editor.dev.x86_64.exe` — the editor; this is what you launch.
+- `solers.windows.editor.dev.x86_64.console.exe` — the same editor with an attached console that streams engine / RPC / MCP logs, handy when debugging the Solers module.
+
 ## Compatibility & license
 
 Solers is a fork of [Godot Engine](https://godotengine.org) and is released under the MIT license. See `LICENSE.txt` and `COPYRIGHT.txt`.

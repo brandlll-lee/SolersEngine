@@ -53,4 +53,9 @@ public:
 	Dictionary set_provider_config(const Dictionary &p_args);
 	Dictionary list_provider_profiles() const;
 	Dictionary validate_provider_config(const Dictionary &p_args) const;
+
+	// Internal-only: returns the active provider config *including the real API
+	// key* for the agent loop to make requests. Intentionally not bound to the
+	// scripting layer so the raw key never leaks through reflection/tools.
+	Dictionary resolve_active_provider() const;
 };

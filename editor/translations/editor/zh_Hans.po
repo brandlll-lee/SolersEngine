@@ -21362,3 +21362,218 @@ msgstr ""
 "正在尝试将模型空间的顶点位置 VERTEX 赋值给裁剪空间的顶点位置 POSITION。4.3 版"
 "本修改了裁剪空间的定义，因此如果这段代码是在 4.3 之前编写的，就会无法继续工"
 "作。请考虑直接指定裁剪空间的 Z 分量，即使用 `vec4(VERTEX.xy, 1.0, 1.0)`。"
+
+msgid "AI Models"
+msgstr "AI 模型"
+
+msgid "PROVIDERS"
+msgstr "服务商"
+
+msgid "CONNECTION"
+msgstr "连接"
+
+msgid "PRIVACY"
+msgstr "隐私"
+
+msgid "STATUS"
+msgstr "状态"
+
+msgid "Model"
+msgstr "模型"
+
+msgid "Base URL"
+msgstr "服务地址"
+
+msgid "API Key"
+msgstr "API 密钥"
+
+msgid "Show API Key"
+msgstr "显示 API 密钥"
+
+msgid "Show the key while typing"
+msgstr "输入时显示密钥"
+
+msgid "Paste your API key"
+msgstr "粘贴您的 API 密钥"
+
+msgid "Configured - leave blank to keep the current key"
+msgstr "已配置 —— 留空则保持当前密钥不变"
+
+msgid "Not required for local runtimes"
+msgstr "本地运行时无需密钥"
+
+msgid "Model id (e.g. gpt-5)"
+msgstr "模型 ID（例如 gpt-5）"
+
+msgid "Environment fallback %s is set and will be used when no key is stored."
+msgstr "已检测到环境变量 %s，未存储密钥时将自动使用。"
+
+msgid "Environment fallback: %s (not set)"
+msgstr "环境变量回退：%s（未设置）"
+
+msgid "Privacy mode (local providers only)"
+msgstr "隐私模式（仅允许本地服务商）"
+
+msgid ""
+"While enabled, Solers blocks every request to remote providers at dispatch "
+"time. Only Ollama and LM Studio are allowed."
+msgstr ""
+"启用后，Solers 会在请求发出前拦截所有发往远程服务商的请求，仅允许 Ollama 与 "
+"LM Studio。"
+
+msgid "Configuration is valid and ready to use."
+msgstr "配置有效，随时可用。"
+
+msgid "Save Configuration"
+msgstr "保存配置"
+
+msgid "Saved"
+msgstr "已保存"
+
+msgid "The Solers AI module is not compiled into this build."
+msgstr "当前构建未编译 Solers AI 模块。"
+
+msgid "Library Options"
+msgstr "项目库选项"
+
+msgid "Library maintenance"
+msgstr "项目库维护"
+
+msgid "Project Options"
+msgstr "项目操作"
+
+msgid "More project actions"
+msgstr "更多项目操作"
+
+msgid "Remove from List"
+msgstr "从列表中移除"
+
+msgid "LIBRARY"
+msgstr "项目库"
+
+msgid "TAGS"
+msgstr "标签"
+
+msgid "All Projects"
+msgstr "全部项目"
+
+msgid ""
+"privacy_mode allows only local providers. Disable privacy_mode or choose "
+"ollama/lm_studio."
+msgstr "隐私模式仅允许本地服务商。请关闭隐私模式，或选择 Ollama / LM Studio。"
+
+msgid ""
+"provider requires an API key (set one in AI settings or via its environment "
+"variable)."
+msgstr "该服务商需要 API 密钥（请在 AI 设置中填写，或通过其环境变量提供）。"
+
+msgid "openai_compatible providers require a base_url."
+msgstr "OpenAI 兼容服务商必须填写服务地址（base_url）。"
+
+msgid "model is empty; Solers will need an explicit model before inference."
+msgstr "模型为空；推理前 Solers 需要明确指定一个模型。"
+
+msgid "base_url must start with http:// or https://."
+msgstr "服务地址必须以 http:// 或 https:// 开头。"
+
+msgid "remote provider base_url is not HTTPS."
+msgstr "远程服务商的服务地址未使用 HTTPS。"
+
+msgid ""
+"Provider: %s, privacy %s, key %s, config %s (%d warning(s), %d blocker(s))"
+msgstr "服务商：%s，隐私：%s，密钥：%s，配置：%s（%d 条警告，%d 条阻断）"
+
+msgid "local-only"
+msgstr "仅本地"
+
+msgid "network-enabled"
+msgstr "允许联网"
+
+msgid "set"
+msgstr "已设置"
+
+msgid "not set"
+msgstr "未设置"
+
+msgid "valid"
+msgstr "有效"
+
+msgid "blocked"
+msgstr "被阻断"
+
+msgid "Provider: unavailable"
+msgstr "服务商：不可用"
+
+msgid "Custom OpenAI-compatible"
+msgstr "自定义 OpenAI 兼容"
+
+msgid "Qwen / Alibaba Cloud Model Studio"
+msgstr "通义千问 / 阿里云百炼"
+
+msgid ""
+"Native OpenAI provider. Wire transport currently uses Chat Completions; "
+"Responses API lands with the protocol stack."
+msgstr ""
+"OpenAI 官方服务。当前传输层使用 Chat Completions；Responses API 将随协议栈一"
+"同提供。"
+
+msgid "Use native Anthropic Messages for provider-specific features."
+msgstr "使用 Anthropic 原生 Messages 协议以获得其特有功能。"
+
+msgid ""
+"OpenAI-compatible endpoint is useful for shared gateway code; native API can "
+"expose Gemini-specific features."
+msgstr ""
+"OpenAI 兼容端点便于复用通用网关代码；原生 API 可启用 Gemini 专属功能。"
+
+msgid ""
+"Provider model aliases can change; Solers validates shape, not remote "
+"availability."
+msgstr "服务商的模型别名可能变化；Solers 只校验配置形态，不校验远端可用性。"
+
+msgid ""
+"Default is the Beijing-region DashScope compatible-mode endpoint; "
+"international accounts use dashscope-intl.aliyuncs.com."
+msgstr ""
+"默认为北京地域的 DashScope 兼容模式端点；国际站账号请使用 dashscope-intl."
+"aliyuncs.com。"
+
+msgid "Local runtime. API key is required by some clients but ignored by Ollama."
+msgstr "本地运行时。部分客户端要求填写 API 密钥，但 Ollama 会忽略它。"
+
+msgid "Local server defaults to port 1234; model id depends on loaded model."
+msgstr "本地服务默认端口 1234；模型 ID 取决于已加载的模型。"
+
+msgid "For LiteLLM, OpenRouter-style, vLLM, or private gateway deployments."
+msgstr "适用于 LiteLLM、OpenRouter 类中转、vLLM 或私有网关部署。"
+
+# Solers AI chat dock composer.
+msgid "Ask anything"
+msgstr "随心输入"
+
+msgid "Full access"
+msgstr "完全访问"
+
+msgid "Extra High"
+msgstr "超高"
+
+msgid "IDE context"
+msgstr "IDE 上下文"
+
+msgid "Agent access"
+msgstr "智能体访问权限"
+
+msgid "Model and effort"
+msgstr "模型与算力"
+
+msgid "Context source"
+msgstr "上下文来源"
+
+msgid "New chat"
+msgstr "新建对话"
+
+msgid "Attach context"
+msgstr "附加上下文"
+
+msgid "Send"
+msgstr "发送"

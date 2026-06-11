@@ -34,6 +34,7 @@
 #include "core/solers_action_timeline.h"
 #include "core/solers_agent_orchestrator.h"
 #include "core/solers_agent_runtime.h"
+#include "core/solers_agent_session.h"
 #include "core/solers_editor_operator.h"
 #include "core/solers_file_checkpoint.h"
 #include "core/solers_observation_service.h"
@@ -44,9 +45,9 @@
 #include "core/solers_script_service.h"
 #include "core/solers_settings_service.h"
 #include "core/solers_tool_registry.h"
+#include "editor/solers_chat_widgets.h"
 #include "editor/solers_dock.h"
 #include "editor/solers_editor_plugin.h"
-#include "editor/solers_rml_chat_surface.h"
 #include "protocol/solers_mcp_adapter.h"
 #include "protocol/solers_rpc_server.h"
 
@@ -59,6 +60,7 @@ void initialize_solers_ai_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(SolersActionTimeline);
 		GDREGISTER_CLASS(SolersAgentOrchestrator);
 		GDREGISTER_CLASS(SolersAgentRuntime);
+		GDREGISTER_CLASS(SolersAgentSession);
 		GDREGISTER_CLASS(SolersEditorOperator);
 		GDREGISTER_CLASS(SolersFileCheckpoint);
 		GDREGISTER_CLASS(SolersObservationService);
@@ -72,7 +74,10 @@ void initialize_solers_ai_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(SolersMCPAdapter);
 		GDREGISTER_CLASS(SolersRpcServer);
 		GDREGISTER_CLASS(SolersDock);
-		GDREGISTER_CLASS(SolersRmlChatSurface);
+		GDREGISTER_CLASS(SolersGlyphButton);
+		GDREGISTER_CLASS(SolersSelectChip);
+		GDREGISTER_CLASS(SolersToolbarDivider);
+		GDREGISTER_CLASS(SolersSurface);
 		GDREGISTER_CLASS(SolersEditorPlugin);
 		EditorPlugins::add_by_type<SolersEditorPlugin>();
 	}

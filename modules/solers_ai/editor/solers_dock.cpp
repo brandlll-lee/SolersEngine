@@ -2,30 +2,17 @@
 /*  solers_dock.cpp                                                       */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                             GODOT ENGINE                               */
-/*                        https://godotengine.org                         */
+/*                              SOLERS ENGINE                              */
+/*                        (a fork of Godot Engine)                        */
 /**************************************************************************/
-/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
-/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/* Solers: AI-native game engine.                                        */
 /*                                                                        */
-/* Permission is hereby granted, free of charge, to any person obtaining  */
-/* a copy of this software and associated documentation files (the        */
-/* "Software"), to deal in the Software without restriction, including    */
-/* without limitation the rights to use, copy, modify, merge, publish,    */
-/* distribute, sublicense, and/or sell copies of the Software, and to     */
-/* permit persons to whom the Software is furnished to do so, subject to  */
-/* the following conditions:                                              */
-/*                                                                        */
-/* The above copyright notice and this permission notice shall be         */
-/* included in all copies or substantial portions of the Software.        */
-/*                                                                        */
-/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
-/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
-/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
-/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
-/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
-/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
-/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/* Native Codex-grade chat dock. Layout and text input are stock Godot   */
+/* Controls (TextEdit gives OS-grade IME/CJK input and TextServer glyph  */
+/* caching); every piece of chat chrome is self-drawn via the widget kit  */
+/* in solers_chat_widgets.h. There is no embedded UI runtime: the dock    */
+/* renders through the editor canvas like any other dock and costs zero   */
+/* CPU at steady state.                                                   */
 /**************************************************************************/
 
 #include "solers_dock.h"
@@ -38,15 +25,16 @@
 #include "core/io/json.h"
 #include "core/os/os.h"
 #include "core/version.h"
+#include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
-#include "modules/modules_enabled.gen.h"
 #include "modules/solers_ai/core/solers_action_timeline.h"
 #include "modules/solers_ai/core/solers_agent_runtime.h"
+#include "modules/solers_ai/core/solers_agent_session.h"
 #include "modules/solers_ai/core/solers_observation_service.h"
 #include "modules/solers_ai/core/solers_permission_manager.h"
 #include "modules/solers_ai/core/solers_settings_service.h"
 #include "modules/solers_ai/core/solers_tool_registry.h"
-#include "modules/solers_ai/editor/solers_rml_chat_surface.h"
+#include "modules/solers_ai/editor/solers_chat_widgets.h"
 #include "modules/solers_ai/protocol/solers_mcp_adapter.h"
 #include "modules/solers_ai/protocol/solers_rpc_server.h"
 #include "scene/gui/box_container.h"
@@ -56,6 +44,7 @@
 #include "scene/gui/margin_container.h"
 #include "scene/gui/panel_container.h"
 #include "scene/gui/rich_text_label.h"
+#include "scene/gui/scroll_bar.h"
 #include "scene/gui/scroll_container.h"
 #include "scene/gui/separator.h"
 #include "scene/gui/text_edit.h"
@@ -64,15 +53,29 @@
 #include "scene/resources/style_box.h"
 #include "scene/resources/style_box_flat.h"
 
-#ifdef MODULE_SVG_ENABLED
-#include "modules/svg/image_loader_svg.h"
-#endif
+constexpr float SOLERS_COMPOSER_TEXT_MIN_HEIGHT = 48.0f;
+constexpr float SOLERS_COMPOSER_TEXT_MAX_HEIGHT = 220.0f;
+constexpr float SOLERS_COMPOSER_TOOLBAR_HEIGHT = 30.0f;
+// Top/bottom composer padding. Keep the toolbar visually attached to the prompt.
+constexpr float SOLERS_COMPOSER_VERTICAL_CHROME = 20.0f;
 
-constexpr float SOLERS_COMPOSER_TEXT_MIN_HEIGHT = 58.0f;
-constexpr float SOLERS_COMPOSER_TEXT_MAX_HEIGHT = 250.0f;
-constexpr float SOLERS_COMPOSER_TOOLBAR_HEIGHT = 32.0f;
-// Card padding (12 top + 8 bottom) plus the gap between the text area and toolbar.
-constexpr float SOLERS_COMPOSER_VERTICAL_CHROME = 24.0f;
+// Codex-calibrated surface palette.
+static const Color SOLERS_BG = Color(0.070, 0.073, 0.078);
+static const Color SOLERS_COMPOSER_BG = Color(0.086, 0.088, 0.092);
+// Hairline: ultra-subtle separator between sections.
+// Use a slightly warm gray instead of pure white to avoid cold "screen door" look.
+static const Color SOLERS_HAIRLINE = Color(0.95, 0.95, 0.97, 0.035);
+static const Color SOLERS_ACCENT_ORANGE = Color(1.00, 0.49, 0.20);
+// Alert tint for the access control.
+static const Color SOLERS_ACCENT_AMBER = Color(1.00, 0.49, 0.20);
+// Primary text: high contrast for readability on dark backgrounds.
+static const Color SOLERS_TEXT_PRIMARY = Color(0.961, 0.969, 0.984);
+// Body text: comfortable reading with slightly reduced contrast for hierarchy.
+static const Color SOLERS_TEXT_BODY = Color(0.918, 0.929, 0.945);
+// Dim text: secondary info, status labels, timestamps.
+static const Color SOLERS_TEXT_DIM = Color(0.667, 0.690, 0.733);
+// Placeholder text: subtle cue in the input field.
+static const Color SOLERS_TEXT_PLACEHOLDER = Color(0.345, 0.357, 0.388);
 
 static Ref<StyleBoxFlat> solers_make_stylebox(const Color &p_bg, const Color &p_border, int p_radius, int p_padding, bool p_shadow = false) {
 	Ref<StyleBoxFlat> style(memnew(StyleBoxFlat));
@@ -89,84 +92,7 @@ static Ref<StyleBoxFlat> solers_make_stylebox(const Color &p_bg, const Color &p_
 	return style;
 }
 
-static Ref<Texture2D> solers_texture_from_svg(const String &p_svg, float p_scale = EDSCALE) {
-#ifdef MODULE_SVG_ENABLED
-	Ref<Image> image;
-	image.instantiate();
-	Error err = ImageLoaderSVG::create_image_from_string(image, p_svg, p_scale, false, HashMap<Color, Color>());
-	if (err == OK && image.is_valid() && !image->is_empty()) {
-		return ImageTexture::create_from_image(image);
-	}
-#endif
-	return Ref<Texture2D>();
-}
-
-static String solers_micro_icon_svg(const StringName &p_icon, const Color &p_color) {
-	const String stroke = p_color.to_html(false);
-	// Slimmer, Codex-grade line weight for a more refined glyph silhouette.
-	const String prefix = vformat("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#%s\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">", stroke);
-	const String suffix = "</svg>";
-
-	if (p_icon == SNAME("solers_plus")) {
-		return prefix + "<path d=\"M12 5v14\"/><path d=\"M5 12h14\"/>" + suffix;
-	}
-	if (p_icon == SNAME("solers_send")) {
-		// Slightly tighter arrow that sits visually centered inside the round send pill.
-		return prefix + "<path d=\"M12 19V6\"/><path d=\"m6 12 6-6 6 6\"/>" + suffix;
-	}
-	if (p_icon == SNAME("solers_shield")) {
-		return prefix + "<path d=\"M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3z\"/><path d=\"M9.5 12.5 11 14l3.5-4\"/>" + suffix;
-	}
-	if (p_icon == SNAME("solers_chevron_down")) {
-		return prefix + "<path d=\"m6 9 6 6 6-6\"/>" + suffix;
-	}
-	if (p_icon == SNAME("solers_mic")) {
-		return prefix + "<path d=\"M12 19v3\"/><path d=\"M19 10v2a7 7 0 0 1-14 0v-2\"/><rect x=\"9\" y=\"2\" width=\"6\" height=\"13\" rx=\"3\"/>" + suffix;
-	}
-	if (p_icon == SNAME("solers_new_chat")) {
-		return prefix + "<path d=\"M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h8\"/><path d=\"M19 3v6\"/><path d=\"M16 6h6\"/>" + suffix;
-	}
-	if (p_icon == SNAME("solers_more")) {
-		return prefix + "<circle cx=\"12\" cy=\"6\" r=\"1\"/><circle cx=\"12\" cy=\"12\" r=\"1\"/><circle cx=\"12\" cy=\"18\" r=\"1\"/>" + suffix;
-	}
-
-	return String();
-}
-
-static StringName solers_builtin_icon_fallback(const StringName &p_icon) {
-	if (p_icon == SNAME("solers_plus")) {
-		return SNAME("Add");
-	}
-	if (p_icon == SNAME("solers_send")) {
-		return SNAME("ArrowUp");
-	}
-	if (p_icon == SNAME("solers_shield")) {
-		return SNAME("Lock");
-	}
-	if (p_icon == SNAME("solers_chevron_down")) {
-		return SNAME("GuiTreeArrowDown");
-	}
-	if (p_icon == SNAME("solers_mic")) {
-		return SNAME("AudioStreamMicrophone");
-	}
-	if (p_icon == SNAME("solers_new_chat")) {
-		return SNAME("VisualShaderNodeComment");
-	}
-	if (p_icon == SNAME("solers_more")) {
-		return SNAME("GuiTabMenuHl");
-	}
-	return p_icon;
-}
-
-static Ref<Texture2D> solers_load_micro_icon(const StringName &p_icon, const Color &p_color) {
-	const String svg = solers_micro_icon_svg(p_icon, p_color);
-	if (svg.is_empty()) {
-		return Ref<Texture2D>();
-	}
-	return solers_texture_from_svg(svg, EDSCALE * 0.72f);
-}
-
-static Ref<Texture2D> solers_load_logo_texture(bool p_icon_only = true) {
+static Ref<Texture2D> solers_load_logo_texture() {
 	Vector<String> candidates;
 	const String cwd = OS::get_singleton()->get_cwd();
 	const String exe_dir = OS::get_singleton()->get_executable_path().get_base_dir();
@@ -175,29 +101,41 @@ static Ref<Texture2D> solers_load_logo_texture(bool p_icon_only = true) {
 
 	candidates.push_back(repo_root.path_join("branding/generated/solers02_icon_transparent_1024.png"));
 	candidates.push_back(repo_root.path_join("branding/generated/solers_splash_icon_transparent_800x600.png"));
-	if (!p_icon_only) {
-		candidates.push_back(repo_root.path_join("branding/generated/solers_logo_white_transparent.png"));
-	}
 	candidates.push_back(cwd.path_join("icon.png"));
 	candidates.push_back(cwd.path_join("main/app_icon.png"));
 	candidates.push_back(source_root.path_join("icon.png"));
 	candidates.push_back(source_root.path_join("main/app_icon.png"));
 	candidates.push_back(exe_dir.path_join("icon.png"));
-	candidates.push_back(cwd.path_join("logo.png"));
-	candidates.push_back(source_root.path_join("logo.png"));
 
 	for (const String &path : candidates) {
 		if (!FileAccess::exists(path)) {
 			continue;
 		}
-
 		Ref<Image> image = Image::load_from_file(path);
 		if (image.is_valid() && !image->is_empty()) {
 			return ImageTexture::create_from_image(image);
 		}
 	}
-
 	return Ref<Texture2D>();
+}
+
+static float solers_longest_line_width(const String &p_text, const Ref<Font> &p_font, int p_font_size) {
+	if (p_font.is_null()) {
+		return 0.0f;
+	}
+	float width = 0.0f;
+	for (const String &line : p_text.split("\n")) {
+		width = MAX(width, p_font->get_string_size(line, HORIZONTAL_ALIGNMENT_LEFT, -1, p_font_size).x);
+	}
+	return width;
+}
+
+static String solers_compact_model_label(const String &p_model) {
+	const String model = p_model.strip_edges();
+	if (model.length() <= 28) {
+		return model;
+	}
+	return model.substr(0, 25) + "...";
 }
 
 Label *SolersDock::_create_section_label(const String &p_text) {
@@ -225,115 +163,15 @@ Label *SolersDock::_create_body_label(const String &p_text, bool p_bold) const {
 	return label;
 }
 
-Button *SolersDock::_create_chip_button(const String &p_text) const {
-	Button *button = memnew(Button(p_text));
-	button->set_focus_mode(Control::FOCUS_ALL);
-	button->set_custom_minimum_size(Size2(0, 30 * EDSCALE));
-	button->set_flat(true);
-	button->set_clip_text(true);
-	button->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
-	button->add_theme_style_override("normal", solers_make_stylebox(Color(0.16, 0.16, 0.17, 1), Color(0.32, 0.32, 0.34, 0.8), 8, 8));
-	button->add_theme_style_override("hover", solers_make_stylebox(Color(0.20, 0.20, 0.22, 1), Color(0.40, 0.40, 0.44, 0.9), 8, 8));
-	button->add_theme_style_override("pressed", solers_make_stylebox(Color(0.12, 0.20, 0.32, 1), Color(0.10, 0.48, 0.95, 1), 8, 8));
-	return button;
-}
-
-Button *SolersDock::_create_composer_select(const String &p_text, const String &p_tooltip) const {
-	Button *button = memnew(Button(p_text));
-	button->set_focus_mode(Control::FOCUS_ALL);
-	button->set_flat(true);
-	button->set_clip_text(true);
-	button->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
-	button->set_custom_minimum_size(Size2(116 * EDSCALE, 30 * EDSCALE));
-	button->set_tooltip_text(p_tooltip);
-	button->set_h_size_flags(Control::SIZE_SHRINK_BEGIN);
-	button->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
-	// Trailing chevron-down glyph, mirroring the Codex model/effort selectors.
-	button->set_icon_alignment(HORIZONTAL_ALIGNMENT_RIGHT);
-	button->set_vertical_icon_alignment(VERTICAL_ALIGNMENT_CENTER);
-	button->set_meta(SNAME("solers_icon"), SNAME("solers_chevron_down"));
-	button->set_meta(SNAME("solers_primary_icon"), false);
-	button->add_theme_constant_override("h_separation", 5 * EDSCALE);
-	button->add_theme_constant_override("icon_max_width", 10 * EDSCALE);
-	button->add_theme_style_override("normal", solers_make_stylebox(Color(0, 0, 0, 0), Color(0, 0, 0, 0), 9, 7));
-	button->add_theme_style_override("hover", solers_make_stylebox(Color(1, 1, 1, 0.055), Color(0, 0, 0, 0), 9, 7));
-	button->add_theme_style_override("pressed", solers_make_stylebox(Color(1, 1, 1, 0.035), Color(0, 0, 0, 0), 9, 7));
-	button->add_theme_color_override(SceneStringName(font_color), Color(0.73, 0.75, 0.80, 1));
-	button->add_theme_color_override("font_hover_color", Color(0.85, 0.88, 0.93, 1));
-	button->add_theme_color_override("font_pressed_color", Color(0.90, 0.93, 0.98, 1));
-	button->add_theme_font_size_override(SceneStringName(font_size), 12 * EDSCALE);
-	return button;
-}
-
-Button *SolersDock::_create_icon_button(const StringName &p_icon, const String &p_tooltip, bool p_primary) const {
-	Button *button = memnew(Button);
-	button->set_focus_mode(Control::FOCUS_ALL);
-	button->set_flat(false);
-	button->set_clip_text(true);
-	button->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
-	button->set_custom_minimum_size(Size2(32 * EDSCALE, 32 * EDSCALE));
-	button->set_tooltip_text(p_tooltip);
-	button->set_icon_alignment(HORIZONTAL_ALIGNMENT_CENTER);
-	button->set_vertical_icon_alignment(VERTICAL_ALIGNMENT_CENTER);
-	button->set_meta(SNAME("solers_icon"), p_icon);
-	button->set_meta(SNAME("solers_primary_icon"), p_primary);
-	if (p_primary) {
-		// Round, softly-lit send pill mirroring the Codex composer's primary action.
-		button->add_theme_style_override("normal", solers_make_stylebox(Color(0.62, 0.63, 0.66, 1), Color(1, 1, 1, 0.10), 16, 0));
-		button->add_theme_style_override("hover", solers_make_stylebox(Color(0.74, 0.75, 0.78, 1), Color(1, 1, 1, 0.16), 16, 0));
-		button->add_theme_style_override("pressed", solers_make_stylebox(Color(0.50, 0.51, 0.55, 1), Color(1, 1, 1, 0.08), 16, 0));
-		button->add_theme_style_override("focus", solers_make_stylebox(Color(0.62, 0.63, 0.66, 1), Color(1, 1, 1, 0.18), 16, 0));
-		button->add_theme_color_override("icon_normal_color", Color(0.10, 0.11, 0.13, 1));
-		button->add_theme_color_override("icon_hover_color", Color(0.07, 0.08, 0.10, 1));
-		button->add_theme_color_override("icon_pressed_color", Color(0.14, 0.15, 0.18, 1));
-	} else {
-		button->set_flat(true);
-		button->add_theme_style_override("normal", solers_make_stylebox(Color(0, 0, 0, 0), Color(0, 0, 0, 0), 8, 3));
-		button->add_theme_style_override("hover", solers_make_stylebox(Color(1, 1, 1, 0.07), Color(0, 0, 0, 0), 8, 3));
-		button->add_theme_style_override("pressed", solers_make_stylebox(Color(1, 1, 1, 0.04), Color(0, 0, 0, 0), 8, 3));
-		button->add_theme_color_override("icon_normal_color", Color(0.60, 0.63, 0.69, 1));
-		button->add_theme_color_override("icon_hover_color", Color(0.85, 0.88, 0.93, 1));
-		button->add_theme_color_override("icon_pressed_color", Color(0.92, 0.95, 1.00, 1));
-	}
-	return button;
-}
-
-Control *SolersDock::_create_brand_mark() const {
-	PanelContainer *mark = _create_panel_card(Color(0, 0, 0, 0), Color(0.26, 0.28, 0.34, 0.58), 8, 0);
-	mark->set_custom_minimum_size(Size2(34 * EDSCALE, 34 * EDSCALE));
-	mark->set_h_size_flags(Control::SIZE_SHRINK_BEGIN);
-
-	Ref<Texture2D> logo = solers_load_logo_texture();
-	if (logo.is_valid()) {
-		TextureRect *logo_rect = memnew(TextureRect);
-		logo_rect->set_texture(logo);
-		logo_rect->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
-		logo_rect->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
-		logo_rect->set_custom_minimum_size(Size2(28 * EDSCALE, 28 * EDSCALE));
-		logo_rect->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		logo_rect->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-		mark->add_child(logo_rect);
-	} else {
-		Label *glyph = memnew(Label("S"));
-		glyph->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
-		glyph->set_vertical_alignment(VERTICAL_ALIGNMENT_CENTER);
-		glyph->add_theme_color_override("font_color", Color(0.80, 0.87, 0.95, 1));
-		glyph->add_theme_font_size_override(SceneStringName(font_size), 14 * EDSCALE);
-		mark->add_child(glyph);
-	}
-	return mark;
-}
-
 Control *SolersDock::_create_empty_state() const {
+	// Codex-minimal: a single, deliberately faded brand glyph centered in the
+	// canvas. No headline, no subtitle — the composer placeholder carries the
+	// only call to action, so the empty state stays calm and uncluttered.
 	VBoxContainer *state = memnew(VBoxContainer);
 	state->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	state->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	state->set_alignment(BoxContainer::ALIGNMENT_CENTER);
-	state->add_theme_constant_override("separation", 12 * EDSCALE);
-
-	Control *top_spacer = memnew(Control);
-	top_spacer->set_custom_minimum_size(Size2(0, 12 * EDSCALE));
-	state->add_child(top_spacer);
+	state->add_theme_constant_override("separation", 0);
 
 	Ref<Texture2D> logo = solers_load_logo_texture();
 	if (logo.is_valid()) {
@@ -341,80 +179,18 @@ Control *SolersDock::_create_empty_state() const {
 		logo_rect->set_texture(logo);
 		logo_rect->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
 		logo_rect->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
-		logo_rect->set_custom_minimum_size(Size2(68 * EDSCALE, 68 * EDSCALE));
+		logo_rect->set_custom_minimum_size(Size2(60 * EDSCALE, 60 * EDSCALE));
 		logo_rect->set_h_size_flags(Control::SIZE_SHRINK_CENTER);
+		// Ghosted: a faint watermark, like the Codex empty canvas.
+		logo_rect->set_self_modulate(Color(1, 1, 1, 0.13f));
 		state->add_child(logo_rect);
-	} else {
-		state->add_child(_create_brand_mark());
 	}
-
-	Label *headline = memnew(Label(TTR("The AI-native game engine")));
-	headline->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
-	headline->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	headline->set_custom_minimum_size(Size2(260 * EDSCALE, 0));
-	headline->set_theme_type_variation("HeaderSmall");
-	headline->add_theme_color_override("font_color", Color(0.91, 0.93, 0.96, 1));
-	headline->add_theme_font_size_override(SceneStringName(font_size), 20 * EDSCALE);
-	state->add_child(headline);
-
-	Label *copy = memnew(Label(TTR("Describe a world, mechanic, or workflow. Solers turns intent into scenes, systems, and playable builds.")));
-	copy->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
-	copy->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	copy->set_custom_minimum_size(Size2(350 * EDSCALE, 0));
-	copy->add_theme_color_override("font_color", Color(0.62, 0.65, 0.70, 1));
-	copy->add_theme_font_size_override(SceneStringName(font_size), 13 * EDSCALE);
-	state->add_child(copy);
 
 	return state;
 }
 
-Control *SolersDock::_create_icon_badge(const String &p_text, const Color &p_color, const Color &p_border_color) const {
-	PanelContainer *badge = _create_panel_card(p_color, p_border_color, 7, 0);
-	badge->set_h_size_flags(Control::SIZE_SHRINK_BEGIN);
-	badge->set_custom_minimum_size(Size2(24 * EDSCALE, 24 * EDSCALE));
-
-	Label *glyph = memnew(Label(p_text));
-	glyph->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
-	glyph->set_vertical_alignment(VERTICAL_ALIGNMENT_CENTER);
-	glyph->set_clip_text(true);
-	glyph->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
-	glyph->set_max_lines_visible(1);
-	glyph->add_theme_color_override("font_color", Color(0.64, 0.67, 0.72, 1));
-	glyph->add_theme_font_size_override(SceneStringName(font_size), 12 * EDSCALE);
-	badge->add_child(glyph);
-
-	return badge;
-}
-
-HBoxContainer *SolersDock::_create_tool_dots(int p_count, const String &p_label) const {
-	HBoxContainer *row = memnew(HBoxContainer);
-	row->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	row->add_theme_constant_override("separation", 6 * EDSCALE);
-
-	for (int i = 0; i < p_count; i++) {
-		row->add_child(_create_icon_badge("*", Color(0.12, 0.13, 0.15, 1), Color(0.25, 0.26, 0.30, 1)));
-	}
-
-	if (!p_label.is_empty()) {
-		PanelContainer *chip = _create_panel_card(Color(0.12, 0.13, 0.15, 1), Color(0.25, 0.26, 0.30, 1), 7, 7);
-		chip->set_h_size_flags(Control::SIZE_SHRINK_BEGIN);
-		chip->set_custom_minimum_size(Size2(72 * EDSCALE, 24 * EDSCALE));
-		Label *label = memnew(Label(p_label));
-		label->set_autowrap_mode(TextServer::AUTOWRAP_OFF);
-		label->set_clip_text(true);
-		label->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
-		label->set_max_lines_visible(1);
-		label->add_theme_color_override("font_color", Color(0.64, 0.66, 0.70, 1));
-		label->add_theme_font_size_override(SceneStringName(font_size), 13 * EDSCALE);
-		chip->add_child(label);
-		row->add_child(chip);
-	}
-
-	return row;
-}
-
 void SolersDock::_refresh_status() {
-	if (rml_chat_surface) {
+	if (!project_status_label) {
 		return;
 	}
 
@@ -480,11 +256,6 @@ void SolersDock::_refresh_status() {
 		provider_status_label->set_text(TTR("Provider: unavailable"));
 	}
 
-	if (rmlui_status_label) {
-		const bool rmlui_available = Engine::get_singleton() && Engine::get_singleton()->has_singleton("RMLServer");
-		rmlui_status_label->set_text(rmlui_available ? TTR("RmlUi: runtime bridge active") : TTR("RmlUi: runtime bridge missing, native fallback active"));
-	}
-
 	const int pending_approval_count = permission_manager ? permission_manager->get_pending_request_count() : 0;
 	approval_status_label->set_text(permission_manager ? vformat(TTR("Approvals: %d pending"), pending_approval_count) : TTR("Approvals: unavailable"));
 
@@ -495,6 +266,43 @@ void SolersDock::_refresh_status() {
 		String preview = vformat(TTR("Snapshot ready. Open scenes: %d, selected nodes: %d, tools: %d."), open_scene_count, selected_count, tools.size());
 		snapshot_preview->set_text(preview);
 	}
+
+	_refresh_model_chip();
+}
+
+void SolersDock::_refresh_model_chip() {
+	if (!model_chip) {
+		return;
+	}
+
+	if (!settings_service) {
+		model_chip->set_texts(TTR("Model"), TTR("Unavailable"));
+		model_chip->set_tooltip_text(TTR("AI model settings are unavailable."));
+		return;
+	}
+
+	const Dictionary provider_result = settings_service->get_provider_config();
+	const Dictionary provider_data = provider_result.get("data", Dictionary());
+	const String provider = String(provider_data.get("provider", String())).strip_edges();
+	const String model = String(provider_data.get("model", String())).strip_edges();
+	const String base_url = String(provider_data.get("base_url", String())).strip_edges();
+	const Dictionary validation = provider_data.get("validation", Dictionary());
+	const bool valid = validation.get("valid", false);
+
+	if (model.is_empty()) {
+		model_chip->set_texts(TTR("Model"), TTR("Not set"));
+		model_chip->set_tooltip_text(TTR("Choose a provider and model in AI Models."));
+		return;
+	}
+
+	model_chip->set_texts(solers_compact_model_label(model), provider);
+
+	String tooltip = vformat(TTR("Model: %s\nProvider: %s"), model, provider.is_empty() ? TTR("unknown") : provider);
+	if (!base_url.is_empty()) {
+		tooltip += "\n" + vformat(TTR("Base URL: %s"), base_url);
+	}
+	tooltip += "\n" + String(valid ? TTR("Configuration is valid.") : TTR("Configuration needs attention in AI Models."));
+	model_chip->set_tooltip_text(tooltip);
 }
 
 void SolersDock::_on_refresh_pressed() {
@@ -539,160 +347,90 @@ void SolersDock::_on_run_loopback_probe_pressed() {
 	_refresh_status();
 }
 
-void SolersDock::_append_chat_message(const String &p_speaker, const String &p_message) {
-	chat_log += vformat("%s%s\n%s\n", chat_log.is_empty() ? "" : "\n", p_speaker, p_message);
-	if (rml_chat_surface) {
-		rml_chat_surface->append_message(p_speaker, p_message);
-		return;
-	}
-	if (!message_list) {
-		return;
-	}
+void SolersDock::_clear_empty_state() {
 	if (empty_state) {
 		empty_state->queue_free();
 		empty_state = nullptr;
 	}
+}
+
+void SolersDock::_scroll_chat_to_bottom() {
+	if (!chat_scroll) {
+		return;
+	}
+	VScrollBar *bar = chat_scroll->get_v_scroll_bar();
+	if (bar) {
+		bar->set_value(bar->get_max());
+	}
+}
+
+void SolersDock::_append_chat_message(const String &p_speaker, const String &p_message) {
+	_clear_active_reasoning();
+	chat_log += vformat("%s%s\n%s\n", chat_log.is_empty() ? "" : "\n", p_speaker, p_message);
+	if (!message_list) {
+		return;
+	}
+	_clear_empty_state();
 
 	const bool is_user = p_speaker == "You";
-	HBoxContainer *row = memnew(HBoxContainer);
-	row->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	row->add_theme_constant_override("separation", 8 * EDSCALE);
-	message_list->add_child(row);
-
 	if (is_user) {
+		// Right-aligned bubble that hugs its content, capped for readability.
+		HBoxContainer *row = memnew(HBoxContainer);
+		row->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		message_list->add_child(row);
+
 		Control *spacer = memnew(Control);
 		spacer->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 		row->add_child(spacer);
+
+		PanelContainer *bubble = memnew(PanelContainer);
+		bubble->set_h_size_flags(Control::SIZE_SHRINK_END);
+		bubble->add_theme_style_override("panel", solers_make_stylebox(Color(1, 1, 1, 0.075), Color(1, 1, 1, 0.0), 14, 10));
+		row->add_child(bubble);
+
+		Label *body = _create_body_label(p_message);
+		const int font_size = 14 * EDSCALE;
+		body->add_theme_color_override("font_color", SOLERS_TEXT_PRIMARY);
+		body->add_theme_font_size_override(SceneStringName(font_size), font_size);
+		const Ref<Font> font = body->get_theme_font(SceneStringName(font));
+		const float text_width = solers_longest_line_width(p_message, font, font_size) + 4 * EDSCALE;
+		body->set_custom_minimum_size(Size2(MIN(text_width, 340 * EDSCALE), 0));
+		bubble->add_child(body);
+	} else {
+		// Assistant: calm full-width prose, Codex style (no bubble chrome).
+		Label *body = _create_body_label(p_message);
+		body->add_theme_color_override("font_color", SOLERS_TEXT_BODY);
+		body->add_theme_font_size_override(SceneStringName(font_size), 14 * EDSCALE);
+		message_list->add_child(body);
 	}
 
-	PanelContainer *card = _create_panel_card(is_user ? Color(0.05, 0.17, 0.29, 1) : Color(0, 0, 0, 0), is_user ? Color(0.08, 0.42, 0.78, 0.52) : Color(0, 0, 0, 0), is_user ? 18 : 10, is_user ? 12 : 4);
-	card->set_h_size_flags(is_user ? Control::SIZE_SHRINK_END : Control::SIZE_EXPAND_FILL);
-	card->set_custom_minimum_size(Size2(is_user ? 220 * EDSCALE : 260 * EDSCALE, 0));
-	row->add_child(card);
-
-	VBoxContainer *card_body = memnew(VBoxContainer);
-	card_body->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	card_body->add_theme_constant_override("separation", 6 * EDSCALE);
-	card->add_child(card_body);
-
-	if (!is_user) {
-		HBoxContainer *kicker = _create_tool_dots(1, p_speaker);
-		card_body->add_child(kicker);
-	}
-
-	Label *body = _create_body_label(p_message);
-	body->set_custom_minimum_size(Size2(is_user ? 180 * EDSCALE : 220 * EDSCALE, 0));
-	body->add_theme_color_override("font_color", is_user ? Color(0.86, 0.93, 1.0, 1) : Color(0.85, 0.86, 0.88, 1));
-	body->add_theme_font_size_override(SceneStringName(font_size), is_user ? 15 * EDSCALE : 14 * EDSCALE);
-	card_body->add_child(body);
-
-	if (chat_scroll) {
-		chat_scroll->queue_redraw();
-	}
+	callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
 }
 
-void SolersDock::_append_timeline_event(const Dictionary &p_event) {
-	const String kind = p_event.get("kind", String());
-	if (kind == "user") {
-		_append_chat_message("You", p_event.get("text", String()));
-		Label *meta = _create_body_label(p_event.get("meta", String()), false);
-		meta->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_RIGHT);
-		meta->add_theme_color_override("font_color", Color(0.50, 0.51, 0.55, 1));
-		message_list->add_child(meta);
+void SolersDock::_append_tool_row(const String &p_text, bool p_ok) {
+	_clear_active_reasoning();
+	chat_log += vformat("%s\n", p_text);
+	if (!message_list) {
 		return;
 	}
+	_clear_empty_state();
 
-	if (kind == "output") {
-		PanelContainer *card = _create_panel_card(Color(0.13, 0.14, 0.15, 1), Color(0.18, 0.19, 0.21, 1), 14, 12);
-		card->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		message_list->add_child(card);
+	Label *row = memnew(Label(p_text));
+	row->set_autowrap_mode(TextServer::AUTOWRAP_OFF);
+	row->set_clip_text(true);
+	row->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+	row->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
+	row->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	row->add_theme_color_override("font_color", p_ok ? SOLERS_TEXT_DIM : Color(0.85, 0.46, 0.40));
+	row->add_theme_font_size_override(SceneStringName(font_size), 12 * EDSCALE);
+	message_list->add_child(row);
 
-		HBoxContainer *row = memnew(HBoxContainer);
-		row->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		row->add_theme_constant_override("separation", 12 * EDSCALE);
-		card->add_child(row);
-
-		PanelContainer *icon = _create_panel_card(Color(0.06, 0.11, 0.18, 1), Color(0.02, 0.47, 0.95, 1), 10, 0);
-		icon->set_custom_minimum_size(Size2(38 * EDSCALE, 38 * EDSCALE));
-		Label *icon_label = memnew(Label("#"));
-		icon_label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
-		icon_label->set_vertical_alignment(VERTICAL_ALIGNMENT_CENTER);
-		icon_label->set_clip_text(true);
-		icon_label->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
-		icon_label->set_max_lines_visible(1);
-		icon_label->add_theme_color_override("font_color", Color(0.19, 0.58, 1.0, 1));
-		icon->add_child(icon_label);
-		row->add_child(icon);
-
-		VBoxContainer *copy = memnew(VBoxContainer);
-		copy->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		copy->add_theme_constant_override("separation", 2 * EDSCALE);
-		row->add_child(copy);
-
-		Label *output_title = _create_body_label(p_event.get("title", String()), true);
-		output_title->add_theme_color_override("font_color", Color(0.91, 0.92, 0.94, 1));
-		copy->add_child(output_title);
-
-		Label *subtitle = _create_body_label(p_event.get("subtitle", String()), false);
-		subtitle->add_theme_color_override("font_color", Color(0.59, 0.61, 0.66, 1));
-		copy->add_child(subtitle);
-
-		Button *open = _create_chip_button(p_event.get("action_label", String("Open")));
-		open->set_custom_minimum_size(Size2(70 * EDSCALE, 38 * EDSCALE));
-		open->set_h_size_flags(Control::SIZE_SHRINK_END);
-		row->add_child(open);
-		return;
-	}
-
-	HBoxContainer *kicker = _create_tool_dots(1, p_event.get("kicker", String()));
-	message_list->add_child(kicker);
-
-	const bool strong = p_event.get("strong", false);
-	Label *body = _create_body_label(p_event.get("text", String()), strong);
-	body->set_custom_minimum_size(Size2(260 * EDSCALE, 0));
-	body->add_theme_color_override("font_color", strong ? Color(0.82, 0.83, 0.86, 1) : Color(0.84, 0.85, 0.88, 1));
-	body->add_theme_font_size_override(SceneStringName(font_size), 14 * EDSCALE);
-	message_list->add_child(body);
-
-	const String action_label = p_event.get("action_label", String());
-	if (!action_label.is_empty()) {
-		message_list->add_child(_create_tool_dots(strong ? 7 : 2, action_label));
-	}
+	callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
 }
 
-void SolersDock::_populate_initial_timeline() {
-	if (message_list) {
-		empty_state = _create_empty_state();
-		message_list->add_child(empty_state);
-	}
-}
-
-void SolersDock::_append_orchestrator_result(const Dictionary &p_result) {
-	if (!(bool)p_result.get("ok", false)) {
-		Dictionary error = p_result.get("error", Dictionary());
-		_append_chat_message("Solers", vformat("I could not start the agent turn.\n%s", String(error.get("message", "Unknown error."))));
-		return;
-	}
-
-	Dictionary result_data = p_result.get("data", Dictionary());
-	Array phases = result_data.get("phases", Array());
-	String phase_text;
-	for (int i = 0; i < phases.size(); i++) {
-		phase_text += vformat("%s%s", i == 0 ? "" : " -> ", String(phases[i]));
-	}
-
-	const String state = result_data.get("state", "unknown");
-	String message = vformat("State: %s\nFlow: %s", state, phase_text);
-	if (result_data.has("executor_result")) {
-		Dictionary executor = result_data["executor_result"];
-		Array tool_results = executor.get("tool_results", Array());
-		message += vformat("\nTool actions: %d", tool_results.size());
-		if (executor.has("error")) {
-			Dictionary error = executor["error"];
-			message += vformat("\nExecutor blocked: %s", String(error.get("message", String())));
-		}
-	}
-	_append_chat_message("Solers", message);
+void SolersDock::_clear_active_reasoning() {
+	active_reasoning_label = nullptr;
+	active_reasoning_text = String();
 }
 
 void SolersDock::_on_send_chat_pressed() {
@@ -706,11 +444,36 @@ void SolersDock::_on_send_chat_pressed() {
 	}
 	chat_input->set_text("");
 	_update_chat_input_height();
+	_update_send_enabled();
+	_refresh_model_chip();
 	_submit_chat_prompt(prompt);
 }
 
-void SolersDock::_on_rml_prompt_submitted(const String &p_prompt) {
-	_submit_chat_prompt(p_prompt);
+void SolersDock::_on_model_chip_pressed() {
+	_append_tool_row(TTR("Model settings live in Project Manager -> AI Models."), true);
+}
+
+void SolersDock::_on_new_chat_pressed() {
+	chat_log = String();
+	if (agent_session) {
+		agent_session->reset_conversation();
+	}
+	if (message_list) {
+		while (message_list->get_child_count() > 0) {
+			Node *child = message_list->get_child(0);
+			message_list->remove_child(child);
+			child->queue_free();
+		}
+		empty_state = _create_empty_state();
+		message_list->add_child(empty_state);
+	}
+	if (chat_input) {
+		chat_input->set_text("");
+		_update_chat_input_height();
+		_update_send_enabled();
+		chat_input->grab_focus();
+	}
+	_refresh_status();
 }
 
 void SolersDock::_submit_chat_prompt(const String &p_prompt) {
@@ -721,36 +484,21 @@ void SolersDock::_submit_chat_prompt(const String &p_prompt) {
 
 	_append_chat_message("You", prompt);
 
-	if (!mcp_adapter) {
-		_append_chat_message("Solers", "MCP adapter is unavailable, so I cannot start an agent session yet.");
+	if (!agent_session) {
+		_append_chat_message("Solers", "Agent session is unavailable.");
 		return;
 	}
 
-	Array messages;
-	Dictionary user_message;
-	user_message["role"] = "user";
-	user_message["content"] = prompt;
-	messages.push_back(user_message);
-
-	Dictionary params;
-	params["provider"] = "mock";
-	params["model"] = "solers-chat-session-v0";
-	params["objective"] = prompt;
-	params["messages"] = messages;
-
-	Dictionary request;
-	request["jsonrpc"] = "2.0";
-	request["id"] = 1;
-	request["method"] = "solers/agent/orchestrate";
-	request["params"] = params;
-
-	Dictionary response = mcp_adapter->handle_request(request);
-	if (response.has("error")) {
-		Dictionary error = response["error"];
-		_append_chat_message("Solers", String(error.get("message", "Unknown JSON-RPC error.")));
-		return;
+	// Real BYOK end-to-end: hand the prompt to the single agent loop. The
+	// session streams assistant text, tool calls and results back through the
+	// signals wired in set_agent_session(); no mock, no hardcoded provider.
+	Dictionary args;
+	args["prompt"] = prompt;
+	const Dictionary result = agent_session->start_turn(args);
+	if (!(bool)result.get("ok", false)) {
+		const Dictionary error = result.get("error", Dictionary());
+		_append_chat_message("Solers", String::utf8("\u26a0 ") + String(error.get("message", "Could not start the agent turn.")));
 	}
-	_append_orchestrator_result(response.get("result", Dictionary()));
 	_refresh_status();
 }
 
@@ -778,6 +526,13 @@ void SolersDock::_on_chat_input_gui_input(const Ref<InputEvent> &p_event) {
 
 void SolersDock::_on_chat_input_text_changed() {
 	_update_chat_input_height();
+	_update_send_enabled();
+}
+
+void SolersDock::_update_send_enabled() {
+	if (send_chat_button && chat_input) {
+		send_chat_button->set_enabled(!chat_input->get_text().strip_edges().is_empty());
+	}
 }
 
 void SolersDock::_update_chat_input_height() {
@@ -863,46 +618,72 @@ void SolersDock::_on_allow_run_project_toggled(bool p_enabled) {
 	_refresh_status();
 }
 
-void SolersDock::_refresh_icon_buttons() {
-	Button *buttons[] = {
-		add_context_button,
-		access_status_button,
-		model_select_button,
-		effort_select_button,
-		send_chat_button,
-		new_chat_button,
-		more_button,
-	};
-
-	for (Button *button : buttons) {
-		if (!button || !button->has_meta(SNAME("solers_icon"))) {
-			continue;
+void SolersDock::_debug_dump_settled() {
+	print_line(vformat("[solers-settled] dock global=%s size=%s", get_global_rect(), get_size()));
+	if (chat_input) {
+		Control *composer = Object::cast_to<Control>(chat_input->get_parent());
+		Control *card = composer ? Object::cast_to<Control>(composer->get_parent()) : nullptr;
+		Control *inset = card ? Object::cast_to<Control>(card->get_parent()) : nullptr;
+		Control *rootv = inset ? Object::cast_to<Control>(inset->get_parent()) : nullptr;
+		if (rootv) {
+			print_line(vformat("[solers-settled] root global=%s", rootv->get_global_rect()));
 		}
-
-		const StringName solers_icon_name = button->get_meta(SNAME("solers_icon"));
-		const bool primary = button->has_meta(SNAME("solers_primary_icon")) && bool(button->get_meta(SNAME("solers_primary_icon")));
-		Color icon_color = primary ? Color(0.10, 0.11, 0.13, 1) : Color(0.62, 0.65, 0.71, 1);
-		if (button->has_meta(SNAME("solers_icon_color"))) {
-			icon_color = button->get_meta(SNAME("solers_icon_color"));
+		if (inset) {
+			print_line(vformat("[solers-settled] composer_inset global=%s visible=%s", inset->get_global_rect(), inset->is_visible_in_tree() ? "yes" : "no"));
 		}
-		Ref<Texture2D> icon = solers_load_micro_icon(solers_icon_name, icon_color);
-		if (icon.is_null()) {
-			icon = get_editor_theme_icon(solers_builtin_icon_fallback(solers_icon_name));
+		if (card) {
+			print_line(vformat("[solers-settled] composer_card global=%s", card->get_global_rect()));
 		}
-		button->set_button_icon(icon);
+	}
+	if (chat_scroll) {
+		print_line(vformat("[solers-settled] scroll global=%s", chat_scroll->get_global_rect()));
+	}
+	if (empty_state) {
+		print_line(vformat("[solers-settled] empty_state global=%s", empty_state->get_global_rect()));
 	}
 }
 
 void SolersDock::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_ENTER_TREE: {
-			_refresh_icon_buttons();
 			_update_chat_input_height();
+			_update_send_enabled();
 			_refresh_status();
+			// TEMP DEBUG: settled-state dump.
+			if (is_inside_tree()) {
+				SceneTree *tree = get_tree();
+				if (tree) {
+					Ref<SceneTreeTimer> timer = tree->create_timer(3.0);
+					timer->connect("timeout", callable_mp(this, &SolersDock::_debug_dump_settled));
+				}
+			}
+		} break;
+		case NOTIFICATION_RESIZED: {
+			// TEMP DEBUG: dump geometry chain.
+			print_line(vformat("[solers-dbg] dock size=%s min=%s", get_size(), get_combined_minimum_size()));
+			if (chat_input && chat_input->is_inside_tree()) {
+				Control *composer = Object::cast_to<Control>(chat_input->get_parent());
+				Control *card = composer ? Object::cast_to<Control>(composer->get_parent()) : nullptr;
+				Control *inset = card ? Object::cast_to<Control>(card->get_parent()) : nullptr;
+				Control *rootv = inset ? Object::cast_to<Control>(inset->get_parent()) : nullptr;
+				print_line(vformat("[solers-dbg] root size=%s min=%s pos=%s", rootv ? rootv->get_size() : Size2(), rootv ? rootv->get_combined_minimum_size() : Size2(), rootv ? rootv->get_position() : Point2()));
+				print_line(vformat("[solers-dbg] inset rect=%s min=%s", inset ? Rect2(inset->get_position(), inset->get_size()) : Rect2(), inset ? inset->get_combined_minimum_size() : Size2()));
+				print_line(vformat("[solers-dbg] card rect=%s min=%s", card ? Rect2(card->get_position(), card->get_size()) : Rect2(), card ? card->get_combined_minimum_size() : Size2()));
+				print_line(vformat("[solers-dbg] scroll rect=%s min=%s", chat_scroll ? Rect2(chat_scroll->get_position(), chat_scroll->get_size()) : Rect2(), chat_scroll ? chat_scroll->get_combined_minimum_size() : Size2()));
+				print_line(vformat("[solers-dbg] EDSCALE=%f", EDSCALE));
+				Control *up = this;
+				for (int i = 0; i < 4 && up; i++) {
+					print_line(vformat("[solers-dbg] up%d %s rect=%s min=%s", i, up->get_name(), Rect2(up->get_position(), up->get_size()), up->get_combined_minimum_size()));
+					up = Object::cast_to<Control>(up->get_parent());
+				}
+			}
 		} break;
 		case NOTIFICATION_THEME_CHANGED: {
-			_refresh_icon_buttons();
 			_update_chat_input_height();
+			_refresh_model_chip();
+		} break;
+		case EditorSettings::NOTIFICATION_EDITOR_SETTINGS_CHANGED: {
+			_refresh_status();
 		} break;
 		case NOTIFICATION_TRANSLATION_CHANGED: {
 			_refresh_status();
@@ -931,53 +712,48 @@ SolersDock::SolersDock() {
 	set_custom_minimum_size(Size2(520 * EDSCALE, 0));
 	set_h_size_flags(Control::SIZE_FILL);
 	set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	add_theme_style_override("panel", solers_make_stylebox(Color(0.070, 0.073, 0.078, 1), Color(0.16, 0.16, 0.17, 1), 0, 0));
-
-#ifdef SOLERS_RMLUI_ENABLED
-	rml_chat_surface = memnew(SolersRmlChatSurface);
-	rml_chat_surface->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	rml_chat_surface->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	rml_chat_surface->connect(SNAME("prompt_submitted"), callable_mp(this, &SolersDock::_on_rml_prompt_submitted));
-	add_child(rml_chat_surface);
-	return;
-#endif
-
-	PanelContainer *surface = _create_panel_card(Color(0.070, 0.073, 0.078, 1), Color(0, 0, 0, 0), 0, 0);
-	surface->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	surface->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	add_child(surface);
+	add_theme_style_override("panel", solers_make_stylebox(SOLERS_BG, Color(0.16, 0.16, 0.17, 1), 0, 0));
 
 	VBoxContainer *root = memnew(VBoxContainer);
 	root->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	root->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	root->add_theme_constant_override("separation", 0);
-	surface->add_child(root);
+	add_child(root);
+
+	/* Topbar — panel toggle left, chat actions right. */
 
 	MarginContainer *topbar_inset = memnew(MarginContainer);
 	topbar_inset->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	topbar_inset->set_custom_minimum_size(Size2(0, 40 * EDSCALE));
-	topbar_inset->add_theme_constant_override("margin_left", 12 * EDSCALE);
-	topbar_inset->add_theme_constant_override("margin_right", 12 * EDSCALE);
+	topbar_inset->add_theme_constant_override("margin_left", 10 * EDSCALE);
+	topbar_inset->add_theme_constant_override("margin_right", 10 * EDSCALE);
 	topbar_inset->add_theme_constant_override("margin_top", 5 * EDSCALE);
 	topbar_inset->add_theme_constant_override("margin_bottom", 5 * EDSCALE);
 	root->add_child(topbar_inset);
 
 	HBoxContainer *topbar_content = memnew(HBoxContainer);
 	topbar_content->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	topbar_content->add_theme_constant_override("separation", 6 * EDSCALE);
+	topbar_content->add_theme_constant_override("separation", 4 * EDSCALE);
 	topbar_inset->add_child(topbar_content);
+
+	panel_button = memnew(SolersGlyphButton);
+	panel_button->configure(SNAME("panel"), SolersGlyphButton::SKIN_GHOST, TTR("Solers panel"), 15);
+	topbar_content->add_child(panel_button);
 
 	Control *topbar_spacer = memnew(Control);
 	topbar_spacer->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	topbar_content->add_child(topbar_spacer);
 
-	new_chat_button = _create_icon_button(SNAME("solers_new_chat"), TTR("New chat"));
-	new_chat_button->set_custom_minimum_size(Size2(30 * EDSCALE, 30 * EDSCALE));
+	new_chat_button = memnew(SolersGlyphButton);
+	new_chat_button->configure(SNAME("new_chat"), SolersGlyphButton::SKIN_GHOST, TTR("New chat"), 15);
+	new_chat_button->set_pressed_callback(callable_mp(this, &SolersDock::_on_new_chat_pressed));
 	topbar_content->add_child(new_chat_button);
 
-	more_button = _create_icon_button(SNAME("solers_more"), TTR("More"));
-	more_button->set_custom_minimum_size(Size2(30 * EDSCALE, 30 * EDSCALE));
+	more_button = memnew(SolersGlyphButton);
+	more_button->configure(SNAME("more"), SolersGlyphButton::SKIN_GHOST, TTR("More"), 15);
 	topbar_content->add_child(more_button);
+
+	/* Hidden diagnostics labels (kept for _refresh_status plumbing). */
 
 	project_status_label = memnew(Label);
 	project_status_label->set_autowrap_mode(TextServer::AUTOWRAP_OFF);
@@ -1002,50 +778,51 @@ SolersDock::SolersDock() {
 	provider_status_label->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
 	root->add_child(provider_status_label);
 
-	rmlui_status_label = memnew(Label);
-	rmlui_status_label->set_visible(false);
-	rmlui_status_label->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
-	root->add_child(rmlui_status_label);
+	/* Conversation timeline. */
 
 	chat_scroll = memnew(ScrollContainer);
 	chat_scroll->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	chat_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	chat_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
 	root->add_child(chat_scroll);
 
 	message_list = memnew(VBoxContainer);
 	message_list->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	message_list->add_theme_constant_override("separation", 16 * EDSCALE);
+	message_list->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	message_list->add_theme_constant_override("separation", 14 * EDSCALE);
 
 	MarginContainer *timeline_inset = memnew(MarginContainer);
 	timeline_inset->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	timeline_inset->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	timeline_inset->add_theme_constant_override("margin_left", 24 * EDSCALE);
-	timeline_inset->add_theme_constant_override("margin_right", 24 * EDSCALE);
+	timeline_inset->add_theme_constant_override("margin_left", 20 * EDSCALE);
+	timeline_inset->add_theme_constant_override("margin_right", 20 * EDSCALE);
 	timeline_inset->add_theme_constant_override("margin_top", 10 * EDSCALE);
 	timeline_inset->add_theme_constant_override("margin_bottom", 12 * EDSCALE);
 	timeline_inset->add_child(message_list);
 	chat_scroll->add_child(timeline_inset);
 
-	_populate_initial_timeline();
+	empty_state = _create_empty_state();
+	message_list->add_child(empty_state);
+
+	/* Composer — one floating rounded card owns text entry and actions. */
 
 	MarginContainer *composer_inset = memnew(MarginContainer);
 	composer_inset->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	composer_inset->add_theme_constant_override("margin_left", 18 * EDSCALE);
-	composer_inset->add_theme_constant_override("margin_right", 18 * EDSCALE);
-	composer_inset->add_theme_constant_override("margin_top", 6 * EDSCALE);
-	composer_inset->add_theme_constant_override("margin_bottom", 18 * EDSCALE);
+	composer_inset->add_theme_constant_override("margin_left", 20 * EDSCALE);
+	composer_inset->add_theme_constant_override("margin_right", 20 * EDSCALE);
+	composer_inset->add_theme_constant_override("margin_top", 4 * EDSCALE);
+	composer_inset->add_theme_constant_override("margin_bottom", 13 * EDSCALE);
 	root->add_child(composer_inset);
 
-	PanelContainer *composer_card = memnew(PanelContainer);
+	SolersSurface *composer_card = memnew(SolersSurface);
 	composer_card->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	// ChatGPT-style floating composer: one rounded surface owns both text entry and actions.
-	composer_card->add_theme_style_override("panel", solers_make_stylebox(Color(0.095, 0.096, 0.100, 1.0), Color(0, 0, 0, 0), 20, 12, true));
+	composer_card->configure(SOLERS_COMPOSER_BG, SOLERS_HAIRLINE, 19, 14, true);
 	composer_card->set_custom_minimum_size(Size2(0, (SOLERS_COMPOSER_TEXT_MIN_HEIGHT + SOLERS_COMPOSER_TOOLBAR_HEIGHT + SOLERS_COMPOSER_VERTICAL_CHROME) * EDSCALE));
 	composer_inset->add_child(composer_card);
 
 	VBoxContainer *composer = memnew(VBoxContainer);
 	composer->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	composer->add_theme_constant_override("separation", 2 * EDSCALE);
+	composer->add_theme_constant_override("separation", 0);
 	composer_card->add_child(composer);
 
 	chat_input = memnew(TextEdit);
@@ -1059,15 +836,16 @@ SolersDock::SolersDock() {
 	chat_input->set_indent_wrapped_lines(false);
 	chat_input->set_highlight_current_line(false);
 	chat_input->set_draw_minimap(false);
+	chat_input->set_caret_blink_enabled(true);
 	chat_input->add_theme_style_override("normal", memnew(StyleBoxEmpty));
 	chat_input->add_theme_style_override("focus", memnew(StyleBoxEmpty));
 	chat_input->add_theme_style_override("read_only", memnew(StyleBoxEmpty));
-	chat_input->add_theme_color_override("font_color", Color(0.89, 0.91, 0.94, 1));
-	chat_input->add_theme_color_override("font_placeholder_color", Color(0.40, 0.41, 0.44, 1));
+	chat_input->add_theme_color_override("font_color", SOLERS_TEXT_PRIMARY);
+	chat_input->add_theme_color_override("font_placeholder_color", SOLERS_TEXT_PLACEHOLDER);
 	chat_input->add_theme_color_override("background_color", Color(0, 0, 0, 0));
 	chat_input->add_theme_color_override("caret_color", Color(0.86, 0.91, 0.98, 1));
 	chat_input->add_theme_color_override("selection_color", Color(0.10, 0.42, 0.62, 0.56));
-	chat_input->add_theme_constant_override("line_spacing", 5 * EDSCALE);
+	chat_input->add_theme_constant_override("line_spacing", 4 * EDSCALE);
 	chat_input->add_theme_font_size_override(SceneStringName(font_size), 14 * EDSCALE);
 	chat_input->connect(SceneStringName(gui_input), callable_mp(this, &SolersDock::_on_chat_input_gui_input));
 	chat_input->connect(SceneStringName(text_changed), callable_mp(this, &SolersDock::_on_chat_input_text_changed));
@@ -1080,39 +858,35 @@ SolersDock::SolersDock() {
 	composer_toolbar->add_theme_constant_override("separation", 6 * EDSCALE);
 	composer->add_child(composer_toolbar);
 
-	add_context_button = _create_icon_button(SNAME("solers_plus"), TTR("Attach context"));
+	add_context_button = memnew(SolersGlyphButton);
+	add_context_button->configure(SNAME("plus"), SolersGlyphButton::SKIN_GHOST, TTR("Attach context"), 15);
 	add_context_button->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
 	composer_toolbar->add_child(add_context_button);
 
-	access_status_button = _create_icon_button(SNAME("solers_shield"), TTR("Agent access"));
-	access_status_button->set_custom_minimum_size(Size2(24 * EDSCALE, 30 * EDSCALE));
-	access_status_button->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
-	access_status_button->set_meta(SNAME("solers_icon_color"), Color(1.00, 0.49, 0.20, 1));
-	composer_toolbar->add_child(access_status_button);
-
-	model_select_button = _create_composer_select(TTR("Full access"), TTR("Agent access"));
-	model_select_button->set_custom_minimum_size(Size2(92 * EDSCALE, 30 * EDSCALE));
-	model_select_button->set_meta(SNAME("solers_icon_color"), Color(1.00, 0.49, 0.20, 1));
-	model_select_button->add_theme_color_override(SceneStringName(font_color), Color(1.00, 0.49, 0.20, 1));
-	model_select_button->add_theme_color_override("font_hover_color", Color(1.00, 0.62, 0.36, 1));
-	model_select_button->add_theme_color_override("font_pressed_color", Color(1.00, 0.55, 0.28, 1));
-	composer_toolbar->add_child(model_select_button);
+	access_chip = memnew(SolersSelectChip);
+	access_chip->configure(SNAME("alert"), TTR("Full access"), String(), TTR("Agent access"));
+	access_chip->set_accent(SOLERS_ACCENT_AMBER);
+	composer_toolbar->add_child(access_chip);
 
 	Control *toolbar_spacer = memnew(Control);
 	toolbar_spacer->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	composer_toolbar->add_child(toolbar_spacer);
 
-	effort_select_button = _create_composer_select(TTR("5.5  Extra High"), TTR("Model and effort"));
-	effort_select_button->set_custom_minimum_size(Size2(126 * EDSCALE, 30 * EDSCALE));
-	composer_toolbar->add_child(effort_select_button);
+	model_chip = memnew(SolersSelectChip);
+	model_chip->configure(StringName(), TTR("Model"), TTR("Not set"), TTR("Model and provider"));
+	model_chip->set_pressed_callback(callable_mp(this, &SolersDock::_on_model_chip_pressed));
+	composer_toolbar->add_child(model_chip);
 
-	send_chat_button = _create_icon_button(SNAME("solers_send"), TTR("Send"), true);
-	send_chat_button->set_focus_mode(Control::FOCUS_ALL);
+	send_chat_button = memnew(SolersGlyphButton);
+	send_chat_button->configure(SNAME("send_up"), SolersGlyphButton::SKIN_PRIMARY, TTR("Send"), 16);
 	send_chat_button->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
-	send_chat_button->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_on_send_chat_pressed));
+	send_chat_button->set_pressed_callback(callable_mp(this, &SolersDock::_on_send_chat_pressed));
+	send_chat_button->set_enabled(false);
 	composer_toolbar->add_child(send_chat_button);
 
 	_update_chat_input_height();
+
+	/* Hidden diagnostics panel (status plumbing + manual probes). */
 
 	HSeparator *debug_separator = memnew(HSeparator);
 	debug_separator->set_visible(false);
@@ -1230,4 +1004,83 @@ SolersDock::SolersDock() {
 	snapshot_preview->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
 	snapshot_preview->set_text(TTR("Snapshot not captured yet."));
 	debug_panel->add_child(snapshot_preview);
+}
+
+SolersDock::~SolersDock() {
+	// The dock is the sole consumer of the glyph cache; release the textures
+	// with it so nothing lives past renderer teardown.
+	SolersChatGlyphs::clear_cache();
+}
+
+void SolersDock::set_agent_session(SolersAgentSession *p_agent_session) {
+	agent_session = p_agent_session;
+	if (!agent_session) {
+		return;
+	}
+	agent_session->connect(SNAME("reasoning_delta"), callable_mp(this, &SolersDock::_on_agent_reasoning_delta));
+	agent_session->connect(SNAME("assistant_message"), callable_mp(this, &SolersDock::_on_agent_assistant_message));
+	agent_session->connect(SNAME("tool_call_started"), callable_mp(this, &SolersDock::_on_agent_tool_started));
+	agent_session->connect(SNAME("tool_call_finished"), callable_mp(this, &SolersDock::_on_agent_tool_finished));
+	agent_session->connect(SNAME("turn_completed"), callable_mp(this, &SolersDock::_on_agent_turn_completed));
+	agent_session->connect(SNAME("turn_failed"), callable_mp(this, &SolersDock::_on_agent_turn_failed));
+}
+
+void SolersDock::_on_agent_reasoning_delta(const String &p_text) {
+	const String text = p_text.strip_edges();
+	if (text.is_empty()) {
+		return;
+	}
+	active_reasoning_text += text;
+	if (!message_list) {
+		return;
+	}
+	_clear_empty_state();
+	if (!active_reasoning_label) {
+		active_reasoning_label = memnew(Label);
+		active_reasoning_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+		active_reasoning_label->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
+		active_reasoning_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		active_reasoning_label->add_theme_color_override("font_color", Color(SOLERS_TEXT_DIM, 0.72));
+		active_reasoning_label->add_theme_font_size_override(SceneStringName(font_size), 12 * EDSCALE);
+		message_list->add_child(active_reasoning_label);
+	}
+	active_reasoning_label->set_text(String::utf8("\u2026 Thinking: ") + active_reasoning_text.strip_edges());
+	callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
+}
+
+void SolersDock::_on_agent_assistant_message(const String &p_text) {
+	if (!p_text.strip_edges().is_empty()) {
+		_append_chat_message("Solers", p_text);
+	}
+}
+
+void SolersDock::_on_agent_tool_started(const String &p_id, const String &p_name, const String &p_arguments) {
+	String label = String::utf8("\u2192 ") + p_name;
+	if (!p_id.is_empty()) {
+		label += vformat("  #%s", p_id);
+	}
+	_append_tool_row(label, true);
+}
+
+void SolersDock::_on_agent_tool_finished(const String &p_id, const String &p_name, const Dictionary &p_result) {
+	const bool ok = p_result.get("ok", false);
+	String label = String::utf8(ok ? "\u2713 " : "\u2717 ") + p_name;
+	if (!ok) {
+		const Dictionary error = p_result.get("error", Dictionary());
+		const String message = error.get("message", String());
+		if (!message.is_empty()) {
+			label += " - " + message;
+		}
+	}
+	_refresh_status();
+	_append_tool_row(label, ok);
+}
+
+void SolersDock::_on_agent_turn_completed(const Dictionary &p_result) {
+	_refresh_status();
+}
+
+void SolersDock::_on_agent_turn_failed(const Dictionary &p_error) {
+	_append_chat_message("Solers", String::utf8("\u26a0 ") + String(p_error.get("message", "Agent turn failed.")));
+	_refresh_status();
 }
