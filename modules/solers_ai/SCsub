@@ -16,6 +16,14 @@ env_solers_ai.add_source_files(module_obj, "protocol/*.cpp")
 if env.editor_build:
     env_solers_ai.add_source_files(module_obj, "editor/*.cpp")
 
+    # Thirdparty: md4c (MIT) - CommonMark parser behind the chat markdown view.
+    thirdparty_obj = []
+    env_md4c = env_solers_ai.Clone()
+    env_md4c.disable_warnings()
+    env_md4c.add_source_files(thirdparty_obj, ["#thirdparty/md4c/md4c.c"])
+    env.modules_sources += thirdparty_obj
+    env.Depends(module_obj, thirdparty_obj)
+
 if env["tests"]:
     env_solers_ai.Append(CPPDEFINES=["TESTS_ENABLED"])
     env_solers_ai.add_source_files(module_obj, "tests/*.cpp")
