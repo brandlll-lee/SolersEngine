@@ -55,6 +55,19 @@ static String solers_glyph_body(const StringName &p_name) {
 	if (p_name == SNAME("chevron_down")) {
 		return "<path d=\"m6 9 6 6 6-6\"/>";
 	}
+	if (p_name == SNAME("chevron_up")) {
+		return "<path d=\"m18 15-6-6-6 6\"/>";
+	}
+	if (p_name == SNAME("chevron_right")) {
+		return "<path d=\"m9 18 6-6-6-6\"/>";
+	}
+	if (p_name == SNAME("check")) {
+		return "<path d=\"M20 6 9 17l-5-5\"/>";
+	}
+	if (p_name == SNAME("cross")) {
+		// lucide: x
+		return "<path d=\"M18 6 6 18\"/><path d=\"m6 6 12 12\"/>";
+	}
 	if (p_name == SNAME("alert")) {
 		// lucide: circle-alert
 		return "<circle cx=\"12\" cy=\"12\" r=\"10\"/><line x1=\"12\" x2=\"12\" y1=\"8\" y2=\"12\"/><line x1=\"12\" x2=\"12.01\" y1=\"16\" y2=\"16\"/>";
@@ -66,6 +79,38 @@ static String solers_glyph_body(const StringName &p_name) {
 	if (p_name == SNAME("send_up")) {
 		// lucide: arrow-up
 		return "<path d=\"m5 12 7-7 7 7\"/><path d=\"M12 19V5\"/>";
+	}
+	if (p_name == SNAME("tool_observe")) {
+		// lucide: eye
+		return "<path d=\"M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0\"/><circle cx=\"12\" cy=\"12\" r=\"3\"/>";
+	}
+	if (p_name == SNAME("tool_scene")) {
+		// lucide: box
+		return "<path d=\"M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z\"/><path d=\"m3.3 7 8.7 5 8.7-5\"/><path d=\"M12 22V12\"/>";
+	}
+	if (p_name == SNAME("tool_file")) {
+		// lucide: file-pen-line
+		return "<path d=\"M12 20h9\"/><path d=\"M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z\"/><path d=\"m15 5 3 3\"/>";
+	}
+	if (p_name == SNAME("tool_run")) {
+		// lucide: play
+		return "<polygon points=\"6 3 20 12 6 21 6 3\"/>";
+	}
+	if (p_name == SNAME("tool_asset")) {
+		// lucide: upload
+		return "<path d=\"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4\"/><polyline points=\"17 8 12 3 7 8\"/><line x1=\"12\" x2=\"12\" y1=\"3\" y2=\"15\"/>";
+	}
+	if (p_name == SNAME("tool_export")) {
+		// lucide: package
+		return "<path d=\"m7.5 4.27 9 5.15\"/><path d=\"M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z\"/><path d=\"m3.3 7 8.7 5 8.7-5\"/><path d=\"M12 22V12\"/>";
+	}
+	if (p_name == SNAME("tool_network")) {
+		// lucide: globe
+		return "<circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20\"/><path d=\"M2 12h20\"/>";
+	}
+	if (p_name == SNAME("tool_shell")) {
+		// lucide: terminal
+		return "<polyline points=\"4 17 10 11 4 5\"/><line x1=\"12\" x2=\"20\" y1=\"19\" y2=\"19\"/>";
 	}
 	return String();
 }
@@ -111,10 +156,11 @@ static const Color SOLERS_GLYPH_IDLE = Color(0.64, 0.65, 0.69);
 static const Color SOLERS_GLYPH_HOVER = Color(0.94, 0.95, 0.97);
 static const Color SOLERS_TEXT_STRONG = Color(0.90, 0.91, 0.94);
 static const Color SOLERS_TEXT_MUTED = Color(0.57, 0.58, 0.62);
-static const Color SOLERS_PRIMARY_FILL = Color(0.64, 0.65, 0.68);
-static const Color SOLERS_PRIMARY_FILL_HOVER = Color(0.78, 0.79, 0.82);
-static const Color SOLERS_PRIMARY_FILL_PRESS = Color(0.52, 0.53, 0.56);
-static const Color SOLERS_PRIMARY_GLYPH = Color(0.090, 0.092, 0.102);
+// Send action: Cursor-style accent blue (#3b82f6), white glyph.
+static const Color SOLERS_PRIMARY_FILL = Color(0.231, 0.510, 0.965);
+static const Color SOLERS_PRIMARY_FILL_HOVER = Color(0.353, 0.588, 0.980);
+static const Color SOLERS_PRIMARY_FILL_PRESS = Color(0.184, 0.435, 0.878);
+static const Color SOLERS_PRIMARY_GLYPH = Color(1, 1, 1);
 
 static void solers_draw_wash(Control *p_control, const Rect2 &p_rect, float p_alpha, float p_radius) {
 	if (p_alpha <= 0.001f) {
@@ -252,8 +298,10 @@ void SolersGlyphButton::_notification(int p_what) {
 			if (skin == SKIN_PRIMARY) {
 				Color fill;
 				if (!enabled_state) {
-					fill = Color(1, 1, 1, 0.085f);
-					glyph_color = Color(1, 1, 1, 0.32f);
+					// Cursor keeps the send pill blue at rest; dim it slightly
+					// rather than collapsing to a gray ring.
+					fill = SOLERS_PRIMARY_FILL.darkened(0.18f);
+					glyph_color = Color(1, 1, 1, 0.85f);
 				} else {
 					fill = pressing ? SOLERS_PRIMARY_FILL_PRESS : SOLERS_PRIMARY_FILL.lerp(SOLERS_PRIMARY_FILL_HOVER, anim);
 					glyph_color = SOLERS_PRIMARY_GLYPH;
