@@ -21510,13 +21510,6 @@ msgstr "自定义 OpenAI 兼容"
 msgid "Qwen / Alibaba Cloud Model Studio"
 msgstr "通义千问 / 阿里云百炼"
 
-msgid ""
-"Native OpenAI provider. Wire transport currently uses Chat Completions; "
-"Responses API lands with the protocol stack."
-msgstr ""
-"OpenAI 官方服务。当前传输层使用 Chat Completions；Responses API 将随协议栈一"
-"同提供。"
-
 msgid "Use native Anthropic Messages for provider-specific features."
 msgstr "使用 Anthropic 原生 Messages 协议以获得其特有功能。"
 
