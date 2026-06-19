@@ -70,36 +70,6 @@ String SolersProviderGateway::_join_url(const String &p_base_url, const String &
 	return base_url + "/" + path;
 }
 
-Dictionary SolersProviderGateway::_build_openai_responses_request(const Dictionary &p_request) const {
-	const String base_url = p_request.get("base_url", "https://api.openai.com/v1");
-	const String path = "/responses";
-
-	Dictionary body;
-	body["model"] = p_request.get("model", String());
-	body["input"] = p_request.get("messages", Array());
-	if (p_request.has("tools")) {
-		body["tools"] = p_request["tools"];
-	}
-	if (p_request.has("response_format")) {
-		body["text"] = p_request["response_format"];
-	}
-
-	Dictionary headers;
-	if (!String(p_request.get("api_key", String())).is_empty()) {
-		headers["Authorization"] = "Bearer <redacted>";
-	}
-	headers["Content-Type"] = "application/json";
-
-	Dictionary data;
-	data["provider"] = "openai_responses";
-	data["method"] = "POST";
-	data["path"] = path;
-	data["url"] = _join_url(base_url, path);
-	data["headers"] = headers;
-	data["body"] = body;
-	return _ok(data);
-}
-
 Dictionary SolersProviderGateway::_build_anthropic_messages_request(const Dictionary &p_request) const {
 	const String base_url = p_request.get("base_url", "https://api.anthropic.com");
 	const String path = "/v1/messages";
@@ -133,7 +103,7 @@ Dictionary SolersProviderGateway::_build_anthropic_messages_request(const Dictio
 }
 
 Dictionary SolersProviderGateway::_build_openai_compatible_request(const Dictionary &p_request) const {
-	const String base_url = p_request.get("base_url", "http://127.0.0.1:11434/v1");
+	const String base_url = p_request.get("base_url", "https://api.openai.com/v1");
 	const String path = "/chat/completions";
 
 	Dictionary body;
@@ -141,6 +111,17 @@ Dictionary SolersProviderGateway::_build_openai_compatible_request(const Diction
 	body["messages"] = p_request.get("messages", Array());
 	if (p_request.has("tools")) {
 		body["tools"] = p_request["tools"];
+	}
+	if (p_request.has("tool_choice")) {
+		body["tool_choice"] = p_request["tool_choice"];
+	}
+	body["stream"] = p_request.get("stream", true);
+	Dictionary stream_options;
+	stream_options["include_usage"] = true;
+	body["stream_options"] = stream_options;
+	body["store"] = p_request.get("store", false);
+	if (p_request.has("reasoning_effort")) {
+		body["reasoning_effort"] = p_request["reasoning_effort"];
 	}
 
 	Dictionary headers;
@@ -183,13 +164,10 @@ Dictionary SolersProviderGateway::_generate_mock_response(const Dictionary &p_re
 
 Dictionary SolersProviderGateway::build_request(const Dictionary &p_request) const {
 	const String provider = p_request.get("provider", "openai_compatible");
-	if (provider == "openai_responses" || provider == "openai") {
-		return _build_openai_responses_request(p_request);
-	}
 	if (provider == "anthropic_messages" || provider == "anthropic") {
 		return _build_anthropic_messages_request(p_request);
 	}
-	if (provider == "openai_compatible" || provider == "ollama" || provider == "gemini") {
+	if (provider == "openai" || provider == "openai_chat" || provider == "openai_compatible" || provider == "openai-compatible" || provider == "custom_openai_compatible" || provider == "ollama" || provider == "gemini" || provider == "deepseek" || provider == "qwen" || provider == "lm_studio") {
 		return _build_openai_compatible_request(p_request);
 	}
 	if (provider == "mock") {
@@ -198,6 +176,9 @@ Dictionary SolersProviderGateway::build_request(const Dictionary &p_request) con
 		data["method"] = "MOCK";
 		data["body"] = p_request;
 		return _ok(data);
+	}
+	if (!String(p_request.get("base_url", String())).strip_edges().is_empty()) {
+		return _build_openai_compatible_request(p_request);
 	}
 	return _error("UNKNOWN_PROVIDER_ADAPTER", vformat("Unknown provider adapter: %s", provider), true);
 }

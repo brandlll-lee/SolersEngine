@@ -66,6 +66,8 @@ class SolersLLMEventKind {
 public:
 	static const char *TEXT_DELTA; // incremental assistant text
 	static const char *REASONING_DELTA; // incremental thinking/reasoning text
+	static const char *TOOL_INPUT_START; // tool call started streaming input
+	static const char *TOOL_INPUT_DELTA; // incremental tool input update
 	static const char *TOOL_CALL; // a fully-assembled tool call (id, name, arguments)
 	static const char *USAGE; // token accounting
 	static const char *FINISH; // turn finished (carries stop reason)
@@ -100,12 +102,34 @@ public:
 		return e;
 	}
 
-	static Dictionary tool_call(const String &p_id, const String &p_name, const String &p_arguments_json) {
+	static Dictionary tool_input_start(const String &p_id, const String &p_name, const String &p_arguments_json) {
+		Dictionary e;
+		e["kind"] = SolersLLMEventKind::TOOL_INPUT_START;
+		e["id"] = p_id;
+		e["name"] = p_name;
+		e["arguments"] = p_arguments_json;
+		return e;
+	}
+
+	static Dictionary tool_input_delta(const String &p_id, const String &p_name, const String &p_arguments_delta, const String &p_arguments_json) {
+		Dictionary e;
+		e["kind"] = SolersLLMEventKind::TOOL_INPUT_DELTA;
+		e["id"] = p_id;
+		e["name"] = p_name;
+		e["arguments_delta"] = p_arguments_delta;
+		e["arguments"] = p_arguments_json;
+		return e;
+	}
+
+	static Dictionary tool_call(const String &p_id, const String &p_name, const String &p_arguments_json, const Dictionary &p_provider_metadata = Dictionary()) {
 		Dictionary e;
 		e["kind"] = SolersLLMEventKind::TOOL_CALL;
 		e["id"] = p_id;
 		e["name"] = p_name;
 		e["arguments"] = p_arguments_json; // raw JSON string; the session parses it
+		if (!p_provider_metadata.is_empty()) {
+			e["provider_metadata"] = p_provider_metadata;
+		}
 		return e;
 	}
 
@@ -117,10 +141,13 @@ public:
 		return e;
 	}
 
-	static Dictionary finish(const String &p_stop_reason) {
+	static Dictionary finish(const String &p_stop_reason, const Dictionary &p_provider_metadata = Dictionary()) {
 		Dictionary e;
 		e["kind"] = SolersLLMEventKind::FINISH;
 		e["stop_reason"] = p_stop_reason;
+		if (!p_provider_metadata.is_empty()) {
+			e["provider_metadata"] = p_provider_metadata;
+		}
 		return e;
 	}
 
@@ -157,7 +184,7 @@ public:
 		m["role"] = SolersLLMRole::ASSISTANT;
 		m["content"] = p_text;
 		if (!p_tool_calls.is_empty()) {
-			m["tool_calls"] = p_tool_calls;
+			m["tool_calls"] = p_tool_calls.duplicate(true);
 		}
 		return m;
 	}

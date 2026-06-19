@@ -72,6 +72,11 @@ public:
 	// the provider-native JSON body. Pure: no I/O, fully unit-testable.
 	virtual Dictionary build_request_body(const Dictionary &p_request) const = 0;
 
+	// Provider protocols may reject a canonical request before the transport
+	// opens a connection. This is for hard wire-contract violations, not
+	// provider policy errors.
+	virtual bool validate_request(const Dictionary &p_request, String &r_code, String &r_message) const { return true; }
+
 	// Protocol-mandated headers independent of auth (e.g. anthropic-version).
 	// Default: nothing to add.
 	virtual void augment_headers(Dictionary &r_headers, const Dictionary &p_request) const {}

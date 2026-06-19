@@ -40,7 +40,6 @@ class SolersProviderGateway : public Object {
 	Dictionary _ok(const Variant &p_data) const;
 	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
 	String _join_url(const String &p_base_url, const String &p_path) const;
-	Dictionary _build_openai_responses_request(const Dictionary &p_request) const;
 	Dictionary _build_anthropic_messages_request(const Dictionary &p_request) const;
 	Dictionary _build_openai_compatible_request(const Dictionary &p_request) const;
 	Dictionary _generate_mock_response(const Dictionary &p_request) const;

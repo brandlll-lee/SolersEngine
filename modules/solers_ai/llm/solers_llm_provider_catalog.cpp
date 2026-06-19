@@ -31,6 +31,7 @@
 #include "solers_llm_provider_catalog.h"
 
 #include "core/variant/variant.h"
+#include "modules/solers_ai/llm/solers_models_dev.h"
 
 void SolersLLMProviderCatalog::_define(const String &p_id, const String &p_label, const String &p_protocol, const String &p_base_url, const String &p_auth_header, const String &p_auth_prefix, const String &p_api_key_env, bool p_local) {
 	Dictionary profile;
@@ -62,12 +63,36 @@ Array SolersLLMProviderCatalog::list_profiles() const {
 	return out;
 }
 
+String SolersLLMProviderCatalog::_protocol_for_npm(const String &p_npm) {
+	// Mirrors opencode's api.npm -> adapter selection: Anthropic speaks its own
+	// Messages protocol; everything else (OpenAI, OpenAI-compatible, Google's
+	// OpenAI endpoint, Groq, DeepSeek, ...) speaks OpenAI Chat Completions.
+	if (p_npm == "@ai-sdk/anthropic") {
+		return "anthropic-messages";
+	}
+	return "openai-chat";
+}
+
 Dictionary SolersLLMProviderCatalog::resolve(const StringName &p_id, const String &p_base_url_override) const {
-	// Known provider -> its profile; unknown id -> generic OpenAI-compatible
-	// profile so any relay/self-hosted endpoint works by supplying base_url.
+	// Resolution order: known builtin profile -> models.dev data-driven profile
+	// -> generic OpenAI-compatible fallback. Then overlay any user base_url.
 	Dictionary profile;
 	if (profiles.has(p_id)) {
 		profile = get_profile(p_id).duplicate();
+	} else if (models_dev && models_dev->has_provider(p_id)) {
+		const Dictionary entry = models_dev->get_provider(p_id);
+		const String npm = entry.get("npm", "@ai-sdk/openai-compatible");
+		const String protocol = _protocol_for_npm(npm);
+		const bool is_anthropic = protocol == "anthropic-messages";
+		const Array env = entry.get("env", Array());
+		profile["id"] = String(p_id);
+		profile["label"] = entry.get("name", String(p_id));
+		profile["protocol"] = protocol;
+		profile["base_url"] = entry.get("api", String());
+		profile["auth_header"] = is_anthropic ? "x-api-key" : "Authorization";
+		profile["auth_prefix"] = is_anthropic ? "" : "Bearer ";
+		profile["api_key_env"] = env.is_empty() ? String() : String(env[0]);
+		profile["local"] = entry.get("local", false);
 	} else {
 		profile = get_profile(StringName("openai-compatible")).duplicate();
 		profile["id"] = String(p_id);
@@ -79,6 +104,26 @@ Dictionary SolersLLMProviderCatalog::resolve(const StringName &p_id, const Strin
 	return profile;
 }
 
+Dictionary SolersLLMProviderCatalog::resolve_model_limits(const StringName &p_provider, const String &p_model) const {
+	Dictionary out;
+	if (!models_dev) {
+		return out;
+	}
+	const Dictionary model = models_dev->get_model(p_provider, p_model);
+	if (model.is_empty()) {
+		return out;
+	}
+	const int context = (int)model.get("context", 0);
+	const int output = (int)model.get("output", 0);
+	if (context > 0) {
+		out["context_window"] = context;
+	}
+	if (output > 0) {
+		out["max_output_tokens"] = output;
+	}
+	return out;
+}
+
 void SolersLLMProviderCatalog::register_builtin_profiles() {
 	// id, label, protocol, base_url, auth_header, auth_prefix, api_key_env, local
 	//
@@ -88,9 +133,7 @@ void SolersLLMProviderCatalog::register_builtin_profiles() {
 	// spoke the wrong protocol at the right endpoint. Endpoints/headers
 	// cross-checked against the providers' official docs (2026-06).
 	_define("openai", "OpenAI", "openai-chat", "https://api.openai.com/v1", "Authorization", "Bearer ", "OPENAI_API_KEY", false);
-	// Registry alias; Responses API rides Chat Completions until the dedicated
-	// protocol lands in SolersLLMProtocolRegistry.
-	_define("openai_responses", "OpenAI (Responses alias)", "openai-chat", "https://api.openai.com/v1", "Authorization", "Bearer ", "OPENAI_API_KEY", false);
+	_define("openai_chat", "OpenAI (Chat Completions)", "openai-chat", "https://api.openai.com/v1", "Authorization", "Bearer ", "OPENAI_API_KEY", false);
 
 	_define("anthropic", "Anthropic", "anthropic-messages", "https://api.anthropic.com", "x-api-key", "", "ANTHROPIC_API_KEY", false);
 	_define("anthropic_messages", "Anthropic Messages", "anthropic-messages", "https://api.anthropic.com", "x-api-key", "", "ANTHROPIC_API_KEY", false);

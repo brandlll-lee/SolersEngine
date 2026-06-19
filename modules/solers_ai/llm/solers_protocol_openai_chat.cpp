@@ -33,6 +33,46 @@
 #include "core/io/json.h"
 #include "modules/solers_ai/llm/solers_llm_message.h"
 
+static bool _is_responses_function_item_id(const String &p_id) {
+	return p_id.begins_with("fc_");
+}
+
+static String _usable_chat_tool_call_id(const Variant &p_value, bool &r_saw_responses_item_id) {
+	const String id = String(p_value).strip_edges();
+	if (id.is_empty()) {
+		return String();
+	}
+	if (_is_responses_function_item_id(id)) {
+		r_saw_responses_item_id = true;
+		return String();
+	}
+	return id;
+}
+
+static String _canonical_chat_tool_call_id(const Dictionary &p_tool_delta, int p_index) {
+	bool saw_responses_item_id = false;
+	String call_id = _usable_chat_tool_call_id(p_tool_delta.get("call_id", String()), saw_responses_item_id);
+	if (!call_id.is_empty()) {
+		return call_id;
+	}
+	const Dictionary fn = p_tool_delta.get("function", Dictionary());
+	call_id = _usable_chat_tool_call_id(fn.get("call_id", String()), saw_responses_item_id);
+	if (!call_id.is_empty()) {
+		return call_id;
+	}
+	call_id = _usable_chat_tool_call_id(p_tool_delta.get("id", String()), saw_responses_item_id);
+	if (!call_id.is_empty()) {
+		return call_id;
+	}
+	if (saw_responses_item_id) {
+		// Some Responses-backed OpenAI-compatible gateways leak Responses
+		// function-call item ids through Chat streams. They are not valid Chat
+		// tool call ids for the follow-up tool result pair.
+		return vformat("call_solers_%d", p_index);
+	}
+	return String();
+}
+
 String SolersOpenAIChatProtocol::_map_finish_reason(const String &p_native) {
 	if (p_native == "tool_calls") {
 		return SolersLLMStopReason::TOOL_USE;
@@ -133,11 +173,15 @@ Dictionary SolersOpenAIChatProtocol::build_request_body(const Dictionary &p_requ
 	if (p_request.has("max_tokens")) {
 		body["max_tokens"] = p_request["max_tokens"];
 	}
+	if (p_request.has("reasoning_effort")) {
+		body["reasoning_effort"] = p_request["reasoning_effort"];
+	}
 
 	body["stream"] = true;
 	Dictionary stream_options;
 	stream_options["include_usage"] = true;
 	body["stream_options"] = stream_options;
+	body["store"] = p_request.get("store", false);
 	return body;
 }
 
@@ -190,24 +234,47 @@ Array SolersOpenAIChatProtocol::parse_event(Dictionary &r_state, const String &p
 		const Array deltas = delta["tool_calls"];
 		for (int i = 0; i < deltas.size(); i++) {
 			const Dictionary tc = deltas[i];
-			const int idx = tc.get("index", 0);
+			int idx;
+			if (tc.has("index")) {
+				idx = tc.get("index", 0);
+			} else {
+				// Gateways that drop `index`: a frame carrying an id starts a
+				// new call, anything else continues the latest one.
+				const bool starts_new = tc.has("id") && !String(tc.get("id", String())).is_empty();
+				idx = starts_new ? calls.size() : MAX(0, calls.size() - 1);
+			}
 			while (calls.size() <= idx) {
 				Dictionary blank;
 				blank["id"] = String();
 				blank["name"] = String();
 				blank["arguments"] = String();
+				blank["started"] = false;
 				calls.push_back(blank);
 			}
 			Dictionary cur = calls[idx];
-			if (tc.has("id")) {
-				cur["id"] = tc["id"];
+			const bool was_started = (bool)cur.get("started", false);
+			bool changed = false;
+			String arguments_delta;
+			const String canonical_id = _canonical_chat_tool_call_id(tc, idx);
+			if (!canonical_id.is_empty()) {
+				cur["id"] = canonical_id;
+				changed = true;
 			}
 			const Dictionary fn = tc.get("function", Dictionary());
 			if (fn.has("name")) {
 				cur["name"] = String(cur["name"]) + String(fn["name"]);
+				changed = true;
 			}
 			if (fn.has("arguments")) {
-				cur["arguments"] = String(cur["arguments"]) + String(fn["arguments"]);
+				arguments_delta = String(fn["arguments"]);
+				cur["arguments"] = String(cur["arguments"]) + arguments_delta;
+				changed = true;
+			}
+			if (!was_started && !String(cur.get("id", String())).is_empty()) {
+				cur["started"] = true;
+				events.push_back(SolersLLMEvent::tool_input_start(cur.get("id", String()), cur.get("name", String()), cur.get("arguments", String())));
+			} else if (was_started && changed) {
+				events.push_back(SolersLLMEvent::tool_input_delta(cur.get("id", String()), cur.get("name", String()), arguments_delta, cur.get("arguments", String())));
 			}
 			calls[idx] = cur;
 		}
@@ -219,8 +286,17 @@ Array SolersOpenAIChatProtocol::parse_event(Dictionary &r_state, const String &p
 		const Array calls = r_state.get("calls", Array());
 		for (int i = 0; i < calls.size(); i++) {
 			const Dictionary c = calls[i];
-			events.push_back(SolersLLMEvent::tool_call(c.get("id", String()), c.get("name", String()), c.get("arguments", String())));
+			String id = c.get("id", String());
+			if (id.strip_edges().is_empty()) {
+				// A missing id breaks call/result pairing on replay; synthesize
+				// a stable one so both sides of the pair stay consistent.
+				id = vformat("call_solers_%d", i);
+			}
+			events.push_back(SolersLLMEvent::tool_call(id, c.get("name", String()), c.get("arguments", String())));
 		}
+		// Flush exactly once: a trailing usage frame that repeats finish_reason
+		// must not duplicate the whole batch.
+		r_state["calls"] = Array();
 		events.push_back(SolersLLMEvent::finish(_map_finish_reason(finish_v)));
 	}
 

@@ -77,13 +77,11 @@ void SolersProviderRegistry::_register_default_profiles() {
 	profiles.clear();
 
 	Array openai_features;
-	openai_features.push_back("responses");
 	openai_features.push_back("chat_completions");
 	openai_features.push_back("tool_calls");
 	openai_features.push_back("structured_outputs");
 	openai_features.push_back("vision");
-	profiles["openai_responses"] = _make_profile("openai_responses", "OpenAI Responses", "openai_responses", "https://api.openai.com/v1", "gpt-5", false, true, openai_features, "Native OpenAI provider. Wire transport currently uses Chat Completions; Responses API lands with the protocol stack.", "OPENAI_API_KEY");
-	profiles["openai"] = profiles["openai_responses"];
+	profiles["openai"] = _make_profile("openai", "OpenAI", "openai_compatible", "https://api.openai.com/v1", "gpt-5", false, true, openai_features, "OpenAI Chat Completions provider. Solers uses the same OpenAI-compatible tool-call loop as custom gateways.", "OPENAI_API_KEY");
 
 	Array anthropic_features;
 	anthropic_features.push_back("messages");
@@ -116,18 +114,17 @@ void SolersProviderRegistry::_register_default_profiles() {
 	ollama_features.push_back("openai_compatible");
 	ollama_features.push_back("local");
 	ollama_features.push_back("chat_completions");
-	ollama_features.push_back("responses_partial");
 	profiles["ollama"] = _make_profile("ollama", "Ollama", "openai_compatible", "http://127.0.0.1:11434/v1", "qwen3:8b", true, false, ollama_features, "Local runtime. API key is required by some clients but ignored by Ollama.");
 
 	Array lmstudio_features;
 	lmstudio_features.push_back("openai_compatible");
 	lmstudio_features.push_back("local");
-	lmstudio_features.push_back("responses");
 	lmstudio_features.push_back("chat_completions");
 	profiles["lm_studio"] = _make_profile("lm_studio", "LM Studio", "openai_compatible", "http://127.0.0.1:1234/v1", "", true, false, lmstudio_features, "Local server defaults to port 1234; model id depends on loaded model.");
 
 	Array custom_features;
 	custom_features.push_back("openai_compatible");
+	custom_features.push_back("chat_completions");
 	custom_features.push_back("user_defined");
 	profiles["custom_openai_compatible"] = _make_profile("custom_openai_compatible", "Custom OpenAI-compatible", "openai_compatible", "", "", false, true, custom_features, "For LiteLLM, OpenRouter-style, vLLM, or private gateway deployments.");
 }
@@ -149,11 +146,18 @@ Array SolersProviderRegistry::list_provider_profiles() const {
 
 Dictionary SolersProviderRegistry::validate_config(const Dictionary &p_config) const {
 	const String provider = p_config.get("provider", "ollama");
-	if (!profiles.has(provider)) {
-		return _error("UNKNOWN_PROVIDER", vformat("Unknown Solers provider profile: %s", provider), true);
+	Dictionary profile;
+	if (profiles.has(provider)) {
+		profile = profiles[provider];
+	} else {
+		const String base_url_arg = String(p_config.get("base_url", String())).strip_edges();
+		if (base_url_arg.is_empty()) {
+			return _error("UNKNOWN_PROVIDER", vformat("Unknown Solers provider profile: %s", provider), true);
+		}
+		profile = profiles["custom_openai_compatible"].duplicate();
+		profile["id"] = provider;
+		profile["label"] = provider;
 	}
-
-	Dictionary profile = profiles[provider];
 	const bool privacy_mode = p_config.get("privacy_mode", true);
 	const bool local = profile.get("local", false);
 	const bool api_key_required = profile.get("api_key_required", true);

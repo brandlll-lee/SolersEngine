@@ -37,6 +37,8 @@ const char *SolersLLMRole::TOOL = "tool";
 
 const char *SolersLLMEventKind::TEXT_DELTA = "text_delta";
 const char *SolersLLMEventKind::REASONING_DELTA = "reasoning_delta";
+const char *SolersLLMEventKind::TOOL_INPUT_START = "tool_input_start";
+const char *SolersLLMEventKind::TOOL_INPUT_DELTA = "tool_input_delta";
 const char *SolersLLMEventKind::TOOL_CALL = "tool_call";
 const char *SolersLLMEventKind::USAGE = "usage";
 const char *SolersLLMEventKind::FINISH = "finish";

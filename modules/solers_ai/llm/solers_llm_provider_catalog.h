@@ -35,6 +35,8 @@
 #include "core/variant/array.h"
 #include "core/variant/dictionary.h"
 
+class SolersModelsDev;
+
 // ---------------------------------------------------------------------------
 // SolersLLMProviderCatalog — the data that turns a wire protocol into a usable
 // provider, with zero per-provider code branches.
@@ -57,18 +59,30 @@
 // ---------------------------------------------------------------------------
 class SolersLLMProviderCatalog {
 	HashMap<StringName, Dictionary> profiles;
+	// Optional data-driven registry (models.dev). When a provider isn't a known
+	// builtin, its connection facts (protocol via npm, base URL) come from here
+	// instead of a hardcoded row — the data-driven half of the catalog.
+	const SolersModelsDev *models_dev = nullptr;
 
 	void _define(const String &p_id, const String &p_label, const String &p_protocol, const String &p_base_url, const String &p_auth_header, const String &p_auth_prefix, const String &p_api_key_env, bool p_local);
+	// Maps an AI-SDK package id (models.dev `npm`) to a Solers wire protocol.
+	static String _protocol_for_npm(const String &p_npm);
 
 public:
+	void set_models_dev(const SolersModelsDev *p_models_dev) { models_dev = p_models_dev; }
+
 	bool has(const StringName &p_id) const;
 	Dictionary get_profile(const StringName &p_id) const;
 	Array list_profiles() const;
 
-	// Builds the effective profile for a request: starts from the registered
-	// profile (or a generic openai-compatible profile for unknown ids) and
-	// overlays any user-provided base_url so relays/self-hosted endpoints work.
+	// Builds the effective profile for a request: a known builtin profile, else
+	// a models.dev-derived profile, else a generic openai-compatible profile;
+	// then overlays any user-provided base_url so relays/self-hosted work.
 	Dictionary resolve(const StringName &p_id, const String &p_base_url_override) const;
+
+	// Per-model context/output token limits from the data registry, or an empty
+	// dictionary when unknown. Replaces guessing a fixed context window.
+	Dictionary resolve_model_limits(const StringName &p_provider, const String &p_model) const;
 
 	void register_builtin_profiles();
 

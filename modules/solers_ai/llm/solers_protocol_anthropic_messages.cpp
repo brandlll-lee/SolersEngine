@@ -181,6 +181,9 @@ Array SolersAnthropicMessagesProtocol::parse_event(Dictionary &r_state, const St
 		tracked["json"] = String();
 		blocks[itos(index)] = tracked;
 		r_state["blocks"] = blocks;
+		if (String(tracked.get("type", String())) == "tool_use") {
+			events.push_back(SolersLLMEvent::tool_input_start(tracked.get("id", String()), tracked.get("name", String()), String()));
+		}
 	} else if (type == "content_block_delta") {
 		const int index = obj.get("index", 0);
 		const Dictionary delta = obj.get("delta", Dictionary());
@@ -192,9 +195,11 @@ Array SolersAnthropicMessagesProtocol::parse_event(Dictionary &r_state, const St
 		} else if (delta_type == "input_json_delta") {
 			Dictionary blocks = r_state["blocks"];
 			Dictionary tracked = blocks.get(itos(index), Dictionary());
-			tracked["json"] = String(tracked.get("json", String())) + String(delta.get("partial_json", String()));
+			const String partial = delta.get("partial_json", String());
+			tracked["json"] = String(tracked.get("json", String())) + partial;
 			blocks[itos(index)] = tracked;
 			r_state["blocks"] = blocks;
+			events.push_back(SolersLLMEvent::tool_input_delta(tracked.get("id", String()), tracked.get("name", String()), partial, tracked.get("json", String())));
 		}
 	} else if (type == "content_block_stop") {
 		const int index = obj.get("index", 0);
