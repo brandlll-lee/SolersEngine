@@ -96,17 +96,6 @@ Dictionary find_tool_def(const Array &p_tools, const String &p_name) {
 	return Dictionary();
 }
 
-int count_tools_by_exposure(const Array &p_tools, const String &p_exposure) {
-	int count = 0;
-	for (int i = 0; i < p_tools.size(); i++) {
-		const Dictionary tool = p_tools[i];
-		if (tool.get("exposure", String()) == p_exposure) {
-			count++;
-		}
-	}
-	return count;
-}
-
 Dictionary search_deferred_tools(SolersToolRegistry &p_registry, const String &p_query, int p_max_results = 10) {
 	Dictionary args;
 	args["query"] = p_query;
@@ -273,7 +262,6 @@ TEST_CASE("[SolersToolRegistry] default model surface is primitive-first") {
 	registry.register_default_tools();
 
 	const Array tools = registry.list_tools();
-	CHECK(count_tools_by_exposure(tools, "direct") <= 10);
 
 	const char *required_direct[] = {
 		"class.introspect",
@@ -286,6 +274,11 @@ TEST_CASE("[SolersToolRegistry] default model surface is primitive-first") {
 		"script.patch",
 		"runtime.control",
 		"tool.search",
+		"resource.get_info",
+		"resource.create",
+		"resource.get_property",
+		"resource.set_property",
+		"resource.call_method",
 	};
 	for (const char *name : required_direct) {
 		Dictionary tool = find_tool_def(tools, name);
@@ -335,9 +328,6 @@ TEST_CASE("[SolersToolRegistry] default model surface is primitive-first") {
 	CHECK(find_tool_def(tools, "validation.run_scene_smoke").is_empty());
 	CHECK(find_tool_def(tools, "scene.save").is_empty());
 	CHECK(find_tool_def(tools, "node.add").is_empty());
-	CHECK(registry.should_autocommit_scene_after_tool("objects.batch"));
-	CHECK(registry.should_autocommit_scene_after_tool("object.set_property"));
-	CHECK_FALSE(registry.should_autocommit_scene_after_tool("project.write_file"));
 
 	for (int i = 0; i < tools.size(); i++) {
 		const Dictionary tool = tools[i];
@@ -378,7 +368,10 @@ TEST_CASE("[SolersToolRegistry] batch failure summaries expose failed operation"
 	data["completed"] = false;
 	data["results"] = results;
 	Dictionary result;
-	result["ok"] = true;
+	result["ok"] = false;
+	Dictionary error;
+	error["code"] = "BATCH_FAILED";
+	result["error"] = error;
 	result["data"] = data;
 
 	const String summary = registry.summarize_tool_result_for_audit(result);
@@ -418,10 +411,6 @@ TEST_CASE("[SolersToolRegistry] tool.search token match finds deferred tools") {
 			search_result_has_tool(export_query, "export.run_preset") ||
 			search_result_has_tool(export_query, "export.validate_presets");
 	CHECK(found_export_tool);
-
-	Dictionary resource_query = search_deferred_tools(registry, "resource create", 10);
-	REQUIRE((bool)resource_query.get("ok", false));
-	CHECK(search_result_has_tool(resource_query, "resource.create"));
 }
 
 TEST_CASE("[SolersToolRegistry] tool.search never returns direct tools") {
@@ -623,7 +612,9 @@ TEST_CASE("[SolersReflectionService] batch dispatches generic scene mutation ops
 		args["operations"] = operations;
 
 		Dictionary result = reflection_service.batch(args);
-		CHECK(result.get("ok", false));
+		CHECK_FALSE((bool)result.get("ok", true));
+		Dictionary batch_error = result.get("error", Dictionary());
+		CHECK(batch_error.get("code", String()) == "BATCH_FAILED");
 		Dictionary data = result.get("data", Dictionary());
 		CHECK_FALSE((bool)data.get("completed", true));
 		Array entries = data.get("results", Array());
@@ -641,6 +632,9 @@ TEST_CASE("[SolersReflectionService] batch dispatches generic scene mutation ops
 	Dictionary args;
 	args["operations"] = unknown_ops;
 	Dictionary unknown = reflection_service.batch(args);
+	CHECK_FALSE((bool)unknown.get("ok", true));
+	Dictionary batch_error = unknown.get("error", Dictionary());
+	CHECK(batch_error.get("code", String()) == "BATCH_FAILED");
 	Dictionary data = unknown.get("data", Dictionary());
 	Array entries = data.get("results", Array());
 	REQUIRE(entries.size() == 1);

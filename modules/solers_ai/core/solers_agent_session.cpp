@@ -140,33 +140,37 @@ void SolersAgentSession::_write_transcript_tool(const String &p_canonical_name, 
 	solers_transcript_write(event);
 }
 
-Dictionary SolersAgentSession::_commit_pending_scene_if_needed() {
+Dictionary SolersAgentSession::_commit_dirty_scene_if_needed() {
 	Dictionary data;
-	if (!scene_commit_pending) {
-		return data;
-	}
-	scene_commit_pending = false;
 
 	EditorInterface *editor_interface = EditorInterface::get_singleton();
 	Node *root = editor_interface ? editor_interface->get_edited_scene_root() : nullptr;
 	const String path = root ? root->get_scene_file_path() : String();
 
-	bool dirty_before = true;
+	bool dirty_before = false;
+	int history_id = -1;
 	if (EditorUndoRedoManager::get_singleton() && EditorNode::get_singleton()) {
-		const int history_id = EditorNode::get_editor_data().get_current_edited_scene_history_id();
+		history_id = EditorNode::get_editor_data().get_current_edited_scene_history_id();
 		dirty_before = EditorUndoRedoManager::get_singleton()->is_history_unsaved(history_id);
+	}
+	if (!dirty_before) {
+		return data;
 	}
 
 	Error err = ERR_UNCONFIGURED;
 	if (editor_interface && root && !path.is_empty()) {
 		err = editor_interface->save_scene();
 	}
+	const bool dirty_after = history_id >= 0 && EditorUndoRedoManager::get_singleton() ?
+			EditorUndoRedoManager::get_singleton()->is_history_unsaved(history_id) :
+			dirty_before;
 
 	data["ok"] = err == OK;
 	data["path"] = path;
 	data["dirty_before"] = dirty_before;
+	data["dirty_after"] = dirty_after;
 	data["error"] = err;
-	SOLERS_TRACE("harness.scene_commit", vformat("ok=%d path=%s dirty_before=%d err=%d", err == OK, path, (int)dirty_before, err));
+	SOLERS_TRACE("harness.scene_commit", vformat("ok=%d path=%s dirty_before=%d dirty_after=%d err=%d", (int)(err == OK), path, (int)dirty_before, (int)dirty_after, (int)err));
 	return data;
 }
 
@@ -179,7 +183,8 @@ String SolersAgentSession::_default_system_prompt() const {
 			"- project.write_file: send exactly one non-empty payload (content OR content_base64); omit unused/empty keys.\n"
 			"- Discover deferred tools with tool.search (token match), then call by canonical name.\n"
 			"- Persist scene edits through the harness commit path; do not script.patch scene resources.\n"
-			"- Scene edits auto-save at turn end via harness commit; no manual scene save.\n"
+			"- Scene edits save at turn end when the editor history is dirty; no manual scene save.\n"
+			"- For @tool scripts, do not claim generated preview/runtime children are persisted unless they have scene owners or are baked into the scene.\n"
 			"- Prefer class.introspect + object.call_method, project assets, and short GDScript via project.write_file/attach_script over dozens of CSG primitives.\n"
 			"- Budget <=%d tool calls per user request; verify with editor.get_snapshot and runtime.control when needed.",
 			max_tool_iterations);
@@ -458,7 +463,6 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 	tool_iterations = 0;
 	failed_tool_fingerprints.clear();
 	force_final_answer = false;
-	scene_commit_pending = false;
 	retry_attempt = 0;
 	retry_resume_msec = 0;
 	turn_id++;
@@ -579,7 +583,7 @@ void SolersAgentSession::_on_model_turn_complete() {
 		data["text"] = current_text;
 		data["reasoning"] = current_reasoning;
 		data["stop_reason"] = last_stop_reason;
-		const Dictionary scene_commit = _commit_pending_scene_if_needed();
+		const Dictionary scene_commit = _commit_dirty_scene_if_needed();
 		if (!scene_commit.is_empty()) {
 			data["scene_commit"] = scene_commit;
 		}
@@ -764,9 +768,6 @@ void SolersAgentSession::_poll_tool_executing() {
 		}
 	}
 
-	if ((bool)result.get("ok", false) && tool_registry && tool_registry->should_autocommit_scene_after_tool(StringName(canonical_name))) {
-		scene_commit_pending = true;
-	}
 	_write_transcript_tool(canonical_name, args, result);
 	phase = PHASE_TOOLS;
 	_deliver_tool_result(id, model_name, canonical_name, result);
@@ -865,7 +866,6 @@ void SolersAgentSession::abort() {
 	awaiting_call.clear();
 	awaiting_approval_id = 0;
 	force_final_answer = false;
-	scene_commit_pending = false;
 	retry_attempt = 0;
 	retry_resume_msec = 0;
 	tool_exec_token++;

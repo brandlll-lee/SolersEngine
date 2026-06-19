@@ -80,7 +80,6 @@ public:
 	Dictionary redact_tool_args_for_fingerprint(const StringName &p_name, const Dictionary &p_args) const;
 	Dictionary summarize_tool_args_for_audit(const StringName &p_name, const Dictionary &p_args) const;
 	String summarize_tool_result_for_audit(const Dictionary &p_result) const;
-	bool should_autocommit_scene_after_tool(const StringName &p_name) const;
 	Dictionary call_tool(const StringName &p_name, const Dictionary &p_args);
 	int get_tool_count() const;
 

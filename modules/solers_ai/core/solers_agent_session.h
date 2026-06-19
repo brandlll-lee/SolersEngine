@@ -98,7 +98,6 @@ class SolersAgentSession : public Object {
 	Dictionary failed_tool_fingerprints; // per user turn: tool+args+error -> count
 	int retry_attempt = 0;
 	uint64_t retry_resume_msec = 0;
-	bool scene_commit_pending = false;
 	int text_delta_count = 0;
 	uint64_t last_text_delta_msec = 0;
 	int max_tool_iterations = 12;
@@ -120,7 +119,7 @@ class SolersAgentSession : public Object {
 	void _execute_deferred_tool(uint64_t p_token);
 	void _deliver_tool_result(const String &p_id, const String &p_model_name, const String &p_canonical_name, const Dictionary &p_result);
 	bool _is_awaiting_approval_result(const Dictionary &p_result) const;
-	Dictionary _commit_pending_scene_if_needed();
+	Dictionary _commit_dirty_scene_if_needed();
 	void _write_transcript_message(const String &p_role, const String &p_content) const;
 	void _write_transcript_tool(const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result) const;
 	Dictionary _tool_denied_result(const String &p_code, const String &p_message) const;

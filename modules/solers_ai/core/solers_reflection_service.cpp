@@ -972,6 +972,11 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 	data["ok_count"] = ok_count;
 	data["error_count"] = error_count;
 	data["completed"] = error_count == 0;
+	if (error_count > 0) {
+		Dictionary result = _error("BATCH_FAILED", "objects.batch stopped at the first failed operation.");
+		result["data"] = data;
+		return result;
+	}
 	return _ok(data);
 }
 

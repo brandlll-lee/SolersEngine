@@ -187,8 +187,9 @@ static Dictionary _trace_args(const Dictionary &p_args, const SolersToolCapabili
 }
 
 static String _trace_result(const Dictionary &p_result) {
-	String out = vformat("ok=%d", (int)(bool)p_result.get("ok", false));
-	if (!(bool)p_result.get("ok", false)) {
+	const bool ok = p_result.get("ok", false);
+	String out = vformat("ok=%d", (int)ok);
+	if (!ok) {
 		const Dictionary error = p_result.get("error", Dictionary());
 		out += vformat(" error=%s", String(error.get("code", error.get("message", String()))));
 		const String message = error.get("message", String());
@@ -201,7 +202,6 @@ static String _trace_result(const Dictionary &p_result) {
 			const Dictionary first = errors[0];
 			out += vformat(" line=%d column=%d detail=%s", (int)first.get("line", 0), (int)first.get("column", 0), String(first.get("message", String())));
 		}
-		return out.length() > 240 ? out.substr(0, 240) + "..." : out;
 	}
 	const Variant data_value = p_result.get("data", Variant());
 	if (data_value.get_type() == Variant::DICTIONARY) {
@@ -225,7 +225,7 @@ static String _trace_result(const Dictionary &p_result) {
 			const Dictionary file_index = data.get("file_index", Dictionary());
 			out += vformat(" file_count=%d", (int)file_index.get("count", 0));
 		}
-	} else if (data_value.get_type() == Variant::ARRAY) {
+	} else if (ok && data_value.get_type() == Variant::ARRAY) {
 		out += vformat(" count=%d", ((Array)data_value).size());
 	}
 	return out.length() > 240 ? out.substr(0, 240) + "..." : out;
@@ -495,23 +495,23 @@ void SolersToolRegistry::_register_observation_tools() {
 		SolersResourceService *svc = resource_service;
 		_add_observe_exposed("resource.get_info", "Read resource type, UID, import state, and dependency metadata for a res:// resource.",
 				R"({"type":"object","properties":{"path":{"type":"string","description":"res:// path of the resource."},"include_dependencies":{"type":"boolean","description":"Include dependency list. Default true."},"max_dependencies":{"type":"integer","description":"Maximum dependencies to return (0-2048). Default 128."}},"required":["path"]})",
-				SolersToolExposure::DEFERRED,
+				SolersToolExposure::DIRECT,
 				[svc](const SolersToolContext &, const Dictionary &a) { return svc->get_resource_info(a); });
 		_add("resource.create", "Instantiate any Godot Resource subclass through ClassDB and save it with ResourceSaver. class_name chooses the exact engine type.",
 				R"({"type":"object","properties":{"class_name":{"type":"string","description":"Instantiable Resource class from class.introspect."},"path":{"type":"string","description":"res:// path to save."}},"required":["class_name","path"]})",
-				SolersPermissionManager::PERMISSION_EDIT_FILES, "resource_save", true, false, Vector<String>(), SolersToolExposure::DEFERRED,
+				SolersPermissionManager::PERMISSION_EDIT_FILES, "resource_save", true, false, Vector<String>(), SolersToolExposure::DIRECT,
 				[svc](const SolersToolContext &, const Dictionary &a) { return svc->create_resource(a); });
 		_add_observe_exposed("resource.get_property", "Load a res:// Resource with ResourceLoader and read one native Object property.",
 				R"({"type":"object","properties":{"path":{"type":"string","description":"res:// resource path."},"property":{"type":"string","description":"Native property name."},"type_hint":{"type":"string","description":"Optional ResourceLoader type hint."}},"required":["path","property"]})",
-				SolersToolExposure::DEFERRED,
+				SolersToolExposure::DIRECT,
 				[svc](const SolersToolContext &, const Dictionary &a) { return svc->get_resource_property(a); });
 		_add("resource.set_property", "Load a res:// Resource with ResourceLoader, set one native Object property, and save it with ResourceSaver.",
 				R"({"type":"object","properties":{"path":{"type":"string","description":"res:// resource path."},"property":{"type":"string","description":"Native property name."},"value":{"description":"New value. Math types accept arrays; Color accepts {r,g,b,a}; Object properties accept res:// resource paths."},"type_hint":{"type":"string","description":"Optional ResourceLoader type hint."}},"required":["path","property","value"]})",
-				SolersPermissionManager::PERMISSION_EDIT_FILES, "resource_save", true, false, Vector<String>(), SolersToolExposure::DEFERRED,
+				SolersPermissionManager::PERMISSION_EDIT_FILES, "resource_save", true, false, Vector<String>(), SolersToolExposure::DIRECT,
 				[svc](const SolersToolContext &, const Dictionary &a) { return svc->set_resource_property(a); });
 		_add("resource.call_method", "Load a res:// Resource with ResourceLoader and call one native Object method. Set save=true to write the mutated resource with ResourceSaver.",
 				R"({"type":"object","properties":{"path":{"type":"string","description":"res:// resource path."},"method":{"type":"string","description":"Native method name."},"args":{"type":"array","description":"Positional arguments. Default []."},"save":{"type":"boolean","description":"Save after the call. Default false."},"type_hint":{"type":"string","description":"Optional ResourceLoader type hint."}},"required":["path","method"]})",
-				SolersPermissionManager::PERMISSION_EDIT_FILES, "resource_save", true, false, Vector<String>(), SolersToolExposure::DEFERRED,
+				SolersPermissionManager::PERMISSION_EDIT_FILES, "resource_save", true, false, Vector<String>(), SolersToolExposure::DIRECT,
 				[svc](const SolersToolContext &, const Dictionary &a) { return svc->call_resource_method(a); });
 		_add_observe_exposed("export.list_presets", "List Godot export platforms and export presets from the current project.",
 				R"({"type":"object","properties":{"include_platforms":{"type":"boolean","description":"Include available export platforms. Default true."}}})",
@@ -742,15 +742,6 @@ Dictionary SolersToolRegistry::summarize_tool_args_for_audit(const StringName &p
 
 String SolersToolRegistry::summarize_tool_result_for_audit(const Dictionary &p_result) const {
 	return _trace_result(p_result);
-}
-
-bool SolersToolRegistry::should_autocommit_scene_after_tool(const StringName &p_name) const {
-	SolersTool *const *tool_ptr = tools.getptr(p_name);
-	if (!tool_ptr || !*tool_ptr) {
-		return false;
-	}
-	const SolersToolCapability &cap = (*tool_ptr)->capability();
-	return cap.undoable && cap.mutation_kind == "editor_undo_redo";
 }
 
 Dictionary SolersToolRegistry::call_tool(const StringName &p_name, const Dictionary &p_args) {
