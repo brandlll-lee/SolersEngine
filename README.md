@@ -3,11 +3,13 @@
 
 # Solers Engine
 
-**The AI-native game engine.**
+**The AI-native game engine built on Godot.**
 
-Describe a world, a mechanic, or a system. Solers turns your intent into scenes, scripts, and playable games, right inside the editor.
+Solers lets an AI agent work inside the editor: it can inspect the real scene
+tree, call native Godot APIs, edit scripts and resources, run the game, read the
+errors, and continue from the engine state instead of guessing from files.
 
-Built on Godot 4.6 · Bring your own model · Your project stays 100% standard Godot
+Built on Godot 4.6.3 | Standard Godot projects | Bring your own model
 
 </div>
 
@@ -15,80 +17,167 @@ Built on Godot 4.6 · Bring your own model · Your project stays 100% standard G
 
 ## What is Solers?
 
-Solers is a game engine where AI is a first-class operator inside the editor, not a chat box bolted onto the side.
+Solers is an independent Godot-based engine distribution with an AI operator
+built into the editor.
 
-Most "AI + gamedev" tools are external assistants that blindly write `.gd` and `.tscn` text. Solers is different. The AI sees your real scene tree, edits nodes through native engine APIs, runs your game, reads the errors, and fixes them, and every single action is something you can watch, approve, and undo.
+The goal is not to wrap Godot in a high-level "AI feature" layer. The goal is to
+give the model a transparent harness over the engine: scene state, ClassDB,
+Object properties and methods, resources, scripts, runtime control, export, logs
+and permissions. The model composes those native primitives the same way a human
+developer would use the editor.
 
-You bring the ideas. Solers turns them into a real, running game.
+Your project remains a normal Godot project. Scenes, scripts, resources, export
+presets and project settings stay in standard Godot formats.
 
-## Why Solers
+## Quick start
 
-- **AI operates the engine, not the filesystem.** Scene edits go through Godot's native APIs and undo/redo, so they are real editor operations, not fragile text patches.
-- **Every action is auditable.** A built-in Action Timeline records each step: what the AI did, which nodes and files it touched, and how to roll it back.
-- **Bring your own key.** Use OpenAI, Anthropic, Gemini, DeepSeek, Qwen, Ollama, or LM Studio. No vendor lock-in, with a local privacy mode in the design.
-- **Stays pure Godot.** Your project remains a standard Godot project. Open it in upstream Godot any time. No proprietary formats, no trap.
-- **Safe by design.** Tiered permissions, approval prompts for risky actions, and automatic file checkpoints before writes.
-
-## What works today
-
-Solers is an early preview, but the operator core is real and running:
-
-- A native **Solers AI panel** built into the editor (an RmlUi-based chat dock, not an external window).
-- **50+ typed, permission-gated tools** covering projects, scenes, nodes, scripts, running, validation, resources, and export, each one logged.
-- **Live editor observation**: read the current scene tree, selection, project settings, and real editor/runtime logs.
-- **Scene & script operations** through Godot's `EditorUndoRedoManager`: add / remove / reparent nodes, set properties, attach scripts, connect signals, create / patch / validate scripts.
-- **Run & verify loop**: play the current scene, capture logs and screenshots, and check for errors.
-- **Action Timeline**, **permission manager**, and **file checkpoints** built in.
-- **MCP-compatible** tool adapter plus a local loopback RPC, so external agents can drive Solers too.
-- **BYOK provider registry** and an agent orchestrator (planner → executor → verifier → reporter).
-
-> Coming next: wiring live model inference end-to-end. The provider request layer and a working mock loop are already in place, real model calls are the next milestone.
-
-## Quick start (Windows)
-
-Solers builds like Godot, using SCons + MSVC.
+Solers builds like Godot. On Windows with MSVC:
 
 ```powershell
 git clone https://github.com/brandlll-lee/SolersEngine.git
 cd SolersEngine
-scons platform=windows target=editor dev_build=yes arch=x86_64
+python -m SCons platform=windows target=editor dev_build=yes arch=x86_64 tests=yes
 bin\solers.windows.editor.dev.x86_64.exe
 ```
 
-Open or create a project, find the **Solers** panel on the left, and start describing what you want to build.
+Open a project, show the **Solers** dock, configure a provider, then describe
+the change you want:
 
-macOS and Linux follow the standard Godot build steps for the same `target=editor` configuration.
-
-### Rebuilding after changes (incremental builds)
-
-After the first build, just re-run the **same** command — SCons rebuilds incrementally, recompiling only the files you changed and relinking. Editing the Solers module (`modules/solers_ai/`) is usually a few seconds of compile plus the final link, **not** a full rebuild.
-
-```powershell
-scons platform=windows target=editor dev_build=yes arch=x86_64
-# `scons` not on PATH? This is exactly equivalent:
-python -m SCons platform=windows target=editor dev_build=yes arch=x86_64
+```text
+Add a small city to this scene with colored buildings, windows and street lights.
+Save it so it is still there after reopening the project.
 ```
 
-Add `-j<N>` (e.g. `-j16`) to compile across CPU cores.
+The console build is useful while developing Solers itself:
 
-**Where the build cache lives — check these *before* assuming a from-scratch rebuild is needed:**
+```powershell
+bin\solers.windows.editor.dev.x86_64.console.exe --path "C:/path/to/project" --editor
+```
 
-- **Signature DB:** `.sconsign5.dblite` in the repo root (generated as `.sconsign<pickle-protocol>.dblite`; the digit comes from Python's pickle version, see `SConstruct`). It is a *hidden, dot-prefixed* file, so directory listers and glob tools that skip dotfiles by default **will not show it** — use `Get-ChildItem -Force` (PowerShell) or `ls -a` to confirm it exists.
-- **Object files:** every `*.obj` is written under **`bin/obj/`** (mirroring the source tree), **not** next to the `.cpp`. An empty `modules/.../*.obj` is expected and does **not** mean the cache was cleared.
+macOS and Linux follow the standard Godot SCons build flow with the same
+`target=editor` configuration.
 
-If both `.sconsign5.dblite` and `bin/obj/` are present, the next build is incremental and fast. Run `scons --clean` (or delete them) only when you intentionally want a full rebuild.
+## Installing model access
 
-**Build outputs land in `bin/`:**
+Solers is BYOK: bring your own provider key or use a local OpenAI-compatible
+server.
 
-- `solers.windows.editor.dev.x86_64.exe` — the editor; this is what you launch.
-- `solers.windows.editor.dev.x86_64.console.exe` — the same editor with an attached console that streams engine / RPC / MCP logs, handy when debugging the Solers module.
+Supported provider profiles include:
 
-## Compatibility & license
+- OpenAI
+- Anthropic
+- Google Gemini
+- DeepSeek
+- Qwen / DashScope
+- Ollama
+- LM Studio
+- Custom OpenAI-compatible endpoints
 
-Solers is a fork of [Godot Engine](https://godotengine.org) and is released under the MIT license. See `LICENSE.txt` and `COPYRIGHT.txt`.
+Keys are stored through the Solers editor settings path, with environment
+variable fallback where available. Privacy mode defaults toward local providers
+and blocks remote providers until the user explicitly disables it.
 
-Solers is an independent distribution. It is **not** affiliated with or endorsed by the Godot Foundation. It is compatible with Godot projects, but it is its own thing.
+## What Solers can do today
 
-## Acknowledgements
+- **Native editor chat dock**: a built-in Solers panel rendered with Godot editor
+  controls, not a browser overlay.
+- **Primitive-first tool surface**: direct tools for snapshots, file reads and
+  writes, ClassDB introspection, object method calls, batched scene operations,
+  resources, runtime control and tool discovery.
+- **Real scene edits**: node creation, property writes, reparenting, script
+  attachment, signal connection and removal go through validated engine paths,
+  with undo/redo where Godot supports it.
+- **Native resource control**: create, load, inspect, set, call and save Godot
+  `Resource` instances through `ClassDB`, `ResourceLoader`, `ResourceSaver` and
+  `Object` APIs.
+- **Script feedback**: script writes and patches can validate through Godot's
+  registered `ScriptLanguage`; raw validation errors are returned to the model.
+- **Run loop**: the agent can play the current scene, inspect the editor/runtime
+  snapshot, then stop playback.
+- **Auditable actions**: tool calls, permissions, arguments, results and
+  transcripts are recorded under the Solers user data directory.
+- **MCP-compatible adapter**: tools can also be exposed through the local
+  Solers protocol surface for external agents.
 
-Built on the incredible work of the Godot Engine community. Thank you. ❤️
+## Why not just a plugin?
+
+Solers is an engine distribution because the useful AI surface lives below a
+project add-on:
+
+- editor lifecycle
+- undo/redo
+- ClassDB
+- scene ownership
+- runtime play state
+- resource loading and saving
+- provider streaming
+- permission gates
+- trace and transcript storage
+
+Keeping this inside the engine lets the AI operate on facts the editor already
+knows, instead of guessing from filenames, text patches or tool-name checklists.
+
+## Build notes
+
+Re-run the same SCons command after edits. SCons rebuilds incrementally:
+
+```powershell
+python -m SCons platform=windows target=editor dev_build=yes arch=x86_64 tests=yes
+```
+
+Useful generated files:
+
+- `.sconsign5.dblite` - SCons signature database.
+- `bin/obj/` - object files for incremental rebuilds.
+- `bin/solers.windows.editor.dev.x86_64.exe` - editor build.
+- `bin/solers.windows.editor.dev.x86_64.console.exe` - editor with console logs.
+
+Run focused Solers tests, for example:
+
+```powershell
+bin\solers.windows.editor.dev.x86_64.console.exe --test --tc="*[SolersToolRegistry] default model surface*"
+bin\solers.windows.editor.dev.x86_64.console.exe --test --tc="*tool.search*"
+bin\solers.windows.editor.dev.x86_64.console.exe --test --tc="*batch*"
+```
+
+## Documentation
+
+- [Architecture notes](docs/SOLERS_ARCHITECTURE.md)
+- [v0.1 implementation report](docs/SOLERS_V0_1_IMPLEMENTATION_REPORT.md)
+- [v0.1 execution plan](docs/SOLERS_V0_1_EXECUTION_PLAN.md)
+- [Build setup report](docs/BUILD_SETUP_REPORT.md)
+
+## Repository layout
+
+```text
+modules/solers_ai/
+  core/       Agent session, tools, permissions, resources, settings, traces
+  editor/     Solers dock, chat cells, markdown view, editor plugin
+  llm/        Provider catalog, protocols, streaming client, retry logic
+  protocol/   MCP adapter and local RPC server
+  tests/      Solers behavior and contract tests
+```
+
+Most Solers-specific code lives under `modules/solers_ai`. The rest of the tree
+is the Godot engine base plus Solers branding and build metadata.
+
+## Contributing
+
+Prefer small, behavior-backed changes:
+
+- use native Godot APIs before adding wrappers
+- expose primitive engine capability before adding feature tools
+- keep tool results structured and honest
+- delete stale paths instead of preserving empty compatibility shims
+- test behavior contracts, not hardcoded name lists
+
+For general engine contribution flow, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+Solers is a fork of [Godot Engine](https://godotengine.org) and is released
+under the MIT license. See [LICENSE.txt](LICENSE.txt) and
+[COPYRIGHT.txt](COPYRIGHT.txt).
+
+Solers is an independent distribution. It is not affiliated with, sponsored by
+or endorsed by the Godot Foundation.
