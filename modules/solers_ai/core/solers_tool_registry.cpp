@@ -716,7 +716,7 @@ Dictionary SolersToolRegistry::normalize_tool_args(const StringName &p_name, con
 	return _normalize_tool_args(p_args, (*tool_ptr)->parameters_schema());
 }
 
-Dictionary SolersToolRegistry::redact_tool_args_for_fingerprint(const StringName &p_name, const Dictionary &p_args) const {
+Dictionary SolersToolRegistry::redact_tool_args_for_audit(const StringName &p_name, const Dictionary &p_args) const {
 	Dictionary out = p_args.duplicate(true);
 	SolersTool *const *tool_ptr = tools.getptr(p_name);
 	if (!tool_ptr || !*tool_ptr) {
@@ -754,7 +754,7 @@ Dictionary SolersToolRegistry::call_tool(const StringName &p_name, const Diction
 	const Dictionary args = normalize_tool_args(p_name, p_args);
 	SolersPermissionManager::Permission effective_permission = cap.permission;
 
-	const Dictionary timeline_args = redact_tool_args_for_fingerprint(p_name, args);
+	const Dictionary timeline_args = redact_tool_args_for_audit(p_name, args);
 	Dictionary timeline_payload;
 	timeline_payload["tool"] = p_name;
 	timeline_payload["args"] = timeline_args;

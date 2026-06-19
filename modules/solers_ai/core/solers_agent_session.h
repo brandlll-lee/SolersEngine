@@ -95,7 +95,6 @@ class SolersAgentSession : public Object {
 	int awaiting_approval_id = 0; // pending request id we are waiting on
 	int turn_id = 0;
 	int tool_iterations = 0;
-	Dictionary failed_tool_fingerprints; // per user turn: tool+args+error -> count
 	int retry_attempt = 0;
 	uint64_t retry_resume_msec = 0;
 	int text_delta_count = 0;

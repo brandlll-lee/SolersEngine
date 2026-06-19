@@ -77,7 +77,7 @@ public:
 	String get_model_tool_name(const StringName &p_name) const;
 	StringName resolve_model_tool_name(const String &p_model_name) const;
 	Dictionary normalize_tool_args(const StringName &p_name, const Dictionary &p_args) const;
-	Dictionary redact_tool_args_for_fingerprint(const StringName &p_name, const Dictionary &p_args) const;
+	Dictionary redact_tool_args_for_audit(const StringName &p_name, const Dictionary &p_args) const;
 	Dictionary summarize_tool_args_for_audit(const StringName &p_name, const Dictionary &p_args) const;
 	String summarize_tool_result_for_audit(const Dictionary &p_result) const;
 	Dictionary call_tool(const StringName &p_name, const Dictionary &p_args);

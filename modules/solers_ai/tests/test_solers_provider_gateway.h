@@ -527,7 +527,7 @@ TEST_CASE("[SolersToolRegistry] normalize_tool_args is public and idempotent") {
 	CHECK((bool)normalized_again.has("required_empty"));
 }
 
-TEST_CASE("[SolersAgentSession] repeated failure fingerprint uses normalized redacted args") {
+TEST_CASE("[SolersToolRegistry] audit redaction normalizes payload fields") {
 	SolersToolRegistry registry;
 
 	SolersToolCapability cap;
@@ -568,8 +568,8 @@ TEST_CASE("[SolersAgentSession] repeated failure fingerprint uses normalized red
 	second_args["path"] = "res://same.gd";
 	second_args["content"] = "second payload";
 
-	Dictionary first = registry.redact_tool_args_for_fingerprint("synthetic.write", registry.normalize_tool_args("synthetic.write", first_args));
-	Dictionary second = registry.redact_tool_args_for_fingerprint("synthetic.write", registry.normalize_tool_args("synthetic.write", second_args));
+	Dictionary first = registry.redact_tool_args_for_audit("synthetic.write", registry.normalize_tool_args("synthetic.write", first_args));
+	Dictionary second = registry.redact_tool_args_for_audit("synthetic.write", registry.normalize_tool_args("synthetic.write", second_args));
 
 	CHECK(first.get("path", String()) == second.get("path", String()));
 	CHECK(first.get("content", String()) == "<redacted>");

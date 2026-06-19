@@ -51,22 +51,6 @@
 #include "modules/solers_ai/llm/solers_models_dev.h"
 #include "scene/main/node.h"
 
-static String _tool_failure_fingerprint(const String &p_tool_name, const Dictionary &p_args, const Dictionary &p_result) {
-	if ((bool)p_result.get("ok", false)) {
-		return String();
-	}
-	const Dictionary error = p_result.get("error", Dictionary());
-	const String code = error.get("code", String());
-	if (code.is_empty()) {
-		return String();
-	}
-	Dictionary fingerprint;
-	fingerprint["tool"] = p_tool_name;
-	fingerprint["args"] = p_args;
-	fingerprint["error"] = code;
-	return JSON::stringify(fingerprint, "", false, true);
-}
-
 static String _transcript_text(const String &p_text, int p_byte_limit) {
 	if (p_byte_limit <= 0 || p_text.utf8().length() <= p_byte_limit) {
 		return p_text;
@@ -461,7 +445,6 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 	streamed_tool_calls.clear();
 	last_usage.clear();
 	tool_iterations = 0;
-	failed_tool_fingerprints.clear();
 	force_final_answer = false;
 	retry_attempt = 0;
 	retry_resume_msec = 0;
@@ -750,24 +733,6 @@ void SolersAgentSession::_poll_tool_executing() {
 		result = _tool_denied_result("APPROVAL_EXPIRED", "The approval expired before the tool could run. Ask again to retry.");
 	}
 
-	Dictionary fingerprint_args = args;
-	if (tool_registry) {
-		fingerprint_args = tool_registry->redact_tool_args_for_fingerprint(StringName(canonical_name), tool_registry->normalize_tool_args(StringName(canonical_name), args));
-	}
-	const String failure_fingerprint = _tool_failure_fingerprint(canonical_name, fingerprint_args, result);
-	if (!failure_fingerprint.is_empty()) {
-		const int failure_count = (int)failed_tool_fingerprints.get(failure_fingerprint, 0) + 1;
-		failed_tool_fingerprints[failure_fingerprint] = failure_count;
-		if (failure_count >= 2) {
-			const Dictionary previous_error = result.get("error", Dictionary());
-			result = _tool_denied_result("REPEATED_FAILURE", "Same tool arguments failed twice with the same error. Change arguments before retry.");
-			Dictionary error = result.get("error", Dictionary());
-			error["previous_error"] = previous_error;
-			result["error"] = error;
-			SOLERS_TRACE("session.repeated_failure", vformat("%s error=%s count=%d", canonical_name, String(previous_error.get("code", String())), failure_count));
-		}
-	}
-
 	_write_transcript_tool(canonical_name, args, result);
 	phase = PHASE_TOOLS;
 	_deliver_tool_result(id, model_name, canonical_name, result);
@@ -861,7 +826,6 @@ void SolersAgentSession::abort() {
 	streamed_tool_calls.clear();
 	tool_queue.clear();
 	tool_queue_index = 0;
-	failed_tool_fingerprints.clear();
 	tool_started_announced = false;
 	awaiting_call.clear();
 	awaiting_approval_id = 0;
