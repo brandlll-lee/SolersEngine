@@ -43,10 +43,16 @@ public:
 		PERMISSION_EDIT_SCENE,
 		PERMISSION_EDIT_FILES,
 		PERMISSION_RUN_PROJECT,
-		PERMISSION_IMPORT_ASSETS,
 		PERMISSION_EXPORT_BUILD,
 		PERMISSION_NETWORK,
 		PERMISSION_SHELL,
+	};
+
+	enum RequestDecision {
+		DECISION_UNKNOWN,
+		DECISION_PENDING,
+		DECISION_APPROVED,
+		DECISION_REJECTED,
 	};
 
 private:
@@ -55,6 +61,7 @@ private:
 	HashSet<int> rejected_request_ids;
 	Array pending_requests;
 	int next_request_id = 1;
+	bool auto_approve_all = false;
 
 	int _find_pending_request_index(int p_request_id) const;
 
@@ -64,7 +71,8 @@ protected:
 public:
 	String get_permission_name(Permission p_permission) const;
 	bool is_auto_approved(Permission p_permission) const;
-	bool requires_user_approval(Permission p_permission) const;
+	bool is_auto_approve_all() const;
+	void set_auto_approve_all(bool p_enabled);
 	void set_auto_approve_permission(Permission p_permission, bool p_enabled);
 	bool get_auto_approve_permission(Permission p_permission) const;
 	Dictionary request_user_approval(const StringName &p_tool_name, const Dictionary &p_args, Permission p_permission);
@@ -73,8 +81,10 @@ public:
 	bool approve_request(int p_request_id);
 	bool reject_request(int p_request_id);
 	bool consume_approval(int p_request_id, const StringName &p_tool_name);
+	RequestDecision get_request_decision(int p_request_id) const;
 
 	SolersPermissionManager();
 };
 
 VARIANT_ENUM_CAST(SolersPermissionManager::Permission);
+VARIANT_ENUM_CAST(SolersPermissionManager::RequestDecision);

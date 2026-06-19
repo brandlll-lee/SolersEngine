@@ -35,7 +35,8 @@
 void SolersPermissionManager::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_permission_name", "permission"), &SolersPermissionManager::get_permission_name);
 	ClassDB::bind_method(D_METHOD("is_auto_approved", "permission"), &SolersPermissionManager::is_auto_approved);
-	ClassDB::bind_method(D_METHOD("requires_user_approval", "permission"), &SolersPermissionManager::requires_user_approval);
+	ClassDB::bind_method(D_METHOD("is_auto_approve_all"), &SolersPermissionManager::is_auto_approve_all);
+	ClassDB::bind_method(D_METHOD("set_auto_approve_all", "enabled"), &SolersPermissionManager::set_auto_approve_all);
 	ClassDB::bind_method(D_METHOD("set_auto_approve_permission", "permission", "enabled"), &SolersPermissionManager::set_auto_approve_permission);
 	ClassDB::bind_method(D_METHOD("get_auto_approve_permission", "permission"), &SolersPermissionManager::get_auto_approve_permission);
 	ClassDB::bind_method(D_METHOD("request_user_approval", "tool_name", "args", "permission"), &SolersPermissionManager::request_user_approval);
@@ -44,15 +45,20 @@ void SolersPermissionManager::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("approve_request", "request_id"), &SolersPermissionManager::approve_request);
 	ClassDB::bind_method(D_METHOD("reject_request", "request_id"), &SolersPermissionManager::reject_request);
 	ClassDB::bind_method(D_METHOD("consume_approval", "request_id", "tool_name"), &SolersPermissionManager::consume_approval);
+	ClassDB::bind_method(D_METHOD("get_request_decision", "request_id"), &SolersPermissionManager::get_request_decision);
 
 	BIND_ENUM_CONSTANT(PERMISSION_OBSERVE);
 	BIND_ENUM_CONSTANT(PERMISSION_EDIT_SCENE);
 	BIND_ENUM_CONSTANT(PERMISSION_EDIT_FILES);
 	BIND_ENUM_CONSTANT(PERMISSION_RUN_PROJECT);
-	BIND_ENUM_CONSTANT(PERMISSION_IMPORT_ASSETS);
 	BIND_ENUM_CONSTANT(PERMISSION_EXPORT_BUILD);
 	BIND_ENUM_CONSTANT(PERMISSION_NETWORK);
 	BIND_ENUM_CONSTANT(PERMISSION_SHELL);
+
+	BIND_ENUM_CONSTANT(DECISION_UNKNOWN);
+	BIND_ENUM_CONSTANT(DECISION_PENDING);
+	BIND_ENUM_CONSTANT(DECISION_APPROVED);
+	BIND_ENUM_CONSTANT(DECISION_REJECTED);
 }
 
 int SolersPermissionManager::_find_pending_request_index(int p_request_id) const {
@@ -75,8 +81,6 @@ String SolersPermissionManager::get_permission_name(Permission p_permission) con
 			return "edit_files";
 		case PERMISSION_RUN_PROJECT:
 			return "run_project";
-		case PERMISSION_IMPORT_ASSETS:
-			return "import_assets";
 		case PERMISSION_EXPORT_BUILD:
 			return "export_build";
 		case PERMISSION_NETWORK:
@@ -89,11 +93,15 @@ String SolersPermissionManager::get_permission_name(Permission p_permission) con
 }
 
 bool SolersPermissionManager::is_auto_approved(Permission p_permission) const {
-	return auto_approved_permissions.has(p_permission);
+	return auto_approve_all || auto_approved_permissions.has(p_permission);
 }
 
-bool SolersPermissionManager::requires_user_approval(Permission p_permission) const {
-	return !is_auto_approved(p_permission);
+bool SolersPermissionManager::is_auto_approve_all() const {
+	return auto_approve_all;
+}
+
+void SolersPermissionManager::set_auto_approve_all(bool p_enabled) {
+	auto_approve_all = p_enabled;
 }
 
 void SolersPermissionManager::set_auto_approve_permission(Permission p_permission, bool p_enabled) {
@@ -113,19 +121,18 @@ Dictionary SolersPermissionManager::request_user_approval(const StringName &p_to
 	request["id"] = next_request_id++;
 	request["tool"] = p_tool_name;
 	request["args"] = p_args;
+	request["permission_id"] = (int)p_permission;
 	request["permission"] = get_permission_name(p_permission);
-	request["status"] = "pending";
-	request["mode"] = "once";
+	if (auto_approve_all) {
+		approved_once_requests[request["id"]] = p_tool_name;
+		return request;
+	}
 	pending_requests.push_back(request);
 	return request;
 }
 
 Array SolersPermissionManager::list_pending_requests() const {
-	Array requests;
-	for (int i = 0; i < pending_requests.size(); i++) {
-		requests.push_back(pending_requests[i]);
-	}
-	return requests;
+	return pending_requests.duplicate();
 }
 
 int SolersPermissionManager::get_pending_request_count() const {
@@ -156,7 +163,24 @@ bool SolersPermissionManager::reject_request(int p_request_id) {
 }
 
 bool SolersPermissionManager::consume_approval(int p_request_id, const StringName &p_tool_name) {
-	if (p_request_id <= 0 || rejected_request_ids.has(p_request_id) || !approved_once_requests.has(p_request_id)) {
+	if (p_request_id <= 0) {
+		Variant matched_id;
+		bool found = false;
+		for (const KeyValue<Variant, Variant> &kv : approved_once_requests) {
+			const StringName approved_tool = StringName(kv.value);
+			if (approved_tool == p_tool_name) {
+				matched_id = kv.key;
+				found = true;
+				break;
+			}
+		}
+		if (!found) {
+			return false;
+		}
+		approved_once_requests.erase(matched_id);
+		return true;
+	}
+	if (rejected_request_ids.has(p_request_id) || !approved_once_requests.has(p_request_id)) {
 		return false;
 	}
 	const StringName approved_tool = StringName(approved_once_requests[p_request_id]);
@@ -165,6 +189,22 @@ bool SolersPermissionManager::consume_approval(int p_request_id, const StringNam
 	}
 	approved_once_requests.erase(p_request_id);
 	return true;
+}
+
+SolersPermissionManager::RequestDecision SolersPermissionManager::get_request_decision(int p_request_id) const {
+	if (p_request_id <= 0) {
+		return DECISION_UNKNOWN;
+	}
+	if (approved_once_requests.has(p_request_id)) {
+		return DECISION_APPROVED;
+	}
+	if (rejected_request_ids.has(p_request_id)) {
+		return DECISION_REJECTED;
+	}
+	if (_find_pending_request_index(p_request_id) >= 0) {
+		return DECISION_PENDING;
+	}
+	return DECISION_UNKNOWN;
 }
 
 SolersPermissionManager::SolersPermissionManager() {

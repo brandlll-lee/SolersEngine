@@ -40,7 +40,8 @@ class SolersObservationService : public Object {
 	Dictionary _serialize_node(Node *p_node, Node *p_edited_root, int p_depth, int p_max_depth, int p_max_children_per_node) const;
 	Array _serialize_node_array(const TypedArray<Node> &p_nodes, Node *p_edited_root, int p_max_depth, int p_max_children_per_node) const;
 	bool _normalize_project_path(const String &p_path, String &r_res_path, String &r_error) const;
-	void _collect_project_files(const String &p_dir, const String &p_query, int p_max_files, Array &r_files, int &r_scanned_count, bool &r_truncated) const;
+	bool _collect_project_files_indexed(const String &p_query, int p_max_files, Array &r_files, int &r_scanned_count, bool &r_truncated) const;
+	void _collect_project_files(const String &p_dir, const String &p_query, int p_max_files, Array &r_files, int &r_scanned_count, bool &r_truncated, uint64_t p_deadline_msec) const;
 
 protected:
 	static void _bind_methods();
@@ -56,5 +57,5 @@ public:
 	Dictionary get_scene_tree(int p_max_depth = 8, int p_max_children_per_node = 128) const;
 	Dictionary get_runtime_status() const;
 	Dictionary get_editor_logs(int p_max_messages = 200) const;
-	Dictionary get_editor_snapshot(int p_max_scene_depth = 4, int p_max_children_per_node = 64) const;
+	Dictionary get_editor_snapshot(int p_max_scene_depth = 4, int p_max_children_per_node = 64, bool p_include_remote_scene = false) const;
 };

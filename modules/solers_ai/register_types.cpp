@@ -32,19 +32,18 @@
 
 #ifdef TOOLS_ENABLED
 #include "core/solers_action_timeline.h"
-#include "core/solers_agent_orchestrator.h"
-#include "core/solers_agent_runtime.h"
 #include "core/solers_agent_session.h"
-#include "core/solers_editor_operator.h"
 #include "core/solers_file_checkpoint.h"
 #include "core/solers_observation_service.h"
 #include "core/solers_permission_manager.h"
 #include "core/solers_provider_gateway.h"
 #include "core/solers_provider_registry.h"
+#include "core/solers_reflection_service.h"
 #include "core/solers_resource_service.h"
 #include "core/solers_script_service.h"
 #include "core/solers_settings_service.h"
 #include "core/solers_tool_registry.h"
+#include "editor/solers_chat_cells.h"
 #include "editor/solers_chat_widgets.h"
 #include "editor/solers_dock.h"
 #include "editor/solers_editor_plugin.h"
@@ -58,15 +57,13 @@ void initialize_solers_ai_module(ModuleInitializationLevel p_level) {
 #ifdef TOOLS_ENABLED
 	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
 		GDREGISTER_CLASS(SolersActionTimeline);
-		GDREGISTER_CLASS(SolersAgentOrchestrator);
-		GDREGISTER_CLASS(SolersAgentRuntime);
 		GDREGISTER_CLASS(SolersAgentSession);
-		GDREGISTER_CLASS(SolersEditorOperator);
 		GDREGISTER_CLASS(SolersFileCheckpoint);
 		GDREGISTER_CLASS(SolersObservationService);
 		GDREGISTER_CLASS(SolersPermissionManager);
 		GDREGISTER_CLASS(SolersProviderGateway);
 		GDREGISTER_CLASS(SolersProviderRegistry);
+		GDREGISTER_CLASS(SolersReflectionService);
 		GDREGISTER_CLASS(SolersResourceService);
 		GDREGISTER_CLASS(SolersScriptService);
 		GDREGISTER_CLASS(SolersSettingsService);
@@ -78,6 +75,12 @@ void initialize_solers_ai_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(SolersSelectChip);
 		GDREGISTER_CLASS(SolersToolbarDivider);
 		GDREGISTER_CLASS(SolersSurface);
+		GDREGISTER_CLASS(SolersUserBubble);
+		GDREGISTER_CLASS(SolersAssistantCell);
+		GDREGISTER_CLASS(SolersThinkingCell);
+		GDREGISTER_CLASS(SolersToolCell);
+		GDREGISTER_CLASS(SolersToolGroupCell);
+		GDREGISTER_CLASS(SolersStatusCell);
 		GDREGISTER_CLASS(SolersEditorPlugin);
 		EditorPlugins::add_by_type<SolersEditorPlugin>();
 	}

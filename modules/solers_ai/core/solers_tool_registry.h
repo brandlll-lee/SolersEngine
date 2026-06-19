@@ -2,30 +2,10 @@
 /*  solers_tool_registry.h                                                */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                             GODOT ENGINE                               */
-/*                        https://godotengine.org                         */
+/*                              SOLERS ENGINE                              */
+/*                        (a fork of Godot Engine)                        */
 /**************************************************************************/
-/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
-/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
-/*                                                                        */
-/* Permission is hereby granted, free of charge, to any person obtaining  */
-/* a copy of this software and associated documentation files (the        */
-/* "Software"), to deal in the Software without restriction, including    */
-/* without limitation the rights to use, copy, modify, merge, publish,    */
-/* distribute, sublicense, and/or sell copies of the Software, and to     */
-/* permit persons to whom the Software is furnished to do so, subject to  */
-/* the following conditions:                                              */
-/*                                                                        */
-/* The above copyright notice and this permission notice shall be         */
-/* included in all copies or substantial portions of the Software.        */
-/*                                                                        */
-/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
-/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
-/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
-/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
-/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
-/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
-/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/* Solers: AI-native game engine.                                        */
 /**************************************************************************/
 
 #pragma once
@@ -34,66 +14,76 @@
 #include "core/templates/hash_map.h"
 #include "core/variant/dictionary.h"
 #include "modules/solers_ai/core/solers_permission_manager.h"
+#include "modules/solers_ai/core/solers_tool.h"
 
 class SolersActionTimeline;
-class SolersEditorOperator;
 class SolersObservationService;
+class SolersReflectionService;
 class SolersResourceService;
-class SolersRpcServer;
 class SolersScriptService;
-class SolersSettingsService;
 
 class SolersToolRegistry : public Object {
 	GDCLASS(SolersToolRegistry, Object);
 
-	struct ToolDefinition {
-		StringName name;
-		String model_name;
-		String description;
-		SolersPermissionManager::Permission permission = SolersPermissionManager::PERMISSION_OBSERVE;
-		String mutation_kind = "none";
-		bool requires_approval = false;
-		int timeout_ms = 10000;
-		Dictionary input_schema;
-		Dictionary output_schema;
-	};
+	HashMap<StringName, SolersTool *> tools; // owned; freed on clear/destroy
+	HashMap<StringName, StringName> model_name_index;
 
-	HashMap<StringName, ToolDefinition> tools;
-	SolersEditorOperator *editor_operator = nullptr;
 	SolersObservationService *observation_service = nullptr;
+	SolersReflectionService *reflection_service = nullptr;
 	SolersResourceService *resource_service = nullptr;
 	SolersScriptService *script_service = nullptr;
-	SolersSettingsService *settings_service = nullptr;
 	SolersPermissionManager *permission_manager = nullptr;
 	SolersActionTimeline *action_timeline = nullptr;
-	SolersRpcServer *rpc_server = nullptr;
 
 	static String _make_model_tool_name(const StringName &p_name);
-	void _register_tool(const ToolDefinition &p_definition);
-	Dictionary _tool_to_dictionary(const ToolDefinition &p_definition) const;
+	static Dictionary _schema(const char *p_json);
+
+	void _clear_tools();
+	void _register(SolersTool *p_tool);
+	void _add(const char *p_name, const char *p_description, const char *p_schema_json,
+			SolersPermissionManager::Permission p_permission, const char *p_mutation_kind,
+			bool p_requires_approval, bool p_undoable, const Vector<String> &p_redact,
+			SolersToolExposure p_exposure, SolersFunctionTool::Handler p_handler);
+	void _add_observe_exposed(const char *p_name, const char *p_description, const char *p_schema_json,
+			SolersToolExposure p_exposure, SolersFunctionTool::Handler p_handler);
+	void _add_observe(const char *p_name, const char *p_description, const char *p_schema_json,
+			SolersFunctionTool::Handler p_handler);
+
+	void _register_observation_tools();
+	void _register_script_tools();
+	void _register_runtime_tools();
+	void _register_reflection_tools();
+	void _register_search_tools();
+	Dictionary _run_control(const Dictionary &p_args) const;
+
+	Dictionary _tool_to_dictionary(const SolersTool *p_tool) const;
 	Dictionary _ok(const Variant &p_data) const;
 	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
-	Dictionary _object_schema() const;
-
-	HashMap<StringName, StringName> model_name_index;
 
 protected:
 	static void _bind_methods();
 
 public:
-	void set_editor_operator(SolersEditorOperator *p_editor_operator);
 	void set_observation_service(SolersObservationService *p_observation_service);
+	void set_reflection_service(SolersReflectionService *p_reflection_service);
 	void set_resource_service(SolersResourceService *p_resource_service);
 	void set_script_service(SolersScriptService *p_script_service);
-	void set_settings_service(SolersSettingsService *p_settings_service);
 	void set_permission_manager(SolersPermissionManager *p_permission_manager);
 	void set_action_timeline(SolersActionTimeline *p_action_timeline);
-	void set_rpc_server(SolersRpcServer *p_rpc_server);
 
 	void register_default_tools();
+	void register_tool(SolersTool *p_tool);
 	Array list_tools() const;
 	String get_model_tool_name(const StringName &p_name) const;
 	StringName resolve_model_tool_name(const String &p_model_name) const;
+	Dictionary normalize_tool_args(const StringName &p_name, const Dictionary &p_args) const;
+	Dictionary redact_tool_args_for_fingerprint(const StringName &p_name, const Dictionary &p_args) const;
+	Dictionary summarize_tool_args_for_audit(const StringName &p_name, const Dictionary &p_args) const;
+	String summarize_tool_result_for_audit(const Dictionary &p_result) const;
+	bool should_autocommit_scene_after_tool(const StringName &p_name) const;
 	Dictionary call_tool(const StringName &p_name, const Dictionary &p_args);
 	int get_tool_count() const;
+
+	SolersToolRegistry();
+	~SolersToolRegistry();
 };

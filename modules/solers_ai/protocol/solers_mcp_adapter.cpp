@@ -33,8 +33,6 @@
 #include "core/io/json.h"
 #include "core/object/class_db.h"
 #include "modules/solers_ai/core/solers_action_timeline.h"
-#include "modules/solers_ai/core/solers_agent_orchestrator.h"
-#include "modules/solers_ai/core/solers_agent_runtime.h"
 #include "modules/solers_ai/core/solers_observation_service.h"
 #include "modules/solers_ai/core/solers_tool_registry.h"
 
@@ -42,8 +40,6 @@ void SolersMCPAdapter::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_tool_registry", "tool_registry"), &SolersMCPAdapter::set_tool_registry);
 	ClassDB::bind_method(D_METHOD("set_observation_service", "observation_service"), &SolersMCPAdapter::set_observation_service);
 	ClassDB::bind_method(D_METHOD("set_action_timeline", "action_timeline"), &SolersMCPAdapter::set_action_timeline);
-	ClassDB::bind_method(D_METHOD("set_agent_runtime", "agent_runtime"), &SolersMCPAdapter::set_agent_runtime);
-	ClassDB::bind_method(D_METHOD("set_agent_orchestrator", "agent_orchestrator"), &SolersMCPAdapter::set_agent_orchestrator);
 	ClassDB::bind_method(D_METHOD("handle_request", "request"), &SolersMCPAdapter::handle_request);
 	ClassDB::bind_method(D_METHOD("initialize", "params"), &SolersMCPAdapter::initialize);
 	ClassDB::bind_method(D_METHOD("list_tools"), &SolersMCPAdapter::list_tools);
@@ -98,6 +94,10 @@ Array SolersMCPAdapter::_tool_definitions_for_mcp() const {
 	Array definitions = tool_registry ? tool_registry->list_tools() : Array();
 	for (int i = 0; i < definitions.size(); i++) {
 		Dictionary definition = definitions[i];
+		const String exposure = definition.get("exposure", "direct");
+		if (exposure == "deferred" || exposure == "hidden") {
+			continue;
+		}
 		Dictionary tool;
 		tool["name"] = definition.get("name", String());
 		tool["description"] = definition.get("description", String());
@@ -130,14 +130,6 @@ void SolersMCPAdapter::set_action_timeline(SolersActionTimeline *p_action_timeli
 	action_timeline = p_action_timeline;
 }
 
-void SolersMCPAdapter::set_agent_runtime(SolersAgentRuntime *p_agent_runtime) {
-	agent_runtime = p_agent_runtime;
-}
-
-void SolersMCPAdapter::set_agent_orchestrator(SolersAgentOrchestrator *p_agent_orchestrator) {
-	agent_orchestrator = p_agent_orchestrator;
-}
-
 Dictionary SolersMCPAdapter::handle_request(const Dictionary &p_request) {
 	const Variant id = p_request.get("id", Variant());
 	const String method = p_request.get("method", String());
@@ -158,17 +150,6 @@ Dictionary SolersMCPAdapter::handle_request(const Dictionary &p_request) {
 		result = list_prompts();
 	} else if (method == "solers/status") {
 		result = get_status();
-	} else if (method == "solers/agent/orchestrate") {
-		result = agent_orchestrator ? agent_orchestrator->start_turn(params) : Dictionary();
-	} else if (method == "solers/agent/start_turn") {
-		result = agent_runtime ? agent_runtime->start_turn(params) : Dictionary();
-	} else if (method == "solers/agent/status") {
-		result = agent_runtime ? agent_runtime->get_status() : Dictionary();
-	} else if (method == "solers/agent/abort") {
-		if (agent_runtime) {
-			agent_runtime->abort_current_turn();
-		}
-		result = agent_runtime ? agent_runtime->get_status() : Dictionary();
 	} else if (method == "ping") {
 		Dictionary pong;
 		pong["status"] = "ok";
@@ -229,7 +210,6 @@ Dictionary SolersMCPAdapter::list_resources() const {
 	Array resources;
 	resources.push_back(_resource("solers://editor/snapshot", "Editor Snapshot", "Current project, scene, selection, and runtime snapshot."));
 	resources.push_back(_resource("solers://timeline/actions", "Action Timeline", "Recent Solers action timeline events."));
-	resources.push_back(_resource("solers://agent/status", "Agent Runtime Status", "Current Solers Agent Runtime state."));
 
 	Dictionary result;
 	result["resources"] = resources;
@@ -249,8 +229,6 @@ Dictionary SolersMCPAdapter::read_resource(const Dictionary &p_params) const {
 		data = observation_service ? observation_service->get_editor_snapshot(4, 64) : Dictionary();
 	} else if (uri == "solers://timeline/actions") {
 		data = action_timeline ? action_timeline->list_actions(100) : Array();
-	} else if (uri == "solers://agent/status") {
-		data = agent_runtime ? agent_runtime->get_status() : Dictionary();
 	} else {
 		Dictionary error;
 		error["ok"] = false;
@@ -285,7 +263,6 @@ Dictionary SolersMCPAdapter::list_prompts() const {
 Dictionary SolersMCPAdapter::get_status() const {
 	Dictionary result;
 	result["tools_available"] = tool_registry ? tool_registry->get_tool_count() : 0;
-	result["agent"] = agent_runtime ? agent_runtime->get_status() : Dictionary();
 	result["timeline_events"] = action_timeline ? action_timeline->get_action_count() : 0;
 	return result;
 }

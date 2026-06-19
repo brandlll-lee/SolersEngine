@@ -43,7 +43,6 @@ class SolersScriptService : public Object {
 	SolersFileCheckpoint *file_checkpoint = nullptr;
 
 	bool _normalize_project_path(const String &p_path, String &r_res_path, String &r_error, bool p_allow_project_data = false) const;
-	void _collect_script_files(const String &p_dir, int p_max_files, Array &r_files, bool &r_truncated) const;
 	Dictionary _ok(const Variant &p_data) const;
 	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
 	Dictionary _validate_source(const String &p_path, const String &p_source) const;
@@ -58,6 +57,4 @@ public:
 	Dictionary write_file(const Dictionary &p_args);
 	Dictionary patch_file(const Dictionary &p_args);
 	Dictionary validate_script(const Dictionary &p_args) const;
-	Dictionary validate_project_scripts(const Dictionary &p_args) const;
-	Dictionary open_script(const Dictionary &p_args) const;
 };

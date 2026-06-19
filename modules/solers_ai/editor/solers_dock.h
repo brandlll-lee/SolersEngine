@@ -18,6 +18,7 @@
 #pragma once
 
 #include "core/input/input_event.h"
+#include "core/templates/hash_map.h"
 #include "scene/gui/panel_container.h"
 
 class Button;
@@ -25,14 +26,14 @@ class CheckButton;
 class Control;
 class HBoxContainer;
 class Label;
+class MarginContainer;
 class PanelContainer;
-class RichTextLabel;
 class ScrollContainer;
 class TextEdit;
 class VBoxContainer;
 class SolersActionTimeline;
-class SolersAgentRuntime;
 class SolersAgentSession;
+class SolersAssistantCell;
 class SolersGlyphButton;
 class SolersMCPAdapter;
 class SolersPermissionManager;
@@ -40,21 +41,16 @@ class SolersObservationService;
 class SolersRpcServer;
 class SolersSelectChip;
 class SolersSettingsService;
+class SolersStatusCell;
+class SolersThinkingCell;
+class SolersToolCell;
+class SolersToolGroupCell;
 class SolersToolRegistry;
+class SolersUserBubble;
 
 class SolersDock : public PanelContainer {
 	GDCLASS(SolersDock, PanelContainer);
 
-	Label *project_status_label = nullptr;
-	Label *runtime_status_label = nullptr;
-	Label *scene_status_label = nullptr;
-	Label *selection_status_label = nullptr;
-	Label *tool_status_label = nullptr;
-	Label *agent_status_label = nullptr;
-	Label *protocol_status_label = nullptr;
-	Label *provider_status_label = nullptr;
-	Label *approval_status_label = nullptr;
-	Label *timeline_status_label = nullptr;
 	ScrollContainer *chat_scroll = nullptr;
 	VBoxContainer *message_list = nullptr;
 	Control *empty_state = nullptr;
@@ -67,20 +63,33 @@ class SolersDock : public PanelContainer {
 	SolersSelectChip *access_chip = nullptr;
 	SolersSelectChip *model_chip = nullptr;
 	SolersSelectChip *context_chip = nullptr;
-	RichTextLabel *snapshot_preview = nullptr;
-	Label *active_reasoning_label = nullptr;
-	String active_reasoning_text;
-	VBoxContainer *debug_panel = nullptr;
-	CheckButton *allow_scene_mutation_toggle = nullptr;
-	CheckButton *allow_file_save_toggle = nullptr;
-	CheckButton *allow_run_project_toggle = nullptr;
+	MarginContainer *approval_overlay_inset = nullptr;
+	PanelContainer *approval_overlay_card = nullptr;
+	Label *approval_tool_label = nullptr;
+	Label *approval_summary_label = nullptr;
+	Button *approval_once_button = nullptr;
+	Button *approval_always_button = nullptr;
+	Button *approval_reject_button = nullptr;
+	Button *approval_submit_button = nullptr;
+	CheckButton *approval_mode_toggle = nullptr;
+
+	// Live turn state: cells updated in place as session events stream in.
+	SolersThinkingCell *active_thinking_cell = nullptr;
+	SolersAssistantCell *active_text_cell = nullptr;
+	SolersStatusCell *status_cell = nullptr;
+	SolersToolGroupCell *active_tool_group = nullptr;
+	HashMap<String, SolersToolCell *> tool_cells_by_id;
+	SolersToolCell *last_started_tool_cell = nullptr;
+	String approval_choice = "once";
+	bool approval_always_confirming = false;
+	int active_approval_id = 0;
+
 	String chat_log;
 
 	SolersObservationService *observation_service = nullptr;
 	SolersToolRegistry *tool_registry = nullptr;
 	SolersActionTimeline *action_timeline = nullptr;
 	SolersPermissionManager *permission_manager = nullptr;
-	SolersAgentRuntime *agent_runtime = nullptr;
 	SolersAgentSession *agent_session = nullptr;
 	SolersMCPAdapter *mcp_adapter = nullptr;
 	SolersRpcServer *rpc_server = nullptr;
@@ -88,44 +97,50 @@ class SolersDock : public PanelContainer {
 
 	void _refresh_status();
 	void _refresh_model_chip();
-	void _on_refresh_pressed();
-	void _on_run_loopback_probe_pressed();
 	void _on_send_chat_pressed();
 	void _on_model_chip_pressed();
 	void _on_new_chat_pressed();
 	void _submit_chat_prompt(const String &p_prompt);
+	void _on_agent_model_request_started();
+	void _on_agent_assistant_delta(const String &p_text);
 	void _on_agent_reasoning_delta(const String &p_text);
 	void _on_agent_assistant_message(const String &p_text);
 	void _on_agent_tool_started(const String &p_id, const String &p_name, const String &p_arguments);
-	void _on_agent_tool_finished(const String &p_id, const String &p_name, const Dictionary &p_result);
+	void _on_agent_tool_updated(const String &p_id, const String &p_name, const String &p_arguments);
+	void _on_agent_tool_awaiting_approval(const String &p_id, const String &p_name);
+	void _on_agent_tool_finished(const String &p_id, const String &p_name, const Dictionary &p_result, int p_duration_msec);
 	void _on_agent_turn_completed(const Dictionary &p_result);
 	void _on_agent_turn_failed(const Dictionary &p_error);
-	void _on_abort_agent_pressed();
-	void _on_approve_next_pressed();
-	void _on_reject_next_pressed();
-	void _on_allow_scene_mutations_toggled(bool p_enabled);
-	void _on_allow_file_saves_toggled(bool p_enabled);
-	void _on_allow_run_project_toggled(bool p_enabled);
+	void _on_agent_turn_retrying(int p_attempt, const String &p_message);
+	void _sync_approval_panel();
+	void _set_approval_choice(const String &p_choice);
+	void _submit_current_approval();
+	void _set_auto_approve_mode(bool p_enabled, bool p_persist);
+	void _on_auto_approve_toggled(bool p_enabled);
 	void _on_chat_input_gui_input(const Ref<InputEvent> &p_event);
 	void _on_chat_input_text_changed();
 	void _update_chat_input_height();
 	void _update_send_enabled();
-	void _debug_dump_settled();
+	bool _is_scroll_pinned() const;
+	void _on_cell_content_changed();
 	void _scroll_chat_to_bottom();
 	void _clear_empty_state();
-	void _append_chat_message(const String &p_speaker, const String &p_message);
-	void _append_tool_row(const String &p_text, bool p_ok);
-	void _clear_active_reasoning();
+	void _append_user_message(const String &p_message);
+	void _append_error_row(const String &p_text);
+	void _ensure_status_cell(const String &p_status);
+	void _remove_status_cell();
+	void _settle_thinking_cell();
+	SolersAssistantCell *_ensure_text_cell();
+	void _settle_tool_group();
+	void _finish_turn_cells();
 	PanelContainer *_create_panel_card(const Color &p_color, const Color &p_border_color, int p_radius = 12, int p_padding = 12) const;
-	Label *_create_body_label(const String &p_text, bool p_bold = false) const;
-	Label *_create_section_label(const String &p_text);
 	Control *_create_empty_state() const;
 
 protected:
 	void _notification(int p_what);
 
 public:
-	void set_services(SolersObservationService *p_observation_service, SolersToolRegistry *p_tool_registry, SolersActionTimeline *p_action_timeline, SolersPermissionManager *p_permission_manager, SolersAgentRuntime *p_agent_runtime, SolersMCPAdapter *p_mcp_adapter, SolersRpcServer *p_rpc_server, SolersSettingsService *p_settings_service);
+	void set_services(SolersObservationService *p_observation_service, SolersToolRegistry *p_tool_registry, SolersActionTimeline *p_action_timeline, SolersPermissionManager *p_permission_manager, SolersMCPAdapter *p_mcp_adapter, SolersRpcServer *p_rpc_server, SolersSettingsService *p_settings_service);
 	void make_visible();
 	void set_agent_session(SolersAgentSession *p_agent_session);
 

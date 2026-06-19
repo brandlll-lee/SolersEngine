@@ -28,12 +28,12 @@
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
 #include "modules/solers_ai/core/solers_action_timeline.h"
-#include "modules/solers_ai/core/solers_agent_runtime.h"
 #include "modules/solers_ai/core/solers_agent_session.h"
 #include "modules/solers_ai/core/solers_observation_service.h"
 #include "modules/solers_ai/core/solers_permission_manager.h"
 #include "modules/solers_ai/core/solers_settings_service.h"
 #include "modules/solers_ai/core/solers_tool_registry.h"
+#include "modules/solers_ai/editor/solers_chat_cells.h"
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
 #include "modules/solers_ai/protocol/solers_mcp_adapter.h"
 #include "modules/solers_ai/protocol/solers_rpc_server.h"
@@ -43,7 +43,6 @@
 #include "scene/gui/label.h"
 #include "scene/gui/margin_container.h"
 #include "scene/gui/panel_container.h"
-#include "scene/gui/rich_text_label.h"
 #include "scene/gui/scroll_bar.h"
 #include "scene/gui/scroll_container.h"
 #include "scene/gui/separator.h"
@@ -65,6 +64,9 @@ static const Color SOLERS_COMPOSER_BG = Color(0.086, 0.088, 0.092);
 // Hairline: ultra-subtle separator between sections.
 // Use a slightly warm gray instead of pure white to avoid cold "screen door" look.
 static const Color SOLERS_HAIRLINE = Color(0.95, 0.95, 0.97, 0.035);
+// Composer edge: a touch more defined than the section hairline so the input
+// reads as a discrete card, like Cursor's composer.
+static const Color SOLERS_COMPOSER_BORDER = Color(0.95, 0.95, 0.97, 0.16);
 static const Color SOLERS_ACCENT_ORANGE = Color(1.00, 0.49, 0.20);
 // Alert tint for the access control.
 static const Color SOLERS_ACCENT_AMBER = Color(1.00, 0.49, 0.20);
@@ -119,17 +121,6 @@ static Ref<Texture2D> solers_load_logo_texture() {
 	return Ref<Texture2D>();
 }
 
-static float solers_longest_line_width(const String &p_text, const Ref<Font> &p_font, int p_font_size) {
-	if (p_font.is_null()) {
-		return 0.0f;
-	}
-	float width = 0.0f;
-	for (const String &line : p_text.split("\n")) {
-		width = MAX(width, p_font->get_string_size(line, HORIZONTAL_ALIGNMENT_LEFT, -1, p_font_size).x);
-	}
-	return width;
-}
-
 static String solers_compact_model_label(const String &p_model) {
 	const String model = p_model.strip_edges();
 	if (model.length() <= 28) {
@@ -138,11 +129,57 @@ static String solers_compact_model_label(const String &p_model) {
 	return model.substr(0, 25) + "...";
 }
 
-Label *SolersDock::_create_section_label(const String &p_text) {
-	Label *label = memnew(Label(p_text));
-	label->set_theme_type_variation("HeaderSmall");
-	label->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
-	return label;
+static StringName solers_tool_glyph_for_metadata(const Dictionary &p_tool) {
+	const String exposure = String(p_tool.get("exposure", String())).strip_edges();
+	if (exposure == "hidden") {
+		return SNAME("shield");
+	}
+
+	const String permission = String(p_tool.get("permission", "observe"));
+	if (permission == "observe") {
+		return exposure == "deferred" ? SNAME("sparkle") : SNAME("tool_observe");
+	}
+	if (permission == "edit_scene") {
+		return SNAME("tool_scene");
+	}
+	if (permission == "edit_files") {
+		return SNAME("tool_file");
+	}
+	if (permission == "run_project") {
+		return SNAME("tool_run");
+	}
+	if (permission == "export_build") {
+		return SNAME("tool_export");
+	}
+	if (permission == "network") {
+		return SNAME("tool_network");
+	}
+	if (permission == "shell") {
+		return SNAME("tool_shell");
+	}
+
+	const String mutation = String(p_tool.get("mutation_kind", "none"));
+	if (mutation != "none") {
+		return bool(p_tool.get("undoable", false)) ? SNAME("tool_scene") : SNAME("alert");
+	}
+	return bool(p_tool.get("requires_approval", false)) ? SNAME("shield") : SNAME("sparkle");
+}
+
+static StringName solers_tool_glyph_for_name(const SolersToolRegistry *p_registry, const String &p_name) {
+	if (p_name.is_empty()) {
+		return StringName();
+	}
+	if (!p_registry) {
+		return SNAME("sparkle");
+	}
+	const Array tools = p_registry->list_tools();
+	for (int i = 0; i < tools.size(); i++) {
+		const Dictionary tool = tools[i];
+		if (String(tool.get("name", String())) == p_name) {
+			return solers_tool_glyph_for_metadata(tool);
+		}
+	}
+	return SNAME("sparkle");
 }
 
 PanelContainer *SolersDock::_create_panel_card(const Color &p_color, const Color &p_border_color, int p_radius, int p_padding) const {
@@ -150,17 +187,6 @@ PanelContainer *SolersDock::_create_panel_card(const Color &p_color, const Color
 	panel->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	panel->add_theme_style_override("panel", solers_make_stylebox(p_color, p_border_color, p_radius, p_padding));
 	return panel;
-}
-
-Label *SolersDock::_create_body_label(const String &p_text, bool p_bold) const {
-	Label *label = memnew(Label(p_text));
-	label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	label->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
-	label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	if (p_bold) {
-		label->set_theme_type_variation("HeaderSmall");
-	}
-	return label;
 }
 
 Control *SolersDock::_create_empty_state() const {
@@ -190,83 +216,9 @@ Control *SolersDock::_create_empty_state() const {
 }
 
 void SolersDock::_refresh_status() {
-	if (!project_status_label) {
-		return;
-	}
-
-	if (!observation_service) {
-		const String project_name = GLOBAL_GET("application/config/name");
-		project_status_label->set_text(project_name.is_empty() ? TTR("No named project loaded") : vformat(TTR("Project: %s"), project_name));
-		runtime_status_label->set_text(TTR("Runtime: idle"));
-		return;
-	}
-
-	Dictionary snapshot = observation_service->get_editor_snapshot(2, 16);
-	Dictionary project = snapshot.get("project", Dictionary());
-	Dictionary open_scenes = snapshot.get("open_scenes", Dictionary());
-	Dictionary scene_tree = snapshot.get("scene_tree", Dictionary());
-	Dictionary selection = snapshot.get("selection", Dictionary());
-	Dictionary runtime = snapshot.get("runtime", Dictionary());
-
-	const String project_name = project.get("name", String());
-	const String resource_path = project.get("resource_path", String());
-	project_status_label->set_text(project_name.is_empty() ? vformat(TTR("Project path: %s"), resource_path) : vformat(TTR("Project: %s"), project_name));
-
-	const bool is_playing = runtime.get("is_playing", false);
-	const String playing_scene = runtime.get("playing_scene", String());
-	runtime_status_label->set_text(is_playing ? vformat(TTR("Runtime: playing %s"), playing_scene) : TTR("Runtime: idle"));
-
-	const bool has_scene = scene_tree.get("has_edited_scene", false);
-	const String current_scene_path = open_scenes.get("current_scene_path", String());
-	const int open_scene_count = open_scenes.get("count", 0);
-	scene_status_label->set_text(has_scene ? vformat(TTR("Scene: %s (%d open)"), current_scene_path.is_empty() ? TTR("unsaved") : current_scene_path, open_scene_count) : TTR("Scene: no edited scene"));
-
-	const int selected_count = selection.get("count", 0);
-	selection_status_label->set_text(vformat(TTR("Selection: %d node(s)"), selected_count));
-
-	const bool scene_mutations_enabled = permission_manager ? permission_manager->get_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_SCENE) : false;
-	const bool file_saves_enabled = permission_manager ? permission_manager->get_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_FILES) : false;
-	const bool run_project_enabled = permission_manager ? permission_manager->get_auto_approve_permission(SolersPermissionManager::PERMISSION_RUN_PROJECT) : false;
-	tool_status_label->set_text(tool_registry ? vformat(TTR("Tools: %d registered, scene edits %s, file writes %s, run %s"), tool_registry->get_tool_count(), scene_mutations_enabled ? TTR("on") : TTR("locked"), file_saves_enabled ? TTR("on") : TTR("locked"), run_project_enabled ? TTR("on") : TTR("locked")) : TTR("Tools: unavailable"));
-
-	Dictionary agent_status = agent_runtime ? agent_runtime->get_status() : Dictionary();
-	agent_status_label->set_text(agent_runtime ? vformat(TTR("Agent: %s (turn %d)"), String(agent_status.get("state", "unknown")), (int)agent_status.get("turn_id", 0)) : TTR("Agent: unavailable"));
-
-	Dictionary protocol_status = mcp_adapter ? mcp_adapter->get_status() : Dictionary();
-	Dictionary rpc_status = rpc_server ? rpc_server->get_status() : Dictionary();
-	if (mcp_adapter && rpc_server) {
-		const bool rpc_running = rpc_status.get("running", false);
-		protocol_status_label->set_text(rpc_running ? vformat(TTR("Protocol: MCP adapter ready, RPC 127.0.0.1:%d (%d client(s)), %d tool(s)"), (int)rpc_status.get("port", 0), (int)rpc_status.get("clients", 0), (int)protocol_status.get("tools_available", 0)) : vformat(TTR("Protocol: MCP adapter ready, RPC stopped, %d tool(s)"), (int)protocol_status.get("tools_available", 0)));
-	} else {
-		protocol_status_label->set_text(TTR("Protocol: unavailable"));
-	}
-
-	if (settings_service && provider_status_label) {
-		Dictionary provider_result = settings_service->get_provider_config();
-		Dictionary provider_data = provider_result.get("data", Dictionary());
-		Dictionary validation = provider_data.get("validation", Dictionary());
-		const String provider = provider_data.get("provider", String("unknown"));
-		const bool privacy_mode = provider_data.get("privacy_mode", true);
-		const bool api_key_configured = provider_data.get("api_key_configured", false);
-		const bool valid = validation.get("valid", false);
-		Array warnings = validation.get("warnings", Array());
-		Array blockers = validation.get("blockers", Array());
-		provider_status_label->set_text(vformat(TTR("Provider: %s, privacy %s, key %s, config %s (%d warning(s), %d blocker(s))"), provider, privacy_mode ? TTR("local-only") : TTR("network-enabled"), api_key_configured ? TTR("set") : TTR("not set"), valid ? TTR("valid") : TTR("blocked"), warnings.size(), blockers.size()));
-	} else if (provider_status_label) {
-		provider_status_label->set_text(TTR("Provider: unavailable"));
-	}
-
-	const int pending_approval_count = permission_manager ? permission_manager->get_pending_request_count() : 0;
-	approval_status_label->set_text(permission_manager ? vformat(TTR("Approvals: %d pending"), pending_approval_count) : TTR("Approvals: unavailable"));
-
-	timeline_status_label->set_text(action_timeline ? vformat(TTR("Timeline: %d event(s)"), action_timeline->get_action_count()) : TTR("Timeline: unavailable"));
-
-	if (snapshot_preview) {
-		Array tools = tool_registry ? tool_registry->list_tools() : Array();
-		String preview = vformat(TTR("Snapshot ready. Open scenes: %d, selected nodes: %d, tools: %d."), open_scene_count, selected_count, tools.size());
-		snapshot_preview->set_text(preview);
-	}
-
+	// The only live status surfaces are the inline approval prompt and the
+	// model chip; everything else here was wiring for the removed diagnostics.
+	_sync_approval_panel();
 	_refresh_model_chip();
 }
 
@@ -305,48 +257,6 @@ void SolersDock::_refresh_model_chip() {
 	model_chip->set_tooltip_text(tooltip);
 }
 
-void SolersDock::_on_refresh_pressed() {
-	if (tool_registry) {
-		Dictionary args;
-		args["max_scene_depth"] = 2;
-		args["max_children_per_node"] = 16;
-		tool_registry->call_tool("editor.get_snapshot", args);
-	}
-	_refresh_status();
-}
-
-void SolersDock::_on_run_loopback_probe_pressed() {
-	if (!agent_runtime) {
-		return;
-	}
-
-	Array tool_calls;
-	Dictionary snapshot_call;
-	snapshot_call["name"] = "editor.get_snapshot";
-	Dictionary snapshot_args;
-	snapshot_args["max_scene_depth"] = 2;
-	snapshot_args["max_children_per_node"] = 16;
-	snapshot_call["arguments"] = snapshot_args;
-	tool_calls.push_back(snapshot_call);
-
-	Dictionary timeline_call;
-	timeline_call["name"] = "timeline.list_actions";
-	Dictionary timeline_args;
-	timeline_args["limit"] = 20;
-	timeline_call["arguments"] = timeline_args;
-	tool_calls.push_back(timeline_call);
-
-	Dictionary turn;
-	turn["objective"] = "Solers v0.1 internal loopback probe";
-	turn["mode"] = "tool_batch";
-	turn["tool_calls"] = tool_calls;
-	Dictionary result = agent_runtime->start_turn(turn);
-	if (snapshot_preview) {
-		snapshot_preview->set_text(JSON::stringify(result, "\t", false, true));
-	}
-	_refresh_status();
-}
-
 void SolersDock::_clear_empty_state() {
 	if (empty_state) {
 		empty_state->queue_free();
@@ -364,51 +274,41 @@ void SolersDock::_scroll_chat_to_bottom() {
 	}
 }
 
-void SolersDock::_append_chat_message(const String &p_speaker, const String &p_message) {
-	_clear_active_reasoning();
-	chat_log += vformat("%s%s\n%s\n", chat_log.is_empty() ? "" : "\n", p_speaker, p_message);
+bool SolersDock::_is_scroll_pinned() const {
+	if (!chat_scroll) {
+		return true;
+	}
+	VScrollBar *bar = chat_scroll->get_v_scroll_bar();
+	if (!bar || !bar->is_visible()) {
+		return true;
+	}
+	// Follow the stream only while the user is at (or near) the bottom; a
+	// reader who scrolled up keeps their place.
+	return bar->get_value() + bar->get_page() >= bar->get_max() - 48.0 * EDSCALE;
+}
+
+void SolersDock::_on_cell_content_changed() {
+	if (_is_scroll_pinned()) {
+		callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
+	}
+}
+
+void SolersDock::_append_user_message(const String &p_message) {
+	chat_log += vformat("%sYou\n%s\n", chat_log.is_empty() ? "" : "\n", p_message);
 	if (!message_list) {
 		return;
 	}
 	_clear_empty_state();
 
-	const bool is_user = p_speaker == "You";
-	if (is_user) {
-		// Right-aligned bubble that hugs its content, capped for readability.
-		HBoxContainer *row = memnew(HBoxContainer);
-		row->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		message_list->add_child(row);
-
-		Control *spacer = memnew(Control);
-		spacer->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		row->add_child(spacer);
-
-		PanelContainer *bubble = memnew(PanelContainer);
-		bubble->set_h_size_flags(Control::SIZE_SHRINK_END);
-		bubble->add_theme_style_override("panel", solers_make_stylebox(Color(1, 1, 1, 0.075), Color(1, 1, 1, 0.0), 14, 10));
-		row->add_child(bubble);
-
-		Label *body = _create_body_label(p_message);
-		const int font_size = 14 * EDSCALE;
-		body->add_theme_color_override("font_color", SOLERS_TEXT_PRIMARY);
-		body->add_theme_font_size_override(SceneStringName(font_size), font_size);
-		const Ref<Font> font = body->get_theme_font(SceneStringName(font));
-		const float text_width = solers_longest_line_width(p_message, font, font_size) + 4 * EDSCALE;
-		body->set_custom_minimum_size(Size2(MIN(text_width, 340 * EDSCALE), 0));
-		bubble->add_child(body);
-	} else {
-		// Assistant: calm full-width prose, Codex style (no bubble chrome).
-		Label *body = _create_body_label(p_message);
-		body->add_theme_color_override("font_color", SOLERS_TEXT_BODY);
-		body->add_theme_font_size_override(SceneStringName(font_size), 14 * EDSCALE);
-		message_list->add_child(body);
-	}
+	SolersUserBubble *bubble = memnew(SolersUserBubble);
+	bubble->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
+	message_list->add_child(bubble);
+	bubble->set_message(p_message);
 
 	callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
 }
 
-void SolersDock::_append_tool_row(const String &p_text, bool p_ok) {
-	_clear_active_reasoning();
+void SolersDock::_append_error_row(const String &p_text) {
 	chat_log += vformat("%s\n", p_text);
 	if (!message_list) {
 		return;
@@ -416,21 +316,74 @@ void SolersDock::_append_tool_row(const String &p_text, bool p_ok) {
 	_clear_empty_state();
 
 	Label *row = memnew(Label(p_text));
-	row->set_autowrap_mode(TextServer::AUTOWRAP_OFF);
-	row->set_clip_text(true);
-	row->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+	row->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
 	row->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
 	row->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	row->add_theme_color_override("font_color", p_ok ? SOLERS_TEXT_DIM : Color(0.85, 0.46, 0.40));
+	row->add_theme_color_override("font_color", Color(0.875, 0.478, 0.420));
 	row->add_theme_font_size_override(SceneStringName(font_size), 12 * EDSCALE);
 	message_list->add_child(row);
 
 	callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
 }
 
-void SolersDock::_clear_active_reasoning() {
-	active_reasoning_label = nullptr;
-	active_reasoning_text = String();
+void SolersDock::_ensure_status_cell(const String &p_status) {
+	if (!message_list) {
+		return;
+	}
+	_clear_empty_state();
+	if (!status_cell) {
+		status_cell = memnew(SolersStatusCell);
+		message_list->add_child(status_cell);
+	}
+	// The status row always trails the latest content.
+	message_list->move_child(status_cell, message_list->get_child_count() - 1);
+	status_cell->set_status(p_status);
+	_on_cell_content_changed();
+}
+
+void SolersDock::_remove_status_cell() {
+	if (status_cell) {
+		status_cell->queue_free();
+		status_cell = nullptr;
+	}
+}
+
+void SolersDock::_settle_thinking_cell() {
+	if (active_thinking_cell && active_thinking_cell->is_active()) {
+		active_thinking_cell->set_done();
+	}
+}
+
+void SolersDock::_settle_tool_group() {
+	// Close the current "N actions" batch; the next tool call opens a new one.
+	if (active_tool_group) {
+		active_tool_group->settle();
+		active_tool_group = nullptr;
+	}
+}
+
+SolersAssistantCell *SolersDock::_ensure_text_cell() {
+	if (active_text_cell) {
+		return active_text_cell;
+	}
+	_clear_empty_state();
+	active_text_cell = memnew(SolersAssistantCell);
+	active_text_cell->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
+	message_list->add_child(active_text_cell);
+	if (status_cell) {
+		message_list->move_child(status_cell, message_list->get_child_count() - 1);
+	}
+	return active_text_cell;
+}
+
+void SolersDock::_finish_turn_cells() {
+	_settle_thinking_cell();
+	_settle_tool_group();
+	active_thinking_cell = nullptr;
+	active_text_cell = nullptr;
+	tool_cells_by_id.clear();
+	last_started_tool_cell = nullptr;
+	_remove_status_cell();
 }
 
 void SolersDock::_on_send_chat_pressed() {
@@ -450,7 +403,7 @@ void SolersDock::_on_send_chat_pressed() {
 }
 
 void SolersDock::_on_model_chip_pressed() {
-	_append_tool_row(TTR("Model settings live in Project Manager -> AI Models."), true);
+	_append_error_row(TTR("Model settings live in Project Manager -> AI Models."));
 }
 
 void SolersDock::_on_new_chat_pressed() {
@@ -458,6 +411,12 @@ void SolersDock::_on_new_chat_pressed() {
 	if (agent_session) {
 		agent_session->reset_conversation();
 	}
+	active_thinking_cell = nullptr;
+	active_text_cell = nullptr;
+	status_cell = nullptr;
+	active_tool_group = nullptr;
+	tool_cells_by_id.clear();
+	last_started_tool_cell = nullptr;
 	if (message_list) {
 		while (message_list->get_child_count() > 0) {
 			Node *child = message_list->get_child(0);
@@ -482,10 +441,10 @@ void SolersDock::_submit_chat_prompt(const String &p_prompt) {
 		return;
 	}
 
-	_append_chat_message("You", prompt);
+	_append_user_message(prompt);
 
 	if (!agent_session) {
-		_append_chat_message("Solers", "Agent session is unavailable.");
+		_append_error_row(TTR("Agent session is unavailable."));
 		return;
 	}
 
@@ -496,8 +455,9 @@ void SolersDock::_submit_chat_prompt(const String &p_prompt) {
 	args["prompt"] = prompt;
 	const Dictionary result = agent_session->start_turn(args);
 	if (!(bool)result.get("ok", false)) {
+		_remove_status_cell();
 		const Dictionary error = result.get("error", Dictionary());
-		_append_chat_message("Solers", String::utf8("\u26a0 ") + String(error.get("message", "Could not start the agent turn.")));
+		_append_error_row(String::utf8("\u26a0 ") + String(error.get("message", "Could not start the agent turn.")));
 	}
 	_refresh_status();
 }
@@ -520,6 +480,11 @@ void SolersDock::_on_chat_input_gui_input(const Ref<InputEvent> &p_event) {
 		return;
 	}
 
+	if (permission_manager && permission_manager->get_pending_request_count() > 0) {
+		_submit_current_approval();
+		chat_input->accept_event();
+		return;
+	}
 	_on_send_chat_pressed();
 	chat_input->accept_event();
 }
@@ -531,7 +496,9 @@ void SolersDock::_on_chat_input_text_changed() {
 
 void SolersDock::_update_send_enabled() {
 	if (send_chat_button && chat_input) {
-		send_chat_button->set_enabled(!chat_input->get_text().strip_edges().is_empty());
+		const bool blocked = permission_manager && permission_manager->get_pending_request_count() > 0;
+		chat_input->set_editable(!blocked);
+		send_chat_button->set_enabled(!blocked && !chat_input->get_text().strip_edges().is_empty());
 	}
 }
 
@@ -556,14 +523,80 @@ void SolersDock::_update_chat_input_height() {
 	}
 }
 
-void SolersDock::_on_abort_agent_pressed() {
-	if (agent_runtime) {
-		agent_runtime->abort_current_turn();
+void SolersDock::_sync_approval_panel() {
+	if (!approval_overlay_inset) {
+		return;
 	}
-	_refresh_status();
+	if (!permission_manager) {
+		approval_overlay_inset->set_visible(false);
+		_update_send_enabled();
+		return;
+	}
+
+	Array pending = permission_manager->list_pending_requests();
+	if (permission_manager->is_auto_approve_all()) {
+		for (int i = 0; i < pending.size(); i++) {
+			const Dictionary request = pending[i];
+			permission_manager->approve_request(request.get("id", 0));
+		}
+		pending = permission_manager->list_pending_requests();
+	}
+	if (pending.is_empty()) {
+		active_approval_id = 0;
+		approval_overlay_inset->set_visible(false);
+		_update_send_enabled();
+		return;
+	}
+
+	const Dictionary request = pending[0];
+	const int request_id = request.get("id", 0);
+	if (active_approval_id != request_id) {
+		active_approval_id = request_id;
+		approval_choice = "once";
+		approval_always_confirming = false;
+	}
+	approval_overlay_inset->set_visible(true);
+
+	const String tool = String(request.get("tool", String()));
+	const String permission = String(request.get("permission", String()));
+	const Dictionary args = request.get("args", Dictionary());
+
+	if (approval_tool_label) {
+		approval_tool_label->set_text(tool);
+	}
+	if (approval_summary_label) {
+		String summary = solers_summarize_tool_args(JSON::stringify(args, "", false, true));
+		if (summary.is_empty()) {
+			summary = permission;
+		} else {
+			summary = vformat("%s - %s", permission, summary);
+		}
+		approval_summary_label->set_text(summary);
+	}
+	_set_approval_choice(approval_choice);
+	_update_send_enabled();
 }
 
-void SolersDock::_on_approve_next_pressed() {
+void SolersDock::_set_approval_choice(const String &p_choice) {
+	approval_choice = p_choice;
+	if (p_choice != "always") {
+		approval_always_confirming = false;
+	}
+	if (approval_once_button) {
+		approval_once_button->set_text(p_choice == "once" ? TTR("1  Allow once *") : TTR("1  Allow once"));
+	}
+	if (approval_always_button) {
+		approval_always_button->set_text(p_choice == "always" ? TTR("2  Allow always *") : TTR("2  Allow always"));
+	}
+	if (approval_reject_button) {
+		approval_reject_button->set_text(p_choice == "reject" ? TTR("3  Deny *") : TTR("3  Deny"));
+	}
+	if (approval_submit_button) {
+		approval_submit_button->set_text(approval_always_confirming ? TTR("Confirm") : TTR("Submit"));
+	}
+}
+
+void SolersDock::_submit_current_approval() {
 	if (!permission_manager) {
 		return;
 	}
@@ -573,74 +606,44 @@ void SolersDock::_on_approve_next_pressed() {
 		return;
 	}
 	Dictionary request = pending[0];
-	permission_manager->approve_request(request.get("id", 0));
-	if (snapshot_preview) {
-		snapshot_preview->set_text(vformat(TTR("Approved Solers request %d for one retry."), (int)request.get("id", 0)));
+	const int request_id = request.get("id", 0);
+	if (approval_choice == "reject") {
+		permission_manager->reject_request(request_id);
+	} else if (approval_choice == "always") {
+		if (!approval_always_confirming) {
+			approval_always_confirming = true;
+			_set_approval_choice("always");
+			return;
+		}
+		const int permission_id = request.get("permission_id", (int)SolersPermissionManager::PERMISSION_OBSERVE);
+		permission_manager->set_auto_approve_permission((SolersPermissionManager::Permission)permission_id, true);
+		permission_manager->approve_request(request_id);
+	} else {
+		permission_manager->approve_request(request_id);
 	}
+	approval_always_confirming = false;
 	_refresh_status();
+	_sync_approval_panel();
 }
 
-void SolersDock::_on_reject_next_pressed() {
+void SolersDock::_set_auto_approve_mode(bool p_enabled, bool p_persist) {
 	if (!permission_manager) {
 		return;
 	}
-	Array pending = permission_manager->list_pending_requests();
-	if (pending.is_empty()) {
-		_refresh_status();
-		return;
+	permission_manager->set_auto_approve_all(p_enabled);
+	if (approval_mode_toggle) {
+		approval_mode_toggle->set_pressed_no_signal(p_enabled);
+		approval_mode_toggle->set_text(p_enabled ? TTR("Auto") : TTR("Manual"));
+		approval_mode_toggle->set_tooltip_text(p_enabled ? TTR("Auto-approve each pending tool call once.") : TTR("Ask before mutating tool calls."));
 	}
-	Dictionary request = pending[0];
-	permission_manager->reject_request(request.get("id", 0));
-	if (snapshot_preview) {
-		snapshot_preview->set_text(vformat(TTR("Rejected Solers request %d."), (int)request.get("id", 0)));
+	if (p_persist && EditorSettings::get_singleton()) {
+		EditorSettings::get_singleton()->set_project_metadata("solers", "auto_approve_mode", p_enabled);
 	}
-	_refresh_status();
 }
 
-void SolersDock::_on_allow_scene_mutations_toggled(bool p_enabled) {
-	if (permission_manager) {
-		permission_manager->set_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_SCENE, p_enabled);
-	}
-	_refresh_status();
-}
-
-void SolersDock::_on_allow_file_saves_toggled(bool p_enabled) {
-	if (permission_manager) {
-		permission_manager->set_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_FILES, p_enabled);
-	}
-	_refresh_status();
-}
-
-void SolersDock::_on_allow_run_project_toggled(bool p_enabled) {
-	if (permission_manager) {
-		permission_manager->set_auto_approve_permission(SolersPermissionManager::PERMISSION_RUN_PROJECT, p_enabled);
-	}
-	_refresh_status();
-}
-
-void SolersDock::_debug_dump_settled() {
-	print_line(vformat("[solers-settled] dock global=%s size=%s", get_global_rect(), get_size()));
-	if (chat_input) {
-		Control *composer = Object::cast_to<Control>(chat_input->get_parent());
-		Control *card = composer ? Object::cast_to<Control>(composer->get_parent()) : nullptr;
-		Control *inset = card ? Object::cast_to<Control>(card->get_parent()) : nullptr;
-		Control *rootv = inset ? Object::cast_to<Control>(inset->get_parent()) : nullptr;
-		if (rootv) {
-			print_line(vformat("[solers-settled] root global=%s", rootv->get_global_rect()));
-		}
-		if (inset) {
-			print_line(vformat("[solers-settled] composer_inset global=%s visible=%s", inset->get_global_rect(), inset->is_visible_in_tree() ? "yes" : "no"));
-		}
-		if (card) {
-			print_line(vformat("[solers-settled] composer_card global=%s", card->get_global_rect()));
-		}
-	}
-	if (chat_scroll) {
-		print_line(vformat("[solers-settled] scroll global=%s", chat_scroll->get_global_rect()));
-	}
-	if (empty_state) {
-		print_line(vformat("[solers-settled] empty_state global=%s", empty_state->get_global_rect()));
-	}
+void SolersDock::_on_auto_approve_toggled(bool p_enabled) {
+	_set_auto_approve_mode(p_enabled, true);
+	_sync_approval_panel();
 }
 
 void SolersDock::_notification(int p_what) {
@@ -649,34 +652,6 @@ void SolersDock::_notification(int p_what) {
 			_update_chat_input_height();
 			_update_send_enabled();
 			_refresh_status();
-			// TEMP DEBUG: settled-state dump.
-			if (is_inside_tree()) {
-				SceneTree *tree = get_tree();
-				if (tree) {
-					Ref<SceneTreeTimer> timer = tree->create_timer(3.0);
-					timer->connect("timeout", callable_mp(this, &SolersDock::_debug_dump_settled));
-				}
-			}
-		} break;
-		case NOTIFICATION_RESIZED: {
-			// TEMP DEBUG: dump geometry chain.
-			print_line(vformat("[solers-dbg] dock size=%s min=%s", get_size(), get_combined_minimum_size()));
-			if (chat_input && chat_input->is_inside_tree()) {
-				Control *composer = Object::cast_to<Control>(chat_input->get_parent());
-				Control *card = composer ? Object::cast_to<Control>(composer->get_parent()) : nullptr;
-				Control *inset = card ? Object::cast_to<Control>(card->get_parent()) : nullptr;
-				Control *rootv = inset ? Object::cast_to<Control>(inset->get_parent()) : nullptr;
-				print_line(vformat("[solers-dbg] root size=%s min=%s pos=%s", rootv ? rootv->get_size() : Size2(), rootv ? rootv->get_combined_minimum_size() : Size2(), rootv ? rootv->get_position() : Point2()));
-				print_line(vformat("[solers-dbg] inset rect=%s min=%s", inset ? Rect2(inset->get_position(), inset->get_size()) : Rect2(), inset ? inset->get_combined_minimum_size() : Size2()));
-				print_line(vformat("[solers-dbg] card rect=%s min=%s", card ? Rect2(card->get_position(), card->get_size()) : Rect2(), card ? card->get_combined_minimum_size() : Size2()));
-				print_line(vformat("[solers-dbg] scroll rect=%s min=%s", chat_scroll ? Rect2(chat_scroll->get_position(), chat_scroll->get_size()) : Rect2(), chat_scroll ? chat_scroll->get_combined_minimum_size() : Size2()));
-				print_line(vformat("[solers-dbg] EDSCALE=%f", EDSCALE));
-				Control *up = this;
-				for (int i = 0; i < 4 && up; i++) {
-					print_line(vformat("[solers-dbg] up%d %s rect=%s min=%s", i, up->get_name(), Rect2(up->get_position(), up->get_size()), up->get_combined_minimum_size()));
-					up = Object::cast_to<Control>(up->get_parent());
-				}
-			}
 		} break;
 		case NOTIFICATION_THEME_CHANGED: {
 			_update_chat_input_height();
@@ -691,16 +666,18 @@ void SolersDock::_notification(int p_what) {
 	}
 }
 
-void SolersDock::set_services(SolersObservationService *p_observation_service, SolersToolRegistry *p_tool_registry, SolersActionTimeline *p_action_timeline, SolersPermissionManager *p_permission_manager, SolersAgentRuntime *p_agent_runtime, SolersMCPAdapter *p_mcp_adapter, SolersRpcServer *p_rpc_server, SolersSettingsService *p_settings_service) {
+void SolersDock::set_services(SolersObservationService *p_observation_service, SolersToolRegistry *p_tool_registry, SolersActionTimeline *p_action_timeline, SolersPermissionManager *p_permission_manager, SolersMCPAdapter *p_mcp_adapter, SolersRpcServer *p_rpc_server, SolersSettingsService *p_settings_service) {
 	observation_service = p_observation_service;
 	tool_registry = p_tool_registry;
 	action_timeline = p_action_timeline;
 	permission_manager = p_permission_manager;
-	agent_runtime = p_agent_runtime;
 	mcp_adapter = p_mcp_adapter;
 	rpc_server = p_rpc_server;
 	settings_service = p_settings_service;
+	const bool auto_mode = EditorSettings::get_singleton() ? (bool)EditorSettings::get_singleton()->get_project_metadata("solers", "auto_approve_mode", false) : false;
+	_set_auto_approve_mode(auto_mode, false);
 	_refresh_status();
+	_sync_approval_panel();
 }
 
 void SolersDock::make_visible() {
@@ -755,29 +732,6 @@ SolersDock::SolersDock() {
 
 	/* Hidden diagnostics labels (kept for _refresh_status plumbing). */
 
-	project_status_label = memnew(Label);
-	project_status_label->set_autowrap_mode(TextServer::AUTOWRAP_OFF);
-	project_status_label->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
-	project_status_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	project_status_label->set_visible(false);
-	root->add_child(project_status_label);
-
-	runtime_status_label = memnew(Label);
-	runtime_status_label->set_visible(false);
-	runtime_status_label->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
-	root->add_child(runtime_status_label);
-
-	agent_status_label = memnew(Label);
-	agent_status_label->set_autowrap_mode(TextServer::AUTOWRAP_OFF);
-	agent_status_label->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
-	agent_status_label->set_visible(false);
-	root->add_child(agent_status_label);
-
-	provider_status_label = memnew(Label);
-	provider_status_label->set_visible(false);
-	provider_status_label->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
-	root->add_child(provider_status_label);
-
 	/* Conversation timeline. */
 
 	chat_scroll = memnew(ScrollContainer);
@@ -804,6 +758,69 @@ SolersDock::SolersDock() {
 	empty_state = _create_empty_state();
 	message_list->add_child(empty_state);
 
+	/* Approval prompt — shown inline above the composer when a tool is blocked. */
+
+	approval_overlay_inset = memnew(MarginContainer);
+	approval_overlay_inset->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	approval_overlay_inset->add_theme_constant_override("margin_left", 20 * EDSCALE);
+	approval_overlay_inset->add_theme_constant_override("margin_right", 20 * EDSCALE);
+	approval_overlay_inset->add_theme_constant_override("margin_top", 0);
+	approval_overlay_inset->add_theme_constant_override("margin_bottom", 8 * EDSCALE);
+	approval_overlay_inset->set_visible(false);
+	root->add_child(approval_overlay_inset);
+
+	approval_overlay_card = _create_panel_card(Color(0.104, 0.106, 0.112), Color(1.0, 0.49, 0.20, 0.34), 14, 12);
+	approval_overlay_card->set_custom_minimum_size(Size2(0, 118 * EDSCALE));
+	approval_overlay_inset->add_child(approval_overlay_card);
+
+	VBoxContainer *approval_box = memnew(VBoxContainer);
+	approval_box->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	approval_box->add_theme_constant_override("separation", 4 * EDSCALE);
+	approval_overlay_card->add_child(approval_box);
+
+	HBoxContainer *approval_header = memnew(HBoxContainer);
+	approval_header->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	approval_box->add_child(approval_header);
+
+	Label *approval_title = memnew(Label(TTR("Allow using this tool?")));
+	approval_header->add_child(approval_title);
+
+	approval_tool_label = memnew(Label);
+	approval_tool_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	approval_tool_label->set_clip_text(true);
+	approval_tool_label->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+	approval_tool_label->add_theme_color_override("font_color", SOLERS_TEXT_BODY);
+	approval_header->add_child(approval_tool_label);
+
+	approval_summary_label = memnew(Label);
+	approval_summary_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	approval_summary_label->set_clip_text(true);
+	approval_summary_label->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+	approval_summary_label->add_theme_color_override("font_color", SOLERS_TEXT_DIM);
+	approval_box->add_child(approval_summary_label);
+
+	HBoxContainer *approval_actions = memnew(HBoxContainer);
+	approval_actions->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	approval_box->add_child(approval_actions);
+
+	approval_once_button = memnew(Button(TTR("Allow once")));
+	approval_once_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	approval_once_button->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_set_approval_choice).bind("once"));
+	approval_actions->add_child(approval_once_button);
+
+	approval_always_button = memnew(Button(TTR("Allow always")));
+	approval_always_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	approval_always_button->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_set_approval_choice).bind("always"));
+	approval_actions->add_child(approval_always_button);
+
+	approval_reject_button = memnew(Button(TTR("Deny")));
+	approval_reject_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	approval_reject_button->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_set_approval_choice).bind("reject"));
+	approval_actions->add_child(approval_reject_button);
+
+	approval_submit_button = memnew(Button(TTR("Submit")));
+	approval_submit_button->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_submit_current_approval));
+	approval_box->add_child(approval_submit_button);
 	/* Composer — one floating rounded card owns text entry and actions. */
 
 	MarginContainer *composer_inset = memnew(MarginContainer);
@@ -816,7 +833,7 @@ SolersDock::SolersDock() {
 
 	SolersSurface *composer_card = memnew(SolersSurface);
 	composer_card->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	composer_card->configure(SOLERS_COMPOSER_BG, SOLERS_HAIRLINE, 19, 14, true);
+	composer_card->configure(SOLERS_COMPOSER_BG, SOLERS_COMPOSER_BORDER, 19, 14, true);
 	composer_card->set_custom_minimum_size(Size2(0, (SOLERS_COMPOSER_TEXT_MIN_HEIGHT + SOLERS_COMPOSER_TOOLBAR_HEIGHT + SOLERS_COMPOSER_VERTICAL_CHROME) * EDSCALE));
 	composer_inset->add_child(composer_card);
 
@@ -829,7 +846,7 @@ SolersDock::SolersDock() {
 	chat_input->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	chat_input->set_custom_minimum_size(Size2(0, SOLERS_COMPOSER_TEXT_MIN_HEIGHT * EDSCALE));
 	chat_input->set_line_wrapping_mode(TextEdit::LINE_WRAPPING_BOUNDARY);
-	chat_input->set_placeholder(TTR("Ask for follow-up changes"));
+	chat_input->set_placeholder(TTR("Make, test, iterate..."));
 	chat_input->set_smooth_scroll_enabled(true);
 	chat_input->set_scroll_past_end_of_file_enabled(false);
 	chat_input->set_fit_content_height_enabled(false);
@@ -868,6 +885,13 @@ SolersDock::SolersDock() {
 	access_chip->set_accent(SOLERS_ACCENT_AMBER);
 	composer_toolbar->add_child(access_chip);
 
+	approval_mode_toggle = memnew(CheckButton);
+	approval_mode_toggle->set_text(TTR("Manual"));
+	approval_mode_toggle->set_tooltip_text(TTR("Ask before mutating tool calls."));
+	approval_mode_toggle->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
+	approval_mode_toggle->connect(SceneStringName(toggled), callable_mp(this, &SolersDock::_on_auto_approve_toggled));
+	composer_toolbar->add_child(approval_mode_toggle);
+
 	Control *toolbar_spacer = memnew(Control);
 	toolbar_spacer->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	composer_toolbar->add_child(toolbar_spacer);
@@ -885,125 +909,6 @@ SolersDock::SolersDock() {
 	composer_toolbar->add_child(send_chat_button);
 
 	_update_chat_input_height();
-
-	/* Hidden diagnostics panel (status plumbing + manual probes). */
-
-	HSeparator *debug_separator = memnew(HSeparator);
-	debug_separator->set_visible(false);
-	root->add_child(debug_separator);
-
-	Label *debug_title = _create_section_label(TTR("Tools & approvals"));
-	debug_title->set_visible(false);
-	root->add_child(debug_title);
-
-	ScrollContainer *debug_scroll = memnew(ScrollContainer);
-	debug_scroll->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	debug_scroll->set_custom_minimum_size(Size2(0, 220 * EDSCALE));
-	debug_scroll->set_visible(false);
-	root->add_child(debug_scroll);
-
-	debug_panel = memnew(VBoxContainer);
-	debug_panel->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	debug_panel->add_theme_constant_override("separation", 6 * EDSCALE);
-	debug_scroll->add_child(debug_panel);
-
-	scene_status_label = memnew(Label);
-	scene_status_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	scene_status_label->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
-	debug_panel->add_child(scene_status_label);
-
-	selection_status_label = memnew(Label);
-	selection_status_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	selection_status_label->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
-	debug_panel->add_child(selection_status_label);
-
-	tool_status_label = memnew(Label);
-	tool_status_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	tool_status_label->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
-	debug_panel->add_child(tool_status_label);
-
-	timeline_status_label = memnew(Label);
-	timeline_status_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	timeline_status_label->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
-	debug_panel->add_child(timeline_status_label);
-
-	protocol_status_label = memnew(Label);
-	protocol_status_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	protocol_status_label->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
-	debug_panel->add_child(protocol_status_label);
-
-	approval_status_label = memnew(Label);
-	approval_status_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	approval_status_label->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
-	debug_panel->add_child(approval_status_label);
-
-	Button *refresh_button = memnew(Button(TTR("Refresh Snapshot")));
-	refresh_button->set_focus_mode(Control::FOCUS_ALL);
-	refresh_button->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_on_refresh_pressed));
-	debug_panel->add_child(refresh_button);
-
-	Button *loopback_probe_button = memnew(Button(TTR("Run Runtime Probe")));
-	loopback_probe_button->set_focus_mode(Control::FOCUS_ALL);
-	loopback_probe_button->set_tooltip_text(TTR("Run a local Solers Agent Runtime tool batch without contacting any model provider."));
-	loopback_probe_button->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_on_run_loopback_probe_pressed));
-	debug_panel->add_child(loopback_probe_button);
-
-	Button *abort_button = memnew(Button(TTR("Abort Agent Turn")));
-	abort_button->set_focus_mode(Control::FOCUS_ALL);
-	abort_button->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_on_abort_agent_pressed));
-	debug_panel->add_child(abort_button);
-
-	HBoxContainer *approval_buttons = memnew(HBoxContainer);
-	approval_buttons->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	debug_panel->add_child(approval_buttons);
-
-	Button *approve_next_button = memnew(Button(TTR("Approve Next")));
-	approve_next_button->set_focus_mode(Control::FOCUS_ALL);
-	approve_next_button->set_tooltip_text(TTR("Approve the oldest pending Solers tool request for one retry."));
-	approve_next_button->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_on_approve_next_pressed));
-	approval_buttons->add_child(approve_next_button);
-
-	Button *reject_next_button = memnew(Button(TTR("Reject Next")));
-	reject_next_button->set_focus_mode(Control::FOCUS_ALL);
-	reject_next_button->set_tooltip_text(TTR("Reject the oldest pending Solers tool request."));
-	reject_next_button->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_on_reject_next_pressed));
-	approval_buttons->add_child(reject_next_button);
-
-	allow_scene_mutation_toggle = memnew(CheckButton(TTR("Allow Scene Mutations")));
-	allow_scene_mutation_toggle->set_pressed(false);
-	allow_scene_mutation_toggle->set_tooltip_text(TTR("Temporarily allow Solers edit_scene tools such as node.add and node.set_properties."));
-	allow_scene_mutation_toggle->connect(SceneStringName(toggled), callable_mp(this, &SolersDock::_on_allow_scene_mutations_toggled));
-	debug_panel->add_child(allow_scene_mutation_toggle);
-
-	allow_file_save_toggle = memnew(CheckButton(TTR("Allow File Writes")));
-	allow_file_save_toggle->set_pressed(false);
-	allow_file_save_toggle->set_tooltip_text(TTR("Temporarily allow Solers edit_files tools such as scene.save and script.write."));
-	allow_file_save_toggle->connect(SceneStringName(toggled), callable_mp(this, &SolersDock::_on_allow_file_saves_toggled));
-	debug_panel->add_child(allow_file_save_toggle);
-
-	allow_run_project_toggle = memnew(CheckButton(TTR("Allow Run Controls")));
-	allow_run_project_toggle->set_pressed(false);
-	allow_run_project_toggle->set_tooltip_text(TTR("Temporarily allow Solers run_project tools such as runtime.play_current_scene and runtime.stop."));
-	allow_run_project_toggle->connect(SceneStringName(toggled), callable_mp(this, &SolersDock::_on_allow_run_project_toggled));
-	debug_panel->add_child(allow_run_project_toggle);
-
-	debug_panel->add_child(_create_section_label(TTR("v0.1 Runtime Spine")));
-
-	RichTextLabel *spine = memnew(RichTextLabel);
-	spine->set_fit_content(true);
-	spine->set_scroll_active(false);
-	spine->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
-	spine->set_text(TTR("- Observation service\n- Tool registry\n- Permission policy\n- File checkpoints\n- Script validation\n- MCP adapter\n- JSONL RPC loopback server\n- Agent tool loop\n- Action timeline"));
-	debug_panel->add_child(spine);
-
-	debug_panel->add_child(_create_section_label(TTR("Observation Preview")));
-
-	snapshot_preview = memnew(RichTextLabel);
-	snapshot_preview->set_fit_content(true);
-	snapshot_preview->set_scroll_active(false);
-	snapshot_preview->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
-	snapshot_preview->set_text(TTR("Snapshot not captured yet."));
-	debug_panel->add_child(snapshot_preview);
 }
 
 SolersDock::~SolersDock() {
@@ -1017,70 +922,177 @@ void SolersDock::set_agent_session(SolersAgentSession *p_agent_session) {
 	if (!agent_session) {
 		return;
 	}
+	agent_session->connect(SNAME("model_request_started"), callable_mp(this, &SolersDock::_on_agent_model_request_started));
+	agent_session->connect(SNAME("assistant_delta"), callable_mp(this, &SolersDock::_on_agent_assistant_delta));
 	agent_session->connect(SNAME("reasoning_delta"), callable_mp(this, &SolersDock::_on_agent_reasoning_delta));
 	agent_session->connect(SNAME("assistant_message"), callable_mp(this, &SolersDock::_on_agent_assistant_message));
 	agent_session->connect(SNAME("tool_call_started"), callable_mp(this, &SolersDock::_on_agent_tool_started));
+	agent_session->connect(SNAME("tool_call_updated"), callable_mp(this, &SolersDock::_on_agent_tool_updated));
+	agent_session->connect(SNAME("tool_call_awaiting_approval"), callable_mp(this, &SolersDock::_on_agent_tool_awaiting_approval));
 	agent_session->connect(SNAME("tool_call_finished"), callable_mp(this, &SolersDock::_on_agent_tool_finished));
 	agent_session->connect(SNAME("turn_completed"), callable_mp(this, &SolersDock::_on_agent_turn_completed));
 	agent_session->connect(SNAME("turn_failed"), callable_mp(this, &SolersDock::_on_agent_turn_failed));
+	agent_session->connect(SNAME("turn_retrying"), callable_mp(this, &SolersDock::_on_agent_turn_retrying));
+}
+
+void SolersDock::_on_agent_model_request_started() {
+	// Covers both the first request and every follow-up after a tool batch.
+	_ensure_status_cell(TTR("Waiting for model"));
 }
 
 void SolersDock::_on_agent_reasoning_delta(const String &p_text) {
-	const String text = p_text.strip_edges();
-	if (text.is_empty()) {
-		return;
-	}
-	active_reasoning_text += text;
-	if (!message_list) {
+	if (p_text.is_empty() || !message_list) {
 		return;
 	}
 	_clear_empty_state();
-	if (!active_reasoning_label) {
-		active_reasoning_label = memnew(Label);
-		active_reasoning_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-		active_reasoning_label->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
-		active_reasoning_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		active_reasoning_label->add_theme_color_override("font_color", Color(SOLERS_TEXT_DIM, 0.72));
-		active_reasoning_label->add_theme_font_size_override(SceneStringName(font_size), 12 * EDSCALE);
-		message_list->add_child(active_reasoning_label);
+	_remove_status_cell();
+	_settle_tool_group();
+	if (!active_thinking_cell || !active_thinking_cell->is_active()) {
+		active_thinking_cell = memnew(SolersThinkingCell);
+		active_thinking_cell->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
+		message_list->add_child(active_thinking_cell);
 	}
-	active_reasoning_label->set_text(String::utf8("\u2026 Thinking: ") + active_reasoning_text.strip_edges());
-	callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
+	active_thinking_cell->append_reasoning(p_text);
+	_on_cell_content_changed();
+}
+
+void SolersDock::_on_agent_assistant_delta(const String &p_text) {
+	if (p_text.is_empty() || !message_list) {
+		return;
+	}
+	// The model moved from thinking to answering.
+	_settle_thinking_cell();
+	_settle_tool_group();
+	_remove_status_cell();
+	_ensure_text_cell()->append_delta(p_text);
 }
 
 void SolersDock::_on_agent_assistant_message(const String &p_text) {
-	if (!p_text.strip_edges().is_empty()) {
-		_append_chat_message("Solers", p_text);
+	const String text = p_text.strip_edges();
+	chat_log += vformat("Solers\n%s\n", text);
+	_settle_tool_group();
+	if (active_text_cell) {
+		// Authoritative final text for this model step; unchanged streams only
+		// drop the caret, avoiding a second full markdown layout.
+		active_text_cell->finalize(p_text);
+		active_text_cell = nullptr;
+		return;
 	}
+	if (text.is_empty() || !message_list) {
+		return;
+	}
+	// Provider without streaming: materialize the step in one piece.
+	_settle_thinking_cell();
+	_remove_status_cell();
+	_clear_empty_state();
+	SolersAssistantCell *cell = memnew(SolersAssistantCell);
+	cell->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
+	message_list->add_child(cell);
+	cell->set_full_text_immediate(p_text);
+	_on_cell_content_changed();
 }
 
 void SolersDock::_on_agent_tool_started(const String &p_id, const String &p_name, const String &p_arguments) {
-	String label = String::utf8("\u2192 ") + p_name;
-	if (!p_id.is_empty()) {
-		label += vformat("  #%s", p_id);
+	if (!message_list) {
+		return;
 	}
-	_append_tool_row(label, true);
-}
-
-void SolersDock::_on_agent_tool_finished(const String &p_id, const String &p_name, const Dictionary &p_result) {
-	const bool ok = p_result.get("ok", false);
-	String label = String::utf8(ok ? "\u2713 " : "\u2717 ") + p_name;
-	if (!ok) {
-		const Dictionary error = p_result.get("error", Dictionary());
-		const String message = error.get("message", String());
-		if (!message.is_empty()) {
-			label += " - " + message;
+	if (!p_id.is_empty()) {
+		SolersToolCell **found = tool_cells_by_id.getptr(p_id);
+		if (found && *found) {
+			(*found)->update(p_name, p_arguments, solers_tool_glyph_for_name(tool_registry, p_name));
+			last_started_tool_cell = *found;
+			_on_cell_content_changed();
+			return;
 		}
 	}
+	_settle_thinking_cell();
+	_remove_status_cell();
+	_clear_empty_state();
+
+	if (!active_tool_group) {
+		active_tool_group = memnew(SolersToolGroupCell);
+		active_tool_group->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
+		message_list->add_child(active_tool_group);
+	}
+	SolersToolCell *cell = active_tool_group->add_tool();
+	cell->start(p_name, p_arguments, solers_tool_glyph_for_name(tool_registry, p_name));
+	if (!p_id.is_empty()) {
+		tool_cells_by_id.insert(p_id, cell);
+	}
+	last_started_tool_cell = cell;
+	_on_cell_content_changed();
+}
+
+void SolersDock::_on_agent_tool_updated(const String &p_id, const String &p_name, const String &p_arguments) {
+	if (!p_id.is_empty()) {
+		SolersToolCell **found = tool_cells_by_id.getptr(p_id);
+		if (found && *found) {
+			(*found)->update(p_name, p_arguments, solers_tool_glyph_for_name(tool_registry, p_name));
+			_on_cell_content_changed();
+			return;
+		}
+	}
+	_on_agent_tool_started(p_id, p_name, p_arguments);
+}
+
+void SolersDock::_on_agent_tool_awaiting_approval(const String &p_id, const String &p_name) {
+	// The call is parked on the permission gate. Its tool cell keeps spinning
+	// (the call really is in progress) while we surface the approval prompt;
+	// the session resolves the same call in place the moment the user decides.
+	_ensure_status_cell(TTR("Awaiting approval"));
 	_refresh_status();
-	_append_tool_row(label, ok);
+	_on_cell_content_changed();
+}
+
+void SolersDock::_on_agent_tool_finished(const String &p_id, const String &p_name, const Dictionary &p_result, int p_duration_msec) {
+	SolersToolCell *cell = nullptr;
+	if (!p_id.is_empty()) {
+		SolersToolCell **found = tool_cells_by_id.getptr(p_id);
+		if (found) {
+			cell = *found;
+			tool_cells_by_id.erase(p_id);
+		}
+	}
+	if (!cell) {
+		cell = last_started_tool_cell;
+	}
+
+	const bool ok = p_result.get("ok", false);
+	String error_message;
+	if (!ok) {
+		const Dictionary error = p_result.get("error", Dictionary());
+		error_message = error.get("message", String());
+	}
+	chat_log += vformat("%s %s%s\n", ok ? "[ok]" : "[error]", p_name, error_message.is_empty() ? String() : " - " + error_message);
+
+	if (cell) {
+		cell->finish(ok, error_message, p_duration_msec);
+	}
+	_remove_status_cell();
+	if (active_tool_group) {
+		active_tool_group->note_finished(ok);
+	}
+	if (cell == last_started_tool_cell) {
+		last_started_tool_cell = nullptr;
+	}
+	_refresh_status();
+	_on_cell_content_changed();
 }
 
 void SolersDock::_on_agent_turn_completed(const Dictionary &p_result) {
+	_finish_turn_cells();
 	_refresh_status();
 }
 
 void SolersDock::_on_agent_turn_failed(const Dictionary &p_error) {
-	_append_chat_message("Solers", String::utf8("\u26a0 ") + String(p_error.get("message", "Agent turn failed.")));
+	_finish_turn_cells();
+	_append_error_row(String::utf8("\u26a0 ") + String(p_error.get("message", "Agent turn failed.")));
 	_refresh_status();
+}
+
+void SolersDock::_on_agent_turn_retrying(int p_attempt, const String &p_message) {
+	// A transient provider/connection failure is being retried with backoff;
+	// keep the turn alive and show a shimmer status instead of an error row.
+	_settle_thinking_cell();
+	_ensure_status_cell(vformat(TTR("Reconnecting (attempt %d)..."), p_attempt));
 }

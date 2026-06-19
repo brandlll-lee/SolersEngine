@@ -34,8 +34,6 @@
 #include "core/variant/dictionary.h"
 
 class SolersActionTimeline;
-class SolersAgentOrchestrator;
-class SolersAgentRuntime;
 class SolersObservationService;
 class SolersToolRegistry;
 
@@ -45,8 +43,6 @@ class SolersMCPAdapter : public Object {
 	SolersToolRegistry *tool_registry = nullptr;
 	SolersObservationService *observation_service = nullptr;
 	SolersActionTimeline *action_timeline = nullptr;
-	SolersAgentRuntime *agent_runtime = nullptr;
-	SolersAgentOrchestrator *agent_orchestrator = nullptr;
 
 	Dictionary _jsonrpc_result(const Variant &p_id, const Variant &p_result) const;
 	Dictionary _jsonrpc_error(const Variant &p_id, int p_code, const String &p_message, const Variant &p_data = Variant()) const;
@@ -61,8 +57,6 @@ public:
 	void set_tool_registry(SolersToolRegistry *p_tool_registry);
 	void set_observation_service(SolersObservationService *p_observation_service);
 	void set_action_timeline(SolersActionTimeline *p_action_timeline);
-	void set_agent_runtime(SolersAgentRuntime *p_agent_runtime);
-	void set_agent_orchestrator(SolersAgentOrchestrator *p_agent_orchestrator);
 
 	Dictionary handle_request(const Dictionary &p_request);
 	Dictionary initialize(const Dictionary &p_params) const;

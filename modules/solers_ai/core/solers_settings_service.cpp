@@ -77,7 +77,12 @@ Dictionary SolersSettingsService::get_provider_config() const {
 
 	Dictionary data;
 	data["privacy_mode"] = settings->has_setting(_setting_path("privacy_mode")) ? (bool)settings->get_setting(_setting_path("privacy_mode")) : true;
-	const String provider = settings->has_setting(_setting_path("provider")) ? String(settings->get_setting(_setting_path("provider"))) : "ollama";
+	String provider = settings->has_setting(_setting_path("provider")) ? String(settings->get_setting(_setting_path("provider"))) : "ollama";
+	if (provider == "openai_responses") {
+		provider = "openai";
+	} else if (provider == "custom_openai_responses") {
+		provider = "custom_openai_compatible";
+	}
 	data["provider"] = provider;
 	data["model"] = settings->has_setting(_setting_path("model")) ? String(settings->get_setting(_setting_path("model"))) : String();
 	data["base_url"] = settings->has_setting(_setting_path("base_url")) ? String(settings->get_setting(_setting_path("base_url"))) : String();
@@ -155,7 +160,12 @@ Dictionary SolersSettingsService::resolve_active_provider() const {
 	if (!settings) {
 		return out;
 	}
-	const String provider = settings->has_setting(_setting_path("provider")) ? String(settings->get_setting(_setting_path("provider"))) : String("openai");
+	String provider = settings->has_setting(_setting_path("provider")) ? String(settings->get_setting(_setting_path("provider"))) : String("openai");
+	if (provider == "openai_responses") {
+		provider = "openai";
+	} else if (provider == "custom_openai_responses") {
+		provider = "custom_openai_compatible";
+	}
 	out["provider"] = provider;
 	out["model"] = settings->has_setting(_setting_path("model")) ? String(settings->get_setting(_setting_path("model"))) : String();
 	out["base_url"] = settings->has_setting(_setting_path("base_url")) ? String(settings->get_setting(_setting_path("base_url"))) : String();

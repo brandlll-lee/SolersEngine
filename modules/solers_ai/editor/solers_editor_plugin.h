@@ -34,16 +34,13 @@
 
 class SolersDock;
 class SolersActionTimeline;
-class SolersAgentOrchestrator;
-class SolersAgentRuntime;
 class SolersAgentSession;
-class SolersEditorOperator;
 class SolersFileCheckpoint;
 class SolersMCPAdapter;
 class SolersObservationService;
 class SolersPermissionManager;
-class SolersProviderGateway;
 class SolersProviderRegistry;
+class SolersReflectionService;
 class SolersResourceService;
 class SolersRpcServer;
 class SolersScriptService;
@@ -55,21 +52,25 @@ class SolersEditorPlugin : public EditorPlugin {
 
 	SolersDock *dock = nullptr;
 	SolersActionTimeline *action_timeline = nullptr;
-	SolersAgentOrchestrator *agent_orchestrator = nullptr;
-	SolersAgentRuntime *agent_runtime = nullptr;
 	SolersAgentSession *agent_session = nullptr;
-	SolersEditorOperator *editor_operator = nullptr;
 	SolersFileCheckpoint *file_checkpoint = nullptr;
 	SolersMCPAdapter *mcp_adapter = nullptr;
 	SolersObservationService *observation_service = nullptr;
 	SolersPermissionManager *permission_manager = nullptr;
-	SolersProviderGateway *provider_gateway = nullptr;
 	SolersProviderRegistry *provider_registry = nullptr;
+	SolersReflectionService *reflection_service = nullptr;
 	SolersResourceService *resource_service = nullptr;
 	SolersRpcServer *rpc_server = nullptr;
 	SolersScriptService *script_service = nullptr;
 	SolersSettingsService *settings_service = nullptr;
 	SolersToolRegistry *tool_registry = nullptr;
+
+	// Guards the per-frame poll drivers against re-entrancy. Tool execution runs
+	// real editor operations (open/save/new scene, undo/redo) that can pump the
+	// main loop; without this guard a nested NOTIFICATION_PROCESS would re-enter
+	// the polls and execute a second tool on top of the first, corrupting editor
+	// state. The nested tick is simply skipped and resumes on the next frame.
+	bool in_process_tick = false;
 
 protected:
 	void _notification(int p_what);

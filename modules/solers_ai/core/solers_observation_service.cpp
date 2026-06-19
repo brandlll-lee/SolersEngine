@@ -34,11 +34,16 @@
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/object/class_db.h"
+#include "core/os/os.h"
 #include "core/version.h"
 #include "editor/editor_data.h"
 #include "editor/editor_interface.h"
 #include "editor/editor_log.h"
 #include "editor/editor_node.h"
+#include "editor/debugger/editor_debugger_node.h"
+#include "editor/debugger/script_editor_debugger.h"
+#include "editor/file_system/editor_file_system.h"
+#include "scene/debugger/scene_debugger.h"
 
 void SolersObservationService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_project_info"), &SolersObservationService::get_project_info);
@@ -51,7 +56,7 @@ void SolersObservationService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_scene_tree", "max_depth", "max_children_per_node"), &SolersObservationService::get_scene_tree, DEFVAL(8), DEFVAL(128));
 	ClassDB::bind_method(D_METHOD("get_runtime_status"), &SolersObservationService::get_runtime_status);
 	ClassDB::bind_method(D_METHOD("get_editor_logs", "max_messages"), &SolersObservationService::get_editor_logs, DEFVAL(200));
-	ClassDB::bind_method(D_METHOD("get_editor_snapshot", "max_scene_depth", "max_children_per_node"), &SolersObservationService::get_editor_snapshot, DEFVAL(4), DEFVAL(64));
+	ClassDB::bind_method(D_METHOD("get_editor_snapshot", "max_scene_depth", "max_children_per_node", "include_remote_scene"), &SolersObservationService::get_editor_snapshot, DEFVAL(4), DEFVAL(64), DEFVAL(false));
 }
 
 bool SolersObservationService::_normalize_project_path(const String &p_path, String &r_res_path, String &r_error) const {
@@ -80,8 +85,54 @@ bool SolersObservationService::_normalize_project_path(const String &p_path, Str
 	return true;
 }
 
-void SolersObservationService::_collect_project_files(const String &p_dir, const String &p_query, int p_max_files, Array &r_files, int &r_scanned_count, bool &r_truncated) const {
+// Walk the EditorFileSystem's in-memory index instead of re-scanning the
+// disk. The editor kernel already maintains this tree incrementally (initial
+// scan, file watcher, import pipeline), so the agent reads the exact same
+// project view the FileSystem dock shows — in microseconds, with zero I/O,
+// and without freezing the main thread on large projects.
+bool SolersObservationService::_collect_project_files_indexed(const String &p_query, int p_max_files, Array &r_files, int &r_scanned_count, bool &r_truncated) const {
+	EditorFileSystem *efs = EditorFileSystem::get_singleton();
+	if (!efs) {
+		return false;
+	}
+	EditorFileSystemDirectory *root = efs->get_filesystem();
+	if (!root) {
+		return false;
+	}
+
+	// Iterative DFS; explicit stack so a pathological tree can never blow the
+	// C++ call stack.
+	LocalVector<EditorFileSystemDirectory *> stack;
+	stack.push_back(root);
+	while (!stack.is_empty()) {
+		EditorFileSystemDirectory *dir = stack[stack.size() - 1];
+		stack.remove_at(stack.size() - 1);
+
+		const int file_count = dir->get_file_count();
+		for (int i = 0; i < file_count; i++) {
+			r_scanned_count++;
+			const String path = dir->get_file_path(i);
+			if (p_query.is_empty() || path.findn(p_query) != -1) {
+				if (r_files.size() >= p_max_files) {
+					r_truncated = true;
+					return true;
+				}
+				r_files.push_back(path);
+			}
+		}
+		for (int i = dir->get_subdir_count() - 1; i >= 0; i--) {
+			stack.push_back(dir->get_subdir(i));
+		}
+	}
+	return true;
+}
+
+void SolersObservationService::_collect_project_files(const String &p_dir, const String &p_query, int p_max_files, Array &r_files, int &r_scanned_count, bool &r_truncated, uint64_t p_deadline_msec) const {
 	if (r_files.size() >= p_max_files) {
+		r_truncated = true;
+		return;
+	}
+	if (OS::get_singleton()->get_ticks_msec() >= p_deadline_msec) {
 		r_truncated = true;
 		return;
 	}
@@ -99,7 +150,10 @@ void SolersObservationService::_collect_project_files(const String &p_dir, const
 		const String path = p_dir.path_join(entry).replace_char('\\', '/');
 		if (dir->current_is_dir()) {
 			if (entry != ".godot" && entry != ".git" && entry != "__pycache__") {
-				_collect_project_files(path, p_query, p_max_files, r_files, r_scanned_count, r_truncated);
+				_collect_project_files(path, p_query, p_max_files, r_files, r_scanned_count, r_truncated, p_deadline_msec);
+				if (r_truncated) {
+					break;
+				}
 			}
 		} else {
 			r_scanned_count++;
@@ -110,6 +164,10 @@ void SolersObservationService::_collect_project_files(const String &p_dir, const
 					break;
 				}
 			}
+		}
+		if (OS::get_singleton()->get_ticks_msec() >= p_deadline_msec) {
+			r_truncated = true;
+			break;
 		}
 		entry = dir->get_next();
 	}
@@ -126,7 +184,7 @@ Dictionary SolersObservationService::_serialize_node(Node *p_node, Node *p_edite
 	node_data["valid"] = true;
 	node_data["name"] = p_node->get_name();
 	node_data["type"] = p_node->get_class();
-	node_data["path"] = String(p_node->get_path());
+	node_data["path"] = p_node->is_inside_tree() ? String(p_node->get_path()) : String(p_node->get_name());
 	node_data["scene_file_path"] = p_node->get_scene_file_path();
 	node_data["child_count"] = p_node->get_child_count();
 
@@ -140,7 +198,7 @@ Dictionary SolersObservationService::_serialize_node(Node *p_node, Node *p_edite
 
 	Node *owner = p_node->get_owner();
 	if (owner) {
-		node_data["owner_path"] = String(owner->get_path());
+		node_data["owner_path"] = owner->is_inside_tree() ? String(owner->get_path()) : String(owner->get_name());
 	}
 
 	if (p_depth >= p_max_depth) {
@@ -160,6 +218,56 @@ Dictionary SolersObservationService::_serialize_node(Node *p_node, Node *p_edite
 		node_data["children_truncated_count"] = child_count - child_limit;
 	}
 
+	return node_data;
+}
+
+static void _skip_remote_node(const LocalVector<SceneDebuggerTree::RemoteNode> &p_nodes, int &r_index) {
+	if (r_index >= p_nodes.size()) {
+		return;
+	}
+	const int child_count = p_nodes[r_index++].child_count;
+	for (int i = 0; i < child_count; i++) {
+		_skip_remote_node(p_nodes, r_index);
+	}
+}
+
+static Dictionary _serialize_remote_node(const LocalVector<SceneDebuggerTree::RemoteNode> &p_nodes, int &r_index, int p_depth, int p_max_depth, int p_max_children_per_node) {
+	Dictionary node_data;
+	if (r_index >= p_nodes.size()) {
+		node_data["valid"] = false;
+		return node_data;
+	}
+	const SceneDebuggerTree::RemoteNode &node = p_nodes[r_index++];
+	node_data["valid"] = true;
+	node_data["name"] = node.name;
+	node_data["type"] = node.type_name;
+	node_data["id"] = String::num_uint64((uint64_t)node.id);
+	node_data["scene_file_path"] = node.scene_file_path;
+	node_data["child_count"] = node.child_count;
+	if (node.view_flags & SceneDebuggerTree::RemoteNode::VIEW_HAS_VISIBLE_METHOD) {
+		node_data["visible"] = (node.view_flags & SceneDebuggerTree::RemoteNode::VIEW_VISIBLE) != 0;
+		node_data["visible_in_tree"] = (node.view_flags & SceneDebuggerTree::RemoteNode::VIEW_VISIBLE_IN_TREE) != 0;
+	}
+	if (p_depth >= p_max_depth) {
+		node_data["children_truncated_by_depth"] = node.child_count > 0;
+		for (int i = 0; i < node.child_count; i++) {
+			_skip_remote_node(p_nodes, r_index);
+		}
+		return node_data;
+	}
+	Array children;
+	const int child_limit = MIN(node.child_count, MAX(0, p_max_children_per_node));
+	for (int i = 0; i < node.child_count; i++) {
+		if (i < child_limit) {
+			children.push_back(_serialize_remote_node(p_nodes, r_index, p_depth + 1, p_max_depth, p_max_children_per_node));
+		} else {
+			_skip_remote_node(p_nodes, r_index);
+		}
+	}
+	node_data["children"] = children;
+	if (node.child_count > child_limit) {
+		node_data["children_truncated_count"] = node.child_count - child_limit;
+	}
 	return node_data;
 }
 
@@ -205,16 +313,28 @@ Dictionary SolersObservationService::get_project_settings_summary() const {
 	return summary;
 }
 
+// Disk-walk fallback budget: the editor index covers every normal case, so
+// the fallback only runs during very early startup; it must never be able to
+// freeze the editor regardless of project size.
+static constexpr uint64_t SOLERS_FILE_WALK_BUDGET_MSEC = 250;
+// Path lists are fed back into the model context; keep them bounded.
+static constexpr int SOLERS_FILE_LIST_HARD_CAP = 2000;
+
 Dictionary SolersObservationService::list_project_files(int p_max_files) const {
 	Dictionary result;
 	Array files;
 	int scanned_count = 0;
 	bool truncated = false;
-	_collect_project_files("res://", String(), CLAMP(p_max_files, 0, 10000), files, scanned_count, truncated);
+	const int max_files = CLAMP(p_max_files, 1, SOLERS_FILE_LIST_HARD_CAP);
+	const bool indexed = _collect_project_files_indexed(String(), max_files, files, scanned_count, truncated);
+	if (!indexed) {
+		_collect_project_files("res://", String(), max_files, files, scanned_count, truncated, OS::get_singleton()->get_ticks_msec() + SOLERS_FILE_WALK_BUDGET_MSEC);
+	}
 	result["files"] = files;
 	result["count"] = files.size();
 	result["scanned_count"] = scanned_count;
 	result["truncated"] = truncated;
+	result["source"] = indexed ? "editor_index" : "disk_walk";
 	return result;
 }
 
@@ -222,21 +342,28 @@ Dictionary SolersObservationService::search_project_files(const String &p_query,
 	Dictionary result;
 	const String query = p_query.strip_edges();
 	if (query.is_empty()) {
-		result["ok"] = false;
-		result["error"] = "Query is empty.";
+		result = list_project_files(p_max_files);
+		result["ok"] = true;
+		result["query"] = String();
+		result["mode"] = "list_all";
 		return result;
 	}
 
 	Array files;
 	int scanned_count = 0;
 	bool truncated = false;
-	_collect_project_files("res://", query, CLAMP(p_max_files, 0, 10000), files, scanned_count, truncated);
+	const int max_files = CLAMP(p_max_files, 1, SOLERS_FILE_LIST_HARD_CAP);
+	const bool indexed = _collect_project_files_indexed(query, max_files, files, scanned_count, truncated);
+	if (!indexed) {
+		_collect_project_files("res://", query, max_files, files, scanned_count, truncated, OS::get_singleton()->get_ticks_msec() + SOLERS_FILE_WALK_BUDGET_MSEC);
+	}
 	result["ok"] = true;
 	result["query"] = query;
 	result["files"] = files;
 	result["count"] = files.size();
 	result["scanned_count"] = scanned_count;
 	result["truncated"] = truncated;
+	result["source"] = indexed ? "editor_index" : "disk_walk";
 	return result;
 }
 
@@ -360,14 +487,58 @@ Dictionary SolersObservationService::get_editor_logs(int p_max_messages) const {
 	return result;
 }
 
-Dictionary SolersObservationService::get_editor_snapshot(int p_max_scene_depth, int p_max_children_per_node) const {
+Dictionary SolersObservationService::get_editor_snapshot(int p_max_scene_depth, int p_max_children_per_node, bool p_include_remote_scene) const {
 	Dictionary snapshot;
-	snapshot["project"] = get_project_info();
+	const Dictionary project = get_project_info();
+	snapshot["project"] = project;
+	snapshot["main_scene"] = project.get("main_scene", String());
 	snapshot["project_settings"] = get_project_settings_summary();
 	snapshot["open_scenes"] = get_open_scenes(1, p_max_children_per_node);
 	snapshot["scene_tree"] = get_scene_tree(p_max_scene_depth, p_max_children_per_node);
 	snapshot["selection"] = get_selection(1, p_max_children_per_node);
 	snapshot["runtime"] = get_runtime_status();
 	snapshot["editor_log"] = get_editor_logs(40);
+
+	Dictionary file_index = list_project_files(96);
+	const Array paths = file_index.get("files", Array());
+	Dictionary extensions;
+	for (int i = 0; i < paths.size(); i++) {
+		const String path = paths[i];
+		String ext = path.get_extension().to_lower();
+		if (ext.is_empty()) {
+			ext = "<none>";
+		}
+		extensions[ext] = (int)extensions.get(ext, 0) + 1;
+	}
+	file_index["extension_counts"] = extensions;
+	snapshot["file_index"] = file_index;
+	if (p_include_remote_scene) {
+		EditorInterface *editor_interface = EditorInterface::get_singleton();
+		if (!editor_interface || !editor_interface->is_playing_scene()) {
+			snapshot["remote_scene"] = Variant();
+			snapshot["remote_scene_reason"] = "not_playing";
+		} else {
+			EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
+			ScriptEditorDebugger *debugger = debugger_node ? debugger_node->get_current_debugger() : nullptr;
+			const SceneDebuggerTree *remote_tree = debugger ? debugger->get_remote_tree() : nullptr;
+			if (!remote_tree) {
+				if (debugger) {
+					debugger->request_remote_tree();
+				}
+				snapshot["remote_scene"] = Variant();
+				snapshot["remote_scene_reason"] = "unavailable";
+			} else {
+				LocalVector<SceneDebuggerTree::RemoteNode> nodes;
+				for (const SceneDebuggerTree::RemoteNode &node : remote_tree->nodes) {
+					nodes.push_back(node);
+				}
+				int index = 0;
+				Dictionary remote;
+				remote["node_count"] = nodes.size();
+				remote["root"] = nodes.is_empty() ? Dictionary() : _serialize_remote_node(nodes, index, 0, p_max_scene_depth, p_max_children_per_node);
+				snapshot["remote_scene"] = remote;
+			}
+		}
+	}
 	return snapshot;
 }

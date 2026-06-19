@@ -48,6 +48,11 @@ protected:
 
 public:
 	Dictionary get_resource_info(const Dictionary &p_args) const;
+	Dictionary create_resource(const Dictionary &p_args) const;
+	Dictionary get_resource_property(const Dictionary &p_args) const;
+	Dictionary set_resource_property(const Dictionary &p_args) const;
+	Dictionary call_resource_method(const Dictionary &p_args) const;
 	Dictionary list_export_presets(const Dictionary &p_args) const;
 	Dictionary validate_export_presets(const Dictionary &p_args) const;
+	Dictionary run_export_preset(const Dictionary &p_args) const;
 };
