@@ -49,8 +49,11 @@ class ProjectDialog;
 class ProjectList;
 class QuickSettingsDialog;
 class RichTextLabel;
+class SolersAgentRuntime;
 class SolersCategoryCard;
+class SolersDock;
 class TabContainer;
+class Tree;
 class VBoxContainer;
 
 class ProjectManager : public Control {
@@ -89,14 +92,19 @@ class ProjectManager : public Control {
 
 	EditorTitleBar *title_bar = nullptr;
 	Control *left_menu_spacer = nullptr;
-	Control *left_spacer = nullptr;
 	Control *right_menu_spacer = nullptr;
-	Control *right_spacer = nullptr;
 	Button *title_bar_logo = nullptr;
-	HBoxContainer *main_view_toggles = nullptr;
+	PanelContainer *shell_sidebar_panel = nullptr;
+	VBoxContainer *main_view_toggles = nullptr;
+	Button *shell_new_session_button = nullptr;
+	Button *shell_project_button = nullptr;
+	Tree *shell_tree = nullptr;
 	Button *quick_settings_button = nullptr;
+	String shell_project_path;
+	bool shell_tree_rebuilding = false;
 
 	enum MainViewTab {
+		MAIN_VIEW_HOME,
 		MAIN_VIEW_PROJECTS,
 		MAIN_VIEW_ASSETLIB,
 		MAIN_VIEW_AI, // Solers: BYOK AI model configuration.
@@ -113,9 +121,16 @@ class ProjectManager : public Control {
 	Button *_add_main_view(MainViewTab p_id, const String &p_name, const Ref<Texture2D> &p_icon, Control *p_view_control);
 	void _set_main_view_icon(MainViewTab p_id, const Ref<Texture2D> &p_icon);
 	void _select_main_view(int p_id);
+	void _rebuild_shell_tree();
+	void _shell_tree_item_selected();
+	void _shell_new_session_pressed();
+	void _shell_project_pressed();
+	void _set_shell_project_path(const String &p_project_path);
 
 	VBoxContainer *local_projects_vb = nullptr;
 	EditorAssetLibrary *asset_library = nullptr;
+	SolersAgentRuntime *solers_agent_runtime = nullptr;
+	SolersDock *solers_home_dock = nullptr;
 
 	EditorAbout *about_dialog = nullptr;
 

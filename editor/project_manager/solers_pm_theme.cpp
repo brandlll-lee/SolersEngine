@@ -303,6 +303,37 @@ void SolersPMTheme::apply(const Ref<Theme> &p_theme) {
 		p_theme->set_color(SNAME("font_hover_pressed_color"), "PMNavButton", t.text);
 		p_theme->set_color(SNAME("font_focus_color"), "PMNavButton", t.text);
 
+		p_theme->set_type_variation("PMShellAction", "Button");
+		Ref<StyleBoxFlat> action_normal = _solers_flat(Color(0, 0, 0, 0), rr, Color(), 0, -1.0f);
+		action_normal->set_content_margin(SIDE_LEFT, 10 * EDSCALE);
+		action_normal->set_content_margin(SIDE_RIGHT, 10 * EDSCALE);
+		action_normal->set_content_margin(SIDE_TOP, 4 * EDSCALE);
+		action_normal->set_content_margin(SIDE_BOTTOM, 4 * EDSCALE);
+
+		Ref<StyleBoxFlat> action_hover = action_normal->duplicate();
+		action_hover->set_bg_color(Color(1, 1, 1, 0.045f));
+		Ref<StyleBoxFlat> action_pressed = action_normal->duplicate();
+		action_pressed->set_bg_color(Color(1, 1, 1, 0.075f));
+		Ref<StyleBoxFlat> action_focus = action_normal->duplicate();
+		action_focus->set_draw_center(false);
+		action_focus->set_border_color(Color(t.accent.r, t.accent.g, t.accent.b, 0.45f));
+		action_focus->set_border_width_all(hair);
+
+		p_theme->set_stylebox(SNAME("normal"), "PMShellAction", action_normal);
+		p_theme->set_stylebox(SNAME("hover"), "PMShellAction", action_hover);
+		p_theme->set_stylebox(SNAME("pressed"), "PMShellAction", action_pressed);
+		p_theme->set_stylebox(SNAME("hover_pressed"), "PMShellAction", action_pressed->duplicate());
+		p_theme->set_stylebox(SNAME("disabled"), "PMShellAction", action_normal->duplicate());
+		p_theme->set_stylebox(SNAME("focus"), "PMShellAction", action_focus);
+		p_theme->set_color(SNAME("font_color"), "PMShellAction", Color(t.text_dim.r, t.text_dim.g, t.text_dim.b, 0.72f));
+		p_theme->set_color(SNAME("font_hover_color"), "PMShellAction", t.text);
+		p_theme->set_color(SNAME("font_pressed_color"), "PMShellAction", t.text);
+		p_theme->set_color(SNAME("font_hover_pressed_color"), "PMShellAction", t.text);
+		p_theme->set_color(SNAME("font_focus_color"), "PMShellAction", t.text);
+		p_theme->set_color(SNAME("icon_normal_color"), "PMShellAction", Color(t.text_dim.r, t.text_dim.g, t.text_dim.b, 0.72f));
+		p_theme->set_color(SNAME("icon_hover_color"), "PMShellAction", t.text);
+		p_theme->set_color(SNAME("icon_pressed_color"), "PMShellAction", t.text);
+
 		p_theme->set_type_variation("PMNavHeader", "Label");
 		p_theme->set_color(SNAME("font_color"), "PMNavHeader", Color(t.text_dim.r, t.text_dim.g, t.text_dim.b, 0.45));
 		p_theme->set_font_size(SNAME("font_size"), "PMNavHeader", MAX(1, (int)(11 * EDSCALE)));
@@ -313,6 +344,40 @@ void SolersPMTheme::apply(const Ref<Theme> &p_theme) {
 		header_pad->set_content_margin(SIDE_TOP, 10 * EDSCALE);
 		header_pad->set_content_margin(SIDE_BOTTOM, 2 * EDSCALE);
 		p_theme->set_stylebox(SNAME("normal"), "PMNavHeader", header_pad);
+
+		p_theme->set_type_variation("SolersShellTree", "Tree");
+		const int row_radius = MAX(rr * 3, (int)(6 * EDSCALE));
+		Ref<StyleBoxFlat> tree_panel = _solers_flat(Color(0, 0, 0, 0), 0, Color(), 0, 0);
+		Ref<StyleBoxFlat> tree_hover = _solers_flat(Color(1, 1, 1, 0.045f), row_radius, Color(), 0, 0);
+		Ref<StyleBoxFlat> tree_selected = _solers_flat(Color(1, 1, 1, 0.085f), row_radius, Color(), 0, 0);
+		Ref<StyleBoxFlat> tree_focus = tree_selected->duplicate();
+
+		p_theme->set_stylebox(SNAME("panel"), "SolersShellTree", tree_panel);
+		p_theme->set_stylebox(SNAME("hovered"), "SolersShellTree", tree_hover);
+		p_theme->set_stylebox(SNAME("hovered_dimmed"), "SolersShellTree", tree_hover->duplicate());
+		p_theme->set_stylebox(SNAME("selected"), "SolersShellTree", tree_selected);
+		p_theme->set_stylebox(SNAME("selected_focus"), "SolersShellTree", tree_focus);
+		p_theme->set_stylebox(SNAME("hovered_selected"), "SolersShellTree", tree_selected->duplicate());
+		p_theme->set_stylebox(SNAME("hovered_selected_focus"), "SolersShellTree", tree_selected->duplicate());
+		p_theme->set_color(SNAME("font_color"), "SolersShellTree", t.text_dim);
+		p_theme->set_color(SNAME("font_hovered_color"), "SolersShellTree", t.text);
+		p_theme->set_color(SNAME("font_hovered_dimmed_color"), "SolersShellTree", t.text_dim);
+		p_theme->set_color(SNAME("font_selected_color"), "SolersShellTree", t.text);
+		p_theme->set_color(SNAME("font_hovered_selected_color"), "SolersShellTree", t.text);
+		p_theme->set_color(SNAME("guide_color"), "SolersShellTree", Color(0, 0, 0, 0));
+		p_theme->set_color(SNAME("relationship_line_color"), "SolersShellTree", Color(0, 0, 0, 0));
+		p_theme->set_constant(SNAME("v_separation"), "SolersShellTree", 2 * EDSCALE);
+		p_theme->set_constant(SNAME("h_separation"), "SolersShellTree", 6 * EDSCALE);
+		p_theme->set_constant(SNAME("item_margin"), "SolersShellTree", 18 * EDSCALE);
+		p_theme->set_constant(SNAME("inner_item_margin_top"), "SolersShellTree", 4 * EDSCALE);
+		p_theme->set_constant(SNAME("inner_item_margin_bottom"), "SolersShellTree", 4 * EDSCALE);
+		p_theme->set_constant(SNAME("inner_item_margin_left"), "SolersShellTree", 8 * EDSCALE);
+		p_theme->set_constant(SNAME("inner_item_margin_right"), "SolersShellTree", 8 * EDSCALE);
+		p_theme->set_constant(SNAME("draw_guides"), "SolersShellTree", 0);
+		p_theme->set_constant(SNAME("draw_relationship_lines"), "SolersShellTree", 0);
+		p_theme->set_constant(SNAME("relationship_line_width"), "SolersShellTree", 0);
+		p_theme->set_constant(SNAME("outline_size"), "SolersShellTree", 0);
+		p_theme->set_font_size(SNAME("font_size"), "SolersShellTree", MAX(10, p_theme->get_default_font_size() - (int)MAX(1.0f, EDSCALE)));
 	}
 
 	// 6) Card thumbnail recess (PMCardThumb) — the tile's image well. Near-black
