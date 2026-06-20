@@ -407,6 +407,10 @@ void SolersDock::_on_model_chip_pressed() {
 }
 
 void SolersDock::_on_new_chat_pressed() {
+	start_new_chat();
+}
+
+void SolersDock::start_new_chat() {
 	chat_log = String();
 	if (agent_session) {
 		agent_session->reset_conversation();

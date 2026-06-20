@@ -143,6 +143,7 @@ public:
 	void set_services(SolersObservationService *p_observation_service, SolersToolRegistry *p_tool_registry, SolersActionTimeline *p_action_timeline, SolersPermissionManager *p_permission_manager, SolersMCPAdapter *p_mcp_adapter, SolersRpcServer *p_rpc_server, SolersSettingsService *p_settings_service);
 	void make_visible();
 	void set_agent_session(SolersAgentSession *p_agent_session);
+	void start_new_chat();
 
 	SolersDock();
 	~SolersDock();

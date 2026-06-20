@@ -101,8 +101,12 @@ class SolersAgentSession : public Object {
 	uint64_t last_text_delta_msec = 0;
 	int max_tool_iterations = 12;
 	bool force_final_answer = false;
+	String project_path;
+	String session_id;
 
 	String _default_system_prompt() const;
+	String _make_session_id() const;
+	void _stamp_transcript_event(Dictionary &r_event) const;
 	Array _collect_tools() const;
 	Dictionary _build_request() const;
 	Dictionary _redacted_request_graph(const Dictionary &p_request, const Dictionary &p_profile) const;
@@ -139,6 +143,7 @@ public:
 	void poll();
 	void abort();
 	void reset_conversation();
+	void set_project_path(const String &p_project_path);
 	Dictionary get_status() const;
 	bool is_running() const { return running; }
 	bool is_executing_tool() const { return running && phase == PHASE_TOOL_EXECUTING; }

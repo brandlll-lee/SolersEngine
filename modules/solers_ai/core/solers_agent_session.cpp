@@ -101,11 +101,21 @@ void SolersAgentSession::_record(const String &p_event, const Dictionary &p_payl
 	}
 }
 
+String SolersAgentSession::_make_session_id() const {
+	return OS::get_singleton()->get_unique_id() + "-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
+}
+
+void SolersAgentSession::_stamp_transcript_event(Dictionary &r_event) const {
+	r_event["project_path"] = project_path;
+	r_event["session_id"] = session_id;
+}
+
 void SolersAgentSession::_write_transcript_message(const String &p_role, const String &p_content) const {
 	Dictionary event;
 	event["turn_id"] = turn_id;
 	event["role"] = p_role;
 	event["content"] = _transcript_text(p_content, context_window);
+	_stamp_transcript_event(event);
 	solers_transcript_write(event);
 }
 
@@ -121,6 +131,7 @@ void SolersAgentSession::_write_transcript_tool(const String &p_canonical_name, 
 	} else {
 		event["args"] = p_args;
 	}
+	_stamp_transcript_event(event);
 	solers_transcript_write(event);
 }
 
@@ -854,7 +865,22 @@ void SolersAgentSession::reset_conversation() {
 	Dictionary event;
 	event["role"] = "session_boundary";
 	event["reason"] = "reset";
+	_stamp_transcript_event(event);
 	solers_transcript_write(event);
+
+	session_id = _make_session_id();
+
+	Dictionary start_event;
+	start_event["role"] = "session_start";
+	start_event["pid"] = OS::get_singleton()->get_process_id();
+	start_event["wall"] = Time::get_singleton()->get_unix_time_from_system();
+	start_event["unique_id"] = OS::get_singleton()->get_unique_id();
+	_stamp_transcript_event(start_event);
+	solers_transcript_write(start_event);
+}
+
+void SolersAgentSession::set_project_path(const String &p_project_path) {
+	project_path = p_project_path;
 }
 
 Dictionary SolersAgentSession::get_status() const {
@@ -868,6 +894,8 @@ Dictionary SolersAgentSession::get_status() const {
 	status["max_tool_iterations"] = max_tool_iterations;
 	status["context_window"] = context_window;
 	status["max_output_tokens"] = max_output_tokens;
+	status["project_path"] = project_path;
+	status["session_id"] = session_id;
 	if (context_manager) {
 		status["context_tokens"] = context_manager->get_last_estimated_tokens();
 		status["prune_count"] = context_manager->get_prune_count();
@@ -877,6 +905,7 @@ Dictionary SolersAgentSession::get_status() const {
 }
 
 SolersAgentSession::SolersAgentSession() {
+	session_id = _make_session_id();
 	protocol_registry = memnew(SolersLLMProtocolRegistry);
 	protocol_registry->register_builtin_protocols();
 	provider_catalog = memnew(SolersLLMProviderCatalog);
@@ -893,6 +922,7 @@ SolersAgentSession::SolersAgentSession() {
 	event["pid"] = OS::get_singleton()->get_process_id();
 	event["wall"] = Time::get_singleton()->get_unix_time_from_system();
 	event["unique_id"] = OS::get_singleton()->get_unique_id();
+	_stamp_transcript_event(event);
 	solers_transcript_write(event);
 }
 
