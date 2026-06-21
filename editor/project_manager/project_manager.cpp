@@ -56,7 +56,6 @@
 #include "editor/project_manager/solers_pm_cards.h"
 #include "editor/project_manager/solers_pm_ai_view.h"
 #include "editor/project_manager/solers_pm_theme.h"
-#include "editor/run/embedded_process.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
 #include "editor/themes/editor_theme_manager.h"
@@ -73,6 +72,7 @@
 #include "scene/gui/panel_container.h"
 #include "scene/gui/rich_text_label.h"
 #include "scene/gui/separator.h"
+#include "scene/gui/split_container.h"
 #include "scene/gui/tab_container.h"
 #include "scene/gui/tree.h"
 #include "scene/main/window.h"
@@ -673,66 +673,35 @@ void ProjectManager::_shell_run_project_pressed() {
 }
 
 void ProjectManager::_load_shell_editor(const String &p_project_path) {
-	if (!shell_editor_process) {
-		return;
-	}
-	if (!DisplayServer::get_singleton()->has_feature(DisplayServer::FEATURE_WINDOW_EMBEDDING)) {
-		_show_error(TTR("This display server cannot embed the editor. Use Open Classic Editor for this project."));
-		return;
-	}
-	if (p_project_path == active_editor_project_path && shell_editor_process->get_embedded_pid() != 0) {
-		shell_workspace_collapsed = false;
-		if (shell_workspace_panel) {
-			shell_workspace_panel->show();
-		}
-		main_view_container->set_tab_hidden(main_view_container->get_tab_idx_from_control(shell_editor_process), false);
-		_select_main_view(MAIN_VIEW_EDITOR);
-		return;
-	}
-
-	List<String> args;
-	for (const String &a : Main::get_forwardable_cli_arguments(Main::CLI_SCOPE_TOOL)) {
-		args.push_back(a);
-	}
-
-	args.push_back("--path");
-	args.push_back(p_project_path);
-	args.push_back("--editor");
-
-	if (open_in_recovery_mode) {
-		args.push_back("--recovery-mode");
-	}
-	if (open_in_verbose_mode) {
-		args.push_back("--verbose");
-	}
-
-	OS::ProcessID pid = 0;
-	Error err = OS::get_singleton()->create_instance(args, &pid);
-
-	if (err != OK || pid == 0) {
-		_show_error(vformat(TTR("Can't load editor for project at '%s'."), p_project_path));
-		ERR_PRINT(vformat("Failed to start an embedded editor instance for the project at '%s', error code %d.", p_project_path, err));
+	if (!main_view_container || !main_view_map.has(MAIN_VIEW_EDITOR)) {
 		return;
 	}
 
 	active_editor_project_path = p_project_path;
-	shell_editor_process->embed_process(pid);
+	_refresh_shell_editor_status();
+
 	shell_workspace_collapsed = false;
 	if (shell_workspace_panel) {
 		shell_workspace_panel->show();
 	}
-	main_view_container->set_tab_hidden(main_view_container->get_tab_idx_from_control(shell_editor_process), false);
+	main_view_container->set_tab_hidden(main_view_container->get_tab_idx_from_control(main_view_map[MAIN_VIEW_EDITOR]), false);
 	_select_main_view(MAIN_VIEW_EDITOR);
 	_refresh_shell_project_panel();
 }
 
-void ProjectManager::_shell_editor_embedding_failed() {
-	active_editor_project_path = String();
-	if (main_view_container && shell_editor_process) {
-		main_view_container->set_tab_hidden(main_view_container->get_tab_idx_from_control(shell_editor_process), true);
+void ProjectManager::_refresh_shell_editor_status() {
+	if (!shell_editor_status) {
+		return;
 	}
-	_refresh_shell_project_panel();
-	_show_error(TTR("The editor process could not be embedded. Use Open Classic Editor for this project."));
+
+	shell_editor_status->clear();
+	if (active_editor_project_path.is_empty()) {
+		shell_editor_status->add_text(TTR("Select a project and click Load Editor."));
+		return;
+	}
+
+	shell_editor_status->add_text(vformat(TTR("Editor workspace selected:\n%s\n\n"), active_editor_project_path));
+	shell_editor_status->add_text(TTR("Load Editor now stays in this window. Native Scene, Script, Files, Inspector, Run, and Logs tabs will appear here after the same-process editor workspace is mounted.\n\nUse Open Classic Editor when you need the full editor today."));
 }
 
 void ProjectManager::_refresh_shell_project_panel() {
@@ -767,9 +736,9 @@ void ProjectManager::_refresh_shell_project_panel() {
 		if (shell_project_path.is_empty()) {
 			shell_run_status->add_text(TTR("Select a project session to run it."));
 		} else if (active_editor_project_path == shell_project_path) {
-			shell_run_status->add_text(TTR("This project is loaded in the editor workspace."));
+			shell_run_status->add_text(TTR("This project is selected for the editor workspace."));
 		} else {
-			shell_run_status->add_text(TTR("Load Editor opens the selected project inside this workspace.\nOpen Classic Editor keeps the full old workflow available when needed."));
+			shell_run_status->add_text(TTR("Load Editor keeps this window active and selects the right workspace.\nOpen Classic Editor keeps the full old workflow available when needed."));
 		}
 	}
 	_refresh_shell_logs();
@@ -2335,13 +2304,18 @@ ProjectManager::ProjectManager() {
 	shell_ai_button->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_shell_ai_pressed));
 	main_view_toggles->add_child(shell_ai_button);
 
+	shell_work_split = memnew(HSplitContainer);
+	shell_work_split->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	shell_work_split->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	shell->add_child(shell_work_split);
+
 	shell_chat_panel = memnew(PanelContainer);
 	shell_chat_panel->set_name("SolersChatPanel");
 	shell_chat_panel->set_custom_minimum_size(Size2(420, 0) * EDSCALE);
 	shell_chat_panel->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	shell_chat_panel->set_stretch_ratio(0.42);
 	shell_chat_panel->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	shell->add_child(shell_chat_panel);
+	shell_work_split->add_child(shell_chat_panel);
 
 #ifdef MODULE_SOLERS_AI_ENABLED
 	{
@@ -2360,9 +2334,10 @@ ProjectManager::ProjectManager() {
 
 	shell_workspace_panel = memnew(PanelContainer);
 	shell_workspace_panel->set_name("SolersWorkspacePanel");
+	shell_workspace_panel->set_custom_minimum_size(Size2(320, 0) * EDSCALE);
 	shell_workspace_panel->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	shell_workspace_panel->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	shell->add_child(shell_workspace_panel);
+	shell_work_split->add_child(shell_workspace_panel);
 
 	main_view_container = memnew(TabContainer);
 	main_view_container->set_name("SolersWorkspaceTabs");
@@ -2707,13 +2682,13 @@ ProjectManager::ProjectManager() {
 	}
 
 	{
-		shell_editor_process = memnew(EmbeddedProcess);
-		shell_editor_process->set_name("SolersEditorTab");
-		shell_editor_process->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		shell_editor_process->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-		shell_editor_process->connect("embedding_failed", callable_mp(this, &ProjectManager::_shell_editor_embedding_failed));
-		_add_main_view(MAIN_VIEW_EDITOR, shell_editor_process);
-		main_view_container->set_tab_hidden(main_view_container->get_tab_idx_from_control(shell_editor_process), true);
+		shell_editor_status = memnew(RichTextLabel);
+		shell_editor_status->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		shell_editor_status->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+		shell_editor_status->set_fit_content(true);
+		_add_main_view(MAIN_VIEW_EDITOR, shell_editor_status);
+		main_view_container->set_tab_hidden(main_view_container->get_tab_idx_from_control(shell_editor_status), true);
+		_refresh_shell_editor_status();
 	}
 
 	{
@@ -3077,7 +3052,7 @@ ProjectManager::~ProjectManager() {
 	}
 	solers_home_dock = nullptr;
 #endif
-	shell_editor_process = nullptr;
+	shell_editor_status = nullptr;
 	EditorInspector::cleanup_plugins();
 
 #if defined(MODULE_GDSCRIPT_ENABLED) || defined(MODULE_MONO_ENABLED)

@@ -34,12 +34,12 @@
 #include "scene/gui/scroll_container.h"
 
 class CheckBox;
-class EmbeddedProcess;
 class EditorAbout;
 class EditorAssetLibrary;
 class EditorFileDialog;
 class EditorTitleBar;
 class HFlowContainer;
+class HSplitContainer;
 class LineEdit;
 class MarginContainer;
 class MenuButton;
@@ -98,6 +98,7 @@ class ProjectManager : public Control {
 	PanelContainer *shell_sidebar_panel = nullptr;
 	PanelContainer *shell_chat_panel = nullptr;
 	PanelContainer *shell_workspace_panel = nullptr;
+	HSplitContainer *shell_work_split = nullptr;
 	VBoxContainer *main_view_toggles = nullptr;
 	Label *shell_sidebar_header_label = nullptr;
 	Button *shell_sidebar_toggle_button = nullptr;
@@ -111,7 +112,7 @@ class ProjectManager : public Control {
 	Label *shell_session_label = nullptr;
 	RichTextLabel *shell_run_status = nullptr;
 	RichTextLabel *shell_logs_view = nullptr;
-	EmbeddedProcess *shell_editor_process = nullptr;
+	RichTextLabel *shell_editor_status = nullptr;
 	Button *shell_edit_project_button = nullptr;
 	Button *shell_open_project_button = nullptr;
 	Button *shell_run_project_button = nullptr;
@@ -156,7 +157,7 @@ class ProjectManager : public Control {
 	void _shell_open_project_pressed();
 	void _shell_run_project_pressed();
 	void _load_shell_editor(const String &p_project_path);
-	void _shell_editor_embedding_failed();
+	void _refresh_shell_editor_status();
 	void _refresh_shell_project_panel();
 	void _refresh_shell_logs();
 
