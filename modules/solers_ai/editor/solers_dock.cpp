@@ -40,7 +40,6 @@
 #include "modules/solers_ai/protocol/solers_rpc_server.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
-#include "scene/gui/check_button.h"
 #include "scene/gui/label.h"
 #include "scene/gui/margin_container.h"
 #include "scene/gui/panel_container.h"
@@ -69,8 +68,6 @@ static const Color SOLERS_HAIRLINE = Color(0.95, 0.95, 0.97, 0.035);
 // reads as a discrete card, like Cursor's composer.
 static const Color SOLERS_COMPOSER_BORDER = Color(0.95, 0.95, 0.97, 0.16);
 static const Color SOLERS_ACCENT_ORANGE = Color(1.00, 0.49, 0.20);
-// Alert tint for the access control.
-static const Color SOLERS_ACCENT_AMBER = Color(1.00, 0.49, 0.20);
 // Primary text: high contrast for readability on dark backgrounds.
 static const Color SOLERS_TEXT_PRIMARY = Color(0.961, 0.969, 0.984);
 // Body text: comfortable reading with slightly reduced contrast for hierarchy.
@@ -196,7 +193,7 @@ Control *SolersDock::_create_empty_state() const {
 	// only call to action, so the empty state stays calm and uncluttered.
 	VBoxContainer *state = memnew(VBoxContainer);
 	state->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	state->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	state->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
 	state->set_alignment(BoxContainer::ALIGNMENT_CENTER);
 	state->add_theme_constant_override("separation", 0);
 
@@ -229,7 +226,7 @@ void SolersDock::_refresh_model_chip() {
 	}
 
 	if (!settings_service) {
-		model_chip->set_texts(TTR("Model"), TTR("Unavailable"));
+		model_chip->set_texts(TTR("Model"), String());
 		model_chip->set_tooltip_text(TTR("AI model settings are unavailable."));
 		return;
 	}
@@ -243,12 +240,12 @@ void SolersDock::_refresh_model_chip() {
 	const bool valid = validation.get("valid", false);
 
 	if (model.is_empty()) {
-		model_chip->set_texts(TTR("Model"), TTR("Not set"));
+		model_chip->set_texts(TTR("Model"), String());
 		model_chip->set_tooltip_text(TTR("Choose a provider and model in AI Models."));
 		return;
 	}
 
-	model_chip->set_texts(solers_compact_model_label(model), provider);
+	model_chip->set_texts(solers_compact_model_label(model), String());
 
 	String tooltip = vformat(TTR("Model: %s\nProvider: %s"), model, provider.is_empty() ? TTR("unknown") : provider);
 	if (!base_url.is_empty()) {
@@ -259,10 +256,35 @@ void SolersDock::_refresh_model_chip() {
 }
 
 void SolersDock::_clear_empty_state() {
-	if (empty_state) {
-		empty_state->queue_free();
-		empty_state = nullptr;
+	if (empty_home) {
+		empty_home->hide();
 	}
+	if (chat_scroll) {
+		chat_scroll->show();
+	}
+	if (composer_inset && root_box && composer_inset->get_parent() != root_box) {
+		if (composer_inset->get_parent()) {
+			composer_inset->get_parent()->remove_child(composer_inset);
+		}
+		root_box->add_child(composer_inset);
+	}
+}
+
+void SolersDock::_show_empty_state() {
+	if (!empty_home || !composer_inset) {
+		return;
+	}
+	if (chat_scroll) {
+		chat_scroll->hide();
+	}
+	if (composer_inset->get_parent() != empty_home) {
+		if (composer_inset->get_parent()) {
+			composer_inset->get_parent()->remove_child(composer_inset);
+		}
+		empty_home->add_child(composer_inset);
+	}
+	empty_home->show();
+	_update_chat_input_height();
 }
 
 void SolersDock::_scroll_chat_to_bottom() {
@@ -401,10 +423,11 @@ void SolersDock::_clear_chat_view(bool p_show_empty) {
 			message_list->remove_child(child);
 			child->queue_free();
 		}
-		empty_state = p_show_empty ? _create_empty_state() : nullptr;
-		if (empty_state) {
-			message_list->add_child(empty_state);
-		}
+	}
+	if (p_show_empty) {
+		_show_empty_state();
+	} else {
+		_clear_empty_state();
 	}
 }
 
@@ -668,18 +691,18 @@ void SolersDock::_set_auto_approve_mode(bool p_enabled, bool p_persist) {
 		return;
 	}
 	permission_manager->set_auto_approve_all(p_enabled);
-	if (approval_mode_toggle) {
-		approval_mode_toggle->set_pressed_no_signal(p_enabled);
-		approval_mode_toggle->set_text(p_enabled ? TTR("Auto") : TTR("Manual"));
-		approval_mode_toggle->set_tooltip_text(p_enabled ? TTR("Auto-approve each pending tool call once.") : TTR("Ask before mutating tool calls."));
+	if (approval_mode_chip) {
+		approval_mode_chip->set_texts(p_enabled ? TTR("Auto") : TTR("Manual"), String());
+		approval_mode_chip->set_tooltip_text(p_enabled ? TTR("Auto-approve each pending tool call once.") : TTR("Ask before mutating tool calls."));
 	}
 	if (p_persist && EditorSettings::get_singleton()) {
 		EditorSettings::get_singleton()->set_project_metadata("solers", "auto_approve_mode", p_enabled);
 	}
 }
 
-void SolersDock::_on_auto_approve_toggled(bool p_enabled) {
-	_set_auto_approve_mode(p_enabled, true);
+void SolersDock::_on_auto_approve_chip_pressed() {
+	const bool enabled = permission_manager && permission_manager->is_auto_approve_all();
+	_set_auto_approve_mode(!enabled, true);
 	_sync_approval_panel();
 }
 
@@ -732,11 +755,11 @@ SolersDock::SolersDock() {
 	set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	add_theme_style_override("panel", solers_make_stylebox(SOLERS_BG, Color(0.16, 0.16, 0.17, 1), 0, 0));
 
-	VBoxContainer *root = memnew(VBoxContainer);
-	root->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	root->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	root->add_theme_constant_override("separation", 0);
-	add_child(root);
+	root_box = memnew(VBoxContainer);
+	root_box->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	root_box->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	root_box->add_theme_constant_override("separation", 0);
+	add_child(root_box);
 
 	/* Topbar — chat actions left, workspace controls right. */
 
@@ -747,7 +770,7 @@ SolersDock::SolersDock() {
 	topbar_inset->add_theme_constant_override("margin_right", 10 * EDSCALE);
 	topbar_inset->add_theme_constant_override("margin_top", 5 * EDSCALE);
 	topbar_inset->add_theme_constant_override("margin_bottom", 5 * EDSCALE);
-	root->add_child(topbar_inset);
+	root_box->add_child(topbar_inset);
 
 	HBoxContainer *topbar_content = memnew(HBoxContainer);
 	topbar_content->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -769,13 +792,24 @@ SolersDock::SolersDock() {
 
 	/* Hidden diagnostics labels (kept for _refresh_status plumbing). */
 
+	empty_home = memnew(VBoxContainer);
+	empty_home->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	empty_home->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	empty_home->set_alignment(BoxContainer::ALIGNMENT_CENTER);
+	empty_home->add_theme_constant_override("separation", 28 * EDSCALE);
+	root_box->add_child(empty_home);
+
+	empty_state = _create_empty_state();
+	empty_home->add_child(empty_state);
+
 	/* Conversation timeline. */
 
 	chat_scroll = memnew(ScrollContainer);
 	chat_scroll->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	chat_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	chat_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
-	root->add_child(chat_scroll);
+	chat_scroll->hide();
+	root_box->add_child(chat_scroll);
 
 	message_list = memnew(VBoxContainer);
 	message_list->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -792,9 +826,6 @@ SolersDock::SolersDock() {
 	timeline_inset->add_child(message_list);
 	chat_scroll->add_child(timeline_inset);
 
-	empty_state = _create_empty_state();
-	message_list->add_child(empty_state);
-
 	/* Approval prompt — shown inline above the composer when a tool is blocked. */
 
 	approval_overlay_inset = memnew(MarginContainer);
@@ -804,7 +835,7 @@ SolersDock::SolersDock() {
 	approval_overlay_inset->add_theme_constant_override("margin_top", 0);
 	approval_overlay_inset->add_theme_constant_override("margin_bottom", 8 * EDSCALE);
 	approval_overlay_inset->set_visible(false);
-	root->add_child(approval_overlay_inset);
+	root_box->add_child(approval_overlay_inset);
 
 	approval_overlay_card = _create_panel_card(Color(0.104, 0.106, 0.112), Color(1.0, 0.49, 0.20, 0.34), 14, 12);
 	approval_overlay_card->set_custom_minimum_size(Size2(0, 118 * EDSCALE));
@@ -860,13 +891,13 @@ SolersDock::SolersDock() {
 	approval_box->add_child(approval_submit_button);
 	/* Composer — one floating rounded card owns text entry and actions. */
 
-	MarginContainer *composer_inset = memnew(MarginContainer);
+	composer_inset = memnew(MarginContainer);
 	composer_inset->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	composer_inset->add_theme_constant_override("margin_left", 20 * EDSCALE);
 	composer_inset->add_theme_constant_override("margin_right", 20 * EDSCALE);
 	composer_inset->add_theme_constant_override("margin_top", 4 * EDSCALE);
 	composer_inset->add_theme_constant_override("margin_bottom", 13 * EDSCALE);
-	root->add_child(composer_inset);
+	empty_home->add_child(composer_inset);
 
 	SolersSurface *composer_card = memnew(SolersSurface);
 	composer_card->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -917,24 +948,17 @@ SolersDock::SolersDock() {
 	add_context_button->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
 	composer_toolbar->add_child(add_context_button);
 
-	access_chip = memnew(SolersSelectChip);
-	access_chip->configure(SNAME("alert"), TTR("Full access"), String(), TTR("Agent access"));
-	access_chip->set_accent(SOLERS_ACCENT_AMBER);
-	composer_toolbar->add_child(access_chip);
-
-	approval_mode_toggle = memnew(CheckButton);
-	approval_mode_toggle->set_text(TTR("Manual"));
-	approval_mode_toggle->set_tooltip_text(TTR("Ask before mutating tool calls."));
-	approval_mode_toggle->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
-	approval_mode_toggle->connect(SceneStringName(toggled), callable_mp(this, &SolersDock::_on_auto_approve_toggled));
-	composer_toolbar->add_child(approval_mode_toggle);
+	approval_mode_chip = memnew(SolersSelectChip);
+	approval_mode_chip->configure(SNAME("shield"), TTR("Manual"), String(), TTR("Ask before mutating tool calls."));
+	approval_mode_chip->set_pressed_callback(callable_mp(this, &SolersDock::_on_auto_approve_chip_pressed));
+	composer_toolbar->add_child(approval_mode_chip);
 
 	Control *toolbar_spacer = memnew(Control);
 	toolbar_spacer->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	composer_toolbar->add_child(toolbar_spacer);
 
 	model_chip = memnew(SolersSelectChip);
-	model_chip->configure(StringName(), TTR("Model"), TTR("Not set"), TTR("Model and provider"));
+	model_chip->configure(StringName(), TTR("Model"), String(), TTR("Model and provider"));
 	model_chip->set_pressed_callback(callable_mp(this, &SolersDock::_on_model_chip_pressed));
 	composer_toolbar->add_child(model_chip);
 

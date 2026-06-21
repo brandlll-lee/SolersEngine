@@ -23,7 +23,6 @@
 #include "scene/gui/panel_container.h"
 
 class Button;
-class CheckButton;
 class Control;
 class HBoxContainer;
 class Label;
@@ -55,14 +54,17 @@ class SolersDock : public PanelContainer {
 	ScrollContainer *chat_scroll = nullptr;
 	VBoxContainer *message_list = nullptr;
 	Control *empty_state = nullptr;
+	VBoxContainer *empty_home = nullptr;
+	VBoxContainer *root_box = nullptr;
+	MarginContainer *composer_inset = nullptr;
 	TextEdit *chat_input = nullptr;
 	SolersGlyphButton *panel_button = nullptr;
 	SolersGlyphButton *more_button = nullptr;
 	SolersGlyphButton *add_context_button = nullptr;
 	SolersGlyphButton *send_chat_button = nullptr;
-	SolersSelectChip *access_chip = nullptr;
 	SolersSelectChip *model_chip = nullptr;
 	SolersSelectChip *context_chip = nullptr;
+	SolersSelectChip *approval_mode_chip = nullptr;
 	MarginContainer *approval_overlay_inset = nullptr;
 	PanelContainer *approval_overlay_card = nullptr;
 	Label *approval_tool_label = nullptr;
@@ -71,7 +73,6 @@ class SolersDock : public PanelContainer {
 	Button *approval_always_button = nullptr;
 	Button *approval_reject_button = nullptr;
 	Button *approval_submit_button = nullptr;
-	CheckButton *approval_mode_toggle = nullptr;
 
 	// Live turn state: cells updated in place as session events stream in.
 	SolersThinkingCell *active_thinking_cell = nullptr;
@@ -117,7 +118,7 @@ class SolersDock : public PanelContainer {
 	void _set_approval_choice(const String &p_choice);
 	void _submit_current_approval();
 	void _set_auto_approve_mode(bool p_enabled, bool p_persist);
-	void _on_auto_approve_toggled(bool p_enabled);
+	void _on_auto_approve_chip_pressed();
 	void _on_chat_input_gui_input(const Ref<InputEvent> &p_event);
 	void _on_chat_input_text_changed();
 	void _update_chat_input_height();
@@ -126,6 +127,7 @@ class SolersDock : public PanelContainer {
 	void _on_cell_content_changed();
 	void _scroll_chat_to_bottom();
 	void _clear_empty_state();
+	void _show_empty_state();
 	void _append_user_message(const String &p_message);
 	void _append_error_row(const String &p_text);
 	void _ensure_status_cell(const String &p_status);
