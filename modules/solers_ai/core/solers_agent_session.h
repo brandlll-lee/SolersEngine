@@ -106,6 +106,7 @@ class SolersAgentSession : public Object {
 
 	String _default_system_prompt() const;
 	String _make_session_id() const;
+	Array _read_transcript_messages(const String &p_project_path, const String &p_session_id) const;
 	void _stamp_transcript_event(Dictionary &r_event) const;
 	Array _collect_tools() const;
 	Dictionary _build_request() const;
@@ -144,6 +145,8 @@ public:
 	void abort();
 	void reset_conversation();
 	void set_project_path(const String &p_project_path);
+	void set_session(const String &p_project_path, const String &p_session_id);
+	Array get_messages() const;
 	Dictionary get_status() const;
 	bool is_running() const { return running; }
 	bool is_executing_tool() const { return running && phase == PHASE_TOOL_EXECUTING; }

@@ -98,6 +98,20 @@ void SolersAgentRuntime::set_project_path(const String &p_project_path) {
 	}
 }
 
+void SolersAgentRuntime::set_session(const String &p_project_path, const String &p_session_id) {
+	if (agent_session) {
+		agent_session->set_session(p_project_path, p_session_id);
+	}
+}
+
+Dictionary SolersAgentRuntime::get_status() const {
+	return agent_session ? agent_session->get_status() : Dictionary();
+}
+
+Array SolersAgentRuntime::get_messages() const {
+	return agent_session ? agent_session->get_messages() : Array();
+}
+
 SolersAgentRuntime::~SolersAgentRuntime() {
 	if (tool_registry) {
 		memdelete(tool_registry);

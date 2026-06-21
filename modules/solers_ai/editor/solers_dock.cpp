@@ -35,6 +35,7 @@
 #include "modules/solers_ai/core/solers_tool_registry.h"
 #include "modules/solers_ai/editor/solers_chat_cells.h"
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
+#include "modules/solers_ai/llm/solers_llm_message.h"
 #include "modules/solers_ai/protocol/solers_mcp_adapter.h"
 #include "modules/solers_ai/protocol/solers_rpc_server.h"
 #include "scene/gui/box_container.h"
@@ -386,6 +387,27 @@ void SolersDock::_finish_turn_cells() {
 	_remove_status_cell();
 }
 
+void SolersDock::_clear_chat_view(bool p_show_empty) {
+	chat_log = String();
+	active_thinking_cell = nullptr;
+	active_text_cell = nullptr;
+	status_cell = nullptr;
+	active_tool_group = nullptr;
+	tool_cells_by_id.clear();
+	last_started_tool_cell = nullptr;
+	if (message_list) {
+		while (message_list->get_child_count() > 0) {
+			Node *child = message_list->get_child(0);
+			message_list->remove_child(child);
+			child->queue_free();
+		}
+		empty_state = p_show_empty ? _create_empty_state() : nullptr;
+		if (empty_state) {
+			message_list->add_child(empty_state);
+		}
+	}
+}
+
 void SolersDock::_on_send_chat_pressed() {
 	if (!chat_input) {
 		return;
@@ -402,34 +424,21 @@ void SolersDock::_on_send_chat_pressed() {
 	_submit_chat_prompt(prompt);
 }
 
-void SolersDock::_on_model_chip_pressed() {
-	_append_error_row(TTR("Model settings live in Project Manager -> AI Models."));
+void SolersDock::_on_workspace_toggle_pressed() {
+	if (workspace_toggle_callback.is_valid()) {
+		workspace_toggle_callback.call();
+	}
 }
 
-void SolersDock::_on_new_chat_pressed() {
-	start_new_chat();
+void SolersDock::_on_model_chip_pressed() {
+	_append_error_row(TTR("Model settings live in the left sidebar -> AI Settings."));
 }
 
 void SolersDock::start_new_chat() {
-	chat_log = String();
 	if (agent_session) {
 		agent_session->reset_conversation();
 	}
-	active_thinking_cell = nullptr;
-	active_text_cell = nullptr;
-	status_cell = nullptr;
-	active_tool_group = nullptr;
-	tool_cells_by_id.clear();
-	last_started_tool_cell = nullptr;
-	if (message_list) {
-		while (message_list->get_child_count() > 0) {
-			Node *child = message_list->get_child(0);
-			message_list->remove_child(child);
-			child->queue_free();
-		}
-		empty_state = _create_empty_state();
-		message_list->add_child(empty_state);
-	}
+	_clear_chat_view(true);
 	if (chat_input) {
 		chat_input->set_text("");
 		_update_chat_input_height();
@@ -437,6 +446,30 @@ void SolersDock::start_new_chat() {
 		chat_input->grab_focus();
 	}
 	_refresh_status();
+}
+
+void SolersDock::load_chat_history(const Array &p_messages) {
+	_clear_chat_view(p_messages.is_empty());
+	for (int i = 0; i < p_messages.size(); i++) {
+		const Variant item = p_messages[i];
+		if (item.get_type() != Variant::DICTIONARY) {
+			continue;
+		}
+		const Dictionary message = item;
+		const String role = message.get("role", String());
+		const String content = message.get("content", String());
+		if (content.is_empty()) {
+			continue;
+		}
+		if (role == SolersLLMRole::USER) {
+			_append_user_message(content);
+		} else if (role == SolersLLMRole::ASSISTANT) {
+			_on_agent_assistant_message(content);
+		}
+	}
+	_finish_turn_cells();
+	_refresh_status();
+	callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
 }
 
 void SolersDock::_submit_chat_prompt(const String &p_prompt) {
@@ -688,6 +721,10 @@ void SolersDock::make_visible() {
 	_refresh_status();
 }
 
+void SolersDock::set_workspace_toggle_callback(const Callable &p_callback) {
+	workspace_toggle_callback = p_callback;
+}
+
 SolersDock::SolersDock() {
 	set_name(TTRC("Solers"));
 	set_custom_minimum_size(Size2(520 * EDSCALE, 0));
@@ -701,7 +738,7 @@ SolersDock::SolersDock() {
 	root->add_theme_constant_override("separation", 0);
 	add_child(root);
 
-	/* Topbar — panel toggle left, chat actions right. */
+	/* Topbar — chat actions left, workspace controls right. */
 
 	MarginContainer *topbar_inset = memnew(MarginContainer);
 	topbar_inset->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -717,18 +754,14 @@ SolersDock::SolersDock() {
 	topbar_content->add_theme_constant_override("separation", 4 * EDSCALE);
 	topbar_inset->add_child(topbar_content);
 
-	panel_button = memnew(SolersGlyphButton);
-	panel_button->configure(SNAME("panel"), SolersGlyphButton::SKIN_GHOST, TTR("Solers panel"), 15);
-	topbar_content->add_child(panel_button);
-
 	Control *topbar_spacer = memnew(Control);
 	topbar_spacer->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	topbar_content->add_child(topbar_spacer);
 
-	new_chat_button = memnew(SolersGlyphButton);
-	new_chat_button->configure(SNAME("new_chat"), SolersGlyphButton::SKIN_GHOST, TTR("New chat"), 15);
-	new_chat_button->set_pressed_callback(callable_mp(this, &SolersDock::_on_new_chat_pressed));
-	topbar_content->add_child(new_chat_button);
+	panel_button = memnew(SolersGlyphButton);
+	panel_button->configure(SNAME("panel"), SolersGlyphButton::SKIN_GHOST, TTR("Toggle workspace"), 15);
+	panel_button->set_pressed_callback(callable_mp(this, &SolersDock::_on_workspace_toggle_pressed));
+	topbar_content->add_child(panel_button);
 
 	more_button = memnew(SolersGlyphButton);
 	more_button->configure(SNAME("more"), SolersGlyphButton::SKIN_GHOST, TTR("More"), 15);

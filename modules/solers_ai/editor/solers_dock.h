@@ -19,6 +19,7 @@
 
 #include "core/input/input_event.h"
 #include "core/templates/hash_map.h"
+#include "core/variant/callable.h"
 #include "scene/gui/panel_container.h"
 
 class Button;
@@ -56,7 +57,6 @@ class SolersDock : public PanelContainer {
 	Control *empty_state = nullptr;
 	TextEdit *chat_input = nullptr;
 	SolersGlyphButton *panel_button = nullptr;
-	SolersGlyphButton *new_chat_button = nullptr;
 	SolersGlyphButton *more_button = nullptr;
 	SolersGlyphButton *add_context_button = nullptr;
 	SolersGlyphButton *send_chat_button = nullptr;
@@ -94,12 +94,13 @@ class SolersDock : public PanelContainer {
 	SolersMCPAdapter *mcp_adapter = nullptr;
 	SolersRpcServer *rpc_server = nullptr;
 	SolersSettingsService *settings_service = nullptr;
+	Callable workspace_toggle_callback;
 
 	void _refresh_status();
 	void _refresh_model_chip();
 	void _on_send_chat_pressed();
+	void _on_workspace_toggle_pressed();
 	void _on_model_chip_pressed();
-	void _on_new_chat_pressed();
 	void _submit_chat_prompt(const String &p_prompt);
 	void _on_agent_model_request_started();
 	void _on_agent_assistant_delta(const String &p_text);
@@ -133,6 +134,7 @@ class SolersDock : public PanelContainer {
 	SolersAssistantCell *_ensure_text_cell();
 	void _settle_tool_group();
 	void _finish_turn_cells();
+	void _clear_chat_view(bool p_show_empty);
 	PanelContainer *_create_panel_card(const Color &p_color, const Color &p_border_color, int p_radius = 12, int p_padding = 12) const;
 	Control *_create_empty_state() const;
 
@@ -144,6 +146,8 @@ public:
 	void make_visible();
 	void set_agent_session(SolersAgentSession *p_agent_session);
 	void start_new_chat();
+	void load_chat_history(const Array &p_messages);
+	void set_workspace_toggle_callback(const Callable &p_callback);
 
 	SolersDock();
 	~SolersDock();

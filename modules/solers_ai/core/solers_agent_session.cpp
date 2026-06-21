@@ -30,6 +30,7 @@
 
 #include "solers_agent_session.h"
 
+#include "core/io/file_access.h"
 #include "core/io/json.h"
 #include "core/object/class_db.h"
 #include "core/os/os.h"
@@ -103,6 +104,47 @@ void SolersAgentSession::_record(const String &p_event, const Dictionary &p_payl
 
 String SolersAgentSession::_make_session_id() const {
 	return OS::get_singleton()->get_unique_id() + "-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
+}
+
+Array SolersAgentSession::_read_transcript_messages(const String &p_project_path, const String &p_session_id) const {
+	Array restored;
+	if (p_project_path.is_empty() || p_session_id.is_empty()) {
+		return restored;
+	}
+
+	Ref<FileAccess> file = FileAccess::open("user://solers_ai_transcript.jsonl", FileAccess::READ);
+	if (file.is_null()) {
+		return restored;
+	}
+
+	while (!file->eof_reached()) {
+		const String line = file->get_line().strip_edges();
+		if (line.is_empty()) {
+			continue;
+		}
+		const Variant parsed = JSON::parse_string(line);
+		if (parsed.get_type() != Variant::DICTIONARY) {
+			continue;
+		}
+
+		const Dictionary event = parsed;
+		if (String(event.get("project_path", String())) != p_project_path || String(event.get("session_id", String())) != p_session_id) {
+			continue;
+		}
+
+		const String role = event.get("role", String());
+		const String content = event.get("content", String());
+		if (content.is_empty()) {
+			continue;
+		}
+		if (role == SolersLLMRole::USER) {
+			restored.push_back(SolersLLMMessage::user(content));
+		} else if (role == SolersLLMRole::ASSISTANT) {
+			restored.push_back(SolersLLMMessage::assistant(content, Array()));
+		}
+	}
+
+	return restored;
 }
 
 void SolersAgentSession::_stamp_transcript_event(Dictionary &r_event) const {
@@ -881,6 +923,19 @@ void SolersAgentSession::reset_conversation() {
 
 void SolersAgentSession::set_project_path(const String &p_project_path) {
 	project_path = p_project_path;
+}
+
+void SolersAgentSession::set_session(const String &p_project_path, const String &p_session_id) {
+	abort();
+	project_path = p_project_path;
+	if (!p_session_id.is_empty()) {
+		session_id = p_session_id;
+	}
+	messages = _read_transcript_messages(project_path, session_id);
+}
+
+Array SolersAgentSession::get_messages() const {
+	return messages.duplicate(true);
 }
 
 Dictionary SolersAgentSession::get_status() const {

@@ -9,6 +9,8 @@
 #pragma once
 
 #include "core/string/ustring.h"
+#include "core/variant/array.h"
+#include "core/variant/dictionary.h"
 
 class SolersActionTimeline;
 class SolersAgentSession;
@@ -46,6 +48,9 @@ public:
 	void poll();
 	bool is_running() const;
 	void set_project_path(const String &p_project_path);
+	void set_session(const String &p_project_path, const String &p_session_id);
+	Dictionary get_status() const;
+	Array get_messages() const;
 
 	SolersAgentRuntime();
 	~SolersAgentRuntime();
