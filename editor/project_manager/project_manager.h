@@ -34,6 +34,7 @@
 #include "scene/gui/scroll_container.h"
 
 class CheckBox;
+class EmbeddedProcess;
 class EditorAbout;
 class EditorAssetLibrary;
 class EditorFileDialog;
@@ -95,40 +96,75 @@ class ProjectManager : public Control {
 	Control *right_menu_spacer = nullptr;
 	Button *title_bar_logo = nullptr;
 	PanelContainer *shell_sidebar_panel = nullptr;
+	PanelContainer *shell_chat_panel = nullptr;
+	PanelContainer *shell_workspace_panel = nullptr;
 	VBoxContainer *main_view_toggles = nullptr;
+	Label *shell_sidebar_header_label = nullptr;
+	Button *shell_sidebar_toggle_button = nullptr;
 	Button *shell_new_session_button = nullptr;
 	Button *shell_project_button = nullptr;
+	Button *shell_asset_button = nullptr;
+	Button *shell_ai_button = nullptr;
 	Tree *shell_tree = nullptr;
+	Label *shell_project_name_label = nullptr;
+	Label *shell_project_path_label = nullptr;
+	Label *shell_session_label = nullptr;
+	RichTextLabel *shell_run_status = nullptr;
+	RichTextLabel *shell_logs_view = nullptr;
+	EmbeddedProcess *shell_editor_process = nullptr;
+	Button *shell_edit_project_button = nullptr;
+	Button *shell_open_project_button = nullptr;
+	Button *shell_run_project_button = nullptr;
 	Button *quick_settings_button = nullptr;
 	String shell_project_path;
+	String shell_session_id;
+	String active_editor_project_path;
+	bool open_classic_editor = false;
 	bool shell_tree_rebuilding = false;
+	bool shell_sidebar_collapsed = false;
+	bool shell_workspace_collapsed = false;
 
 	enum MainViewTab {
-		MAIN_VIEW_HOME,
-		MAIN_VIEW_PROJECTS,
-		MAIN_VIEW_ASSETLIB,
-		MAIN_VIEW_AI, // Solers: BYOK AI model configuration.
+		MAIN_VIEW_EDITOR,
+		MAIN_VIEW_RUN,
+		MAIN_VIEW_LOGS,
 		MAIN_VIEW_MAX
 	};
 
-	MainViewTab current_main_view = MAIN_VIEW_PROJECTS;
+	MainViewTab current_main_view = MAIN_VIEW_RUN;
 	HashMap<MainViewTab, Control *> main_view_map;
-	HashMap<MainViewTab, Button *> main_view_toggle_map;
 
-	PanelContainer *main_view_container = nullptr;
-	Ref<ButtonGroup> main_view_toggles_group;
+	TabContainer *main_view_container = nullptr;
 
-	Button *_add_main_view(MainViewTab p_id, const String &p_name, const Ref<Texture2D> &p_icon, Control *p_view_control);
-	void _set_main_view_icon(MainViewTab p_id, const Ref<Texture2D> &p_icon);
+	void _add_main_view(MainViewTab p_id, Control *p_view_control);
 	void _select_main_view(int p_id);
+	void _main_view_tab_changed(int p_tab);
+	void _toggle_shell_sidebar();
+	void _refresh_shell_sidebar();
+	void _toggle_shell_workspace();
+	void _show_shell_chat();
+	void _show_shell_global_view(Control *p_view);
 	void _rebuild_shell_tree();
 	void _shell_tree_item_selected();
 	void _shell_new_session_pressed();
 	void _shell_project_pressed();
-	void _set_shell_project_path(const String &p_project_path);
+	void _shell_asset_pressed();
+	void _shell_ai_pressed();
+	void _set_shell_session(const String &p_project_path, const String &p_session_id);
+	bool _select_shell_project_in_list();
+	void _shell_edit_project_pressed();
+	void _shell_open_project_pressed();
+	void _shell_run_project_pressed();
+	void _load_shell_editor(const String &p_project_path);
+	void _shell_editor_embedding_failed();
+	void _refresh_shell_project_panel();
+	void _refresh_shell_logs();
 
 	VBoxContainer *local_projects_vb = nullptr;
 	EditorAssetLibrary *asset_library = nullptr;
+	Control *shell_asset_view = nullptr;
+	Control *shell_ai_view = nullptr;
+	Control *shell_global_overlay_view = nullptr;
 	SolersAgentRuntime *solers_agent_runtime = nullptr;
 	SolersDock *solers_home_dock = nullptr;
 
