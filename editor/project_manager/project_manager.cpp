@@ -30,6 +30,7 @@
 
 #include "project_manager.h"
 
+#include "core/config/engine.h"
 #include "core/config/project_settings.h"
 #include "core/io/config_file.h"
 #include "core/io/dir_access.h"
@@ -42,6 +43,7 @@
 #include "core/version.h"
 #include "editor/asset_library/asset_library_editor_plugin.h"
 #include "editor/doc/editor_help.h"
+#include "editor/editor_node.h"
 #include "editor/editor_string_names.h"
 #include "editor/gui/editor_about.h"
 #include "editor/gui/editor_file_dialog.h"
@@ -196,7 +198,9 @@ static Vector<SolersShellSessionInfo> _solers_read_shell_sessions(const String &
 void ProjectManager::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_ENTER_TREE: {
-			Engine::get_singleton()->set_editor_hint(false);
+			if (!EditorNode::get_singleton()) {
+				Engine::get_singleton()->set_editor_hint(false);
+			}
 
 			Window *main_window = get_window();
 			if (main_window) {
@@ -677,31 +681,51 @@ void ProjectManager::_load_shell_editor(const String &p_project_path) {
 		return;
 	}
 
-	active_editor_project_path = p_project_path;
-	_refresh_shell_editor_status();
-
-	shell_workspace_collapsed = false;
-	if (shell_workspace_panel) {
-		shell_workspace_panel->show();
-	}
-	main_view_container->set_tab_hidden(main_view_container->get_tab_idx_from_control(main_view_map[MAIN_VIEW_EDITOR]), false);
-	_select_main_view(MAIN_VIEW_EDITOR);
-	_refresh_shell_project_panel();
-}
-
-void ProjectManager::_refresh_shell_editor_status() {
-	if (!shell_editor_status) {
+	if (shell_editor_node) {
+		if (p_project_path != active_editor_project_path) {
+			_show_error(TTR("One project editor is already loaded in this workspace. Use Open Classic Editor for another project."));
+			return;
+		}
+		shell_workspace_collapsed = false;
+		if (shell_workspace_panel) {
+			shell_workspace_panel->show();
+		}
+		main_view_container->set_tab_hidden(main_view_container->get_tab_idx_from_control(main_view_map[MAIN_VIEW_EDITOR]), false);
+		_select_main_view(MAIN_VIEW_EDITOR);
 		return;
 	}
 
-	shell_editor_status->clear();
-	if (active_editor_project_path.is_empty()) {
-		shell_editor_status->add_text(TTR("Select a project and click Load Editor."));
+	if (!FileAccess::exists(p_project_path.path_join("project.godot"))) {
+		_show_error(vformat(TTR("Can't load editor for project at '%s'.\nProject file doesn't exist or is inaccessible."), p_project_path));
 		return;
 	}
 
-	shell_editor_status->add_text(vformat(TTR("Editor workspace selected:\n%s\n\n"), active_editor_project_path));
-	shell_editor_status->add_text(TTR("Load Editor now stays in this window. Native Scene, Script, Files, Inspector, Run, and Logs tabs will appear here after the same-process editor workspace is mounted.\n\nUse Open Classic Editor when you need the full editor today."));
+	List<String> args;
+	for (const String &a : Main::get_forwardable_cli_arguments(Main::CLI_SCOPE_TOOL)) {
+		args.push_back(a);
+	}
+	args.push_back("--path");
+	args.push_back(p_project_path);
+	args.push_back("--editor");
+	args.push_back("--solers-appshell");
+
+	if (open_in_recovery_mode) {
+		args.push_back("--recovery-mode");
+	}
+	if (open_in_verbose_mode) {
+		args.push_back("--verbose");
+	}
+
+#ifdef MODULE_SOLERS_AI_ENABLED
+	if (p_project_path == shell_project_path && !shell_session_id.is_empty()) {
+		OS::get_singleton()->set_environment("SOLERS_SESSION_ID", shell_session_id);
+	}
+#endif
+
+	OS::get_singleton()->set_restart_on_exit(true, args);
+	project_list->project_opening_initiated = true;
+	_dim_window();
+	get_tree()->quit();
 }
 
 void ProjectManager::_refresh_shell_project_panel() {
@@ -2061,9 +2085,11 @@ ProjectManager::ProjectManager() {
 	singleton = this;
 
 	// Turn off some servers we aren't going to be using in the Project Manager.
-	NavigationServer3D::get_singleton()->set_active(false);
-	PhysicsServer3D::get_singleton()->set_active(false);
-	PhysicsServer2D::get_singleton()->set_active(false);
+	if (!EditorNode::get_singleton()) {
+		NavigationServer3D::get_singleton()->set_active(false);
+		PhysicsServer3D::get_singleton()->set_active(false);
+		PhysicsServer2D::get_singleton()->set_active(false);
+	}
 
 	// Initialize settings.
 	{
@@ -2125,7 +2151,9 @@ ProjectManager::ProjectManager() {
 	}
 
 #if defined(MODULE_GDSCRIPT_ENABLED) || defined(MODULE_MONO_ENABLED)
-	EditorHelpHighlighter::create_singleton();
+	if (!EditorNode::get_singleton()) {
+		EditorHelpHighlighter::create_singleton();
+	}
 #endif
 
 	SceneTree::get_singleton()->get_root()->connect("files_dropped", callable_mp(this, &ProjectManager::_files_dropped));
@@ -2682,13 +2710,11 @@ ProjectManager::ProjectManager() {
 	}
 
 	{
-		shell_editor_status = memnew(RichTextLabel);
-		shell_editor_status->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		shell_editor_status->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-		shell_editor_status->set_fit_content(true);
-		_add_main_view(MAIN_VIEW_EDITOR, shell_editor_status);
-		main_view_container->set_tab_hidden(main_view_container->get_tab_idx_from_control(shell_editor_status), true);
-		_refresh_shell_editor_status();
+		shell_editor_host = memnew(Control);
+		shell_editor_host->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		shell_editor_host->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+		_add_main_view(MAIN_VIEW_EDITOR, shell_editor_host);
+		main_view_container->set_tab_hidden(main_view_container->get_tab_idx_from_control(shell_editor_host), true);
 	}
 
 	{
@@ -3043,6 +3069,50 @@ ProjectManager::ProjectManager() {
 	_update_size_limits();
 }
 
+void ProjectManager::mount_shell_editor(EditorNode *p_editor_node) {
+	ERR_FAIL_NULL(p_editor_node);
+	ERR_FAIL_NULL(shell_editor_host);
+
+	if (shell_editor_node == p_editor_node) {
+		_select_main_view(MAIN_VIEW_EDITOR);
+		return;
+	}
+
+	if (shell_editor_node) {
+		_show_error(TTR("One project editor is already loaded in this workspace."));
+		return;
+	}
+
+	shell_editor_node = p_editor_node;
+	if (!shell_editor_node->get_parent()) {
+		add_child(shell_editor_node);
+	}
+
+	shell_editor_gui = shell_editor_node->get_gui_base();
+	ERR_FAIL_NULL(shell_editor_gui);
+
+	if (shell_editor_gui->get_parent()) {
+		shell_editor_gui->get_parent()->remove_child(shell_editor_gui);
+	}
+	shell_editor_host->add_child(shell_editor_gui);
+	shell_editor_gui->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
+
+	active_editor_project_path = ProjectSettings::get_singleton()->get_resource_path();
+	const String solers_session_id = OS::get_singleton()->get_environment("SOLERS_SESSION_ID");
+	_set_shell_session(active_editor_project_path, solers_session_id);
+	if (!solers_session_id.is_empty()) {
+		OS::get_singleton()->unset_environment("SOLERS_SESSION_ID");
+	}
+
+	shell_workspace_collapsed = false;
+	if (shell_workspace_panel) {
+		shell_workspace_panel->show();
+	}
+	main_view_container->set_tab_hidden(main_view_container->get_tab_idx_from_control(main_view_map[MAIN_VIEW_EDITOR]), false);
+	_select_main_view(MAIN_VIEW_EDITOR);
+	_refresh_shell_project_panel();
+}
+
 ProjectManager::~ProjectManager() {
 	singleton = nullptr;
 #ifdef MODULE_SOLERS_AI_ENABLED
@@ -3052,16 +3122,20 @@ ProjectManager::~ProjectManager() {
 	}
 	solers_home_dock = nullptr;
 #endif
-	shell_editor_status = nullptr;
-	EditorInspector::cleanup_plugins();
+	shell_editor_host = nullptr;
+	shell_editor_gui = nullptr;
+	if (!shell_editor_node && !EditorNode::get_singleton()) {
+		EditorInspector::cleanup_plugins();
 
 #if defined(MODULE_GDSCRIPT_ENABLED) || defined(MODULE_MONO_ENABLED)
-	EditorHelpHighlighter::free_singleton();
+		EditorHelpHighlighter::free_singleton();
 #endif
 
-	if (EditorSettings::get_singleton()) {
-		EditorSettings::destroy();
-	}
+		if (EditorSettings::get_singleton()) {
+			EditorSettings::destroy();
+		}
 
-	EditorThemeManager::finalize();
+		EditorThemeManager::finalize();
+	}
+	shell_editor_node = nullptr;
 }

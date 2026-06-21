@@ -208,6 +208,7 @@ static bool accessibility_mode_set = false;
 static bool single_window = false;
 static bool editor = false;
 static bool project_manager = false;
+static bool solers_appshell = false;
 static bool cmdline_tool = false;
 static String locale;
 static String log_file;
@@ -554,6 +555,7 @@ void Main::print_help(const char *p_binary) {
 #ifdef TOOLS_ENABLED
 	print_help_option("-e, --editor", "Start the editor instead of running the scene.\n", CLI_OPTION_AVAILABILITY_EDITOR);
 	print_help_option("-p, --project-manager", "Start the project manager, even if a project is auto-detected.\n", CLI_OPTION_AVAILABILITY_EDITOR);
+	print_help_option("--solers-appshell", "Start Solers AppShell with the active project editor workspace.\n", CLI_OPTION_AVAILABILITY_EDITOR);
 	print_help_option("--recovery-mode", "Start the editor in recovery mode, which disables features that can typically cause startup crashes, such as tool scripts, editor plugins, GDExtension addons, and others.\n", CLI_OPTION_AVAILABILITY_EDITOR);
 	print_help_option("--debug-server <uri>", "Start the editor debug server (<protocol>://<host/IP>[:port], e.g. tcp://127.0.0.1:6007)\n", CLI_OPTION_AVAILABILITY_EDITOR);
 	print_help_option("--dap-port <port>", "Use the specified port for the GDScript Debug Adapter Protocol. Recommended port range [1024, 49151].\n", CLI_OPTION_AVAILABILITY_EDITOR);
@@ -1549,6 +1551,9 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 			editor = true;
 		} else if (arg == "-p" || arg == "--project-manager") { // starts project manager
 			project_manager = true;
+		} else if (arg == "--solers-appshell") {
+			solers_appshell = true;
+			editor = true;
 		} else if (arg == "--recovery-mode") { // Enables recovery mode.
 			recovery_mode = true;
 		} else if (arg == "--debug-server") {
@@ -3969,6 +3974,9 @@ int Main::start() {
 			editor = true;
 		} else if (E->get() == "-p" || E->get() == "--project-manager") {
 			project_manager = true;
+		} else if (E->get() == "--solers-appshell") {
+			solers_appshell = true;
+			editor = true;
 		} else if (E->get() == "--recovery-mode") {
 			recovery_mode = true;
 		} else if (E->get() == "--install-android-build-template") {
@@ -4509,7 +4517,9 @@ int Main::start() {
 			}
 
 			editor_node = memnew(EditorNode);
-			sml->get_root()->add_child(editor_node);
+			if (!solers_appshell) {
+				sml->get_root()->add_child(editor_node);
+			}
 
 			if (!_export_preset.is_empty()) {
 				editor_node->export_preset(_export_preset, positional_arg, export_debug, export_pack_only, install_android_build_template, export_patch, patches);
@@ -4704,7 +4714,7 @@ int Main::start() {
 		}
 
 #ifdef TOOLS_ENABLED
-		if (project_manager) {
+		if (project_manager || solers_appshell) {
 			OS::get_singleton()->benchmark_begin_measure("Startup", "Project Manager");
 			Engine::get_singleton()->set_editor_hint(true);
 
@@ -4714,10 +4724,15 @@ int Main::start() {
 			}
 
 			ProjectManager *pmanager = memnew(ProjectManager);
-			ProgressDialog *progress_dialog = memnew(ProgressDialog);
-			pmanager->add_child(progress_dialog);
+			if (!ProgressDialog::get_singleton()) {
+				ProgressDialog *progress_dialog = memnew(ProgressDialog);
+				pmanager->add_child(progress_dialog);
+			}
 
 			sml->get_root()->add_child(pmanager);
+			if (solers_appshell && editor_node) {
+				pmanager->mount_shell_editor(editor_node);
+			}
 			OS::get_singleton()->benchmark_end_measure("Startup", "Project Manager");
 		}
 
