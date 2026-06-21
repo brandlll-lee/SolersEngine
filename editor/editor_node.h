@@ -55,6 +55,7 @@ class Panel;
 class PanelContainer;
 class RichTextLabel;
 class SubViewport;
+class TabBar;
 class TextureProgressBar;
 class Timer;
 class Translation;
@@ -329,11 +330,6 @@ private:
 	EditorTitleBar *title_bar = nullptr;
 	EditorRunBar *project_run_bar = nullptr;
 	HBoxContainer *right_menu_hb = nullptr;
-	Control *solers_ai_panel_host = nullptr;
-	Control *solers_ai_panel = nullptr;
-	Button *solers_ai_panel_toggle_button = nullptr;
-	Ref<Tween> solers_ai_panel_tween;
-	bool solers_ai_panel_collapsed = false;
 
 	// Spacers to center 2D / 3D / Script buttons.
 	HBoxContainer *left_spacer = nullptr;
@@ -342,6 +338,8 @@ private:
 	Control *menu_btn_spacer = nullptr;
 	MenuButton *main_menu_button = nullptr;
 	MenuBar *main_menu_bar = nullptr;
+
+	TabBar *solers_workspace_tabs = nullptr;
 
 	PopupMenu *apple_menu = nullptr;
 	PopupMenu *file_menu = nullptr;
@@ -733,12 +731,8 @@ private:
 
 	void _update_main_menu_type();
 	void _add_to_main_menu(const String &p_name, PopupMenu *p_menu);
-	void _toggle_solers_ai_panel();
-	void _set_solers_ai_panel_width(float p_width);
-	void _set_solers_ai_panel_animation_suspended(bool p_suspended);
-	void _finish_solers_ai_panel_toggle();
-	void _update_solers_ai_panel_toggle_icon();
 
+	void _solers_workspace_tab_changed(int p_tab);
 	void _bottom_panel_resized();
 
 protected:
@@ -988,7 +982,6 @@ public:
 	bool is_project_exporting() const;
 
 	Control *get_gui_base() { return gui_base; }
-	void set_solers_ai_panel(Control *p_panel);
 
 	void save_scene_to_path(String p_file, bool p_with_preview = true) {
 		if (p_with_preview) {

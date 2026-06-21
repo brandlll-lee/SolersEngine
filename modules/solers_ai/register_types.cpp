@@ -46,11 +46,9 @@
 #include "editor/solers_chat_cells.h"
 #include "editor/solers_chat_widgets.h"
 #include "editor/solers_dock.h"
-#include "editor/solers_editor_plugin.h"
 #include "protocol/solers_mcp_adapter.h"
 #include "protocol/solers_rpc_server.h"
 
-#include "editor/plugins/editor_plugin.h"
 #endif // TOOLS_ENABLED
 
 void initialize_solers_ai_module(ModuleInitializationLevel p_level) {
@@ -81,8 +79,6 @@ void initialize_solers_ai_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(SolersToolCell);
 		GDREGISTER_CLASS(SolersToolGroupCell);
 		GDREGISTER_CLASS(SolersStatusCell);
-		GDREGISTER_CLASS(SolersEditorPlugin);
-		EditorPlugins::add_by_type<SolersEditorPlugin>();
 	}
 #endif // TOOLS_ENABLED
 }
