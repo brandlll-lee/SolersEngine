@@ -2206,16 +2206,11 @@ ProjectManager::ProjectManager() {
 		shell_chat_panel->add_child(solers_home_dock);
 
 		shell_session_popup = memnew(PopupPanel);
-		shell_session_popup->add_theme_style_override(SceneStringName(panel), memnew(StyleBoxEmpty));
-
-		PanelContainer *session_popup_surface = memnew(PanelContainer);
 		Ref<StyleBoxFlat> session_popup_style;
 		session_popup_style.instantiate();
 		session_popup_style->set_bg_color(Color(0.075, 0.078, 0.086));
 		session_popup_style->set_corner_radius_all(int(12 * EDSCALE));
-		session_popup_style->set_shadow_color(Color(0, 0, 0, 0.34));
-		session_popup_style->set_shadow_size(int(18 * EDSCALE));
-		session_popup_surface->add_theme_style_override(SceneStringName(panel), session_popup_style);
+		shell_session_popup->add_theme_style_override(SceneStringName(panel), session_popup_style);
 		add_child(shell_session_popup);
 
 		MarginContainer *session_popup_margin = memnew(MarginContainer);
@@ -2224,8 +2219,7 @@ ProjectManager::ProjectManager() {
 		session_popup_margin->add_theme_constant_override("margin_right", 8 * EDSCALE);
 		session_popup_margin->add_theme_constant_override("margin_top", 8 * EDSCALE);
 		session_popup_margin->add_theme_constant_override("margin_bottom", 8 * EDSCALE);
-		shell_session_popup->add_child(session_popup_surface);
-		session_popup_surface->add_child(session_popup_margin);
+		shell_session_popup->add_child(session_popup_margin);
 
 		shell_session_popup_list = memnew(VBoxContainer);
 		shell_session_popup_list->add_theme_constant_override("separation", 4 * EDSCALE);
