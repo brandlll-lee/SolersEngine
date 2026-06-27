@@ -149,6 +149,7 @@ class GameView : public VBoxContainer {
 	int active_sessions = 0;
 	int screen_index_before_start = -1;
 	ScriptEditorDebugger *embedded_script_debugger = nullptr;
+	bool project_preview_requested = false;
 
 	bool embed_on_play = true;
 	bool make_floating_on_play = true;
@@ -217,6 +218,8 @@ class GameView : public VBoxContainer {
 	void _instance_starting(int p_idx, List<String> &r_arguments);
 	static bool _instance_rq_screenshot_static(const Callable &p_callback);
 	bool _instance_rq_screenshot(const Callable &p_callback);
+	void _request_project_preview();
+	void _save_project_preview(int64_t p_width, int64_t p_height, const String &p_path, const Rect2i &p_rect);
 	void _stop_pressed();
 	void _embedding_completed();
 	void _embedding_failed();

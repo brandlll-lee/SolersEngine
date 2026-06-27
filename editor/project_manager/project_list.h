@@ -95,7 +95,7 @@ public:
 	void set_project_title(const String &p_title);
 	void set_project_path(const String &p_path);
 	void set_tags(const PackedStringArray &p_tags, ProjectList *p_parent_list);
-	void set_project_icon(const Ref<Texture2D> &p_icon);
+	void set_project_icon(const Ref<Texture2D> &p_icon, bool p_cover = false);
 	void set_last_edited_info(const String &p_info);
 	void set_project_version(const String &p_version);
 	void set_unsupported_features(PackedStringArray p_features);

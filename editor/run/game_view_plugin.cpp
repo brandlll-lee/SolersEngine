@@ -33,6 +33,8 @@
 #include "core/config/project_settings.h"
 #include "core/debugger/debugger_marshalls.h"
 #include "core/debugger/engine_debugger.h"
+#include "core/io/dir_access.h"
+#include "core/io/image.h"
 #include "core/string/translation_server.h"
 #include "editor/debugger/editor_debugger_node.h"
 #include "editor/debugger/script_editor_debugger.h"
@@ -360,6 +362,13 @@ void GameView::_sessions_changed() {
 
 	_update_debugger_buttons();
 
+	if (active_sessions == 0) {
+		project_preview_requested = false;
+	} else if (!project_preview_requested) {
+		project_preview_requested = true;
+		get_tree()->create_timer(1.0)->connect("timeout", callable_mp(this, &GameView::_request_project_preview));
+	}
+
 #ifdef MACOS_ENABLED
 	if (!embedded_script_debugger || !embedded_script_debugger->is_session_active() || embedded_script_debugger->get_remote_pid() != embedded_process->get_embedded_pid()) {
 		_attach_script_debugger();
@@ -414,6 +423,29 @@ bool GameView::_instance_rq_screenshot(const Callable &p_callback) {
 	r.position -= embedded_process->get_window()->get_position();
 #endif
 	return debugger->add_screenshot_callback(p_callback, r);
+}
+
+void GameView::_request_project_preview() {
+	if (debugger.is_null() || active_sessions == 0) {
+		return;
+	}
+	debugger->add_screenshot_callback(callable_mp(this, &GameView::_save_project_preview), Rect2i());
+}
+
+void GameView::_save_project_preview(int64_t, int64_t, const String &p_path, const Rect2i &) {
+	ERR_FAIL_COND(p_path.is_empty());
+
+	Ref<Image> img = Image::load_from_file(p_path);
+	DirAccess::remove_absolute(p_path);
+	if (img.is_null() || img->get_width() <= 1 || img->get_height() <= 1) {
+		return;
+	}
+
+	const String preview_path = ProjectSettings::get_singleton()->get_project_data_path().path_join("solers/project_preview.png");
+	const String preview_abs_path = ProjectSettings::get_singleton()->globalize_path(preview_path);
+	if (DirAccess::make_dir_recursive_absolute(preview_abs_path.get_base_dir()) == OK) {
+		img->save_png(preview_abs_path);
+	}
 }
 
 void GameView::_show_update_window_wrapper() {

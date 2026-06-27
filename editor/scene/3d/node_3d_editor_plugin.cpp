@@ -33,6 +33,8 @@
 #include "core/config/project_settings.h"
 #include "core/input/input.h"
 #include "core/input/input_map.h"
+#include "core/io/dir_access.h"
+#include "core/io/file_access.h"
 #include "core/math/math_funcs.h"
 #include "core/math/projection.h"
 #include "core/os/keyboard.h"
@@ -8605,6 +8607,38 @@ void Node3DEditor::_selection_changed() {
 	update_transform_gizmo();
 }
 
+void Node3DEditor::_save_project_preview() {
+	const String preview_path = ProjectSettings::get_singleton()->get_project_data_path().path_join("solers/project_preview.png");
+	if (FileAccess::exists(preview_path)) {
+		Ref<Image> cached = Image::load_from_file(preview_path);
+		if (cached.is_valid() && cached->get_width() > 1 && cached->get_height() > 1) {
+			project_preview_saved = true;
+			return;
+		}
+	}
+
+	if (!get_tree()->get_edited_scene_root()) {
+		return;
+	}
+
+	if (!viewports[0]) {
+		return;
+	}
+	SubViewport *viewport = viewports[0]->get_viewport_node();
+	if (!viewport) {
+		return;
+	}
+	Ref<Image> img = viewport->get_texture()->get_image();
+	if (img.is_null() || img->get_width() <= 1 || img->get_height() <= 1) {
+		return;
+	}
+
+	const String preview_abs_path = ProjectSettings::get_singleton()->globalize_path(preview_path);
+	if (DirAccess::make_dir_recursive_absolute(preview_abs_path.get_base_dir()) == OK && img->save_png(preview_abs_path) == OK) {
+		project_preview_saved = true;
+	}
+}
+
 void Node3DEditor::refresh_dirty_gizmos() {
 	if (!gizmos_dirty) {
 		return;
@@ -9038,7 +9072,13 @@ void Node3DEditor::_notification(int p_what) {
 				_snap_selected_nodes_to_floor();
 				do_snap_selected_nodes_to_floor = false;
 			}
-		}
+		} break;
+
+		case NOTIFICATION_PROCESS: {
+			if (!project_preview_saved) {
+				_save_project_preview();
+			}
+		} break;
 	}
 }
 

@@ -66,9 +66,8 @@ void ProjectListItemControl::_notification(int p_what) {
 			project_title->begin_bulk_theme_override();
 			project_title->add_theme_font_override(SceneStringName(font), get_theme_font(SNAME("bold"), EditorStringName(EditorFonts)));
 			if (is_card) {
-				// UE caption type: compact bold label, one step above body text —
-				// the oversized "title" font is a Godot-ism on a template tile.
-				project_title->add_theme_font_size_override(SceneStringName(font_size), MAX(10, (int)(13 * EDSCALE)));
+				project_title->add_theme_font_size_override(SceneStringName(font_size), MAX(9, (int)(10 * EDSCALE)));
+				project_version->add_theme_font_size_override(SceneStringName(font_size), MAX(9, (int)(10 * EDSCALE)));
 			} else {
 				project_title->add_theme_font_size_override(SceneStringName(font_size), get_theme_font_size(SNAME("title_size"), EditorStringName(EditorFonts)));
 			}
@@ -295,18 +294,25 @@ void ProjectListItemControl::set_tags(const PackedStringArray &p_tags, ProjectLi
 	}
 }
 
-void ProjectListItemControl::set_project_icon(const Ref<Texture2D> &p_icon) {
+void ProjectListItemControl::set_project_icon(const Ref<Texture2D> &p_icon, bool p_cover) {
 	icon_needs_reload = false;
 
 	// The default project icon is 128×128 to look crisp on hiDPI displays,
 	// but we want the actual displayed size to be 64×64 on loDPI displays.
 	project_icon->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
-	project_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
 	if (!is_card) {
+		project_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
 		project_icon->set_custom_minimum_size(Size2(64, 64) * EDSCALE);
+	} else if (p_cover) {
+		project_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_COVERED);
+		project_icon->set_custom_minimum_size(Size2());
+		project_icon->set_h_size_flags(SIZE_EXPAND_FILL);
+		project_icon->set_v_size_flags(SIZE_EXPAND_FILL);
 	} else {
-		// In card layout the icon fills the thumbnail panel above the title.
-		project_icon->set_custom_minimum_size(Size2(0, 0));
+		project_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+		project_icon->set_custom_minimum_size(Size2(44, 44) * EDSCALE);
+		project_icon->set_h_size_flags(SIZE_SHRINK_CENTER);
+		project_icon->set_v_size_flags(SIZE_SHRINK_CENTER);
 	}
 
 	project_icon->set_texture(p_icon);
@@ -368,6 +374,9 @@ void ProjectListItemControl::set_selected(bool p_selected, bool p_hide_focus) {
 
 void ProjectListItemControl::set_is_favorite(bool p_favorite) {
 	is_favorite = p_favorite;
+	if (is_card) {
+		favorite_button->set_visible(p_favorite);
+	}
 	if (p_favorite) {
 		favorite_button->set_texture_normal(SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Favorites"))));
 		favorite_button->set_accessibility_name(TTRC("Remove from Favorites"));
@@ -534,16 +543,12 @@ void ProjectListItemControl::_build_row_layout() {
 	add_child(memnew(Control));
 }
 
-// Solers: UE-style vertical thumbnail card for the grid layout. Uses the exact
-// same member widgets/signals as the row layout, so selection, favorites, the
-// context menu and asynchronous icon loading all work identically.
+// Solers: compact UE-style thumbnail card for the grid layout.
 void ProjectListItemControl::_build_card_layout() {
 	set_h_size_flags(SIZE_SHRINK_BEGIN);
 	set_v_size_flags(SIZE_SHRINK_BEGIN);
-	set_custom_minimum_size(Size2(236, 0) * EDSCALE);
+	set_custom_minimum_size(Size2(96, 0) * EDSCALE);
 
-	// UE template tiles run the artwork edge-to-edge: only a 1px inset so the
-	// self-drawn outline (NOTIFICATION_DRAW) stays visible around the content.
 	const int tile_inset = MAX(1, (int)EDSCALE);
 	MarginContainer *card_margin = memnew(MarginContainer);
 	card_margin->set_h_size_flags(SIZE_EXPAND_FILL);
@@ -557,51 +562,42 @@ void ProjectListItemControl::_build_card_layout() {
 	main_vbox = memnew(VBoxContainer);
 	main_vbox->set_h_size_flags(SIZE_EXPAND_FILL);
 	main_vbox->set_v_size_flags(SIZE_EXPAND_FILL);
-	// No gap: the caption band must sit flush under the image well, UE-style.
 	main_vbox->add_theme_constant_override("separation", 0);
 	card_margin->add_child(main_vbox);
 
-	// Thumbnail panel (large icon) — the tile's near-black image well.
 	{
 		PanelContainer *thumb = memnew(PanelContainer);
 		thumb->set_theme_type_variation("PMCardThumb");
-		thumb->set_custom_minimum_size(Size2(0, 132) * EDSCALE);
+		thumb->set_custom_minimum_size(Size2(0, 70) * EDSCALE);
 		thumb->set_mouse_filter(MOUSE_FILTER_PASS);
 		main_vbox->add_child(thumb);
 		card_thumb = thumb;
 
-		// Present the project icon as a restrained 56px mark centered in the
-		// near-black well — "logo on dark", not a full-bleed cartoon. This is
-		// how an icon-only thumbnail can read premium next to UE's artwork.
 		project_icon = memnew(TextureRect);
 		project_icon->set_name("ProjectIcon");
 		project_icon->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
 		project_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
-		project_icon->set_custom_minimum_size(Size2(56, 56) * EDSCALE);
+		project_icon->set_custom_minimum_size(Size2(44, 44) * EDSCALE);
 		project_icon->set_h_size_flags(SIZE_SHRINK_CENTER);
 		project_icon->set_v_size_flags(SIZE_SHRINK_CENTER);
 		project_icon->set_mouse_filter(MOUSE_FILTER_PASS);
 		thumb->add_child(project_icon);
 	}
 
-	// Caption band content. The band's *fill* is painted by NOTIFICATION_DRAW
-	// (idle strip / accent blue on selection); here we only lay out the text
-	// rows with UE's tight label padding.
 	MarginContainer *caption_margin = memnew(MarginContainer);
 	caption_margin->set_h_size_flags(SIZE_EXPAND_FILL);
 	caption_margin->set_v_size_flags(SIZE_EXPAND_FILL);
-	caption_margin->add_theme_constant_override("margin_left", 10 * EDSCALE);
-	caption_margin->add_theme_constant_override("margin_right", 8 * EDSCALE);
-	caption_margin->add_theme_constant_override("margin_top", 6 * EDSCALE);
-	caption_margin->add_theme_constant_override("margin_bottom", 8 * EDSCALE);
+	caption_margin->add_theme_constant_override("margin_left", 5 * EDSCALE);
+	caption_margin->add_theme_constant_override("margin_right", 5 * EDSCALE);
+	caption_margin->add_theme_constant_override("margin_top", 4 * EDSCALE);
+	caption_margin->add_theme_constant_override("margin_bottom", 4 * EDSCALE);
 	main_vbox->add_child(caption_margin);
 
 	VBoxContainer *caption_vbox = memnew(VBoxContainer);
 	caption_vbox->set_h_size_flags(SIZE_EXPAND_FILL);
-	caption_vbox->add_theme_constant_override("separation", 2 * EDSCALE);
+	caption_vbox->add_theme_constant_override("separation", 1 * EDSCALE);
 	caption_margin->add_child(caption_vbox);
 
-	// Title row: name + unsupported-features warning + favorite toggle.
 	{
 		HBoxContainer *title_hb = memnew(HBoxContainer);
 		caption_vbox->add_child(title_hb);
@@ -625,62 +621,55 @@ void ProjectListItemControl::_build_card_layout() {
 		favorite_button->set_auto_translate_mode(AUTO_TRANSLATE_MODE_ALWAYS);
 		favorite_button->set_mouse_filter(MOUSE_FILTER_PASS);
 		favorite_button->set_v_size_flags(SIZE_SHRINK_CENTER);
+		favorite_button->set_custom_minimum_size(Size2(12, 12) * EDSCALE);
+		favorite_button->hide();
 		title_hb->add_child(favorite_button);
 		favorite_button->connect(SceneStringName(pressed), callable_mp(this, &ProjectListItemControl::_favorite_button_pressed));
 		favorite_button->connect(SceneStringName(focus_entered), callable_mp(this, &ProjectListItemControl::_update_favorite_button_focus_color));
 		favorite_button->connect(SceneStringName(focus_exited), callable_mp(this, &ProjectListItemControl::_update_favorite_button_focus_color));
 	}
 
-	// Path row: explore button + path.
-	{
-		HBoxContainer *path_hb = memnew(HBoxContainer);
-		path_hb->set_h_size_flags(SIZE_EXPAND_FILL);
-		caption_vbox->add_child(path_hb);
+	project_version = memnew(Label);
+	project_version->set_focus_mode(FOCUS_ACCESSIBILITY);
+	project_version->set_name("ProjectVersion");
+	project_version->set_mouse_filter(MOUSE_FILTER_PASS);
+	project_version->set_clip_text(true);
+	project_version->set_modulate(Color(1, 1, 1, 0.75));
+	caption_vbox->add_child(project_version);
 
-		explore_button = memnew(Button);
-		explore_button->set_name("ExploreButton");
-		explore_button->set_tooltip_auto_translate_mode(AUTO_TRANSLATE_MODE_ALWAYS);
-		explore_button->set_mouse_filter(MOUSE_FILTER_PASS);
-		explore_button->set_tooltip_text(TTRC("Open in file manager"));
-		explore_button->set_flat(true);
-		path_hb->add_child(explore_button);
-		explore_button->connect(SceneStringName(pressed), callable_mp(this, &ProjectListItemControl::_explore_button_pressed));
+	explore_button = memnew(Button);
+	explore_button->set_name("ExploreButton");
+	explore_button->set_tooltip_auto_translate_mode(AUTO_TRANSLATE_MODE_ALWAYS);
+	explore_button->set_mouse_filter(MOUSE_FILTER_PASS);
+	explore_button->set_tooltip_text(TTRC("Open in file manager"));
+	explore_button->set_flat(true);
+	explore_button->hide();
+	caption_vbox->add_child(explore_button);
+	explore_button->connect(SceneStringName(pressed), callable_mp(this, &ProjectListItemControl::_explore_button_pressed));
 
-		project_path = memnew(Label);
-		project_path->set_name("ProjectPath");
-		project_path->set_focus_mode(FOCUS_ACCESSIBILITY);
-		project_path->set_structured_text_bidi_override(TextServer::STRUCTURED_TEXT_FILE);
-		project_path->set_clip_text(true);
-		project_path->set_h_size_flags(SIZE_EXPAND_FILL);
-		project_path->set_modulate(Color(1, 1, 1, 0.5));
-		path_hb->add_child(project_path);
-	}
+	project_path = memnew(Label);
+	project_path->set_name("ProjectPath");
+	project_path->set_focus_mode(FOCUS_ACCESSIBILITY);
+	project_path->set_structured_text_bidi_override(TextServer::STRUCTURED_TEXT_FILE);
+	project_path->set_clip_text(true);
+	project_path->set_h_size_flags(SIZE_EXPAND_FILL);
+	project_path->set_modulate(Color(1, 1, 1, 0.5));
+	project_path->hide();
+	caption_vbox->add_child(project_path);
 
-	// Meta row: last edited + project version.
-	{
-		HBoxContainer *meta_hb = memnew(HBoxContainer);
-		meta_hb->set_h_size_flags(SIZE_EXPAND_FILL);
-		caption_vbox->add_child(meta_hb);
+	last_edited_info = memnew(Label);
+	last_edited_info->set_focus_mode(FOCUS_ACCESSIBILITY);
+	last_edited_info->set_name("LastEditedInfo");
+	last_edited_info->set_mouse_filter(MOUSE_FILTER_PASS);
+	last_edited_info->set_tooltip_auto_translate_mode(AUTO_TRANSLATE_MODE_ALWAYS);
+	last_edited_info->set_tooltip_text(TTRC("Last edited timestamp"));
+	last_edited_info->set_modulate(Color(1, 1, 1, 0.5));
+	last_edited_info->set_h_size_flags(SIZE_EXPAND_FILL);
+	last_edited_info->hide();
+	caption_vbox->add_child(last_edited_info);
 
-		last_edited_info = memnew(Label);
-		last_edited_info->set_focus_mode(FOCUS_ACCESSIBILITY);
-		last_edited_info->set_name("LastEditedInfo");
-		last_edited_info->set_mouse_filter(MOUSE_FILTER_PASS);
-		last_edited_info->set_tooltip_auto_translate_mode(AUTO_TRANSLATE_MODE_ALWAYS);
-		last_edited_info->set_tooltip_text(TTRC("Last edited timestamp"));
-		last_edited_info->set_modulate(Color(1, 1, 1, 0.5));
-		last_edited_info->set_h_size_flags(SIZE_EXPAND_FILL);
-		meta_hb->add_child(last_edited_info);
-
-		project_version = memnew(Label);
-		project_version->set_focus_mode(FOCUS_ACCESSIBILITY);
-		project_version->set_name("ProjectVersion");
-		project_version->set_mouse_filter(MOUSE_FILTER_PASS);
-		meta_hb->add_child(project_version);
-	}
-
-	// Tags.
 	tag_container = memnew(HBoxContainer);
+	tag_container->hide();
 	caption_vbox->add_child(tag_container);
 
 	if (DisplayServer::get_singleton()->is_touchscreen_available()) {
@@ -977,7 +966,19 @@ void ProjectList::_load_project_icon(int p_index) {
 
 	Ref<Texture2D> default_icon = get_editor_theme_icon(SNAME("DefaultProjectIcon"));
 	Ref<Texture2D> icon;
-	if (!item.icon.is_empty()) {
+	bool cover_icon = false;
+	if (_display_mode == DISPLAY_GRID) {
+		const String preview_path = item.path.path_join(".godot/solers/project_preview.png");
+		if (FileAccess::exists(preview_path)) {
+			Ref<Image> img;
+			img.instantiate();
+			if (img->load(preview_path) == OK && img->get_width() > 1 && img->get_height() > 1) {
+				icon = ImageTexture::create_from_image(img);
+				cover_icon = true;
+			}
+		}
+	}
+	if (_display_mode != DISPLAY_GRID && icon.is_null() && !item.icon.is_empty()) {
 		Ref<Image> img;
 		img.instantiate();
 		Error err = img->load(item.icon.replace_first("res://", item.path + "/"));
@@ -986,11 +987,11 @@ void ProjectList::_load_project_icon(int p_index) {
 			icon = ImageTexture::create_from_image(img);
 		}
 	}
-	if (icon.is_null()) {
+	if (_display_mode != DISPLAY_GRID && icon.is_null()) {
 		icon = default_icon;
 	}
 
-	item.control->set_project_icon(icon);
+	item.control->set_project_icon(icon, cover_icon);
 }
 
 // Project list updates.
@@ -1277,7 +1278,8 @@ void ProjectList::_create_project_item_control(int p_index) {
 	hb->set_tooltip_text(item.description);
 	hb->set_tags(item.tags, this);
 	hb->set_unsupported_features(item.unsupported_features.duplicate());
-	hb->set_project_version(item.project_version);
+	const String project_version = (_display_mode == DISPLAY_GRID && item.project_version == GODOT_VERSION_BRANCH) ? TTR("Current") : item.project_version;
+	hb->set_project_version(project_version);
 	hb->set_last_edited_info(item.get_last_edited_string());
 
 	hb->set_is_favorite(item.favorite);
@@ -1866,8 +1868,8 @@ ProjectList::ProjectList() {
 
 	project_grid = memnew(HFlowContainer);
 	project_grid->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	project_grid->add_theme_constant_override("h_separation", 12 * EDSCALE);
-	project_grid->add_theme_constant_override("v_separation", 12 * EDSCALE);
+	project_grid->add_theme_constant_override("h_separation", 7 * EDSCALE);
+	project_grid->add_theme_constant_override("v_separation", 7 * EDSCALE);
 	project_grid->hide();
 	content_root->add_child(project_grid);
 

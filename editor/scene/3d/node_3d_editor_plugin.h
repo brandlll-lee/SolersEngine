@@ -865,6 +865,7 @@ private:
 	void _clear_subgizmo_selection(Object *p_obj = nullptr);
 
 	bool gizmos_dirty = false;
+	bool project_preview_saved = false;
 
 	static Node3DEditor *singleton;
 
@@ -877,6 +878,7 @@ private:
 
 	void _selection_changed();
 	void _refresh_menu_icons();
+	void _save_project_preview();
 
 	bool do_snap_selected_nodes_to_floor = false;
 	void _snap_selected_nodes_to_floor();
