@@ -140,6 +140,8 @@ public:
 	void set_hsplit(DockSplitContainer *p_split);
 	void register_dock_slot(DockConstants::DockSlot p_dock_slot, TabContainer *p_tab_container, DockConstants::DockLayout p_layout);
 	int get_vsplit_count() const;
+	int get_dock_count() const { return all_docks.size(); }
+	EditorDock *get_dock(int p_index) const { ERR_FAIL_INDEX_V(p_index, (int)all_docks.size(), nullptr); return all_docks[p_index]; }
 	PopupMenu *get_docks_menu();
 
 	void save_docks_to_config(Ref<ConfigFile> p_layout, const String &p_section) const;

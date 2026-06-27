@@ -119,6 +119,7 @@ public:
 
 	void set_closable(bool p_closable) { closable = p_closable; }
 	bool is_closable() const { return closable; }
+	bool is_enabled() const { return enabled; }
 
 	void set_icon_name(const StringName &p_name);
 	StringName get_icon_name() const { return icon_name; }

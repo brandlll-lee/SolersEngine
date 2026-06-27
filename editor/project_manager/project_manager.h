@@ -55,7 +55,10 @@ class RichTextLabel;
 class SolersAgentRuntime;
 class SolersCategoryCard;
 class SolersDock;
+class Shortcut;
+class TabBar;
 class TabContainer;
+class Texture2D;
 class VBoxContainer;
 
 class ProjectManager : public Control {
@@ -101,30 +104,29 @@ class ProjectManager : public Control {
 	HSplitContainer *shell_work_split = nullptr;
 	PopupPanel *shell_session_popup = nullptr;
 	VBoxContainer *shell_session_popup_list = nullptr;
-	RichTextLabel *shell_logs_view = nullptr;
 	Control *shell_editor_host = nullptr;
 	Control *shell_editor_gui = nullptr;
 	EditorNode *shell_editor_node = nullptr;
+	Control *shell_workspace_home = nullptr;
+	VBoxContainer *shell_workspace_tool_list = nullptr;
 	String shell_project_path;
 	String shell_session_id;
 	String active_editor_project_path;
 	bool open_classic_editor = false;
 	bool shell_workspace_collapsed = false;
 
-	enum MainViewTab {
-		MAIN_VIEW_EDITOR,
-		MAIN_VIEW_LOGS,
-		MAIN_VIEW_MAX
-	};
-
-	MainViewTab current_main_view = MAIN_VIEW_LOGS;
-	HashMap<MainViewTab, Control *> main_view_map;
-
+	TabBar *shell_workspace_tab_bar = nullptr;
 	TabContainer *main_view_container = nullptr;
 
-	void _add_main_view(MainViewTab p_id, Control *p_view_control);
-	void _select_main_view(int p_id);
-	void _main_view_tab_changed(int p_tab);
+	void _show_workspace_home();
+	void _show_workspace_editor();
+	void _rebuild_workspace_launcher();
+	void _add_workspace_tool_button(VBoxContainer *p_list, const String &p_tool_id, const String &p_title, const Ref<Texture2D> &p_icon, const Ref<Shortcut> &p_shortcut);
+	void _workspace_tool_pressed(const String &p_tool_id, const String &p_title, const Ref<Texture2D> &p_icon);
+	void _workspace_tool_tab_changed(int p_tab);
+	void _workspace_tool_tab_close_pressed(int p_tab);
+	void _activate_workspace_tool(const String &p_tool_id);
+	int _find_workspace_tool_tab(const String &p_tool_id) const;
 	void _toggle_shell_workspace();
 	void _show_shell_chat();
 	void _show_shell_global_view(Control *p_view);
@@ -135,7 +137,6 @@ class ProjectManager : public Control {
 	void _shell_ai_pressed();
 	void _set_shell_session(const String &p_project_path, const String &p_session_id);
 	void _load_shell_editor(const String &p_project_path);
-	void _refresh_shell_logs();
 
 	VBoxContainer *local_projects_vb = nullptr;
 	EditorAssetLibrary *asset_library = nullptr;

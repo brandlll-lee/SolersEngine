@@ -78,6 +78,8 @@ public:
 	void select_by_name(const String &p_name);
 	void select(int p_index);
 	int get_selected_index() const;
+	int get_plugin_count() const { return editor_table.size(); }
+	EditorPlugin *get_plugin(int p_index) const { ERR_FAIL_INDEX_V(p_index, editor_table.size(), nullptr); return editor_table[p_index]; }
 	int get_plugin_index(EditorPlugin *p_editor) const;
 	EditorPlugin *get_selected_plugin() const;
 	EditorPlugin *get_plugin_by_name(const String &p_plugin_name) const;

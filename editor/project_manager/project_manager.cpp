@@ -42,7 +42,10 @@
 #include "core/templates/hash_set.h"
 #include "core/version.h"
 #include "editor/asset_library/asset_library_editor_plugin.h"
+#include "editor/docks/editor_dock.h"
+#include "editor/docks/editor_dock_manager.h"
 #include "editor/doc/editor_help.h"
+#include "editor/editor_main_screen.h"
 #include "editor/editor_node.h"
 #include "editor/editor_string_names.h"
 #include "editor/gui/editor_about.h"
@@ -58,6 +61,7 @@
 #include "editor/project_manager/solers_pm_cards.h"
 #include "editor/project_manager/solers_pm_ai_view.h"
 #include "editor/project_manager/solers_pm_theme.h"
+#include "editor/plugins/editor_plugin.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
 #include "editor/themes/editor_theme_manager.h"
@@ -76,6 +80,7 @@
 #include "scene/gui/rich_text_label.h"
 #include "scene/gui/separator.h"
 #include "scene/gui/split_container.h"
+#include "scene/gui/tab_bar.h"
 #include "scene/gui/tab_container.h"
 #include "scene/main/window.h"
 #include "scene/resources/style_box_flat.h"
@@ -242,7 +247,7 @@ void ProjectManager::_notification(int p_what) {
 			project_list->set_order_option(default_sorting, false);
 
 			if (app_shell) {
-				_select_main_view(MAIN_VIEW_LOGS);
+				_show_workspace_home();
 				_show_shell_chat();
 			} else {
 				if (shell_workspace_panel) {
@@ -394,6 +399,9 @@ void ProjectManager::_update_theme(bool p_skip_creation) {
 
 		background_panel->add_theme_style_override(SceneStringName(panel), get_theme_stylebox("Background", EditorStringName(EditorStyles)));
 		main_view_container->add_theme_style_override(SceneStringName(panel), get_theme_stylebox("panel_container", "ProjectManager"));
+		if (shell_workspace_home) {
+			shell_workspace_home->add_theme_style_override(SceneStringName(panel), get_theme_stylebox("panel_container", "ProjectManager"));
+		}
 
 		// Project list.
 		{
@@ -466,58 +474,187 @@ void ProjectManager::_update_theme(bool p_skip_creation) {
 #endif
 }
 
-void ProjectManager::_add_main_view(MainViewTab p_id, Control *p_view_control) {
-	ERR_FAIL_INDEX(p_id, MAIN_VIEW_MAX);
-	ERR_FAIL_COND(main_view_map.has(p_id));
-
-	String tab_name;
-	switch (p_id) {
-		case MAIN_VIEW_EDITOR:
-			tab_name = TTR("Editor");
-			break;
-		case MAIN_VIEW_LOGS:
-			tab_name = TTR("Logs");
-			break;
-		default:
-			break;
+void ProjectManager::_show_workspace_home() {
+	if (!main_view_container || !shell_workspace_home || !shell_editor_host) {
+		return;
 	}
-
-	p_view_control->set_name(tab_name);
-	main_view_container->add_child(p_view_control);
-	main_view_map[p_id] = p_view_control;
-	if (p_id == current_main_view) {
-		main_view_container->set_current_tab(main_view_container->get_tab_idx_from_control(p_view_control));
+	if (shell_workspace_tab_bar) {
+		shell_workspace_tab_bar->hide();
+	}
+	main_view_container->set_tabs_visible(false);
+	const int home_idx = main_view_container->get_tab_idx_from_control(shell_workspace_home);
+	if (home_idx >= 0) {
+		main_view_container->set_tab_hidden(home_idx, false);
+		main_view_container->set_current_tab(home_idx);
+	}
+	const int host_idx = main_view_container->get_tab_idx_from_control(shell_editor_host);
+	if (host_idx >= 0) {
+		main_view_container->set_tab_hidden(host_idx, true);
 	}
 }
 
-void ProjectManager::_select_main_view(int p_id) {
-	MainViewTab view_id = (MainViewTab)p_id;
-
-	ERR_FAIL_INDEX(view_id, MAIN_VIEW_MAX);
-	ERR_FAIL_COND(!main_view_map.has(view_id));
-
-	if (current_main_view != view_id) {
-		current_main_view = view_id;
+void ProjectManager::_show_workspace_editor() {
+	if (!main_view_container || !shell_editor_host) {
+		return;
 	}
-	if (main_view_container) {
-		main_view_container->set_current_tab(main_view_container->get_tab_idx_from_control(main_view_map[current_main_view]));
+	if (shell_workspace_tab_bar && shell_workspace_tab_bar->get_tab_count() > 0) {
+		shell_workspace_tab_bar->show();
+	}
+	main_view_container->set_tabs_visible(false);
+	const int home_idx = main_view_container->get_tab_idx_from_control(shell_workspace_home);
+	if (home_idx >= 0) {
+		main_view_container->set_tab_hidden(home_idx, true);
+	}
+	const int host_idx = main_view_container->get_tab_idx_from_control(shell_editor_host);
+	if (host_idx >= 0) {
+		main_view_container->set_tab_hidden(host_idx, false);
+		main_view_container->set_current_tab(host_idx);
 	}
 }
 
-void ProjectManager::_main_view_tab_changed(int p_tab) {
-	if (!main_view_container) {
+void ProjectManager::_rebuild_workspace_launcher() {
+	if (!shell_workspace_tool_list) {
 		return;
 	}
-	Control *tab_control = main_view_container->get_tab_control(p_tab);
-	if (!tab_control) {
-		return;
+
+	while (shell_workspace_tool_list->get_child_count() > 0) {
+		Node *child = shell_workspace_tool_list->get_child(0);
+		shell_workspace_tool_list->remove_child(child);
+		child->queue_free();
 	}
-	for (const KeyValue<MainViewTab, Control *> &E : main_view_map) {
-		if (E.value == tab_control) {
-			_select_main_view((int)E.key);
-			return;
+
+	EditorMainScreen *main_screen = EditorNode::get_editor_main_screen();
+	if (main_screen) {
+		Label *section = memnew(Label(TTR("Main Screens")));
+		section->add_theme_color_override(SceneStringName(font_color), get_theme_color("font_placeholder_color", EditorStringName(Editor)));
+		shell_workspace_tool_list->add_child(section);
+
+		for (int i = 0; i < main_screen->get_plugin_count(); i++) {
+			if (!main_screen->is_button_enabled(i)) {
+				continue;
+			}
+			EditorPlugin *plugin = main_screen->get_plugin(i);
+			if (!plugin) {
+				continue;
+			}
+			Ref<Texture2D> icon = plugin->get_plugin_icon();
+			if (icon.is_null() && has_theme_icon(plugin->get_plugin_name(), EditorStringName(EditorIcons))) {
+				icon = get_editor_theme_icon(plugin->get_plugin_name());
+			}
+			_add_workspace_tool_button(shell_workspace_tool_list, "main:" + itos(i), plugin->get_plugin_name(), SolersPMTheme::mono_icon(icon), Ref<Shortcut>());
 		}
 	}
+
+	EditorDockManager *dock_manager = EditorDockManager::get_singleton();
+	if (dock_manager) {
+		Label *section = memnew(Label(TTR("Docks")));
+		section->add_theme_color_override(SceneStringName(font_color), get_theme_color("font_placeholder_color", EditorStringName(Editor)));
+		shell_workspace_tool_list->add_child(section);
+
+		for (int i = 0; i < dock_manager->get_dock_count(); i++) {
+			EditorDock *dock = dock_manager->get_dock(i);
+			if (!dock || !dock->is_enabled() || (!dock->is_global() && dock->get_default_slot() != EditorDock::DOCK_SLOT_BOTTOM)) {
+				continue;
+			}
+			Ref<Texture2D> icon = dock->get_dock_icon();
+			if (icon.is_null() && !dock->get_icon_name().is_empty() && has_theme_icon(dock->get_icon_name(), EditorStringName(EditorIcons))) {
+				icon = get_editor_theme_icon(dock->get_icon_name());
+			}
+			_add_workspace_tool_button(shell_workspace_tool_list, "dock:" + uitos(dock->get_instance_id()), dock->get_display_title(), SolersPMTheme::mono_icon(icon), dock->get_dock_shortcut());
+		}
+	}
+}
+
+void ProjectManager::_add_workspace_tool_button(VBoxContainer *p_list, const String &p_tool_id, const String &p_title, const Ref<Texture2D> &p_icon, const Ref<Shortcut> &p_shortcut) {
+	Button *button = memnew(Button);
+	button->set_theme_type_variation("PMShellAction");
+	button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+	button->set_clip_text(true);
+	button->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+	button->set_text(p_title);
+	button->set_tooltip_text(p_title);
+	button->set_button_icon(p_icon);
+	if (p_shortcut.is_valid()) {
+		button->set_tooltip_text(p_title + "\n" + p_shortcut->get_as_text());
+	}
+	button->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_workspace_tool_pressed).bind(p_tool_id, p_title, p_icon));
+	p_list->add_child(button);
+}
+
+void ProjectManager::_workspace_tool_pressed(const String &p_tool_id, const String &p_title, const Ref<Texture2D> &p_icon) {
+	ERR_FAIL_NULL(shell_workspace_tab_bar);
+	int tab_idx = _find_workspace_tool_tab(p_tool_id);
+	if (tab_idx < 0) {
+		shell_workspace_tab_bar->add_tab(p_title, p_icon);
+		tab_idx = shell_workspace_tab_bar->get_tab_count() - 1;
+		shell_workspace_tab_bar->set_tab_metadata(tab_idx, p_tool_id);
+		shell_workspace_tab_bar->set_tab_tooltip(tab_idx, p_title);
+		shell_workspace_tab_bar->set_tab_icon_max_width(tab_idx, 18 * EDSCALE);
+	}
+	if (shell_workspace_tab_bar->get_current_tab() != tab_idx) {
+		shell_workspace_tab_bar->set_current_tab(tab_idx);
+	} else {
+		_workspace_tool_tab_changed(tab_idx);
+	}
+}
+
+void ProjectManager::_workspace_tool_tab_changed(int p_tab) {
+	if (!shell_workspace_tab_bar) {
+		return;
+	}
+	if (p_tab < 0 || p_tab >= shell_workspace_tab_bar->get_tab_count()) {
+		return;
+	}
+	_show_workspace_editor();
+	_activate_workspace_tool(String(shell_workspace_tab_bar->get_tab_metadata(p_tab)));
+}
+
+void ProjectManager::_workspace_tool_tab_close_pressed(int p_tab) {
+	if (!shell_workspace_tab_bar) {
+		return;
+	}
+	if (p_tab < 0 || p_tab >= shell_workspace_tab_bar->get_tab_count()) {
+		return;
+	}
+	shell_workspace_tab_bar->remove_tab(p_tab);
+	if (shell_workspace_tab_bar->get_tab_count() == 0) {
+		_show_workspace_home();
+		return;
+	}
+	const int next_tab = shell_workspace_tab_bar->get_current_tab();
+	if (next_tab >= 0) {
+		_workspace_tool_tab_changed(next_tab);
+	}
+}
+
+void ProjectManager::_activate_workspace_tool(const String &p_tool_id) {
+	if (p_tool_id.begins_with("main:")) {
+		EditorMainScreen *main_screen = EditorNode::get_editor_main_screen();
+		if (main_screen) {
+			main_screen->select(p_tool_id.substr(5).to_int());
+		}
+		return;
+	}
+	if (p_tool_id.begins_with("dock:")) {
+		Object *object = ObjectDB::get_instance(ObjectID((uint64_t)p_tool_id.substr(5).to_int()));
+		EditorDock *dock = Object::cast_to<EditorDock>(object);
+		if (dock && EditorDockManager::get_singleton()) {
+			EditorDockManager::get_singleton()->focus_dock(dock);
+		}
+	}
+}
+
+int ProjectManager::_find_workspace_tool_tab(const String &p_tool_id) const {
+	if (!shell_workspace_tab_bar) {
+		return -1;
+	}
+	for (int i = 0; i < shell_workspace_tab_bar->get_tab_count(); i++) {
+		if (String(shell_workspace_tab_bar->get_tab_metadata(i)) == p_tool_id) {
+			return i;
+		}
+	}
+	return -1;
 }
 
 void ProjectManager::_toggle_shell_workspace() {
@@ -666,7 +803,6 @@ void ProjectManager::_set_shell_session(const String &p_project_path, const Stri
 		}
 	}
 #endif
-	_refresh_shell_logs();
 }
 
 void ProjectManager::_shell_new_session_pressed() {
@@ -679,7 +815,6 @@ void ProjectManager::_shell_new_session_pressed() {
 		const Dictionary status = solers_agent_runtime->get_status();
 		shell_session_id = status.get("session_id", String());
 	}
-	_refresh_shell_logs();
 	if (shell_session_popup) {
 		shell_session_popup->hide();
 	}
@@ -709,7 +844,7 @@ void ProjectManager::_shell_ai_pressed() {
 }
 
 void ProjectManager::_load_shell_editor(const String &p_project_path) {
-	if (!main_view_container || !main_view_map.has(MAIN_VIEW_EDITOR)) {
+	if (!main_view_container) {
 		return;
 	}
 
@@ -722,8 +857,7 @@ void ProjectManager::_load_shell_editor(const String &p_project_path) {
 		if (shell_workspace_panel) {
 			shell_workspace_panel->show();
 		}
-		main_view_container->set_tab_hidden(main_view_container->get_tab_idx_from_control(main_view_map[MAIN_VIEW_EDITOR]), false);
-		_select_main_view(MAIN_VIEW_EDITOR);
+		_show_workspace_home();
 		return;
 	}
 
@@ -758,50 +892,6 @@ void ProjectManager::_load_shell_editor(const String &p_project_path) {
 	project_list->project_opening_initiated = true;
 	_dim_window();
 	get_tree()->quit();
-}
-
-void ProjectManager::_refresh_shell_logs() {
-	if (!shell_logs_view) {
-		return;
-	}
-
-	shell_logs_view->clear();
-	if (shell_project_path.is_empty() || shell_session_id.is_empty()) {
-		shell_logs_view->add_text(TTR("Select a session to inspect its transcript."));
-		return;
-	}
-
-	Ref<FileAccess> file = FileAccess::open("user://solers_ai_transcript.jsonl", FileAccess::READ);
-	if (file.is_null()) {
-		shell_logs_view->add_text(TTR("No transcript written yet."));
-		return;
-	}
-
-	String text;
-	while (!file->eof_reached()) {
-		const String line = file->get_line().strip_edges();
-		if (line.is_empty()) {
-			continue;
-		}
-		const Variant parsed = JSON::parse_string(line);
-		if (parsed.get_type() != Variant::DICTIONARY) {
-			continue;
-		}
-		const Dictionary event = parsed;
-		if (String(event.get("project_path", String())) != shell_project_path || String(event.get("session_id", String())) != shell_session_id) {
-			continue;
-		}
-		const String role = event.get("role", String());
-		const String content = event.get("content", String());
-		if (role == "tool") {
-			text += vformat("%s: %s\n", role, String(event.get("tool", String())));
-		} else if (!content.is_empty()) {
-			text += vformat("%s: %s\n", role, content);
-		} else {
-			text += role + "\n";
-		}
-	}
-	shell_logs_view->add_text(text.is_empty() ? TTR("No transcript entries for this session.") : text);
 }
 
 void ProjectManager::_show_about() {
@@ -2161,13 +2251,69 @@ ProjectManager::ProjectManager() {
 	shell_workspace_panel->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	shell_work_split->add_child(shell_workspace_panel);
 
+	VBoxContainer *workspace_root = memnew(VBoxContainer);
+	workspace_root->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	workspace_root->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	workspace_root->add_theme_constant_override("separation", 0);
+	shell_workspace_panel->add_child(workspace_root);
+
+	shell_workspace_tab_bar = memnew(TabBar);
+	shell_workspace_tab_bar->set_name("SolersWorkspaceTabBar");
+	shell_workspace_tab_bar->set_theme_type_variation("TabBarInner");
+	shell_workspace_tab_bar->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	shell_workspace_tab_bar->set_tab_close_display_policy(TabBar::CLOSE_BUTTON_SHOW_ACTIVE_ONLY);
+	shell_workspace_tab_bar->set_max_tab_width(220 * EDSCALE);
+	shell_workspace_tab_bar->connect("tab_changed", callable_mp(this, &ProjectManager::_workspace_tool_tab_changed));
+	shell_workspace_tab_bar->connect("tab_close_pressed", callable_mp(this, &ProjectManager::_workspace_tool_tab_close_pressed));
+	shell_workspace_tab_bar->hide();
+	workspace_root->add_child(shell_workspace_tab_bar);
+
 	main_view_container = memnew(TabContainer);
 	main_view_container->set_name("SolersWorkspaceTabs");
 	main_view_container->set_theme_type_variation("TabContainerInner");
 	main_view_container->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	main_view_container->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	main_view_container->connect("tab_changed", callable_mp(this, &ProjectManager::_main_view_tab_changed));
-	shell_workspace_panel->add_child(main_view_container);
+	main_view_container->set_tabs_visible(false);
+	workspace_root->add_child(main_view_container);
+
+	shell_workspace_home = memnew(PanelContainer);
+	shell_workspace_home->set_name("Workspace");
+	shell_workspace_home->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	shell_workspace_home->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	main_view_container->add_child(shell_workspace_home);
+
+	ScrollContainer *workspace_scroll = memnew(ScrollContainer);
+	workspace_scroll->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	workspace_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	shell_workspace_home->add_child(workspace_scroll);
+
+	MarginContainer *workspace_margin = memnew(MarginContainer);
+	workspace_margin->add_theme_constant_override("margin_left", 28 * EDSCALE);
+	workspace_margin->add_theme_constant_override("margin_right", 28 * EDSCALE);
+	workspace_margin->add_theme_constant_override("margin_top", 28 * EDSCALE);
+	workspace_margin->add_theme_constant_override("margin_bottom", 28 * EDSCALE);
+	workspace_scroll->add_child(workspace_margin);
+
+	VBoxContainer *workspace_body = memnew(VBoxContainer);
+	workspace_body->add_theme_constant_override("separation", 12 * EDSCALE);
+	workspace_body->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	workspace_margin->add_child(workspace_body);
+
+	Label *workspace_title = memnew(Label(TTR("Workspace")));
+	workspace_title->set_theme_type_variation("HeaderMedium");
+	workspace_body->add_child(workspace_title);
+
+	shell_workspace_tool_list = memnew(VBoxContainer);
+	shell_workspace_tool_list->add_theme_constant_override("separation", 6 * EDSCALE);
+	shell_workspace_tool_list->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	workspace_body->add_child(shell_workspace_tool_list);
+
+	shell_editor_host = memnew(Control);
+	shell_editor_host->set_name("EditorHost");
+	shell_editor_host->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	shell_editor_host->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	main_view_container->add_child(shell_editor_host);
+	main_view_container->set_tab_hidden(main_view_container->get_tab_idx_from_control(shell_editor_host), true);
 
 	// Project list view.
 	{
@@ -2484,21 +2630,6 @@ ProjectManager::ProjectManager() {
 		}
 	}
 
-	{
-		shell_editor_host = memnew(Control);
-		shell_editor_host->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		shell_editor_host->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-		_add_main_view(MAIN_VIEW_EDITOR, shell_editor_host);
-		main_view_container->set_tab_hidden(main_view_container->get_tab_idx_from_control(shell_editor_host), true);
-	}
-
-	{
-		shell_logs_view = memnew(RichTextLabel);
-		shell_logs_view->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		shell_logs_view->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-		_add_main_view(MAIN_VIEW_LOGS, shell_logs_view);
-	}
-
 	// Asset library view.
 	if (AssetLibraryEditorPlugin::is_available()) {
 		asset_library = memnew(EditorAssetLibrary(true));
@@ -2770,10 +2901,15 @@ ProjectManager::ProjectManager() {
 
 void ProjectManager::mount_shell_editor(EditorNode *p_editor_node) {
 	ERR_FAIL_NULL(p_editor_node);
+	ERR_FAIL_NULL(main_view_container);
 	ERR_FAIL_NULL(shell_editor_host);
 
+	if (shell_workspace_tab_bar) {
+		shell_workspace_tab_bar->clear_tabs();
+	}
+
 	if (shell_editor_node == p_editor_node) {
-		_select_main_view(MAIN_VIEW_EDITOR);
+		_show_workspace_home();
 		return;
 	}
 
@@ -2790,11 +2926,13 @@ void ProjectManager::mount_shell_editor(EditorNode *p_editor_node) {
 	shell_editor_gui = shell_editor_node->get_gui_base();
 	ERR_FAIL_NULL(shell_editor_gui);
 
-	if (shell_editor_gui->get_parent()) {
-		shell_editor_gui->get_parent()->remove_child(shell_editor_gui);
+	if (shell_editor_gui->get_parent() != shell_editor_host) {
+		if (shell_editor_gui->get_parent()) {
+			shell_editor_gui->get_parent()->remove_child(shell_editor_gui);
+		}
+		shell_editor_host->add_child(shell_editor_gui);
+		shell_editor_gui->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
 	}
-	shell_editor_host->add_child(shell_editor_gui);
-	shell_editor_gui->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
 
 	active_editor_project_path = ProjectSettings::get_singleton()->get_resource_path();
 	const String solers_session_id = OS::get_singleton()->get_environment("SOLERS_SESSION_ID");
@@ -2807,9 +2945,8 @@ void ProjectManager::mount_shell_editor(EditorNode *p_editor_node) {
 	if (shell_workspace_panel) {
 		shell_workspace_panel->show();
 	}
-	main_view_container->set_tab_hidden(main_view_container->get_tab_idx_from_control(main_view_map[MAIN_VIEW_EDITOR]), false);
-	_select_main_view(MAIN_VIEW_EDITOR);
-	_refresh_shell_logs();
+	_rebuild_workspace_launcher();
+	_show_workspace_home();
 }
 
 ProjectManager::~ProjectManager() {
