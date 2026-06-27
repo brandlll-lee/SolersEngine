@@ -101,17 +101,10 @@ class ProjectManager : public Control {
 	HSplitContainer *shell_work_split = nullptr;
 	PopupPanel *shell_session_popup = nullptr;
 	VBoxContainer *shell_session_popup_list = nullptr;
-	Label *shell_project_name_label = nullptr;
-	Label *shell_project_path_label = nullptr;
-	Label *shell_session_label = nullptr;
-	RichTextLabel *shell_run_status = nullptr;
 	RichTextLabel *shell_logs_view = nullptr;
 	Control *shell_editor_host = nullptr;
 	Control *shell_editor_gui = nullptr;
 	EditorNode *shell_editor_node = nullptr;
-	Button *shell_edit_project_button = nullptr;
-	Button *shell_open_project_button = nullptr;
-	Button *shell_run_project_button = nullptr;
 	String shell_project_path;
 	String shell_session_id;
 	String active_editor_project_path;
@@ -120,12 +113,11 @@ class ProjectManager : public Control {
 
 	enum MainViewTab {
 		MAIN_VIEW_EDITOR,
-		MAIN_VIEW_RUN,
 		MAIN_VIEW_LOGS,
 		MAIN_VIEW_MAX
 	};
 
-	MainViewTab current_main_view = MAIN_VIEW_RUN;
+	MainViewTab current_main_view = MAIN_VIEW_LOGS;
 	HashMap<MainViewTab, Control *> main_view_map;
 
 	TabContainer *main_view_container = nullptr;
@@ -142,12 +134,7 @@ class ProjectManager : public Control {
 	void _shell_asset_pressed();
 	void _shell_ai_pressed();
 	void _set_shell_session(const String &p_project_path, const String &p_session_id);
-	bool _select_shell_project_in_list();
-	void _shell_edit_project_pressed();
-	void _shell_open_project_pressed();
-	void _shell_run_project_pressed();
 	void _load_shell_editor(const String &p_project_path);
-	void _refresh_shell_project_panel();
 	void _refresh_shell_logs();
 
 	VBoxContainer *local_projects_vb = nullptr;

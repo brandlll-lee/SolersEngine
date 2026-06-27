@@ -242,7 +242,7 @@ void ProjectManager::_notification(int p_what) {
 			project_list->set_order_option(default_sorting, false);
 
 			if (app_shell) {
-				_select_main_view(MAIN_VIEW_RUN);
+				_select_main_view(MAIN_VIEW_LOGS);
 				_show_shell_chat();
 			} else {
 				if (shell_workspace_panel) {
@@ -475,9 +475,6 @@ void ProjectManager::_add_main_view(MainViewTab p_id, Control *p_view_control) {
 		case MAIN_VIEW_EDITOR:
 			tab_name = TTR("Editor");
 			break;
-		case MAIN_VIEW_RUN:
-			tab_name = TTR("Run");
-			break;
 		case MAIN_VIEW_LOGS:
 			tab_name = TTR("Logs");
 			break;
@@ -669,7 +666,7 @@ void ProjectManager::_set_shell_session(const String &p_project_path, const Stri
 		}
 	}
 #endif
-	_refresh_shell_project_panel();
+	_refresh_shell_logs();
 }
 
 void ProjectManager::_shell_new_session_pressed() {
@@ -682,7 +679,7 @@ void ProjectManager::_shell_new_session_pressed() {
 		const Dictionary status = solers_agent_runtime->get_status();
 		shell_session_id = status.get("session_id", String());
 	}
-	_refresh_shell_project_panel();
+	_refresh_shell_logs();
 	if (shell_session_popup) {
 		shell_session_popup->hide();
 	}
@@ -709,38 +706,6 @@ void ProjectManager::_shell_ai_pressed() {
 		}
 	}
 	_show_shell_global_view(shell_ai_view);
-}
-
-bool ProjectManager::_select_shell_project_in_list() {
-	if (!project_list || shell_project_path.is_empty()) {
-		return false;
-	}
-	for (int i = 0; i < project_list->_projects.size(); i++) {
-		if (project_list->_projects[i].path == shell_project_path) {
-			project_list->select_project(i, true);
-			return true;
-		}
-	}
-	return false;
-}
-
-void ProjectManager::_shell_edit_project_pressed() {
-	if (_select_shell_project_in_list()) {
-		_open_selected_projects_check_recovery_mode();
-	}
-}
-
-void ProjectManager::_shell_open_project_pressed() {
-	if (_select_shell_project_in_list()) {
-		open_classic_editor = true;
-		_open_selected_projects_check_recovery_mode();
-	}
-}
-
-void ProjectManager::_shell_run_project_pressed() {
-	if (_select_shell_project_in_list()) {
-		_run_project();
-	}
 }
 
 void ProjectManager::_load_shell_editor(const String &p_project_path) {
@@ -793,46 +758,6 @@ void ProjectManager::_load_shell_editor(const String &p_project_path) {
 	project_list->project_opening_initiated = true;
 	_dim_window();
 	get_tree()->quit();
-}
-
-void ProjectManager::_refresh_shell_project_panel() {
-	if (!shell_project_name_label || !shell_project_path_label || !shell_session_label) {
-		return;
-	}
-
-	String project_name = shell_project_path.get_file();
-	if (project_list) {
-		for (const ProjectList::Item &project : project_list->_projects) {
-			if (project.path == shell_project_path) {
-				project_name = project.project_name.is_empty() ? project.path.get_file() : project.project_name;
-				break;
-			}
-		}
-	}
-	shell_project_name_label->set_text(project_name.is_empty() ? TTR("No project") : project_name);
-	shell_project_path_label->set_text(shell_project_path);
-	shell_project_path_label->set_tooltip_text(shell_project_path);
-	shell_session_label->set_text(shell_session_id.is_empty() ? TTR("No session") : shell_session_id);
-	if (shell_edit_project_button) {
-		shell_edit_project_button->set_disabled(shell_project_path.is_empty());
-	}
-	if (shell_open_project_button) {
-		shell_open_project_button->set_disabled(shell_project_path.is_empty());
-	}
-	if (shell_run_project_button) {
-		shell_run_project_button->set_disabled(shell_project_path.is_empty());
-	}
-	if (shell_run_status) {
-		shell_run_status->clear();
-		if (shell_project_path.is_empty()) {
-			shell_run_status->add_text(TTR("Select a project session to run it."));
-		} else if (active_editor_project_path == shell_project_path) {
-			shell_run_status->add_text(TTR("This project is selected for the editor workspace."));
-		} else {
-			shell_run_status->add_text(TTR("Load Editor keeps this window active and selects the right workspace.\nOpen Classic Editor keeps the full old workflow available when needed."));
-		}
-	}
-	_refresh_shell_logs();
 }
 
 void ProjectManager::_refresh_shell_logs() {
@@ -2568,59 +2493,6 @@ ProjectManager::ProjectManager() {
 	}
 
 	{
-		VBoxContainer *shell_project_vb = memnew(VBoxContainer);
-		shell_project_vb->add_theme_constant_override("separation", 8 * EDSCALE);
-		_add_main_view(MAIN_VIEW_RUN, shell_project_vb);
-
-		Label *shell_project_header = memnew(Label);
-		shell_project_header->set_theme_type_variation("PMNavHeader");
-		shell_project_header->set_text(TTRC("PROJECT"));
-		shell_project_vb->add_child(shell_project_header);
-
-		shell_project_name_label = memnew(Label);
-		shell_project_name_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-		shell_project_vb->add_child(shell_project_name_label);
-
-		shell_project_path_label = memnew(Label);
-		shell_project_path_label->set_clip_text(true);
-		shell_project_path_label->add_theme_color_override(SceneStringName(font_color), Color(1, 1, 1, 0.62));
-		shell_project_vb->add_child(shell_project_path_label);
-
-		Label *shell_session_header = memnew(Label);
-		shell_session_header->set_theme_type_variation("PMNavHeader");
-		shell_session_header->set_text(TTRC("SESSION"));
-		shell_project_vb->add_child(shell_session_header);
-
-		shell_session_label = memnew(Label);
-		shell_session_label->set_clip_text(true);
-		shell_project_vb->add_child(shell_session_label);
-
-		shell_run_status = memnew(RichTextLabel);
-		shell_run_status->set_fit_content(true);
-		shell_run_status->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		shell_project_vb->add_child(shell_run_status);
-
-		Control *shell_project_spacer = memnew(Control);
-		shell_project_spacer->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-		shell_project_vb->add_child(shell_project_spacer);
-
-		shell_edit_project_button = memnew(Button);
-		shell_edit_project_button->set_text(TTRC("Load Editor"));
-		shell_edit_project_button->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_shell_edit_project_pressed));
-		shell_project_vb->add_child(shell_edit_project_button);
-
-		shell_run_project_button = memnew(Button);
-		shell_run_project_button->set_text(TTRC("Run Project"));
-		shell_run_project_button->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_shell_run_project_pressed));
-		shell_project_vb->add_child(shell_run_project_button);
-
-		shell_open_project_button = memnew(Button);
-		shell_open_project_button->set_text(TTRC("Open Classic Editor"));
-		shell_open_project_button->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_shell_open_project_pressed));
-		shell_project_vb->add_child(shell_open_project_button);
-	}
-
-	{
 		shell_logs_view = memnew(RichTextLabel);
 		shell_logs_view->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 		shell_logs_view->set_v_size_flags(Control::SIZE_EXPAND_FILL);
@@ -2937,7 +2809,7 @@ void ProjectManager::mount_shell_editor(EditorNode *p_editor_node) {
 	}
 	main_view_container->set_tab_hidden(main_view_container->get_tab_idx_from_control(main_view_map[MAIN_VIEW_EDITOR]), false);
 	_select_main_view(MAIN_VIEW_EDITOR);
-	_refresh_shell_project_panel();
+	_refresh_shell_logs();
 }
 
 ProjectManager::~ProjectManager() {
