@@ -157,6 +157,7 @@ void SolersAgentSession::_write_transcript_message(const String &p_role, const S
 	event["turn_id"] = turn_id;
 	event["role"] = p_role;
 	event["content"] = _transcript_text(p_content, context_window);
+	event["wall"] = Time::get_singleton()->get_unix_time_from_system();
 	_stamp_transcript_event(event);
 	solers_transcript_write(event);
 }
@@ -903,22 +904,7 @@ void SolersAgentSession::reset_conversation() {
 	tool_iterations = 0;
 	last_stop_reason = String();
 	last_usage.clear();
-
-	Dictionary event;
-	event["role"] = "session_boundary";
-	event["reason"] = "reset";
-	_stamp_transcript_event(event);
-	solers_transcript_write(event);
-
 	session_id = _make_session_id();
-
-	Dictionary start_event;
-	start_event["role"] = "session_start";
-	start_event["pid"] = OS::get_singleton()->get_process_id();
-	start_event["wall"] = Time::get_singleton()->get_unix_time_from_system();
-	start_event["unique_id"] = OS::get_singleton()->get_unique_id();
-	_stamp_transcript_event(start_event);
-	solers_transcript_write(start_event);
 }
 
 void SolersAgentSession::set_project_path(const String &p_project_path) {
@@ -971,14 +957,6 @@ SolersAgentSession::SolersAgentSession() {
 	models_dev = memnew(SolersModelsDev);
 	models_dev->initialize();
 	provider_catalog->set_models_dev(models_dev);
-
-	Dictionary event;
-	event["role"] = "session_start";
-	event["pid"] = OS::get_singleton()->get_process_id();
-	event["wall"] = Time::get_singleton()->get_unix_time_from_system();
-	event["unique_id"] = OS::get_singleton()->get_unique_id();
-	_stamp_transcript_event(event);
-	solers_transcript_write(event);
 }
 
 SolersAgentSession::~SolersAgentSession() {

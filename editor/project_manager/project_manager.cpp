@@ -115,6 +115,7 @@ struct SolersShellSessionInfo {
 	String title;
 	int64_t wall = 0;
 	bool has_title = false;
+	bool has_user = false;
 };
 
 struct SolersShellSessionInfoSort {
@@ -171,6 +172,7 @@ static Vector<SolersShellSessionInfo> _solers_read_shell_sessions(const String &
 			continue;
 		}
 
+		const String role = event.get("role", String());
 		const String session_id = event.get("session_id", String());
 		if (session_id.is_empty()) {
 			continue;
@@ -189,7 +191,10 @@ static Vector<SolersShellSessionInfo> _solers_read_shell_sessions(const String &
 		if (event.has("wall")) {
 			session.wall = (int64_t)event.get("wall", 0);
 		}
-		if (String(event.get("role", String())) == "user" && !session.has_title) {
+		if (role == "user") {
+			session.has_user = true;
+		}
+		if (role == "user" && !session.has_title) {
 			const String title = _solers_shell_title(event.get("content", String()));
 			if (!title.is_empty()) {
 				session.title = title;
@@ -199,7 +204,13 @@ static Vector<SolersShellSessionInfo> _solers_read_shell_sessions(const String &
 		sessions.write[by_id[session_id]] = session;
 	}
 
-	return sessions;
+	Vector<SolersShellSessionInfo> visible_sessions;
+	for (const SolersShellSessionInfo &session : sessions) {
+		if (session.has_user) {
+			visible_sessions.push_back(session);
+		}
+	}
+	return visible_sessions;
 }
 
 // Notifications.
@@ -2195,15 +2206,16 @@ ProjectManager::ProjectManager() {
 		shell_chat_panel->add_child(solers_home_dock);
 
 		shell_session_popup = memnew(PopupPanel);
+		shell_session_popup->add_theme_style_override(SceneStringName(panel), memnew(StyleBoxEmpty));
+
+		PanelContainer *session_popup_surface = memnew(PanelContainer);
 		Ref<StyleBoxFlat> session_popup_style;
 		session_popup_style.instantiate();
 		session_popup_style->set_bg_color(Color(0.075, 0.078, 0.086));
-		session_popup_style->set_border_color(Color(1, 1, 1, 0.12));
-		session_popup_style->set_border_width_all(MAX(1, int(EDSCALE)));
 		session_popup_style->set_corner_radius_all(int(12 * EDSCALE));
 		session_popup_style->set_shadow_color(Color(0, 0, 0, 0.34));
 		session_popup_style->set_shadow_size(int(18 * EDSCALE));
-		shell_session_popup->add_theme_style_override(SceneStringName(panel), session_popup_style);
+		session_popup_surface->add_theme_style_override(SceneStringName(panel), session_popup_style);
 		add_child(shell_session_popup);
 
 		MarginContainer *session_popup_margin = memnew(MarginContainer);
@@ -2212,7 +2224,8 @@ ProjectManager::ProjectManager() {
 		session_popup_margin->add_theme_constant_override("margin_right", 8 * EDSCALE);
 		session_popup_margin->add_theme_constant_override("margin_top", 8 * EDSCALE);
 		session_popup_margin->add_theme_constant_override("margin_bottom", 8 * EDSCALE);
-		shell_session_popup->add_child(session_popup_margin);
+		shell_session_popup->add_child(session_popup_surface);
+		session_popup_surface->add_child(session_popup_margin);
 
 		shell_session_popup_list = memnew(VBoxContainer);
 		shell_session_popup_list->add_theme_constant_override("separation", 4 * EDSCALE);
