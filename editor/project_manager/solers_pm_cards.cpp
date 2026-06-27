@@ -15,15 +15,10 @@
 #include "scene/resources/style_box_flat.h"
 #include "scene/resources/texture.h"
 
-// Canonical Unreal-Engine "Dark" Slate palette (normalized RGBA), shared with
-// SolersPMTheme so the rail reads as one cohesive surface with the project
-// cards — not a separate, louder widget.
-static const Color SOLERS_UE_ACCENT = Color(0.071f, 0.396f, 0.745f); // #1265BE UE action blue (engine-grade).
 static const Color SOLERS_TEXT = Color(0.886f, 0.890f, 0.902f); // Primary text.
 
 SolersCategoryCard::SolersCategoryCard() {
-	// Compact rail row, UE Editor-Preferences density — not a chunky tile.
-	set_custom_minimum_size(Size2(0, 38) * EDSCALE);
+	set_custom_minimum_size(Size2(0, 48) * EDSCALE);
 	set_mouse_filter(MOUSE_FILTER_STOP);
 	set_focus_mode(FOCUS_NONE);
 	set_default_cursor_shape(CURSOR_POINTING_HAND);
@@ -45,6 +40,11 @@ void SolersCategoryCard::configure(const String &p_title, const Ref<Texture2D> &
 
 void SolersCategoryCard::set_icon(const Ref<Texture2D> &p_icon) {
 	icon = p_icon;
+	queue_redraw();
+}
+
+void SolersCategoryCard::set_filled(bool p_filled) {
+	filled = p_filled;
 	queue_redraw();
 }
 
@@ -105,42 +105,31 @@ void SolersCategoryCard::_notification(int p_what) {
 			const Rect2 r(Point2(), get_size());
 			const float ed = EDSCALE;
 
-			// UE rail rows are *flat states on the panel*, not outlined tiles:
-			// idle is fully transparent, hover is a whisper of lift, selection is
-			// a low-chroma accent wash. No borders anywhere — outlines are what
-			// made the old rail read "cartoon".
-			if (selected) {
-				Color fill = SOLERS_UE_ACCENT;
-				fill.a = 0.16f + 0.04f * anim;
-				draw_rect(r, fill);
-				// Unreal's signature active marker: a slim accent bar, full height.
-				draw_rect(Rect2(0, 0, MAX(2, (int)(2 * ed)), r.size.y), SOLERS_UE_ACCENT);
-			} else if (anim > 0.005f) {
-				draw_rect(r, Color(1, 1, 1, 0.045f * anim));
+			if (filled || selected || anim > 0.005f) {
+				Ref<StyleBoxFlat> pill;
+				pill.instantiate();
+				pill->set_bg_color(Color(1, 1, 1, (filled || selected) ? 0.070f + 0.020f * anim : 0.045f * anim));
+				pill->set_corner_radius_all((int)(14 * ed));
+				draw_style_box(pill, Rect2(6 * ed, 3 * ed, r.size.x - 12 * ed, r.size.y - 6 * ed));
 			}
 
-			// Layout: icon glyph on the left, title vertically centered beside it.
-			const float pad_l = 12 * ed;
+			const float pad_l = 18 * ed;
 			const Vector2 isz = Vector2(17, 17) * ed;
 			const float icon_x = pad_l;
-			const float text_x = icon.is_valid() ? (icon_x + isz.x + 10 * ed) : pad_l;
+			const float text_x = icon.is_valid() ? (icon_x + isz.x + 14 * ed) : pad_l;
 
-			// Icon: white-stroke Lucide glyph tinted by state — calm slate at
-			// rest, brightening on hover, pure white when active. Single hue
-			// chrome; no per-category color (that was the cartoon tell).
 			if (icon.is_valid()) {
 				const Vector2 ipos = Vector2(icon_x, Math::round((r.size.y - isz.y) * 0.5f));
 				const Color idle_tint = Color(0.66f, 0.69f, 0.74f, 0.95f);
-				const Color icon_col = selected ? Color(1, 1, 1) : idle_tint.lerp(Color(1, 1, 1), 0.35f * anim);
+				const Color icon_col = (filled || selected) ? Color(1, 1, 1) : idle_tint.lerp(Color(1, 1, 1), 0.35f * anim);
 				draw_texture_rect(icon, Rect2(ipos, isz), false, icon_col);
 			}
 
-			// Title — fine 13px label, vertically centered, clipped to width.
 			const Ref<Font> font = get_theme_font(SNAME("font"), SNAME("Label"));
-			const int fs = MAX(10, (int)(13 * ed));
+			const int fs = MAX(10, (int)(14 * ed));
 			if (font.is_valid()) {
-				const Color idle_tc = Color(SOLERS_TEXT.r, SOLERS_TEXT.g, SOLERS_TEXT.b, 0.82f);
-				const Color tc = selected ? Color(1, 1, 1) : idle_tc.lerp(Color(1, 1, 1), 0.25f * anim);
+				const Color idle_tc = Color(SOLERS_TEXT.r, SOLERS_TEXT.g, SOLERS_TEXT.b, 0.62f);
+				const Color tc = (filled || selected) ? Color(1, 1, 1) : idle_tc.lerp(Color(1, 1, 1), 0.25f * anim);
 				const float baseline = Math::round((r.size.y + font->get_ascent(fs) - font->get_descent(fs)) * 0.5f);
 				draw_string(font, Vector2(text_x, baseline), title, HORIZONTAL_ALIGNMENT_LEFT, r.size.x - text_x - 10 * ed, fs, tc);
 			}

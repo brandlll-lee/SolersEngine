@@ -46,6 +46,7 @@ class MarginContainer;
 class MenuButton;
 class OptionButton;
 class PanelContainer;
+class PopupPanel;
 class PopupMenu;
 class ProjectDialog;
 class ProjectList;
@@ -55,7 +56,6 @@ class SolersAgentRuntime;
 class SolersCategoryCard;
 class SolersDock;
 class TabContainer;
-class Tree;
 class VBoxContainer;
 
 class ProjectManager : public Control {
@@ -96,18 +96,11 @@ class ProjectManager : public Control {
 	Control *left_menu_spacer = nullptr;
 	Control *right_menu_spacer = nullptr;
 	Button *title_bar_logo = nullptr;
-	PanelContainer *shell_sidebar_panel = nullptr;
 	PanelContainer *shell_chat_panel = nullptr;
 	PanelContainer *shell_workspace_panel = nullptr;
 	HSplitContainer *shell_work_split = nullptr;
-	VBoxContainer *main_view_toggles = nullptr;
-	Label *shell_sidebar_header_label = nullptr;
-	Button *shell_sidebar_toggle_button = nullptr;
-	Button *shell_new_session_button = nullptr;
-	Button *shell_project_button = nullptr;
-	Button *shell_asset_button = nullptr;
-	Button *shell_ai_button = nullptr;
-	Tree *shell_tree = nullptr;
+	PopupPanel *shell_session_popup = nullptr;
+	VBoxContainer *shell_session_popup_list = nullptr;
 	Label *shell_project_name_label = nullptr;
 	Label *shell_project_path_label = nullptr;
 	Label *shell_session_label = nullptr;
@@ -119,13 +112,10 @@ class ProjectManager : public Control {
 	Button *shell_edit_project_button = nullptr;
 	Button *shell_open_project_button = nullptr;
 	Button *shell_run_project_button = nullptr;
-	Button *quick_settings_button = nullptr;
 	String shell_project_path;
 	String shell_session_id;
 	String active_editor_project_path;
 	bool open_classic_editor = false;
-	bool shell_tree_rebuilding = false;
-	bool shell_sidebar_collapsed = false;
 	bool shell_workspace_collapsed = false;
 
 	enum MainViewTab {
@@ -143,15 +133,12 @@ class ProjectManager : public Control {
 	void _add_main_view(MainViewTab p_id, Control *p_view_control);
 	void _select_main_view(int p_id);
 	void _main_view_tab_changed(int p_tab);
-	void _toggle_shell_sidebar();
-	void _refresh_shell_sidebar();
 	void _toggle_shell_workspace();
 	void _show_shell_chat();
 	void _show_shell_global_view(Control *p_view);
-	void _rebuild_shell_tree();
-	void _shell_tree_item_selected();
+	void _show_shell_session_popup(const Rect2 &p_anchor);
+	void _shell_session_pressed(const String &p_session_id);
 	void _shell_new_session_pressed();
-	void _shell_project_pressed();
 	void _shell_asset_pressed();
 	void _shell_ai_pressed();
 	void _set_shell_session(const String &p_project_path, const String &p_session_id);
@@ -216,17 +203,16 @@ class ProjectManager : public Control {
 	void _set_project_view(int p_mode);
 
 	// Solers: left navigation rail — custom-drawn UE-style category cards.
-	enum NavCardKind { NAV_ALL, NAV_FAVORITES, NAV_TAG };
 	VBoxContainer *nav_panel = nullptr;
-	VBoxContainer *nav_tag_list = nullptr;
+	SolersCategoryCard *nav_new_card = nullptr;
 	SolersCategoryCard *nav_all_card = nullptr;
-	SolersCategoryCard *nav_fav_card = nullptr;
-	void _nav_card_pressed(SolersCategoryCard *p_card, int p_kind, const String &p_tag);
+	SolersCategoryCard *nav_asset_card = nullptr;
+	SolersCategoryCard *nav_ai_card = nullptr;
+	SolersCategoryCard *nav_settings_card = nullptr;
+	void _nav_new_pressed();
+	void _nav_card_pressed(SolersCategoryCard *p_card);
 	void _deselect_all_nav_cards();
 	void _nav_all_pressed();
-	void _nav_favorites_pressed();
-	void _nav_tag_pressed(const String &p_tag);
-	void _rebuild_nav_tags();
 	void _bottom_bar_separator(HBoxContainer *p_bar);
 
 	// Solers: progressive-disclosure bottom bar. Low-frequency actions live in

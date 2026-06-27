@@ -59,7 +59,7 @@ class SolersDock : public PanelContainer {
 	MarginContainer *composer_inset = nullptr;
 	TextEdit *chat_input = nullptr;
 	SolersGlyphButton *panel_button = nullptr;
-	SolersGlyphButton *more_button = nullptr;
+	SolersGlyphButton *session_button = nullptr;
 	SolersGlyphButton *add_context_button = nullptr;
 	SolersGlyphButton *send_chat_button = nullptr;
 	SolersSelectChip *model_chip = nullptr;
@@ -96,11 +96,13 @@ class SolersDock : public PanelContainer {
 	SolersRpcServer *rpc_server = nullptr;
 	SolersSettingsService *settings_service = nullptr;
 	Callable workspace_toggle_callback;
+	Callable session_menu_callback;
 
 	void _refresh_status();
 	void _refresh_model_chip();
 	void _on_send_chat_pressed();
 	void _on_workspace_toggle_pressed();
+	void _on_session_menu_pressed();
 	void _on_model_chip_pressed();
 	void _submit_chat_prompt(const String &p_prompt);
 	void _on_agent_model_request_started();
@@ -150,6 +152,7 @@ public:
 	void start_new_chat();
 	void load_chat_history(const Array &p_messages);
 	void set_workspace_toggle_callback(const Callable &p_callback);
+	void set_session_menu_callback(const Callable &p_callback);
 
 	SolersDock();
 	~SolersDock();

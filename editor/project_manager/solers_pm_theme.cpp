@@ -158,18 +158,6 @@ SolersPMTheme::Tokens SolersPMTheme::make_tokens(const Ref<Theme> &p_theme) {
 	t.caption_hover = Color(0.173f, 0.173f, 0.188f); // ~#2C2C30 — hovered band.
 	t.caption_selected = t.accent; // Selected band = UE blue.
 
-	// Honor a user's custom accent only if they explicitly diverged from Godot's
-	// default blue; otherwise keep the canonical UE blue for an authentic look.
-	if (p_theme.is_valid() && p_theme->has_color("accent_color", EditorStringName(Editor))) {
-		const Color user_accent = p_theme->get_color("accent_color", EditorStringName(Editor));
-		const Color godot_default = Color(0.26f, 0.55f, 0.98f);
-		if (!user_accent.is_equal_approx(godot_default)) {
-			t.accent = user_accent;
-			t.card_selected = user_accent.lerp(Color(0, 0, 0), 0.45f);
-			t.caption_selected = user_accent;
-		}
-	}
-
 	return t;
 }
 

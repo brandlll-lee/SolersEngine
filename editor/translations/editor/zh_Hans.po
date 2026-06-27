@@ -8631,6 +8631,9 @@ msgstr "窗口"
 msgid "Settings"
 msgstr "设置"
 
+msgid "AI Settings"
+msgstr "AI 设置"
+
 msgid "Projects"
 msgstr "项目"
 

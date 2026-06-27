@@ -8122,6 +8122,9 @@ msgstr "關於 Godot"
 msgid "Settings"
 msgstr "設定"
 
+msgid "AI Settings"
+msgstr "AI 設定"
+
 msgid "Projects"
 msgstr "專案"
 

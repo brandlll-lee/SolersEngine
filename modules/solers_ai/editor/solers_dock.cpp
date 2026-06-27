@@ -453,8 +453,14 @@ void SolersDock::_on_workspace_toggle_pressed() {
 	}
 }
 
+void SolersDock::_on_session_menu_pressed() {
+	if (session_menu_callback.is_valid() && session_button) {
+		session_menu_callback.call(session_button->get_screen_rect());
+	}
+}
+
 void SolersDock::_on_model_chip_pressed() {
-	_append_error_row(TTR("Model settings live in the left sidebar -> AI Settings."));
+	_append_error_row(TTR("Open AI Settings from the project manager."));
 }
 
 void SolersDock::start_new_chat() {
@@ -748,6 +754,10 @@ void SolersDock::set_workspace_toggle_callback(const Callable &p_callback) {
 	workspace_toggle_callback = p_callback;
 }
 
+void SolersDock::set_session_menu_callback(const Callable &p_callback) {
+	session_menu_callback = p_callback;
+}
+
 SolersDock::SolersDock() {
 	set_name(TTRC("Solers"));
 	set_custom_minimum_size(Size2(520 * EDSCALE, 0));
@@ -786,9 +796,10 @@ SolersDock::SolersDock() {
 	panel_button->set_pressed_callback(callable_mp(this, &SolersDock::_on_workspace_toggle_pressed));
 	topbar_content->add_child(panel_button);
 
-	more_button = memnew(SolersGlyphButton);
-	more_button->configure(SNAME("more"), SolersGlyphButton::SKIN_GHOST, TTR("More"), 15);
-	topbar_content->add_child(more_button);
+	session_button = memnew(SolersGlyphButton);
+	session_button->configure(SNAME("history"), SolersGlyphButton::SKIN_GHOST, TTR("Sessions"), 15);
+	session_button->set_pressed_callback(callable_mp(this, &SolersDock::_on_session_menu_pressed));
+	topbar_content->add_child(session_button);
 
 	/* Hidden diagnostics labels (kept for _refresh_status plumbing). */
 

@@ -35,6 +35,7 @@ class SolersCategoryCard : public Control {
 	Color hue = Color(0.10f, 0.45f, 0.95f); // Per-category accent tint (icon only).
 
 	bool selected = false;
+	bool filled = false;
 	bool hovering = false;
 	bool pressing = false;
 
@@ -54,6 +55,7 @@ public:
 
 	void configure(const String &p_title, const Ref<Texture2D> &p_icon, const Color &p_hue);
 	void set_icon(const Ref<Texture2D> &p_icon);
+	void set_filled(bool p_filled);
 	void set_selected(bool p_selected);
 	bool is_selected() const { return selected; }
 	void set_pressed_callback(const Callable &p_cb) { pressed_callback = p_cb; }

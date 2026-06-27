@@ -72,12 +72,13 @@
 #include "scene/gui/menu_button.h"
 #include "scene/gui/option_button.h"
 #include "scene/gui/panel_container.h"
+#include "scene/gui/popup.h"
 #include "scene/gui/rich_text_label.h"
 #include "scene/gui/separator.h"
 #include "scene/gui/split_container.h"
 #include "scene/gui/tab_container.h"
-#include "scene/gui/tree.h"
 #include "scene/main/window.h"
+#include "scene/resources/style_box_flat.h"
 #include "scene/theme/theme_db.h"
 #include "servers/display/display_server.h"
 #include "servers/navigation_3d/navigation_server_3d.h"
@@ -101,9 +102,11 @@ constexpr int GODOT4_CONFIG_VERSION = 5;
 
 // Lucide glyph bodies (24x24 viewBox, white stroke applied by the rasterizer;
 // ISC license — see modules/solers_ai/UI_ICON_LICENSE.txt).
-static const char *SOLERS_LUCIDE_FOLDER = "<path d=\"M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z\"/>";
-static const char *SOLERS_LUCIDE_HEART = "<path d=\"M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z\"/>";
-static const char *SOLERS_LUCIDE_TAG = "<path d=\"M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z\"/><circle cx=\"7.5\" cy=\"7.5\" r=\".5\" fill=\"#FFFFFF\"/>";
+static const char *SOLERS_LUCIDE_PLUS = "<path d=\"M5 12h14\"/><path d=\"M12 5v14\"/>";
+static const char *SOLERS_LUCIDE_MONITOR = "<rect width=\"20\" height=\"14\" x=\"2\" y=\"3\" rx=\"2\"/><path d=\"M8 21h8\"/><path d=\"M12 17v4\"/>";
+static const char *SOLERS_LUCIDE_PANELS = "<rect width=\"18\" height=\"18\" x=\"3\" y=\"3\" rx=\"2\"/><path d=\"M3 9h18\"/><path d=\"M9 21V9\"/>";
+static const char *SOLERS_LUCIDE_BRIEFCASE = "<path d=\"M16 20V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16\"/><rect width=\"20\" height=\"14\" x=\"2\" y=\"6\" rx=\"2\"/>";
+static const char *SOLERS_LUCIDE_HEXAGON_DOT = "<path d=\"M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z\"/><circle cx=\"12\" cy=\"12\" r=\"3\"/>";
 
 ProjectManager *ProjectManager::singleton = nullptr;
 
@@ -112,6 +115,12 @@ struct SolersShellSessionInfo {
 	String title;
 	int64_t wall = 0;
 	bool has_title = false;
+};
+
+struct SolersShellSessionInfoSort {
+	bool operator()(const SolersShellSessionInfo &p_a, const SolersShellSessionInfo &p_b) const {
+		return p_a.wall > p_b.wall;
+	}
 };
 
 static String _solers_shell_title(const String &p_content) {
@@ -213,14 +222,23 @@ void ProjectManager::_notification(int p_what) {
 		} break;
 
 		case NOTIFICATION_READY: {
-			SceneTree::get_singleton()->get_root()->set_title(GODOT_VERSION_NAME + String(" - ") + TTR("Solers App Shell", "Application"));
+			const bool app_shell = EditorNode::get_singleton();
+			const String window_title = app_shell ? TTR("Solers App Shell", "Application") : TTR("Project Manager", "Application");
+			SceneTree::get_singleton()->get_root()->set_title(GODOT_VERSION_NAME + String(" - ") + window_title);
 			DisplayServer::get_singleton()->screen_set_keep_on(EDITOR_GET("interface/editor/keep_screen_on"));
 			const int default_sorting = (int)EDITOR_GET("project_manager/sorting_order");
 			filter_option->select(default_sorting);
 			project_list->set_order_option(default_sorting, false);
 
-			_select_main_view(MAIN_VIEW_RUN);
-			_show_shell_chat();
+			if (app_shell) {
+				_select_main_view(MAIN_VIEW_RUN);
+				_show_shell_chat();
+			} else {
+				if (shell_workspace_panel) {
+					shell_workspace_panel->hide();
+				}
+				_show_shell_global_view(local_projects_vb);
+			}
 			_update_list_placeholder();
 			_titlebar_resized();
 		} break;
@@ -237,7 +255,8 @@ void ProjectManager::_notification(int p_what) {
 		} break;
 
 		case NOTIFICATION_TRANSLATION_CHANGED: {
-			SceneTree::get_singleton()->get_root()->set_title(GODOT_VERSION_NAME + String(" - ") + TTR("Solers App Shell", "Application"));
+			const String window_title = EditorNode::get_singleton() ? TTR("Solers App Shell", "Application") : TTR("Project Manager", "Application");
+			SceneTree::get_singleton()->get_root()->set_title(GODOT_VERSION_NAME + String(" - ") + window_title);
 
 			const String line1 = TTR("You don't have any projects yet.");
 			const String line2 = TTR("Get started by creating a new one,\nimporting one that exists, or by downloading a project template from the Asset Library!");
@@ -364,9 +383,6 @@ void ProjectManager::_update_theme(bool p_skip_creation) {
 
 		background_panel->add_theme_style_override(SceneStringName(panel), get_theme_stylebox("Background", EditorStringName(EditorStyles)));
 		main_view_container->add_theme_style_override(SceneStringName(panel), get_theme_stylebox("panel_container", "ProjectManager"));
-		if (shell_sidebar_panel) {
-			shell_sidebar_panel->add_theme_style_override(SceneStringName(panel), get_theme_stylebox("project_list", "ProjectManager"));
-		}
 
 		// Project list.
 		{
@@ -382,19 +398,6 @@ void ProjectManager::_update_theme(bool p_skip_creation) {
 
 			// Top bar.
 			search_box->set_right_icon(get_editor_theme_icon("Search"));
-			if (shell_sidebar_toggle_button) {
-				shell_sidebar_toggle_button->set_button_icon(get_editor_theme_icon("Collapse"));
-			}
-			shell_new_session_button->set_button_icon(get_editor_theme_icon("Add"));
-			shell_project_button->set_button_icon(get_editor_theme_icon("Folder"));
-			if (shell_asset_button) {
-				shell_asset_button->set_button_icon(SolersPMTheme::mono_icon(get_editor_theme_icon("AssetLib")));
-			}
-			if (shell_ai_button) {
-				shell_ai_button->set_button_icon(SolersPMTheme::mono_icon(get_editor_theme_icon("Tools")));
-			}
-			quick_settings_button->set_button_icon(get_editor_theme_icon("Tools"));
-			_refresh_shell_sidebar();
 
 			// Bottom command bar — text-only, exactly like Unreal's footer
 			// actions (Create/Cancel). Icon-and-text rows are the single
@@ -415,12 +418,8 @@ void ProjectManager::_update_theme(bool p_skip_creation) {
 			// Left rail: Lucide stroke glyphs (white at source, state-tinted by the
 			// card) — modern line iconography instead of chunky editor SVGs.
 			if (nav_all_card) {
-				Ref<Texture2D> folder_glyph = SolersPMTheme::lucide_icon(SOLERS_LUCIDE_FOLDER);
-				nav_all_card->set_icon(folder_glyph.is_valid() ? folder_glyph : SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Folder"))));
-			}
-			if (nav_fav_card) {
-				Ref<Texture2D> heart_glyph = SolersPMTheme::lucide_icon(SOLERS_LUCIDE_HEART);
-				nav_fav_card->set_icon(heart_glyph.is_valid() ? heart_glyph : SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Heart"))));
+				Ref<Texture2D> monitor_glyph = SolersPMTheme::lucide_icon(SOLERS_LUCIDE_MONITOR);
+				nav_all_card->set_icon(monitor_glyph.is_valid() ? monitor_glyph : SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("GuiTabMenuHl"))));
 			}
 
 			tag_error->add_theme_color_override(SceneStringName(font_color), get_theme_color("error_color", EditorStringName(Editor)));
@@ -513,48 +512,6 @@ void ProjectManager::_main_view_tab_changed(int p_tab) {
 	}
 }
 
-void ProjectManager::_toggle_shell_sidebar() {
-	shell_sidebar_collapsed = !shell_sidebar_collapsed;
-	_refresh_shell_sidebar();
-}
-
-void ProjectManager::_refresh_shell_sidebar() {
-	if (!shell_sidebar_panel) {
-		return;
-	}
-
-	shell_sidebar_panel->set_custom_minimum_size(Size2(shell_sidebar_collapsed ? 72 : 248, 0) * EDSCALE);
-	if (shell_sidebar_header_label) {
-		shell_sidebar_header_label->set_text(shell_sidebar_collapsed ? String() : TTRC("Projects"));
-	}
-	if (shell_tree) {
-		shell_tree->set_visible(!shell_sidebar_collapsed);
-	}
-	if (shell_sidebar_toggle_button) {
-		shell_sidebar_toggle_button->set_tooltip_text(shell_sidebar_collapsed ? TTR("Expand sidebar") : TTR("Collapse sidebar"));
-		shell_sidebar_toggle_button->set_icon_alignment(HORIZONTAL_ALIGNMENT_CENTER);
-	}
-
-	struct SidebarButton {
-		Button *button;
-		String text;
-	};
-	SidebarButton buttons[] = {
-		{ shell_new_session_button, TTRC("New Session") },
-		{ shell_project_button, TTRC("Projects") },
-		{ shell_asset_button, TTRC("Assets") },
-		{ shell_ai_button, TTRC("AI Settings") },
-		{ quick_settings_button, TTRC("Settings") },
-	};
-	for (SidebarButton &button : buttons) {
-		if (!button.button) {
-			continue;
-		}
-		button.button->set_text(shell_sidebar_collapsed ? String() : button.text);
-		button.button->set_icon_alignment(shell_sidebar_collapsed ? HORIZONTAL_ALIGNMENT_CENTER : HORIZONTAL_ALIGNMENT_LEFT);
-	}
-}
-
 void ProjectManager::_toggle_shell_workspace() {
 	shell_workspace_collapsed = !shell_workspace_collapsed;
 	if (shell_workspace_panel) {
@@ -576,6 +533,26 @@ void ProjectManager::_show_shell_global_view(Control *p_view) {
 	if (!p_view) {
 		return;
 	}
+	if (!EditorNode::get_singleton() && p_view != local_projects_vb && project_list_panel) {
+		if (shell_global_overlay_view && shell_global_overlay_view != p_view && shell_global_overlay_view != local_projects_vb) {
+			shell_global_overlay_view->hide();
+		}
+		if (p_view->get_parent() != project_list_panel) {
+			if (p_view->get_parent()) {
+				p_view->get_parent()->remove_child(p_view);
+			}
+			project_list_panel->add_child(p_view);
+		}
+		if (project_list) {
+			project_list->hide();
+		}
+		if (empty_list_placeholder) {
+			empty_list_placeholder->hide();
+		}
+		shell_global_overlay_view = p_view;
+		shell_global_overlay_view->show();
+		return;
+	}
 	if (shell_global_overlay_view == p_view && p_view->is_visible()) {
 		_show_shell_chat();
 		return;
@@ -593,6 +570,75 @@ void ProjectManager::_show_shell_global_view(Control *p_view) {
 		callable_mp((Control *)search_box, &Control::grab_focus).call_deferred(true);
 	}
 #endif
+}
+
+void ProjectManager::_show_shell_session_popup(const Rect2 &p_anchor) {
+	if (!shell_session_popup || !shell_session_popup_list) {
+		return;
+	}
+
+	while (shell_session_popup_list->get_child_count() > 0) {
+		Node *child = shell_session_popup_list->get_child(0);
+		shell_session_popup_list->remove_child(child);
+		child->queue_free();
+	}
+
+	Button *new_session = memnew(Button);
+	new_session->set_theme_type_variation("PMShellAction");
+	new_session->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	new_session->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+	new_session->set_text(TTR("New Session"));
+	new_session->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_shell_new_session_pressed));
+	shell_session_popup_list->add_child(new_session);
+
+	Vector<SolersShellSessionInfo> sessions = _solers_read_shell_sessions(shell_project_path);
+	sessions.sort_custom<SolersShellSessionInfoSort>();
+	for (const SolersShellSessionInfo &session : sessions) {
+		if (session.session_id.is_empty()) {
+			continue;
+		}
+		const String time = _solers_shell_time_ago(session.wall);
+		Button *row = memnew(Button);
+		row->set_theme_type_variation("PMShellAction");
+		row->set_toggle_mode(true);
+		row->set_pressed(session.session_id == shell_session_id);
+		row->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		row->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+		row->set_clip_text(true);
+		row->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+		row->set_text(time.is_empty() ? session.title : vformat("%s  %s", session.title, time));
+		row->set_tooltip_text(session.title);
+		row->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_shell_session_pressed).bind(session.session_id));
+		shell_session_popup_list->add_child(row);
+	}
+	if (sessions.is_empty()) {
+		Label *empty = memnew(Label);
+		empty->set_text(TTR("No sessions yet."));
+		empty->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+		empty->add_theme_color_override(SceneStringName(font_color), get_theme_color("font_placeholder_color", EditorStringName(Editor)));
+		shell_session_popup_list->add_child(empty);
+	}
+
+	shell_session_popup->reset_size();
+	Point2 pos = p_anchor.get_end() + Vector2(-shell_session_popup->get_size().x, 4 * EDSCALE);
+	Window *win = get_window();
+	if (win) {
+		const float win_right = win->get_position().x + win->get_size().x;
+		const float overflow = (pos.x + shell_session_popup->get_size().x) - (win_right - 8 * EDSCALE);
+		if (overflow > 0) {
+			pos.x -= overflow;
+		}
+	}
+	shell_session_popup->set_position(pos);
+	shell_session_popup->popup();
+}
+
+void ProjectManager::_shell_session_pressed(const String &p_session_id) {
+	_show_shell_chat();
+	_set_shell_session(shell_project_path, p_session_id);
+	if (shell_session_popup) {
+		shell_session_popup->hide();
+	}
 }
 
 void ProjectManager::_set_shell_session(const String &p_project_path, const String &p_session_id) {
@@ -626,21 +672,31 @@ void ProjectManager::_shell_new_session_pressed() {
 		shell_session_id = status.get("session_id", String());
 	}
 	_refresh_shell_project_panel();
-	_rebuild_shell_tree();
+	if (shell_session_popup) {
+		shell_session_popup->hide();
+	}
 #else
 	_show_shell_chat();
 #endif
 }
 
-void ProjectManager::_shell_project_pressed() {
-	_show_shell_global_view(local_projects_vb);
-}
-
 void ProjectManager::_shell_asset_pressed() {
+	if (!EditorNode::get_singleton()) {
+		_deselect_all_nav_cards();
+		if (nav_asset_card) {
+			nav_asset_card->set_selected(true);
+		}
+	}
 	_open_asset_library_confirmed();
 }
 
 void ProjectManager::_shell_ai_pressed() {
+	if (!EditorNode::get_singleton()) {
+		_deselect_all_nav_cards();
+		if (nav_ai_card) {
+			nav_ai_card->set_selected(true);
+		}
+	}
 	_show_shell_global_view(shell_ai_view);
 }
 
@@ -812,114 +868,6 @@ void ProjectManager::_refresh_shell_logs() {
 	shell_logs_view->add_text(text.is_empty() ? TTR("No transcript entries for this session.") : text);
 }
 
-void ProjectManager::_shell_tree_item_selected() {
-	if (shell_tree_rebuilding) {
-		return;
-	}
-	if (!shell_tree) {
-		return;
-	}
-	TreeItem *item = shell_tree->get_selected();
-	if (!item) {
-		return;
-	}
-	const Dictionary meta = item->get_metadata(0);
-	const String kind = meta.get("kind", String());
-	const String project_path = meta.get("project_path", String());
-	if (project_path.is_empty()) {
-		return;
-	}
-	if (kind == "project") {
-		_set_shell_session(project_path, String());
-		_show_shell_chat();
-		return;
-	}
-	if (kind != "session") {
-		return;
-	}
-	const String session_id = meta.get("session_id", String());
-	if (session_id.is_empty()) {
-		return;
-	}
-	_set_shell_session(project_path, session_id);
-	_show_shell_chat();
-}
-
-void ProjectManager::_rebuild_shell_tree() {
-	if (!shell_tree || !project_list) {
-		return;
-	}
-
-	shell_tree_rebuilding = true;
-	shell_tree->clear();
-	TreeItem *root = shell_tree->create_item();
-	bool selected_session_found = false;
-	const SolersPMTheme::Tokens tokens = SolersPMTheme::make_tokens(theme);
-	const Color project_color = tokens.text;
-	const Color session_color = Color(tokens.text.r, tokens.text.g, tokens.text.b, 0.88f);
-	const Color time_color = Color(tokens.text_dim.r, tokens.text_dim.g, tokens.text_dim.b, 0.72f);
-	const Ref<Texture2D> folder_icon = SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Folder")));
-
-	for (const ProjectList::Item &project : project_list->_projects) {
-		if (project.missing) {
-			continue;
-		}
-
-		const String project_path = project.path;
-		Dictionary meta;
-		meta["kind"] = "project";
-		meta["project_path"] = project_path;
-
-		TreeItem *project_item = shell_tree->create_item(root);
-		project_item->set_text(0, project.project_name.is_empty() ? project_path.get_file() : project.project_name);
-		project_item->set_tooltip_text(0, project_path);
-		project_item->set_metadata(0, meta);
-		project_item->set_icon(0, folder_icon);
-		project_item->set_icon_modulate(0, Color(tokens.text_dim.r, tokens.text_dim.g, tokens.text_dim.b, 0.95f));
-		project_item->set_icon_max_width(0, 16 * EDSCALE);
-		project_item->set_custom_color(0, project_color);
-		project_item->set_selectable(0, true);
-		project_item->set_selectable(1, false);
-		project_item->set_collapsed(false);
-		if (project_path == shell_project_path && shell_session_id.is_empty() && !selected_session_found) {
-			project_item->select(0);
-			selected_session_found = true;
-		}
-
-		Vector<SolersShellSessionInfo> sessions = _solers_read_shell_sessions(project_path);
-		for (int i = sessions.size() - 1; i >= 0; i--) {
-			if (sessions[i].session_id.is_empty()) {
-				continue;
-			}
-			Dictionary session_meta;
-			session_meta["kind"] = "session";
-			session_meta["project_path"] = project_path;
-			session_meta["session_id"] = sessions[i].session_id;
-
-			TreeItem *session_item = shell_tree->create_item(project_item);
-			session_item->set_text(0, sessions[i].title);
-			session_item->set_text_overrun_behavior(0, TextServer::OVERRUN_TRIM_ELLIPSIS);
-			session_item->set_text(1, _solers_shell_time_ago(sessions[i].wall));
-			session_item->set_text_alignment(1, HORIZONTAL_ALIGNMENT_RIGHT);
-			session_item->set_metadata(0, session_meta);
-			session_item->set_metadata(1, session_meta);
-			session_item->set_custom_color(0, session_color);
-			session_item->set_custom_color(1, time_color);
-			session_item->set_disable_folding(true);
-			session_item->set_selectable(1, false);
-			if (project_path == shell_project_path && sessions[i].session_id == shell_session_id && !selected_session_found) {
-				session_item->select(0);
-				selected_session_found = true;
-			}
-		}
-	}
-
-	if (!selected_session_found && shell_project_path.is_empty()) {
-		_set_shell_session(String(), String());
-	}
-	shell_tree_rebuilding = false;
-}
-
 void ProjectManager::_show_about() {
 	about_dialog->popup_centered(Size2(780, 500) * EDSCALE);
 }
@@ -1006,6 +954,12 @@ void ProjectManager::_dim_window() {
 // Quick settings.
 
 void ProjectManager::_show_quick_settings() {
+	if (!EditorNode::get_singleton()) {
+		_deselect_all_nav_cards();
+		if (nav_settings_card) {
+			nav_settings_card->set_selected(true);
+		}
+	}
 	quick_settings_dialog->popup_centered(Size2(640, 200) * EDSCALE);
 }
 
@@ -1509,45 +1463,48 @@ void ProjectManager::_set_project_view(int p_mode) {
 		return;
 	}
 	project_list->set_display_mode(p_mode);
-	if (EditorSettings::get_singleton()) {
-		EditorSettings::get_singleton()->set("project_manager/view_mode", p_mode);
-		EditorSettings::get_singleton()->save();
-	}
 }
 
 void ProjectManager::_deselect_all_nav_cards() {
+	if (nav_new_card) {
+		nav_new_card->set_selected(false);
+	}
 	if (nav_all_card) {
 		nav_all_card->set_selected(false);
 	}
-	if (nav_fav_card) {
-		nav_fav_card->set_selected(false);
+	if (nav_asset_card) {
+		nav_asset_card->set_selected(false);
 	}
-	if (nav_tag_list) {
-		for (int i = 0; i < nav_tag_list->get_child_count(); ++i) {
-			SolersCategoryCard *c = Object::cast_to<SolersCategoryCard>(nav_tag_list->get_child(i));
-			if (c) {
-				c->set_selected(false);
-			}
-		}
+	if (nav_ai_card) {
+		nav_ai_card->set_selected(false);
+	}
+	if (nav_settings_card) {
+		nav_settings_card->set_selected(false);
 	}
 }
 
-void ProjectManager::_nav_card_pressed(SolersCategoryCard *p_card, int p_kind, const String &p_tag) {
+void ProjectManager::_nav_new_pressed() {
+	_deselect_all_nav_cards();
+	if (nav_new_card) {
+		nav_new_card->set_selected(true);
+	}
+	_new_project();
+}
+
+void ProjectManager::_nav_card_pressed(SolersCategoryCard *p_card) {
+	if (!EditorNode::get_singleton() && shell_global_overlay_view && shell_global_overlay_view != local_projects_vb) {
+		shell_global_overlay_view->hide();
+		shell_global_overlay_view = local_projects_vb;
+		if (project_list) {
+			project_list->show();
+		}
+		_update_list_placeholder();
+	}
 	_deselect_all_nav_cards();
 	if (p_card) {
 		p_card->set_selected(true);
 	}
-	switch ((NavCardKind)p_kind) {
-		case NAV_ALL:
-			_nav_all_pressed();
-			break;
-		case NAV_FAVORITES:
-			_nav_favorites_pressed();
-			break;
-		case NAV_TAG:
-			_nav_tag_pressed(p_tag);
-			break;
-	}
+	_nav_all_pressed();
 }
 
 void ProjectManager::_nav_all_pressed() {
@@ -1557,44 +1514,6 @@ void ProjectManager::_nav_all_pressed() {
 	project_list->sort_projects();
 	project_list->select_first_visible_project();
 	_update_project_buttons();
-}
-
-void ProjectManager::_nav_favorites_pressed() {
-	search_box->set_text("");
-	project_list->set_search_term("");
-	project_list->set_favorites_only(true);
-	project_list->sort_projects();
-	project_list->select_first_visible_project();
-	_update_project_buttons();
-}
-
-void ProjectManager::_nav_tag_pressed(const String &p_tag) {
-	const String term = "tag:" + p_tag;
-	project_list->set_favorites_only(false);
-	search_box->set_text(term);
-	project_list->set_search_term(term);
-	project_list->sort_projects();
-	project_list->select_first_visible_project();
-	_update_project_buttons();
-}
-
-void ProjectManager::_rebuild_nav_tags() {
-	if (!nav_tag_list) {
-		return;
-	}
-	for (int i = nav_tag_list->get_child_count() - 1; i >= 0; --i) {
-		nav_tag_list->get_child(i)->queue_free();
-	}
-	const PackedStringArray tags = project_list->get_all_tags();
-	const Ref<Texture2D> tag_glyph = SolersPMTheme::lucide_icon(SOLERS_LUCIDE_TAG, 15);
-	for (const String &tag : tags) {
-		// Monochrome rail: one calm Lucide tag glyph for every entry. Per-tag
-		// rainbow hues read as toy-like next to UE's restrained chrome.
-		SolersCategoryCard *c = memnew(SolersCategoryCard);
-		c->configure(tag.capitalize(), tag_glyph, Color());
-		c->set_pressed_callback(callable_mp(this, &ProjectManager::_nav_card_pressed).bind(c, (int)NAV_TAG, tag));
-		nav_tag_list->add_child(c);
-	}
 }
 
 void ProjectManager::_bottom_bar_separator(HBoxContainer *p_bar) {
@@ -2250,88 +2169,6 @@ ProjectManager::ProjectManager() {
 	shell->add_theme_constant_override("separation", 8 * EDSCALE);
 	main_vbox->add_child(shell);
 
-	shell_sidebar_panel = memnew(PanelContainer);
-	shell_sidebar_panel->set_custom_minimum_size(Size2(248, 0) * EDSCALE);
-	shell_sidebar_panel->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	shell->add_child(shell_sidebar_panel);
-
-	MarginContainer *shell_sidebar_margin = memnew(MarginContainer);
-	shell_sidebar_margin->add_theme_constant_override("margin_left", 8 * EDSCALE);
-	shell_sidebar_margin->add_theme_constant_override("margin_right", 8 * EDSCALE);
-	shell_sidebar_margin->add_theme_constant_override("margin_top", 8 * EDSCALE);
-	shell_sidebar_margin->add_theme_constant_override("margin_bottom", 8 * EDSCALE);
-	shell_sidebar_panel->add_child(shell_sidebar_margin);
-
-	main_view_toggles = memnew(VBoxContainer);
-	main_view_toggles->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	main_view_toggles->add_theme_constant_override("separation", 3 * EDSCALE);
-	shell_sidebar_margin->add_child(main_view_toggles);
-
-	HBoxContainer *shell_header = memnew(HBoxContainer);
-	shell_header->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	main_view_toggles->add_child(shell_header);
-
-	shell_sidebar_header_label = memnew(Label);
-	shell_sidebar_header_label->set_theme_type_variation("PMNavHeader");
-	shell_sidebar_header_label->set_text(TTRC("Projects"));
-	shell_sidebar_header_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	shell_header->add_child(shell_sidebar_header_label);
-
-	shell_sidebar_toggle_button = memnew(Button);
-	shell_sidebar_toggle_button->set_flat(true);
-	shell_sidebar_toggle_button->set_focus_mode(Control::FOCUS_NONE);
-	shell_sidebar_toggle_button->set_tooltip_text(TTRC("Collapse sidebar"));
-	shell_sidebar_toggle_button->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_toggle_shell_sidebar));
-	shell_header->add_child(shell_sidebar_toggle_button);
-
-	shell_new_session_button = memnew(Button);
-	shell_new_session_button->set_theme_type_variation("PMShellAction");
-	shell_new_session_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	shell_new_session_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
-	shell_new_session_button->set_text(TTRC("New Session"));
-	shell_new_session_button->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_shell_new_session_pressed));
-	main_view_toggles->add_child(shell_new_session_button);
-
-	shell_project_button = memnew(Button);
-	shell_project_button->set_theme_type_variation("PMShellAction");
-	shell_project_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	shell_project_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
-	shell_project_button->set_text(TTRC("Projects"));
-	shell_project_button->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_shell_project_pressed));
-	main_view_toggles->add_child(shell_project_button);
-
-	shell_tree = memnew(Tree);
-	shell_tree->set_theme_type_variation("SolersShellTree");
-	shell_tree->set_hide_root(true);
-	shell_tree->set_select_mode(Tree::SELECT_ROW);
-	shell_tree->set_columns(2);
-	shell_tree->set_column_titles_visible(false);
-	shell_tree->set_column_expand(0, true);
-	shell_tree->set_column_expand(1, false);
-	shell_tree->set_column_custom_minimum_width(1, 68 * EDSCALE);
-	shell_tree->set_column_clip_content(0, true);
-	shell_tree->set_column_clip_content(1, true);
-	shell_tree->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	shell_tree->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	shell_tree->connect(SceneStringName(item_selected), callable_mp(this, &ProjectManager::_shell_tree_item_selected));
-	main_view_toggles->add_child(shell_tree);
-
-	shell_asset_button = memnew(Button);
-	shell_asset_button->set_theme_type_variation("PMShellAction");
-	shell_asset_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	shell_asset_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
-	shell_asset_button->set_text(TTRC("Assets"));
-	shell_asset_button->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_shell_asset_pressed));
-	main_view_toggles->add_child(shell_asset_button);
-
-	shell_ai_button = memnew(Button);
-	shell_ai_button->set_theme_type_variation("PMShellAction");
-	shell_ai_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	shell_ai_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
-	shell_ai_button->set_text(TTRC("AI Settings"));
-	shell_ai_button->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_shell_ai_pressed));
-	main_view_toggles->add_child(shell_ai_button);
-
 	shell_work_split = memnew(HSplitContainer);
 	shell_work_split->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	shell_work_split->set_v_size_flags(Control::SIZE_EXPAND_FILL);
@@ -2353,8 +2190,33 @@ ProjectManager::ProjectManager() {
 		solers_home_dock->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 		solers_home_dock->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 		solers_home_dock->set_workspace_toggle_callback(callable_mp(this, &ProjectManager::_toggle_shell_workspace));
+		solers_home_dock->set_session_menu_callback(callable_mp(this, &ProjectManager::_show_shell_session_popup));
 		solers_agent_runtime->bind_dock(solers_home_dock);
 		shell_chat_panel->add_child(solers_home_dock);
+
+		shell_session_popup = memnew(PopupPanel);
+		Ref<StyleBoxFlat> session_popup_style;
+		session_popup_style.instantiate();
+		session_popup_style->set_bg_color(Color(0.075, 0.078, 0.086));
+		session_popup_style->set_border_color(Color(1, 1, 1, 0.12));
+		session_popup_style->set_border_width_all(MAX(1, int(EDSCALE)));
+		session_popup_style->set_corner_radius_all(int(12 * EDSCALE));
+		session_popup_style->set_shadow_color(Color(0, 0, 0, 0.34));
+		session_popup_style->set_shadow_size(int(18 * EDSCALE));
+		shell_session_popup->add_theme_style_override(SceneStringName(panel), session_popup_style);
+		add_child(shell_session_popup);
+
+		MarginContainer *session_popup_margin = memnew(MarginContainer);
+		session_popup_margin->set_custom_minimum_size(Size2(360, 0) * EDSCALE);
+		session_popup_margin->add_theme_constant_override("margin_left", 8 * EDSCALE);
+		session_popup_margin->add_theme_constant_override("margin_right", 8 * EDSCALE);
+		session_popup_margin->add_theme_constant_override("margin_top", 8 * EDSCALE);
+		session_popup_margin->add_theme_constant_override("margin_bottom", 8 * EDSCALE);
+		shell_session_popup->add_child(session_popup_margin);
+
+		shell_session_popup_list = memnew(VBoxContainer);
+		shell_session_popup_list->add_theme_constant_override("separation", 4 * EDSCALE);
+		session_popup_margin->add_child(shell_session_popup_list);
 
 		set_process(true);
 	}
@@ -2452,44 +2314,27 @@ ProjectManager::ProjectManager() {
 			local_projects_vb->add_child(project_list_hbox);
 			project_list_hbox->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 
-			// Left navigation rail — custom-drawn UE-style category cards.
 			nav_panel = memnew(VBoxContainer);
-			nav_panel->set_custom_minimum_size(Size2(208, 0) * EDSCALE);
-			nav_panel->add_theme_constant_override("separation", 3 * EDSCALE);
+			nav_panel->set_custom_minimum_size(Size2(240, 0) * EDSCALE);
+			nav_panel->add_theme_constant_override("separation", 0);
 			project_list_hbox->add_child(nav_panel);
 
-			{
-				Label *lib_header = memnew(Label(TTRC("LIBRARY")));
-				lib_header->set_theme_type_variation("PMNavHeader");
-				nav_panel->add_child(lib_header);
-			}
+			auto make_nav_card = [&](const String &p_title, const char *p_glyph, const Callable &p_callback) -> SolersCategoryCard * {
+				SolersCategoryCard *card = memnew(SolersCategoryCard);
+				card->configure(p_title, SolersPMTheme::lucide_icon(p_glyph), Color());
+				card->set_pressed_callback(p_callback);
+				nav_panel->add_child(card);
+				return card;
+			};
 
-			nav_all_card = memnew(SolersCategoryCard);
-			nav_all_card->configure(TTRC("All Projects"), Ref<Texture2D>(), Color(0.16f, 0.34f, 0.62f));
-			nav_all_card->set_selected(true);
-			nav_all_card->set_pressed_callback(callable_mp(this, &ProjectManager::_nav_card_pressed).bind(nav_all_card, (int)NAV_ALL, String()));
-			nav_panel->add_child(nav_all_card);
+			nav_new_card = make_nav_card(TTRC("New Project"), SOLERS_LUCIDE_PLUS, callable_mp(this, &ProjectManager::_nav_new_pressed));
+			nav_new_card->set_filled(true);
 
-			nav_fav_card = memnew(SolersCategoryCard);
-			nav_fav_card->configure(TTRC("Favorites"), Ref<Texture2D>(), Color(0.62f, 0.36f, 0.12f));
-			nav_fav_card->set_pressed_callback(callable_mp(this, &ProjectManager::_nav_card_pressed).bind(nav_fav_card, (int)NAV_FAVORITES, String()));
-			nav_panel->add_child(nav_fav_card);
-
-			{
-				Label *tags_header = memnew(Label(TTRC("TAGS")));
-				tags_header->set_theme_type_variation("PMNavHeader");
-				nav_panel->add_child(tags_header);
-			}
-
-			ScrollContainer *nav_tags_scroll = memnew(ScrollContainer);
-			nav_tags_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
-			nav_tags_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-			nav_panel->add_child(nav_tags_scroll);
-
-			nav_tag_list = memnew(VBoxContainer);
-			nav_tag_list->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-			nav_tag_list->add_theme_constant_override("separation", 2 * EDSCALE);
-			nav_tags_scroll->add_child(nav_tag_list);
+			nav_all_card = make_nav_card(TTRC("Projects"), SOLERS_LUCIDE_MONITOR, Callable());
+			nav_all_card->set_pressed_callback(callable_mp(this, &ProjectManager::_nav_card_pressed).bind(nav_all_card));
+			nav_asset_card = make_nav_card(TTRC("Asset Library"), SOLERS_LUCIDE_PANELS, callable_mp(this, &ProjectManager::_shell_asset_pressed));
+			nav_ai_card = make_nav_card(TTRC("AI Settings"), SOLERS_LUCIDE_BRIEFCASE, callable_mp(this, &ProjectManager::_shell_ai_pressed));
+			nav_settings_card = make_nav_card(TTRC("Settings"), SOLERS_LUCIDE_HEXAGON_DOT, callable_mp(this, &ProjectManager::_show_quick_settings));
 
 			project_list_panel = memnew(PanelContainer);
 			project_list_panel->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -2500,8 +2345,6 @@ ProjectManager::ProjectManager() {
 			project_list_panel->add_child(project_list);
 			project_list->connect(ProjectList::SIGNAL_LIST_CHANGED, callable_mp(this, &ProjectManager::_update_project_buttons));
 			project_list->connect(ProjectList::SIGNAL_LIST_CHANGED, callable_mp(this, &ProjectManager::_update_list_placeholder));
-			project_list->connect(ProjectList::SIGNAL_LIST_CHANGED, callable_mp(this, &ProjectManager::_rebuild_nav_tags));
-			project_list->connect(ProjectList::SIGNAL_LIST_CHANGED, callable_mp(this, &ProjectManager::_rebuild_shell_tree));
 			project_list->connect(ProjectList::SIGNAL_SELECTION_CHANGED, callable_mp(this, &ProjectManager::_update_project_buttons));
 			project_list->connect(ProjectList::SIGNAL_PROJECT_ASK_OPEN, callable_mp(this, &ProjectManager::_open_selected_projects_check_recovery_mode));
 			project_list->connect(ProjectList::SIGNAL_MENU_OPTION_SELECTED, callable_mp(this, &ProjectManager::_project_list_menu_option));
@@ -2795,10 +2638,6 @@ ProjectManager::ProjectManager() {
 		asset_library_filler->hide();
 		shell_chat_panel->add_child(asset_library_filler);
 		shell_asset_view = asset_library_filler;
-		if (shell_asset_button) {
-			shell_asset_button->set_disabled(true);
-			shell_asset_button->set_tooltip_text(TTRC("Asset Library not available (due to using Web editor, or because SSL support disabled)."));
-		}
 	}
 
 	// Solers: BYOK AI model configuration view.
@@ -2810,17 +2649,6 @@ ProjectManager::ProjectManager() {
 		ai_view->hide();
 		shell_chat_panel->add_child(ai_view);
 		shell_ai_view = ai_view;
-	}
-
-	{
-		quick_settings_button = memnew(Button);
-		quick_settings_button->set_theme_type_variation("PMNavButton");
-		quick_settings_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		quick_settings_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
-		quick_settings_button->set_text(TTRC("Settings"));
-		quick_settings_button->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_show_quick_settings));
-		main_view_toggles->add_child(quick_settings_button);
-		_refresh_shell_sidebar();
 	}
 
 	// Footer bar.
@@ -3041,18 +2869,10 @@ ProjectManager::ProjectManager() {
 				}
 			}
 		}
-		// Solers: apply the saved view mode (defaults to the UE-style grid)
-		// before the first population so items build into the correct layout.
-		int saved_view = ProjectList::DISPLAY_GRID;
-		if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("project_manager/view_mode")) {
-			saved_view = (int)EditorSettings::get_singleton()->get("project_manager/view_mode");
-		}
-		project_list->set_display_mode(saved_view);
-		if (saved_view == ProjectList::DISPLAY_GRID) {
-			view_grid_btn->set_pressed_no_signal(true);
-		} else {
-			view_list_btn->set_pressed_no_signal(true);
-		}
+		// Solers: start in the UE-style grid before first population so items
+		// build into the card layout even if older settings saved list mode.
+		project_list->set_display_mode(ProjectList::DISPLAY_GRID);
+		view_grid_btn->set_pressed_no_signal(true);
 
 		project_list->update_project_list();
 		initialized = true;
