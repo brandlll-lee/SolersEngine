@@ -54,6 +54,7 @@
 
 #ifdef MODULE_SOLERS_AI_ENABLED
 #include "modules/solers_ai/editor/solers_agent_runtime.h"
+#include "modules/solers_ai/editor/solers_chat_widgets.h"
 #include "modules/solers_ai/editor/solers_dock.h"
 #endif
 #include "scene/2d/node_2d.h"
@@ -222,6 +223,12 @@ static const String INSTALL_ANDROID_BUILD_TEMPLATE_MESSAGE = TTRC("This will set
 constexpr int LARGE_RESOURCE_WARNING_SIZE_THRESHOLD = 512'000; // 500 KB
 
 #ifdef MODULE_SOLERS_AI_ENABLED
+enum SolersRunOption {
+	SOLERS_RUN_MAIN = 1,
+	SOLERS_RUN_CURRENT,
+	SOLERS_RUN_STOP,
+};
+
 struct SolersEditorSessionInfo {
 	String session_id;
 	String title;
@@ -1252,6 +1259,12 @@ void EditorNode::_notification(int p_what) {
 }
 
 void EditorNode::_update_update_spinner() {
+#ifdef MODULE_SOLERS_AI_ENABLED
+	if (solers_home_dock) {
+		update_spinner->hide();
+		return;
+	}
+#endif
 	update_spinner->set_visible(!RenderingServer::get_singleton()->canvas_item_get_debug_redraw() && _should_display_update_spinner());
 
 	const bool update_continuously = EDITOR_GET("interface/editor/update_continuously");
@@ -8363,6 +8376,74 @@ void EditorNode::_set_solers_session(const String &p_project_path, const String 
 #endif
 }
 
+void EditorNode::_set_solers_side_panel_visible(bool p_visible) {
+#ifdef MODULE_SOLERS_AI_ENABLED
+	if (!solers_home_dock || !main_hsplit) {
+		return;
+	}
+	solers_side_panel_visible = p_visible;
+	main_hsplit->set_visible(p_visible);
+	solers_home_dock->set_stretch_ratio(p_visible ? 0.54 : 1.0);
+	main_hsplit->set_stretch_ratio(0.46);
+	if (!p_visible && bottom_panel) {
+		bottom_panel->hide_bottom_panel();
+	}
+#else
+	(void)p_visible;
+#endif
+}
+
+void EditorNode::_toggle_solers_side_panel() {
+	_set_solers_side_panel_visible(!solers_side_panel_visible);
+}
+
+void EditorNode::_show_solers_run_options() {
+#ifdef MODULE_SOLERS_AI_ENABLED
+	if (!solers_run_options_popup) {
+		return;
+	}
+	const Point2i pos = DisplayServer::get_singleton()->mouse_get_position();
+	solers_run_options_popup->popup(Rect2i(pos, Size2i()));
+#endif
+}
+
+void EditorNode::_solers_run_option_selected(int p_id) {
+#ifdef MODULE_SOLERS_AI_ENABLED
+	if (!project_run_bar) {
+		return;
+	}
+	switch (p_id) {
+		case SOLERS_RUN_MAIN:
+			project_run_bar->play_main_scene();
+			break;
+		case SOLERS_RUN_CURRENT:
+			project_run_bar->play_current_scene();
+			break;
+		case SOLERS_RUN_STOP:
+			project_run_bar->stop_playing();
+			break;
+	}
+#else
+	(void)p_id;
+#endif
+}
+
+void EditorNode::_solers_filesystem_pressed() {
+	_set_solers_side_panel_visible(true);
+	if (editor_dock_manager && FileSystemDock::get_singleton()) {
+		editor_dock_manager->open_dock(FileSystemDock::get_singleton(), true);
+		editor_dock_manager->focus_dock(FileSystemDock::get_singleton());
+	}
+}
+
+void EditorNode::_solers_output_pressed() {
+	_set_solers_side_panel_visible(true);
+	if (editor_dock_manager && log) {
+		editor_dock_manager->open_dock(log, true);
+		editor_dock_manager->focus_dock(log);
+	}
+}
+
 #ifdef ANDROID_ENABLED
 void EditorNode::_touch_actions_panel_mode_changed() {
 	int panel_mode = EDITOR_GET("interface/touchscreen/touch_actions_panel");
@@ -8775,6 +8856,11 @@ EditorNode::EditorNode() {
 	}
 
 	if (!solers_classic_editor) {
+		Ref<StyleBoxFlat> solers_editor_style;
+		solers_editor_style.instantiate();
+		solers_editor_style->set_bg_color(Color(0.045, 0.047, 0.052));
+		gui_base->add_theme_style_override(SceneStringName(panel), solers_editor_style);
+
 		HBoxContainer *solers_editor_root = memnew(HBoxContainer);
 		solers_editor_root->set_name("SolersEditorRoot");
 		solers_editor_root->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -8787,12 +8873,13 @@ EditorNode::EditorNode() {
 		solers_home_dock->set_name("SolersChat");
 		solers_home_dock->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 		solers_home_dock->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-		solers_home_dock->set_stretch_ratio(0.38);
+		solers_home_dock->set_stretch_ratio(1.0);
 		solers_home_dock->set_session_menu_callback(callable_mp(this, &EditorNode::_show_solers_session_popup));
 		solers_agent_runtime->bind_dock(solers_home_dock);
 		solers_editor_root->add_child(solers_home_dock);
 
-		main_hsplit->set_stretch_ratio(0.62);
+		main_hsplit->set_stretch_ratio(0.46);
+		main_hsplit->hide();
 		solers_editor_root->add_child(main_hsplit);
 
 		solers_session_popup = memnew(PopupPanel);
@@ -9176,6 +9263,36 @@ EditorNode::EditorNode() {
 	right_menu_hb->set_mouse_filter(Control::MOUSE_FILTER_STOP);
 	title_bar->add_child(right_menu_hb);
 
+#ifdef MODULE_SOLERS_AI_ENABLED
+	if (solers_home_dock) {
+		project_run_bar->hide();
+		main_editor_button_hb->hide();
+		right_menu_hb->add_theme_constant_override("separation", 5 * EDSCALE);
+
+		auto add_solers_top_button = [&](const StringName &p_glyph, const String &p_tooltip, const Callable &p_callback) {
+			SolersGlyphButton *button = memnew(SolersGlyphButton);
+			button->configure(p_glyph, SolersGlyphButton::SKIN_GHOST, p_tooltip, 15);
+			button->set_pressed_callback(p_callback);
+			button->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
+			right_menu_hb->add_child(button);
+		};
+
+		add_solers_top_button(SNAME("tool_run"), TTR("Run Project"), callable_mp(this, &EditorNode::_solers_run_option_selected).bind(SOLERS_RUN_MAIN));
+		add_solers_top_button(SNAME("chevron_down"), TTR("Run Options"), callable_mp(this, &EditorNode::_show_solers_run_options));
+		add_solers_top_button(SNAME("tool_file"), TTR("FileSystem"), callable_mp(this, &EditorNode::_solers_filesystem_pressed));
+		add_solers_top_button(SNAME("tool_shell"), TTR("Output"), callable_mp(this, &EditorNode::_solers_output_pressed));
+		add_solers_top_button(SNAME("panel"), TTR("Side Panel"), callable_mp(this, &EditorNode::_toggle_solers_side_panel));
+
+		solers_run_options_popup = memnew(PopupMenu);
+		solers_run_options_popup->add_item(TTR("Run Main Scene"), SOLERS_RUN_MAIN);
+		solers_run_options_popup->add_item(TTR("Run Current Scene"), SOLERS_RUN_CURRENT);
+		solers_run_options_popup->add_separator();
+		solers_run_options_popup->add_item(TTR("Stop"), SOLERS_RUN_STOP);
+		solers_run_options_popup->connect(SceneStringName(id_pressed), callable_mp(this, &EditorNode::_solers_run_option_selected));
+		gui_base->add_child(solers_run_options_popup);
+	}
+#endif
+
 	renderer = memnew(OptionButton);
 	renderer->set_visible(true);
 	renderer->set_flat(true);
@@ -9222,6 +9339,11 @@ EditorNode::EditorNode() {
 		renderer->set_item_metadata(-1, current_renderer_os);
 	}
 	_update_renderer_color();
+#ifdef MODULE_SOLERS_AI_ENABLED
+	if (solers_home_dock) {
+		renderer->hide();
+	}
+#endif
 
 	progress_hb = memnew(BackgroundProgress);
 
@@ -9309,6 +9431,12 @@ EditorNode::EditorNode() {
 
 	log = memnew(EditorLog);
 	editor_dock_manager->add_dock(log);
+
+#ifdef MODULE_SOLERS_AI_ENABLED
+	if (solers_home_dock) {
+		_set_solers_side_panel_visible(false);
+	}
+#endif
 
 	center_split->connect(SceneStringName(resized), callable_mp(this, &EditorNode::_vp_resized));
 

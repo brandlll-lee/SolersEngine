@@ -53,6 +53,7 @@ class MenuButton;
 class OptionButton;
 class Panel;
 class PanelContainer;
+class PopupMenu;
 class PopupPanel;
 class RichTextLabel;
 class SolersAgentRuntime;
@@ -309,12 +310,14 @@ private:
 	DockSplitContainer *right_l_vsplit = nullptr;
 	DockSplitContainer *right_r_vsplit = nullptr;
 	DockSplitContainer *center_split = nullptr;
+	PopupMenu *solers_run_options_popup = nullptr;
 	PopupPanel *solers_session_popup = nullptr;
 	VBoxContainer *solers_session_popup_list = nullptr;
 	SolersAgentRuntime *solers_agent_runtime = nullptr;
 	SolersDock *solers_home_dock = nullptr;
 	String solers_project_path;
 	String solers_session_id;
+	bool solers_side_panel_visible = false;
 
 	// Main tabs.
 	EditorSceneTabs *scene_tabs = nullptr;
@@ -743,6 +746,12 @@ private:
 	void _solers_session_pressed(const String &p_session_id);
 	void _solers_new_session_pressed();
 	void _set_solers_session(const String &p_project_path, const String &p_session_id);
+	void _set_solers_side_panel_visible(bool p_visible);
+	void _toggle_solers_side_panel();
+	void _show_solers_run_options();
+	void _solers_run_option_selected(int p_id);
+	void _solers_filesystem_pressed();
+	void _solers_output_pressed();
 
 protected:
 	friend class FileSystemDock;

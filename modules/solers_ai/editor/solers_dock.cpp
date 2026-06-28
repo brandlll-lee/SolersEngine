@@ -20,10 +20,7 @@
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
 #include "core/input/input_event.h"
-#include "core/io/file_access.h"
-#include "core/io/image.h"
 #include "core/io/json.h"
-#include "core/os/os.h"
 #include "core/version.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
@@ -47,8 +44,6 @@
 #include "scene/gui/scroll_container.h"
 #include "scene/gui/separator.h"
 #include "scene/gui/text_edit.h"
-#include "scene/gui/texture_rect.h"
-#include "scene/resources/image_texture.h"
 #include "scene/resources/style_box.h"
 #include "scene/resources/style_box_flat.h"
 
@@ -90,33 +85,6 @@ static Ref<StyleBoxFlat> solers_make_stylebox(const Color &p_bg, const Color &p_
 		style->set_shadow_offset(Point2(0, 2 * EDSCALE));
 	}
 	return style;
-}
-
-static Ref<Texture2D> solers_load_logo_texture() {
-	Vector<String> candidates;
-	const String cwd = OS::get_singleton()->get_cwd();
-	const String exe_dir = OS::get_singleton()->get_executable_path().get_base_dir();
-	const String source_root = exe_dir.get_base_dir();
-	const String repo_root = source_root.get_base_dir();
-
-	candidates.push_back(repo_root.path_join("branding/generated/solers02_icon_transparent_1024.png"));
-	candidates.push_back(repo_root.path_join("branding/generated/solers_splash_icon_transparent_800x600.png"));
-	candidates.push_back(cwd.path_join("icon.png"));
-	candidates.push_back(cwd.path_join("main/app_icon.png"));
-	candidates.push_back(source_root.path_join("icon.png"));
-	candidates.push_back(source_root.path_join("main/app_icon.png"));
-	candidates.push_back(exe_dir.path_join("icon.png"));
-
-	for (const String &path : candidates) {
-		if (!FileAccess::exists(path)) {
-			continue;
-		}
-		Ref<Image> image = Image::load_from_file(path);
-		if (image.is_valid() && !image->is_empty()) {
-			return ImageTexture::create_from_image(image);
-		}
-	}
-	return Ref<Texture2D>();
 }
 
 static String solers_compact_model_label(const String &p_model) {
@@ -188,29 +156,34 @@ PanelContainer *SolersDock::_create_panel_card(const Color &p_color, const Color
 }
 
 Control *SolersDock::_create_empty_state() const {
-	// Codex-minimal: a single, deliberately faded brand glyph centered in the
-	// canvas. No headline, no subtitle — the composer placeholder carries the
-	// only call to action, so the empty state stays calm and uncluttered.
 	VBoxContainer *state = memnew(VBoxContainer);
 	state->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	state->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
 	state->set_alignment(BoxContainer::ALIGNMENT_CENTER);
 	state->add_theme_constant_override("separation", 0);
 
-	Ref<Texture2D> logo = solers_load_logo_texture();
-	if (logo.is_valid()) {
-		TextureRect *logo_rect = memnew(TextureRect);
-		logo_rect->set_texture(logo);
-		logo_rect->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
-		logo_rect->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
-		logo_rect->set_custom_minimum_size(Size2(60 * EDSCALE, 60 * EDSCALE));
-		logo_rect->set_h_size_flags(Control::SIZE_SHRINK_CENTER);
-		// Ghosted: a faint watermark, like the Codex empty canvas.
-		logo_rect->set_self_modulate(Color(1, 1, 1, 0.13f));
-		state->add_child(logo_rect);
-	}
+	Label *title = memnew(Label(TTR("What should we build?")));
+	title->set_h_size_flags(Control::SIZE_SHRINK_CENTER);
+	title->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+	title->add_theme_color_override(SceneStringName(font_color), SOLERS_TEXT_PRIMARY);
+	title->add_theme_font_size_override(SceneStringName(font_size), 28 * EDSCALE);
+	state->add_child(title);
 
 	return state;
+}
+
+void SolersDock::_sync_layout_widths() {
+	if (!composer_inset) {
+		return;
+	}
+	const float width = get_size().x;
+	float margin = 20 * EDSCALE;
+	if (width > 980 * EDSCALE) {
+		const float target = MIN(width * 0.52f, 920 * EDSCALE);
+		margin = MAX(margin, (width - target) * 0.5f);
+	}
+	composer_inset->add_theme_constant_override("margin_left", int(margin));
+	composer_inset->add_theme_constant_override("margin_right", int(margin));
 }
 
 void SolersDock::_refresh_status() {
@@ -268,6 +241,7 @@ void SolersDock::_clear_empty_state() {
 		}
 		root_box->add_child(composer_inset);
 	}
+	_sync_layout_widths();
 }
 
 void SolersDock::_show_empty_state() {
@@ -284,6 +258,7 @@ void SolersDock::_show_empty_state() {
 		empty_home->add_child(composer_inset);
 	}
 	empty_home->show();
+	_sync_layout_widths();
 	_update_chat_input_height();
 }
 
@@ -715,9 +690,13 @@ void SolersDock::_on_auto_approve_chip_pressed() {
 void SolersDock::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_ENTER_TREE: {
+			_sync_layout_widths();
 			_update_chat_input_height();
 			_update_send_enabled();
 			_refresh_status();
+		} break;
+		case NOTIFICATION_RESIZED: {
+			_sync_layout_widths();
 		} break;
 		case NOTIFICATION_THEME_CHANGED: {
 			_update_chat_input_height();
@@ -752,6 +731,9 @@ void SolersDock::make_visible() {
 
 void SolersDock::set_workspace_toggle_callback(const Callable &p_callback) {
 	workspace_toggle_callback = p_callback;
+	if (panel_button) {
+		panel_button->set_visible(workspace_toggle_callback.is_valid());
+	}
 }
 
 void SolersDock::set_session_menu_callback(const Callable &p_callback) {
@@ -794,6 +776,7 @@ SolersDock::SolersDock() {
 	panel_button = memnew(SolersGlyphButton);
 	panel_button->configure(SNAME("panel"), SolersGlyphButton::SKIN_GHOST, TTR("Toggle workspace"), 15);
 	panel_button->set_pressed_callback(callable_mp(this, &SolersDock::_on_workspace_toggle_pressed));
+	panel_button->hide();
 	topbar_content->add_child(panel_button);
 
 	session_button = memnew(SolersGlyphButton);
