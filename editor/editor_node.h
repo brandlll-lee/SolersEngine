@@ -313,6 +313,7 @@ private:
 	PopupMenu *solers_run_options_popup = nullptr;
 	PopupPanel *solers_session_popup = nullptr;
 	VBoxContainer *solers_session_popup_list = nullptr;
+	VBoxContainer *solers_editor_host = nullptr;
 	SolersAgentRuntime *solers_agent_runtime = nullptr;
 	SolersDock *solers_home_dock = nullptr;
 	String solers_project_path;

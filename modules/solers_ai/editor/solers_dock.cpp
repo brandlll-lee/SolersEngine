@@ -182,8 +182,13 @@ void SolersDock::_sync_layout_widths() {
 		const float target = MIN(width * 0.52f, 920 * EDSCALE);
 		margin = MAX(margin, (width - target) * 0.5f);
 	}
-	composer_inset->add_theme_constant_override("margin_left", int(margin));
-	composer_inset->add_theme_constant_override("margin_right", int(margin));
+	const int margin_px = int(margin);
+	if (composer_margin_px == margin_px) {
+		return;
+	}
+	composer_margin_px = margin_px;
+	composer_inset->add_theme_constant_override("margin_left", margin_px);
+	composer_inset->add_theme_constant_override("margin_right", margin_px);
 }
 
 void SolersDock::_refresh_status() {

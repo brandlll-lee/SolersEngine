@@ -8378,13 +8378,12 @@ void EditorNode::_set_solers_session(const String &p_project_path, const String 
 
 void EditorNode::_set_solers_side_panel_visible(bool p_visible) {
 #ifdef MODULE_SOLERS_AI_ENABLED
-	if (!solers_home_dock || !main_hsplit) {
+	if (!solers_home_dock || !solers_editor_host) {
 		return;
 	}
 	solers_side_panel_visible = p_visible;
-	main_hsplit->set_visible(p_visible);
-	solers_home_dock->set_stretch_ratio(p_visible ? 0.54 : 1.0);
-	main_hsplit->set_stretch_ratio(0.46);
+	solers_home_dock->set_visible(!p_visible);
+	solers_editor_host->set_visible(p_visible);
 	if (!p_visible && bottom_panel) {
 		bottom_panel->hide_bottom_panel();
 	}
@@ -8878,9 +8877,17 @@ EditorNode::EditorNode() {
 		solers_agent_runtime->bind_dock(solers_home_dock);
 		solers_editor_root->add_child(solers_home_dock);
 
-		main_hsplit->set_stretch_ratio(0.46);
-		main_hsplit->hide();
-		solers_editor_root->add_child(main_hsplit);
+		solers_editor_host = memnew(VBoxContainer);
+		solers_editor_host->set_name("SolersEditorHost");
+		solers_editor_host->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		solers_editor_host->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+		solers_editor_host->set_stretch_ratio(1.0);
+		solers_editor_host->add_theme_constant_override("separation", 0);
+		solers_editor_host->hide();
+		solers_editor_root->add_child(solers_editor_host);
+
+		main_hsplit->set_stretch_ratio(1.0);
+		solers_editor_host->add_child(main_hsplit);
 
 		solers_session_popup = memnew(PopupPanel);
 		Ref<StyleBoxFlat> popup_outer;
@@ -9281,7 +9288,7 @@ EditorNode::EditorNode() {
 		add_solers_top_button(SNAME("chevron_down"), TTR("Run Options"), callable_mp(this, &EditorNode::_show_solers_run_options));
 		add_solers_top_button(SNAME("tool_file"), TTR("FileSystem"), callable_mp(this, &EditorNode::_solers_filesystem_pressed));
 		add_solers_top_button(SNAME("tool_shell"), TTR("Output"), callable_mp(this, &EditorNode::_solers_output_pressed));
-		add_solers_top_button(SNAME("panel"), TTR("Side Panel"), callable_mp(this, &EditorNode::_toggle_solers_side_panel));
+		add_solers_top_button(SNAME("panel"), TTR("Editor"), callable_mp(this, &EditorNode::_toggle_solers_side_panel));
 
 		solers_run_options_popup = memnew(PopupMenu);
 		solers_run_options_popup->add_item(TTR("Run Main Scene"), SOLERS_RUN_MAIN);

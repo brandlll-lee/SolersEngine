@@ -84,6 +84,7 @@ class SolersDock : public PanelContainer {
 	String approval_choice = "once";
 	bool approval_always_confirming = false;
 	int active_approval_id = 0;
+	int composer_margin_px = -1;
 
 	String chat_log;
 
