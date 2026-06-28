@@ -48,7 +48,6 @@
 #include "editor/doc/editor_help.h"
 #include "editor/editor_main_screen.h"
 #include "editor/editor_node.h"
-#include "editor/file_system/editor_file_system.h"
 #include "editor/editor_string_names.h"
 #include "editor/gui/editor_about.h"
 #include "editor/gui/editor_file_dialog.h"
@@ -526,6 +525,151 @@ void ProjectManager::_add_workspace_section_label(const String &p_text) {
 	shell_workspace_tool_list->add_child(section);
 }
 
+HBoxContainer *ProjectManager::_rebuild_workspace_canvas_surface(const String &p_mode, const String &p_studio_tool_id, const Ref<Texture2D> &p_icon, const String &p_title, const String &p_hint) {
+	if (!shell_workspace_tool_list) {
+		return nullptr;
+	}
+
+	_clear_workspace_tool_list();
+
+	PanelContainer *canvas = memnew(PanelContainer);
+	canvas->set_theme_type_variation("PMWorkspaceCanvas");
+	canvas->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	canvas->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	shell_workspace_tool_list->add_child(canvas);
+
+	MarginContainer *canvas_margin = memnew(MarginContainer);
+	canvas_margin->add_theme_constant_override("margin_left", 18 * EDSCALE);
+	canvas_margin->add_theme_constant_override("margin_right", 18 * EDSCALE);
+	canvas_margin->add_theme_constant_override("margin_top", 16 * EDSCALE);
+	canvas_margin->add_theme_constant_override("margin_bottom", 14 * EDSCALE);
+	canvas->add_child(canvas_margin);
+
+	VBoxContainer *canvas_root = memnew(VBoxContainer);
+	canvas_root->add_theme_constant_override("separation", 0);
+	canvas_root->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	canvas_root->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	canvas_margin->add_child(canvas_root);
+
+	HBoxContainer *header = memnew(HBoxContainer);
+	header->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	header->set_custom_minimum_size(Size2(0, 34) * EDSCALE);
+	canvas_root->add_child(header);
+
+	PanelContainer *pill = memnew(PanelContainer);
+	pill->set_theme_type_variation("PMWorkspaceModePill");
+	header->add_child(pill);
+
+	MarginContainer *pill_margin = memnew(MarginContainer);
+	pill_margin->add_theme_constant_override("margin_left", 10 * EDSCALE);
+	pill_margin->add_theme_constant_override("margin_right", 11 * EDSCALE);
+	pill_margin->add_theme_constant_override("margin_top", 5 * EDSCALE);
+	pill_margin->add_theme_constant_override("margin_bottom", 5 * EDSCALE);
+	pill->add_child(pill_margin);
+
+	HBoxContainer *pill_row = memnew(HBoxContainer);
+	pill_row->add_theme_constant_override("separation", 7 * EDSCALE);
+	pill_margin->add_child(pill_row);
+
+	TextureRect *pill_icon = memnew(TextureRect);
+	pill_icon->set_texture(p_icon);
+	pill_icon->set_custom_minimum_size(Size2(16, 16) * EDSCALE);
+	pill_icon->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
+	pill_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+	pill_row->add_child(pill_icon);
+
+	Label *pill_label = memnew(Label(p_mode));
+	pill_label->set_theme_type_variation("PMWorkspaceModePillLabel");
+	pill_label->set_vertical_alignment(VERTICAL_ALIGNMENT_CENTER);
+	pill_row->add_child(pill_label);
+
+	Control *header_spacer = memnew(Control);
+	header_spacer->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	header->add_child(header_spacer);
+
+	HBoxContainer *header_actions = memnew(HBoxContainer);
+	header_actions->add_theme_constant_override("separation", 6 * EDSCALE);
+	header->add_child(header_actions);
+	_add_workspace_canvas_action(header_actions, p_studio_tool_id, TTR("Studio"), SolersPMTheme::lucide_icon(SOLERS_LUCIDE_PANELS));
+	_add_workspace_canvas_action(header_actions, "home", TTR("Modes"), SolersPMTheme::lucide_icon(SOLERS_LUCIDE_PANELS));
+
+	VBoxContainer *center = memnew(VBoxContainer);
+	center->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	center->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	canvas_root->add_child(center);
+
+	Control *top_spacer = memnew(Control);
+	top_spacer->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	center->add_child(top_spacer);
+
+	VBoxContainer *copy = memnew(VBoxContainer);
+	copy->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	copy->add_theme_constant_override("separation", 8 * EDSCALE);
+	center->add_child(copy);
+
+	TextureRect *hero_icon = memnew(TextureRect);
+	hero_icon->set_texture(p_icon);
+	hero_icon->set_custom_minimum_size(Size2(54, 54) * EDSCALE);
+	hero_icon->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
+	hero_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+	hero_icon->set_h_size_flags(Control::SIZE_SHRINK_CENTER);
+	hero_icon->set_modulate(Color(1, 1, 1, 0.22f));
+	copy->add_child(hero_icon);
+
+	Label *title = memnew(Label(p_title));
+	title->set_theme_type_variation("PMWorkspaceCanvasTitle");
+	title->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+	title->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	copy->add_child(title);
+
+	Label *hint = memnew(Label(p_hint));
+	hint->set_theme_type_variation("PMWorkspaceCanvasHint");
+	hint->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+	hint->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	hint->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	copy->add_child(hint);
+
+	Control *bottom_spacer = memnew(Control);
+	bottom_spacer->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	center->add_child(bottom_spacer);
+
+	HBoxContainer *toolbar_wrap = memnew(HBoxContainer);
+	toolbar_wrap->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	toolbar_wrap->set_alignment(BoxContainer::ALIGNMENT_CENTER);
+	canvas_root->add_child(toolbar_wrap);
+
+	PanelContainer *toolbar = memnew(PanelContainer);
+	toolbar->set_theme_type_variation("PMWorkspaceCanvasToolbar");
+	toolbar_wrap->add_child(toolbar);
+
+	MarginContainer *toolbar_margin = memnew(MarginContainer);
+	toolbar_margin->add_theme_constant_override("margin_left", 6 * EDSCALE);
+	toolbar_margin->add_theme_constant_override("margin_right", 6 * EDSCALE);
+	toolbar_margin->add_theme_constant_override("margin_top", 5 * EDSCALE);
+	toolbar_margin->add_theme_constant_override("margin_bottom", 5 * EDSCALE);
+	toolbar->add_child(toolbar_margin);
+
+	HBoxContainer *toolbar_actions = memnew(HBoxContainer);
+	toolbar_actions->add_theme_constant_override("separation", 6 * EDSCALE);
+	toolbar_margin->add_child(toolbar_actions);
+	return toolbar_actions;
+}
+
+void ProjectManager::_add_workspace_canvas_action(HBoxContainer *p_bar, const String &p_tool_id, const String &p_title, const Ref<Texture2D> &p_icon) {
+	ERR_FAIL_NULL(p_bar);
+
+	Button *button = memnew(Button(p_title));
+	button->set_theme_type_variation("PMWorkspaceCanvasAction");
+	button->set_button_icon(p_icon);
+	button->set_icon_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+	button->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+	button->set_clip_text(true);
+	button->set_custom_minimum_size(Size2(0, 30) * EDSCALE);
+	button->set_tooltip_text(p_title);
+	button->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_workspace_tool_pressed).bind(p_tool_id, p_title, p_icon));
+	p_bar->add_child(button);
+}
+
 void ProjectManager::_show_workspace_home() {
 	_show_workspace_launcher(false);
 	_rebuild_workspace_launcher();
@@ -565,76 +709,25 @@ void ProjectManager::_rebuild_workspace_launcher() {
 }
 
 void ProjectManager::_rebuild_workspace_scene_surface() {
-	if (!shell_workspace_tool_list) {
-		return;
-	}
-
-	_clear_workspace_tool_list();
-	_add_workspace_section_label(TTR("Scene"));
-	_add_workspace_tool_button(shell_workspace_tool_list, "studio:scene", TTR("Open Scene in Studio"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("PackedScene"))), Ref<Shortcut>());
-	_add_workspace_tool_button(shell_workspace_tool_list, "game", TTR("Playtest Game"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Play"))), Ref<Shortcut>());
-	_add_workspace_tool_button(shell_workspace_tool_list, "home", TTR("All Modes"), SolersPMTheme::lucide_icon(SOLERS_LUCIDE_PANELS), Ref<Shortcut>());
+	HBoxContainer *actions = _rebuild_workspace_canvas_surface(TTR("Scene"), "studio:scene", SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("PackedScene"))), TTR("Scene canvas"), TTR("Ask AI to build the world, then run it when you are ready."));
+	_add_workspace_canvas_action(actions, "run:main", TTR("Run"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Play"))));
 }
 
 void ProjectManager::_rebuild_workspace_script_surface() {
-	if (!shell_workspace_tool_list) {
-		return;
-	}
-
-	_clear_workspace_tool_list();
-	_add_workspace_section_label(TTR("Script"));
-	_add_workspace_tool_button(shell_workspace_tool_list, "studio:script", TTR("Open Script Editor in Studio"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Script"))), Ref<Shortcut>());
-	_add_workspace_tool_button(shell_workspace_tool_list, "assets", TTR("Browse Project Assets"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Folder"))), Ref<Shortcut>());
-	_add_workspace_tool_button(shell_workspace_tool_list, "home", TTR("All Modes"), SolersPMTheme::lucide_icon(SOLERS_LUCIDE_PANELS), Ref<Shortcut>());
-}
-
-void ProjectManager::_add_workspace_asset_rows(EditorFileSystemDirectory *p_dir, int &r_count) {
-	if (!p_dir || r_count >= 12) {
-		return;
-	}
-
-	for (int i = 0; i < p_dir->get_file_count() && r_count < 12; i++) {
-		const String path = p_dir->get_file_path(i);
-		_add_workspace_tool_button(shell_workspace_tool_list, "studio:file:" + path, path.trim_prefix("res://"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("File"))), Ref<Shortcut>());
-		r_count++;
-	}
-
-	for (int i = 0; i < p_dir->get_subdir_count() && r_count < 12; i++) {
-		_add_workspace_asset_rows(p_dir->get_subdir(i), r_count);
-	}
+	HBoxContainer *actions = _rebuild_workspace_canvas_surface(TTR("Script"), "studio:script", SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Script"))), TTR("Script canvas"), TTR("Describe the gameplay logic you want, or open Studio for manual code."));
+	_add_workspace_canvas_action(actions, "assets", TTR("Assets"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Folder"))));
 }
 
 void ProjectManager::_rebuild_workspace_assets_surface() {
-	if (!shell_workspace_tool_list) {
-		return;
-	}
-
-	_clear_workspace_tool_list();
-	_add_workspace_section_label(TTR("Assets"));
-	_add_workspace_tool_button(shell_workspace_tool_list, "studio:filesystem", TTR("Project Files in Studio"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Folder"))), Ref<Shortcut>());
-	_add_workspace_tool_button(shell_workspace_tool_list, "studio:assetlib", TTR("Asset Library in Studio"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("AssetLib"))), Ref<Shortcut>());
-
-	EditorFileSystem *efs = EditorFileSystem::get_singleton();
-	if (efs && efs->get_filesystem()) {
-		_add_workspace_section_label(TTR("Project Assets"));
-		int count = 0;
-		_add_workspace_asset_rows(efs->get_filesystem(), count);
-	}
-
-	_add_workspace_tool_button(shell_workspace_tool_list, "home", TTR("All Modes"), SolersPMTheme::lucide_icon(SOLERS_LUCIDE_PANELS), Ref<Shortcut>());
+	HBoxContainer *actions = _rebuild_workspace_canvas_surface(TTR("Assets"), "studio:filesystem", SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Folder"))), TTR("Asset canvas"), TTR("Keep project files quiet here; open Studio only for detailed asset work."));
+	_add_workspace_canvas_action(actions, "studio:assetlib", TTR("Asset Library"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("AssetLib"))));
+	_add_workspace_canvas_action(actions, "studio:filesystem", TTR("Project Files"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Folder"))));
 }
 
 void ProjectManager::_rebuild_workspace_game_surface() {
-	if (!shell_workspace_tool_list) {
-		return;
-	}
-
-	_clear_workspace_tool_list();
-	_add_workspace_section_label(TTR("Game"));
-	_add_workspace_tool_button(shell_workspace_tool_list, "run:main", TTR("Run Project"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Play"))), Ref<Shortcut>());
-	_add_workspace_tool_button(shell_workspace_tool_list, "run:stop", TTR("Stop Game"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Stop"))), Ref<Shortcut>());
-	_add_workspace_tool_button(shell_workspace_tool_list, "studio:game", TTR("Open Game View in Studio"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Play"))), Ref<Shortcut>());
-	_add_workspace_tool_button(shell_workspace_tool_list, "home", TTR("All Modes"), SolersPMTheme::lucide_icon(SOLERS_LUCIDE_PANELS), Ref<Shortcut>());
+	HBoxContainer *actions = _rebuild_workspace_canvas_surface(TTR("Game"), "studio:game", SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Play"))), TTR("Game preview"), TTR("Run the project to test the current build."));
+	_add_workspace_canvas_action(actions, "run:main", TTR("Run"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Play"))));
+	_add_workspace_canvas_action(actions, "run:stop", TTR("Stop"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Stop"))));
 }
 
 void ProjectManager::_rebuild_workspace_studio_launcher() {
@@ -2551,13 +2644,14 @@ ProjectManager::ProjectManager() {
 	VBoxContainer *workspace_body = memnew(VBoxContainer);
 	workspace_body->add_theme_constant_override("separation", 7 * EDSCALE);
 	workspace_body->set_custom_minimum_size(Size2(668, 0) * EDSCALE);
-	workspace_body->set_h_size_flags(Control::SIZE_SHRINK_CENTER);
-	workspace_body->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
+	workspace_body->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	workspace_body->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	workspace_margin->add_child(workspace_body);
 
 	shell_workspace_tool_list = memnew(VBoxContainer);
 	shell_workspace_tool_list->add_theme_constant_override("separation", 7 * EDSCALE);
 	shell_workspace_tool_list->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	shell_workspace_tool_list->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	workspace_body->add_child(shell_workspace_tool_list);
 
 	shell_editor_host = memnew(Control);

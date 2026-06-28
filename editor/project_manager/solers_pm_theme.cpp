@@ -363,6 +363,62 @@ void SolersPMTheme::apply(const Ref<Theme> &p_theme) {
 		section_pad->set_content_margin(SIDE_BOTTOM, 2 * EDSCALE);
 		p_theme->set_stylebox(SNAME("normal"), "PMWorkspaceSection", section_pad);
 
+		p_theme->set_type_variation("PMWorkspaceCanvas", "PanelContainer");
+		Ref<StyleBoxFlat> canvas_panel = _solers_flat(Color(0.071f, 0.072f, 0.079f), rr, Color(1, 1, 1, 0.035f), hair, 0);
+		p_theme->set_stylebox(SNAME("panel"), "PMWorkspaceCanvas", canvas_panel);
+
+		p_theme->set_type_variation("PMWorkspaceModePill", "PanelContainer");
+		Ref<StyleBoxFlat> mode_pill = _solers_flat(Color(1, 1, 1, 0.060f), rr, Color(1, 1, 1, 0.035f), hair, 0);
+		p_theme->set_stylebox(SNAME("panel"), "PMWorkspaceModePill", mode_pill);
+
+		p_theme->set_type_variation("PMWorkspaceModePillLabel", "Label");
+		p_theme->set_color(SNAME("font_color"), "PMWorkspaceModePillLabel", Color(t.text.r, t.text.g, t.text.b, 0.86f));
+		p_theme->set_font_size(SNAME("font_size"), "PMWorkspaceModePillLabel", MAX(1, (int)(12 * EDSCALE)));
+
+		p_theme->set_type_variation("PMWorkspaceCanvasTitle", "Label");
+		p_theme->set_color(SNAME("font_color"), "PMWorkspaceCanvasTitle", Color(t.text.r, t.text.g, t.text.b, 0.86f));
+		p_theme->set_font_size(SNAME("font_size"), "PMWorkspaceCanvasTitle", MAX(1, (int)(18 * EDSCALE)));
+
+		p_theme->set_type_variation("PMWorkspaceCanvasHint", "Label");
+		p_theme->set_color(SNAME("font_color"), "PMWorkspaceCanvasHint", Color(t.text_dim.r, t.text_dim.g, t.text_dim.b, 0.64f));
+		p_theme->set_font_size(SNAME("font_size"), "PMWorkspaceCanvasHint", MAX(1, (int)(12 * EDSCALE)));
+
+		p_theme->set_type_variation("PMWorkspaceCanvasToolbar", "PanelContainer");
+		Ref<StyleBoxFlat> canvas_toolbar = _solers_flat(Color(0.105f, 0.106f, 0.116f, 0.94f), rr, Color(0, 0, 0, 0.32f), hair, 0);
+		p_theme->set_stylebox(SNAME("panel"), "PMWorkspaceCanvasToolbar", canvas_toolbar);
+
+		p_theme->set_type_variation("PMWorkspaceCanvasAction", "Button");
+		Ref<StyleBoxFlat> canvas_action = _solers_flat(Color(0, 0, 0, 0), rr, Color(), 0, -1.0f);
+		canvas_action->set_content_margin(SIDE_LEFT, 10 * EDSCALE);
+		canvas_action->set_content_margin(SIDE_RIGHT, 10 * EDSCALE);
+		canvas_action->set_content_margin(SIDE_TOP, 4 * EDSCALE);
+		canvas_action->set_content_margin(SIDE_BOTTOM, 4 * EDSCALE);
+		Ref<StyleBoxFlat> canvas_action_hover = canvas_action->duplicate();
+		canvas_action_hover->set_bg_color(Color(1, 1, 1, 0.060f));
+		Ref<StyleBoxFlat> canvas_action_pressed = canvas_action->duplicate();
+		canvas_action_pressed->set_bg_color(Color(t.accent.r, t.accent.g, t.accent.b, 0.28f));
+		Ref<StyleBoxFlat> canvas_action_focus = canvas_action->duplicate();
+		canvas_action_focus->set_draw_center(false);
+		canvas_action_focus->set_border_color(Color(t.accent.r, t.accent.g, t.accent.b, 0.40f));
+		canvas_action_focus->set_border_width_all(hair);
+		p_theme->set_stylebox(SNAME("normal"), "PMWorkspaceCanvasAction", canvas_action);
+		p_theme->set_stylebox(SNAME("hover"), "PMWorkspaceCanvasAction", canvas_action_hover);
+		p_theme->set_stylebox(SNAME("pressed"), "PMWorkspaceCanvasAction", canvas_action_pressed);
+		p_theme->set_stylebox(SNAME("hover_pressed"), "PMWorkspaceCanvasAction", canvas_action_pressed->duplicate());
+		p_theme->set_stylebox(SNAME("disabled"), "PMWorkspaceCanvasAction", canvas_action->duplicate());
+		p_theme->set_stylebox(SNAME("focus"), "PMWorkspaceCanvasAction", canvas_action_focus);
+		p_theme->set_color(SNAME("font_color"), "PMWorkspaceCanvasAction", Color(t.text.r, t.text.g, t.text.b, 0.76f));
+		p_theme->set_color(SNAME("font_hover_color"), "PMWorkspaceCanvasAction", t.text);
+		p_theme->set_color(SNAME("font_pressed_color"), "PMWorkspaceCanvasAction", t.text);
+		p_theme->set_color(SNAME("font_hover_pressed_color"), "PMWorkspaceCanvasAction", t.text);
+		p_theme->set_color(SNAME("font_focus_color"), "PMWorkspaceCanvasAction", t.text);
+		p_theme->set_color(SNAME("icon_normal_color"), "PMWorkspaceCanvasAction", Color(t.text.r, t.text.g, t.text.b, 0.70f));
+		p_theme->set_color(SNAME("icon_hover_color"), "PMWorkspaceCanvasAction", t.text);
+		p_theme->set_color(SNAME("icon_pressed_color"), "PMWorkspaceCanvasAction", t.text);
+		p_theme->set_font_size(SNAME("font_size"), "PMWorkspaceCanvasAction", MAX(1, (int)(12 * EDSCALE)));
+		p_theme->set_constant(SNAME("h_separation"), "PMWorkspaceCanvasAction", 6 * EDSCALE);
+		p_theme->set_constant(SNAME("icon_max_width"), "PMWorkspaceCanvasAction", 16 * EDSCALE);
+
 		p_theme->set_type_variation("PMWorkspaceTabBar", "TabBar");
 		Ref<StyleBoxFlat> workspace_tab = _solers_flat(Color(0, 0, 0, 0), rr, Color(), 0, -1.0f);
 		workspace_tab->set_content_margin(SIDE_LEFT, 12 * EDSCALE);
