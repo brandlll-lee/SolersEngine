@@ -55,7 +55,6 @@ class Panel;
 class PanelContainer;
 class RichTextLabel;
 class SubViewport;
-class TabBar;
 class TextureProgressBar;
 class Timer;
 class Translation;
@@ -338,8 +337,6 @@ private:
 	Control *menu_btn_spacer = nullptr;
 	MenuButton *main_menu_button = nullptr;
 	MenuBar *main_menu_bar = nullptr;
-
-	TabBar *solers_workspace_tabs = nullptr;
 
 	PopupMenu *apple_menu = nullptr;
 	PopupMenu *file_menu = nullptr;
@@ -732,7 +729,6 @@ private:
 	void _update_main_menu_type();
 	void _add_to_main_menu(const String &p_name, PopupMenu *p_menu);
 
-	void _solers_workspace_tab_changed(int p_tab);
 	void _bottom_panel_resized();
 
 protected:

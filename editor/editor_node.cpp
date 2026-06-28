@@ -64,7 +64,6 @@
 #include "scene/gui/popup.h"
 #include "scene/gui/rich_text_label.h"
 #include "scene/gui/split_container.h"
-#include "scene/gui/tab_bar.h"
 #include "scene/gui/tab_container.h"
 #include "scene/main/timer.h"
 #include "scene/main/viewport.h"
@@ -213,17 +212,6 @@ static const String REMOVE_ANDROID_BUILD_TEMPLATE_MESSAGE = TTRC("The Android bu
 static const String INSTALL_ANDROID_BUILD_TEMPLATE_MESSAGE = TTRC("This will set up your project for gradle Android builds by installing the source template to \"%s\".\nNote that in order to make gradle builds instead of using pre-built APKs, the \"Use Gradle Build\" option should be enabled in the Android export preset.");
 
 constexpr int LARGE_RESOURCE_WARNING_SIZE_THRESHOLD = 512'000; // 500 KB
-
-#ifdef MODULE_SOLERS_AI_ENABLED
-enum SolersWorkspaceTab {
-	SOLERS_WORKSPACE_SCENE,
-	SOLERS_WORKSPACE_SCRIPT,
-	SOLERS_WORKSPACE_FILES,
-	SOLERS_WORKSPACE_INSPECTOR,
-	SOLERS_WORKSPACE_RUN,
-	SOLERS_WORKSPACE_LOGS,
-};
-#endif
 
 bool EditorProgress::step(const String &p_state, int p_step, bool p_force_refresh) {
 	if (!force_background && Thread::is_main_thread()) {
@@ -8140,48 +8128,6 @@ void EditorNode::_update_main_menu_type() {
 	}
 }
 
-void EditorNode::_solers_workspace_tab_changed(int p_tab) {
-#ifdef MODULE_SOLERS_AI_ENABLED
-	if (!editor_main_screen) {
-		return;
-	}
-
-	switch (p_tab) {
-		case SOLERS_WORKSPACE_SCENE: {
-			const int selected = editor_main_screen->get_selected_index();
-			if (selected != EditorMainScreen::EDITOR_2D && selected != EditorMainScreen::EDITOR_3D) {
-				editor_main_screen->select(EditorMainScreen::EDITOR_2D);
-			}
-		} break;
-		case SOLERS_WORKSPACE_SCRIPT: {
-			if (editor_main_screen->is_button_enabled(EditorMainScreen::EDITOR_SCRIPT)) {
-				editor_main_screen->select(EditorMainScreen::EDITOR_SCRIPT);
-			}
-		} break;
-		case SOLERS_WORKSPACE_FILES: {
-			if (EditorDockManager::get_singleton() && FileSystemDock::get_singleton()) {
-				EditorDockManager::get_singleton()->focus_dock(FileSystemDock::get_singleton());
-			}
-		} break;
-		case SOLERS_WORKSPACE_INSPECTOR: {
-			if (EditorDockManager::get_singleton() && InspectorDock::get_singleton()) {
-				EditorDockManager::get_singleton()->focus_dock(InspectorDock::get_singleton());
-			}
-		} break;
-		case SOLERS_WORKSPACE_RUN: {
-			if (editor_main_screen->is_button_enabled(EditorMainScreen::EDITOR_GAME)) {
-				editor_main_screen->select(EditorMainScreen::EDITOR_GAME);
-			}
-		} break;
-		case SOLERS_WORKSPACE_LOGS: {
-			if (EditorDockManager::get_singleton() && log) {
-				EditorDockManager::get_singleton()->focus_dock(log);
-			}
-		} break;
-	}
-#endif
-}
-
 void EditorNode::_bottom_panel_resized() {
 	bottom_panel->set_bottom_panel_offset(center_split->get_split_offset());
 }
@@ -8595,34 +8541,9 @@ EditorNode::EditorNode() {
 		if (OS::get_singleton()->has_environment("SOLERS_SESSION_ID")) {
 			OS::get_singleton()->unset_environment("SOLERS_SESSION_ID");
 		}
-		main_vbox->add_child(main_hsplit);
-	} else {
-		VBoxContainer *solers_shell = memnew(VBoxContainer);
-		solers_shell->set_name("SolersEditorShell");
-		solers_shell->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		solers_shell->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-		solers_shell->add_theme_constant_override("separation", 0);
-		main_vbox->add_child(solers_shell);
-
-		solers_workspace_tabs = memnew(TabBar);
-		solers_workspace_tabs->set_name("SolersWorkspaceTabs");
-		solers_workspace_tabs->set_theme_type_variation("TabBarInner");
-		solers_workspace_tabs->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		solers_workspace_tabs->add_tab(TTR("Scene"));
-		solers_workspace_tabs->add_tab(TTR("Script"));
-		solers_workspace_tabs->add_tab(TTR("Files"));
-		solers_workspace_tabs->add_tab(TTR("Inspector"));
-		solers_workspace_tabs->add_tab(TTR("Run"));
-		solers_workspace_tabs->add_tab(TTR("Logs"));
-		solers_workspace_tabs->set_current_tab(SOLERS_WORKSPACE_SCENE);
-		solers_workspace_tabs->connect("tab_changed", callable_mp(this, &EditorNode::_solers_workspace_tab_changed));
-		solers_shell->add_child(solers_workspace_tabs);
-
-		solers_shell->add_child(main_hsplit);
 	}
-#else
-	main_vbox->add_child(main_hsplit);
 #endif
+	main_vbox->add_child(main_hsplit);
 
 	left_l_vsplit = memnew(DockSplitContainer);
 	left_l_vsplit->set_name("DockVSplitLeftL");
