@@ -130,7 +130,7 @@ class ProjectManager : public Control {
 	void _rebuild_workspace_assets_surface();
 	void _rebuild_workspace_game_surface();
 	void _rebuild_workspace_studio_launcher();
-	HBoxContainer *_rebuild_workspace_canvas_surface(const String &p_mode, const String &p_studio_tool_id, const Ref<Texture2D> &p_icon, const String &p_title, const String &p_hint);
+	HBoxContainer *_rebuild_workspace_canvas_surface(const String &p_mode, const Ref<Texture2D> &p_icon, const String &p_title, const String &p_hint, Control *p_content = nullptr);
 	void _add_workspace_section_label(const String &p_text);
 	void _add_workspace_canvas_action(HBoxContainer *p_bar, const String &p_tool_id, const String &p_title, const Ref<Texture2D> &p_icon);
 	void _add_workspace_tool_button(VBoxContainer *p_list, const String &p_tool_id, const String &p_title, const Ref<Texture2D> &p_icon, const Ref<Shortcut> &p_shortcut);

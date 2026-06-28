@@ -83,10 +83,12 @@
 #include "scene/gui/rich_text_label.h"
 #include "scene/gui/separator.h"
 #include "scene/gui/split_container.h"
+#include "scene/gui/subviewport_container.h"
 #include "scene/gui/tab_bar.h"
 #include "scene/gui/tab_container.h"
 #include "scene/gui/texture_rect.h"
 #include "scene/main/canvas_item.h"
+#include "scene/main/viewport.h"
 #include "scene/main/window.h"
 #include "scene/resources/style_box_flat.h"
 #include "scene/theme/theme_db.h"
@@ -117,6 +119,16 @@ static const char *SOLERS_LUCIDE_MONITOR = "<rect width=\"20\" height=\"14\" x=\
 static const char *SOLERS_LUCIDE_PANELS = "<rect width=\"18\" height=\"18\" x=\"3\" y=\"3\" rx=\"2\"/><path d=\"M3 9h18\"/><path d=\"M9 21V9\"/>";
 static const char *SOLERS_LUCIDE_BRIEFCASE = "<path d=\"M16 20V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16\"/><rect width=\"20\" height=\"14\" x=\"2\" y=\"6\" rx=\"2\"/>";
 static const char *SOLERS_LUCIDE_HEXAGON_DOT = "<path d=\"M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z\"/><circle cx=\"12\" cy=\"12\" r=\"3\"/>";
+
+static void _solers_disable_preview_processing(Node *p_node) {
+	if (!p_node) {
+		return;
+	}
+	p_node->set_process_mode(Node::PROCESS_MODE_DISABLED);
+	for (int i = 0; i < p_node->get_child_count(false); i++) {
+		_solers_disable_preview_processing(p_node->get_child(i, false));
+	}
+}
 
 ProjectManager *ProjectManager::singleton = nullptr;
 
@@ -525,7 +537,7 @@ void ProjectManager::_add_workspace_section_label(const String &p_text) {
 	shell_workspace_tool_list->add_child(section);
 }
 
-HBoxContainer *ProjectManager::_rebuild_workspace_canvas_surface(const String &p_mode, const String &p_studio_tool_id, const Ref<Texture2D> &p_icon, const String &p_title, const String &p_hint) {
+HBoxContainer *ProjectManager::_rebuild_workspace_canvas_surface(const String &p_mode, const Ref<Texture2D> &p_icon, const String &p_title, const String &p_hint, Control *p_content) {
 	if (!shell_workspace_tool_list) {
 		return nullptr;
 	}
@@ -587,51 +599,51 @@ HBoxContainer *ProjectManager::_rebuild_workspace_canvas_surface(const String &p
 	header_spacer->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	header->add_child(header_spacer);
 
-	HBoxContainer *header_actions = memnew(HBoxContainer);
-	header_actions->add_theme_constant_override("separation", 6 * EDSCALE);
-	header->add_child(header_actions);
-	_add_workspace_canvas_action(header_actions, p_studio_tool_id, TTR("Studio"), SolersPMTheme::lucide_icon(SOLERS_LUCIDE_PANELS));
-	_add_workspace_canvas_action(header_actions, "home", TTR("Modes"), SolersPMTheme::lucide_icon(SOLERS_LUCIDE_PANELS));
-
 	VBoxContainer *center = memnew(VBoxContainer);
 	center->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	center->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	canvas_root->add_child(center);
 
-	Control *top_spacer = memnew(Control);
-	top_spacer->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	center->add_child(top_spacer);
+	if (p_content) {
+		p_content->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		p_content->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+		center->add_child(p_content);
+	} else {
+		Control *top_spacer = memnew(Control);
+		top_spacer->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+		center->add_child(top_spacer);
 
-	VBoxContainer *copy = memnew(VBoxContainer);
-	copy->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	copy->add_theme_constant_override("separation", 8 * EDSCALE);
-	center->add_child(copy);
+		VBoxContainer *copy = memnew(VBoxContainer);
+		copy->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		copy->add_theme_constant_override("separation", 8 * EDSCALE);
+		center->add_child(copy);
 
-	TextureRect *hero_icon = memnew(TextureRect);
-	hero_icon->set_texture(p_icon);
-	hero_icon->set_custom_minimum_size(Size2(54, 54) * EDSCALE);
-	hero_icon->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
-	hero_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
-	hero_icon->set_h_size_flags(Control::SIZE_SHRINK_CENTER);
-	hero_icon->set_modulate(Color(1, 1, 1, 0.22f));
-	copy->add_child(hero_icon);
+		TextureRect *hero_icon = memnew(TextureRect);
+		hero_icon->set_texture(p_icon);
+		hero_icon->set_custom_minimum_size(Size2(54, 54) * EDSCALE);
+		hero_icon->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
+		hero_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+		hero_icon->set_h_size_flags(Control::SIZE_SHRINK_CENTER);
+		hero_icon->set_modulate(Color(1, 1, 1, 0.22f));
+		copy->add_child(hero_icon);
 
-	Label *title = memnew(Label(p_title));
-	title->set_theme_type_variation("PMWorkspaceCanvasTitle");
-	title->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
-	title->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	copy->add_child(title);
+		Label *title = memnew(Label(p_title));
+		title->set_theme_type_variation("PMWorkspaceCanvasTitle");
+		title->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+		title->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		copy->add_child(title);
 
-	Label *hint = memnew(Label(p_hint));
-	hint->set_theme_type_variation("PMWorkspaceCanvasHint");
-	hint->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
-	hint->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	hint->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	copy->add_child(hint);
+		Label *hint = memnew(Label(p_hint));
+		hint->set_theme_type_variation("PMWorkspaceCanvasHint");
+		hint->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+		hint->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+		hint->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		copy->add_child(hint);
 
-	Control *bottom_spacer = memnew(Control);
-	bottom_spacer->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	center->add_child(bottom_spacer);
+		Control *bottom_spacer = memnew(Control);
+		bottom_spacer->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+		center->add_child(bottom_spacer);
+	}
 
 	HBoxContainer *toolbar_wrap = memnew(HBoxContainer);
 	toolbar_wrap->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -709,23 +721,42 @@ void ProjectManager::_rebuild_workspace_launcher() {
 }
 
 void ProjectManager::_rebuild_workspace_scene_surface() {
-	HBoxContainer *actions = _rebuild_workspace_canvas_surface(TTR("Scene"), "studio:scene", SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("PackedScene"))), TTR("Scene canvas"), TTR("Ask AI to build the world, then run it when you are ready."));
+	const Ref<Texture2D> icon = SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("PackedScene")));
+	Control *preview = nullptr;
+	Node *edited_scene = shell_editor_node ? shell_editor_node->get_edited_scene() : nullptr;
+	Node *preview_root = edited_scene ? edited_scene->duplicate(0) : nullptr;
+	if (preview_root) {
+		_solers_disable_preview_processing(preview_root);
+
+		SubViewportContainer *preview_container = memnew(SubViewportContainer);
+		preview_container->set_stretch(true);
+		preview_container->set_mouse_target(false);
+
+		SubViewport *preview_viewport = memnew(SubViewport);
+		preview_viewport->set_size(Size2i(1280, 720));
+		preview_viewport->set_update_mode(SubViewport::UPDATE_WHEN_VISIBLE);
+		preview_container->add_child(preview_viewport);
+		preview_viewport->add_child(preview_root);
+		preview = preview_container;
+	}
+
+	HBoxContainer *actions = _rebuild_workspace_canvas_surface(TTR("Scene"), icon, TTR("Scene canvas"), TTR("Open a scene to preview it here."), preview);
 	_add_workspace_canvas_action(actions, "run:main", TTR("Run"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Play"))));
 }
 
 void ProjectManager::_rebuild_workspace_script_surface() {
-	HBoxContainer *actions = _rebuild_workspace_canvas_surface(TTR("Script"), "studio:script", SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Script"))), TTR("Script canvas"), TTR("Describe the gameplay logic you want, or open Studio for manual code."));
+	HBoxContainer *actions = _rebuild_workspace_canvas_surface(TTR("Script"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Script"))), TTR("Script canvas"), TTR("Describe the gameplay logic you want, or open Studio for manual code."));
 	_add_workspace_canvas_action(actions, "assets", TTR("Assets"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Folder"))));
 }
 
 void ProjectManager::_rebuild_workspace_assets_surface() {
-	HBoxContainer *actions = _rebuild_workspace_canvas_surface(TTR("Assets"), "studio:filesystem", SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Folder"))), TTR("Asset canvas"), TTR("Keep project files quiet here; open Studio only for detailed asset work."));
+	HBoxContainer *actions = _rebuild_workspace_canvas_surface(TTR("Assets"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Folder"))), TTR("Asset canvas"), TTR("Keep project files quiet here; open Studio only for detailed asset work."));
 	_add_workspace_canvas_action(actions, "studio:assetlib", TTR("Asset Library"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("AssetLib"))));
 	_add_workspace_canvas_action(actions, "studio:filesystem", TTR("Project Files"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Folder"))));
 }
 
 void ProjectManager::_rebuild_workspace_game_surface() {
-	HBoxContainer *actions = _rebuild_workspace_canvas_surface(TTR("Game"), "studio:game", SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Play"))), TTR("Game preview"), TTR("Run the project to test the current build."));
+	HBoxContainer *actions = _rebuild_workspace_canvas_surface(TTR("Game"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Play"))), TTR("Game preview"), TTR("Run the project to test the current build."));
 	_add_workspace_canvas_action(actions, "run:main", TTR("Run"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Play"))));
 	_add_workspace_canvas_action(actions, "run:stop", TTR("Stop"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Stop"))));
 }
