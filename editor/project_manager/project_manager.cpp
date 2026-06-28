@@ -1249,7 +1249,6 @@ void ProjectManager::_load_shell_editor(const String &p_project_path) {
 	args.push_back("--path");
 	args.push_back(p_project_path);
 	args.push_back("--editor");
-	args.push_back("--solers-appshell");
 
 	if (open_in_recovery_mode) {
 		args.push_back("--recovery-mode");

@@ -53,7 +53,10 @@ class MenuButton;
 class OptionButton;
 class Panel;
 class PanelContainer;
+class PopupPanel;
 class RichTextLabel;
+class SolersAgentRuntime;
+class SolersDock;
 class SubViewport;
 class TextureProgressBar;
 class Timer;
@@ -306,6 +309,12 @@ private:
 	DockSplitContainer *right_l_vsplit = nullptr;
 	DockSplitContainer *right_r_vsplit = nullptr;
 	DockSplitContainer *center_split = nullptr;
+	PopupPanel *solers_session_popup = nullptr;
+	VBoxContainer *solers_session_popup_list = nullptr;
+	SolersAgentRuntime *solers_agent_runtime = nullptr;
+	SolersDock *solers_home_dock = nullptr;
+	String solers_project_path;
+	String solers_session_id;
 
 	// Main tabs.
 	EditorSceneTabs *scene_tabs = nullptr;
@@ -730,6 +739,10 @@ private:
 	void _add_to_main_menu(const String &p_name, PopupMenu *p_menu);
 
 	void _bottom_panel_resized();
+	void _show_solers_session_popup(const Rect2 &p_anchor);
+	void _solers_session_pressed(const String &p_session_id);
+	void _solers_new_session_pressed();
+	void _set_solers_session(const String &p_project_path, const String &p_session_id);
 
 protected:
 	friend class FileSystemDock;

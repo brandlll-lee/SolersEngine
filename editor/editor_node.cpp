@@ -36,6 +36,7 @@
 #include "core/io/config_file.h"
 #include "core/io/file_access.h"
 #include "core/io/image.h"
+#include "core/io/json.h"
 #include "core/io/resource_loader.h"
 #include "core/io/resource_saver.h"
 #include "core/object/class_db.h"
@@ -50,6 +51,11 @@
 #include "editor/plugins/editor_plugin_list.h"
 #include "main/main.h"
 #include "modules/modules_enabled.gen.h" // For gdscript, mono, svg.
+
+#ifdef MODULE_SOLERS_AI_ENABLED
+#include "modules/solers_ai/editor/solers_agent_runtime.h"
+#include "modules/solers_ai/editor/solers_dock.h"
+#endif
 #include "scene/2d/node_2d.h"
 #include "scene/3d/bone_attachment_3d.h"
 #include "scene/animation/animation_tree.h"
@@ -61,6 +67,7 @@
 #include "scene/gui/menu_bar.h"
 #include "scene/gui/menu_button.h"
 #include "scene/gui/panel.h"
+#include "scene/gui/panel_container.h"
 #include "scene/gui/popup.h"
 #include "scene/gui/rich_text_label.h"
 #include "scene/gui/split_container.h"
@@ -73,6 +80,7 @@
 #include "scene/resources/image_texture.h"
 #include "scene/resources/packed_scene.h"
 #include "scene/resources/portable_compressed_texture.h"
+#include "scene/resources/style_box_flat.h"
 #include "scene/theme/theme_db.h"
 #include "servers/display/display_server.h"
 #include "servers/navigation_2d/navigation_server_2d.h"
@@ -212,6 +220,111 @@ static const String REMOVE_ANDROID_BUILD_TEMPLATE_MESSAGE = TTRC("The Android bu
 static const String INSTALL_ANDROID_BUILD_TEMPLATE_MESSAGE = TTRC("This will set up your project for gradle Android builds by installing the source template to \"%s\".\nNote that in order to make gradle builds instead of using pre-built APKs, the \"Use Gradle Build\" option should be enabled in the Android export preset.");
 
 constexpr int LARGE_RESOURCE_WARNING_SIZE_THRESHOLD = 512'000; // 500 KB
+
+#ifdef MODULE_SOLERS_AI_ENABLED
+struct SolersEditorSessionInfo {
+	String session_id;
+	String title;
+	int64_t wall = 0;
+	bool has_title = false;
+	bool has_user = false;
+};
+
+struct SolersEditorSessionInfoSort {
+	bool operator()(const SolersEditorSessionInfo &p_a, const SolersEditorSessionInfo &p_b) const {
+		return p_a.wall > p_b.wall;
+	}
+};
+
+static String _solers_editor_session_title(const String &p_content) {
+	return p_content.strip_edges().replace("\r", " ").replace("\n", " ").strip_edges();
+}
+
+static String _solers_editor_time_ago(int64_t p_wall) {
+	if (p_wall <= 0) {
+		return String();
+	}
+	const int64_t delta = MAX((int64_t)0, (int64_t)Time::get_singleton()->get_unix_time_from_system() - p_wall);
+	if (delta < 60) {
+		return TTR("just now");
+	}
+	if (delta < 3600) {
+		const int minutes = MAX(1, (int)(delta / 60));
+		return vformat(TTRN("%d minute ago", "%d minutes ago", minutes), minutes);
+	}
+	if (delta < 86400) {
+		const int hours = MAX(1, (int)(delta / 3600));
+		return vformat(TTRN("%d hour ago", "%d hours ago", hours), hours);
+	}
+	const int days = MAX(1, (int)(delta / 86400));
+	return vformat(TTRN("%d day ago", "%d days ago", days), days);
+}
+
+static Vector<SolersEditorSessionInfo> _solers_editor_read_sessions(const String &p_project_path) {
+	Vector<SolersEditorSessionInfo> sessions;
+	HashMap<String, int> by_id;
+
+	Ref<FileAccess> file = FileAccess::open("user://solers_ai_transcript.jsonl", FileAccess::READ);
+	if (file.is_null()) {
+		return sessions;
+	}
+
+	while (!file->eof_reached()) {
+		const String line = file->get_line().strip_edges();
+		if (line.is_empty()) {
+			continue;
+		}
+		const Variant parsed = JSON::parse_string(line);
+		if (parsed.get_type() != Variant::DICTIONARY) {
+			continue;
+		}
+
+		const Dictionary event = parsed;
+		if (String(event.get("project_path", String())) != p_project_path) {
+			continue;
+		}
+
+		const String session_id = event.get("session_id", String());
+		if (session_id.is_empty()) {
+			continue;
+		}
+
+		if (!by_id.has(session_id)) {
+			SolersEditorSessionInfo session;
+			session.session_id = session_id;
+			session.title = TTR("current chat");
+			session.wall = (int64_t)event.get("wall", 0);
+			sessions.push_back(session);
+			by_id[session_id] = sessions.size() - 1;
+		}
+
+		SolersEditorSessionInfo session = sessions[by_id[session_id]];
+		const String role = event.get("role", String());
+		if (event.has("wall")) {
+			session.wall = (int64_t)event.get("wall", 0);
+		}
+		if (role == "user") {
+			session.has_user = true;
+		}
+		if (role == "user" && !session.has_title) {
+			const String title = _solers_editor_session_title(event.get("content", String()));
+			if (!title.is_empty()) {
+				session.title = title;
+				session.has_title = true;
+			}
+		}
+		sessions.write[by_id[session_id]] = session;
+	}
+
+	Vector<SolersEditorSessionInfo> visible_sessions;
+	for (const SolersEditorSessionInfo &session : sessions) {
+		if (session.has_user) {
+			visible_sessions.push_back(session);
+		}
+	}
+	return visible_sessions;
+}
+#endif
 
 bool EditorProgress::step(const String &p_state, int p_step, bool p_force_refresh) {
 	if (!force_background && Thread::is_main_thread()) {
@@ -831,6 +944,14 @@ void EditorNode::_notification(int p_what) {
 		} break;
 
 		case NOTIFICATION_PROCESS: {
+#ifdef MODULE_SOLERS_AI_ENABLED
+			if (solers_agent_runtime) {
+				solers_agent_runtime->poll();
+			}
+			if (solers_agent_runtime && solers_agent_runtime->is_running() && solers_home_dock) {
+				solers_home_dock->queue_redraw();
+			}
+#endif
 			if (editor_data.is_scene_changed(-1)) {
 				scene_tabs->update_scene_tabs();
 			}
@@ -8132,6 +8253,116 @@ void EditorNode::_bottom_panel_resized() {
 	bottom_panel->set_bottom_panel_offset(center_split->get_split_offset());
 }
 
+void EditorNode::_show_solers_session_popup(const Rect2 &p_anchor) {
+#ifdef MODULE_SOLERS_AI_ENABLED
+	if (!solers_session_popup || !solers_session_popup_list) {
+		return;
+	}
+
+	while (solers_session_popup_list->get_child_count() > 0) {
+		Node *child = solers_session_popup_list->get_child(0);
+		solers_session_popup_list->remove_child(child);
+		child->queue_free();
+	}
+
+	Button *new_session = memnew(Button);
+	new_session->set_theme_type_variation("FlatMenuButton");
+	new_session->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	new_session->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+	new_session->set_text(TTR("New Session"));
+	new_session->connect(SceneStringName(pressed), callable_mp(this, &EditorNode::_solers_new_session_pressed));
+	solers_session_popup_list->add_child(new_session);
+
+	Vector<SolersEditorSessionInfo> sessions = _solers_editor_read_sessions(solers_project_path);
+	sessions.sort_custom<SolersEditorSessionInfoSort>();
+	for (const SolersEditorSessionInfo &session : sessions) {
+		const String time = _solers_editor_time_ago(session.wall);
+		Button *row = memnew(Button);
+		row->set_theme_type_variation("FlatMenuButton");
+		row->set_toggle_mode(true);
+		row->set_pressed(session.session_id == solers_session_id);
+		row->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		row->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+		row->set_clip_text(true);
+		row->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+		row->set_text(time.is_empty() ? session.title : vformat("%s  %s", session.title, time));
+		row->set_tooltip_text(session.title);
+		row->connect(SceneStringName(pressed), callable_mp(this, &EditorNode::_solers_session_pressed).bind(session.session_id));
+		solers_session_popup_list->add_child(row);
+	}
+	if (sessions.is_empty()) {
+		Label *empty = memnew(Label);
+		empty->set_text(TTR("No sessions yet."));
+		empty->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+		empty->add_theme_color_override(SceneStringName(font_color), Color(0.62, 0.64, 0.68));
+		solers_session_popup_list->add_child(empty);
+	}
+
+	solers_session_popup->reset_size();
+	Point2 pos = p_anchor.get_end() + Vector2(-solers_session_popup->get_size().x, 4 * EDSCALE);
+	Window *win = get_window();
+	if (win) {
+		const float win_right = win->get_position().x + win->get_size().x;
+		const float overflow = (pos.x + solers_session_popup->get_size().x) - (win_right - 8 * EDSCALE);
+		if (overflow > 0) {
+			pos.x -= overflow;
+		}
+	}
+	solers_session_popup->set_position(pos);
+	solers_session_popup->popup();
+#else
+	(void)p_anchor;
+#endif
+}
+
+void EditorNode::_solers_session_pressed(const String &p_session_id) {
+#ifdef MODULE_SOLERS_AI_ENABLED
+	_set_solers_session(solers_project_path, p_session_id);
+	if (solers_session_popup) {
+		solers_session_popup->hide();
+	}
+#else
+	(void)p_session_id;
+#endif
+}
+
+void EditorNode::_solers_new_session_pressed() {
+#ifdef MODULE_SOLERS_AI_ENABLED
+	if (solers_home_dock) {
+		solers_home_dock->start_new_chat();
+	}
+	if (solers_agent_runtime) {
+		const Dictionary status = solers_agent_runtime->get_status();
+		solers_session_id = status.get("session_id", String());
+	}
+	if (solers_session_popup) {
+		solers_session_popup->hide();
+	}
+#endif
+}
+
+void EditorNode::_set_solers_session(const String &p_project_path, const String &p_session_id) {
+#ifdef MODULE_SOLERS_AI_ENABLED
+	const bool changed = solers_project_path != p_project_path || solers_session_id != p_session_id;
+	solers_project_path = p_project_path;
+	solers_session_id = p_session_id;
+	if (!changed || !solers_agent_runtime) {
+		return;
+	}
+	if (solers_session_id.is_empty()) {
+		solers_agent_runtime->set_project_path(solers_project_path);
+	} else {
+		solers_agent_runtime->set_session(solers_project_path, solers_session_id);
+	}
+	if (solers_home_dock) {
+		solers_home_dock->load_chat_history(solers_session_id.is_empty() ? Array() : solers_agent_runtime->get_messages());
+	}
+#else
+	(void)p_project_path;
+	(void)p_session_id;
+#endif
+}
+
 #ifdef ANDROID_ENABLED
 void EditorNode::_touch_actions_panel_mode_changed() {
 	int panel_mode = EDITOR_GET("interface/touchscreen/touch_actions_panel");
@@ -8542,8 +8773,61 @@ EditorNode::EditorNode() {
 			OS::get_singleton()->unset_environment("SOLERS_SESSION_ID");
 		}
 	}
-#endif
+
+	if (!solers_classic_editor) {
+		HBoxContainer *solers_editor_root = memnew(HBoxContainer);
+		solers_editor_root->set_name("SolersEditorRoot");
+		solers_editor_root->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		solers_editor_root->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+		solers_editor_root->add_theme_constant_override("separation", 0);
+		main_vbox->add_child(solers_editor_root);
+
+		solers_agent_runtime = memnew(SolersAgentRuntime);
+		solers_home_dock = memnew(SolersDock);
+		solers_home_dock->set_name("SolersChat");
+		solers_home_dock->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		solers_home_dock->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+		solers_home_dock->set_stretch_ratio(0.38);
+		solers_home_dock->set_session_menu_callback(callable_mp(this, &EditorNode::_show_solers_session_popup));
+		solers_agent_runtime->bind_dock(solers_home_dock);
+		solers_editor_root->add_child(solers_home_dock);
+
+		main_hsplit->set_stretch_ratio(0.62);
+		solers_editor_root->add_child(main_hsplit);
+
+		solers_session_popup = memnew(PopupPanel);
+		Ref<StyleBoxFlat> popup_outer;
+		popup_outer.instantiate();
+		popup_outer->set_bg_color(Color(0, 0, 0, 0));
+		popup_outer->set_shadow_size(0);
+		solers_session_popup->add_theme_style_override(SceneStringName(panel), popup_outer);
+		gui_base->add_child(solers_session_popup);
+
+		PanelContainer *session_popup_card = memnew(PanelContainer);
+		session_popup_card->set_custom_minimum_size(Size2(360, 0) * EDSCALE);
+		Ref<StyleBoxFlat> session_popup_style;
+		session_popup_style.instantiate();
+		session_popup_style->set_bg_color(Color(0.075, 0.078, 0.086));
+		session_popup_style->set_corner_radius_all(int(12 * EDSCALE));
+		session_popup_style->set_content_margin_all(8 * EDSCALE);
+		session_popup_card->add_theme_style_override(SceneStringName(panel), session_popup_style);
+		solers_session_popup->add_child(session_popup_card);
+
+		solers_session_popup_list = memnew(VBoxContainer);
+		solers_session_popup_list->add_theme_constant_override("separation", 4 * EDSCALE);
+		session_popup_card->add_child(solers_session_popup_list);
+
+		const String solers_env_session_id = OS::get_singleton()->get_environment("SOLERS_SESSION_ID");
+		_set_solers_session(ProjectSettings::get_singleton()->get_resource_path(), solers_env_session_id);
+		if (!solers_env_session_id.is_empty()) {
+			OS::get_singleton()->unset_environment("SOLERS_SESSION_ID");
+		}
+	} else {
+		main_vbox->add_child(main_hsplit);
+	}
+#else
 	main_vbox->add_child(main_hsplit);
+#endif
 
 	left_l_vsplit = memnew(DockSplitContainer);
 	left_l_vsplit->set_name("DockVSplitLeftL");
@@ -9425,6 +9709,13 @@ EditorNode::~EditorNode() {
 	memdelete(progress_hb);
 	memdelete(project_upgrade_tool);
 	memdelete(editor_dock_manager);
+#ifdef MODULE_SOLERS_AI_ENABLED
+	if (solers_agent_runtime) {
+		memdelete(solers_agent_runtime);
+		solers_agent_runtime = nullptr;
+	}
+	solers_home_dock = nullptr;
+#endif
 
 	EditorSettings::destroy();
 	EditorThemeManager::finalize();
