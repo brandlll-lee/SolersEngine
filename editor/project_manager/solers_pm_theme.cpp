@@ -185,6 +185,9 @@ void SolersPMTheme::apply(const Ref<Theme> &p_theme) {
 		Ref<StyleBoxFlat> panel = _solers_flat(t.surface, rp, t.border, hair, 4 * EDSCALE);
 		p_theme->set_stylebox("panel_container", "ProjectManager", panel);
 
+		Ref<StyleBoxFlat> workspace_home = _solers_flat(t.surface, 0, Color(), 0, 0);
+		p_theme->set_stylebox("workspace_home", "ProjectManager", workspace_home);
+
 		Ref<StyleBoxFlat> list = _solers_flat(t.surface, rc, t.border_strong, hair, 6 * EDSCALE);
 		p_theme->set_stylebox("project_list", "ProjectManager", list);
 
@@ -321,6 +324,73 @@ void SolersPMTheme::apply(const Ref<Theme> &p_theme) {
 		p_theme->set_color(SNAME("icon_normal_color"), "PMShellAction", Color(t.text_dim.r, t.text_dim.g, t.text_dim.b, 0.72f));
 		p_theme->set_color(SNAME("icon_hover_color"), "PMShellAction", t.text);
 		p_theme->set_color(SNAME("icon_pressed_color"), "PMShellAction", t.text);
+
+		p_theme->set_type_variation("PMWorkspaceTool", "Button");
+		Ref<StyleBoxFlat> tool_normal = _solers_flat(Color(0.095f, 0.095f, 0.102f), rr, Color(0, 0, 0, 0.16f), hair, -1.0f);
+		Ref<StyleBoxFlat> tool_hover = _solers_flat(Color(0.118f, 0.118f, 0.128f), rr, Color(1, 1, 1, 0.025f), hair, -1.0f);
+		Ref<StyleBoxFlat> tool_pressed = _solers_flat(Color(0.135f, 0.135f, 0.145f), rr, Color(t.accent.r, t.accent.g, t.accent.b, 0.20f), hair, -1.0f);
+		Ref<StyleBoxFlat> tool_focus = tool_normal->duplicate();
+		tool_focus->set_draw_center(false);
+		tool_focus->set_border_color(Color(t.accent.r, t.accent.g, t.accent.b, 0.42f));
+		tool_focus->set_border_width_all(hair);
+
+		p_theme->set_stylebox(SNAME("normal"), "PMWorkspaceTool", tool_normal);
+		p_theme->set_stylebox(SNAME("hover"), "PMWorkspaceTool", tool_hover);
+		p_theme->set_stylebox(SNAME("pressed"), "PMWorkspaceTool", tool_pressed);
+		p_theme->set_stylebox(SNAME("hover_pressed"), "PMWorkspaceTool", tool_pressed->duplicate());
+		p_theme->set_stylebox(SNAME("disabled"), "PMWorkspaceTool", tool_normal->duplicate());
+		p_theme->set_stylebox(SNAME("focus"), "PMWorkspaceTool", tool_focus);
+
+		p_theme->set_type_variation("PMWorkspaceToolTitle", "Label");
+		p_theme->set_color(SNAME("font_color"), "PMWorkspaceToolTitle", Color(t.text.r, t.text.g, t.text.b, 0.88f));
+
+		p_theme->set_type_variation("PMWorkspaceShortcut", "Label");
+		p_theme->set_color(SNAME("font_color"), "PMWorkspaceShortcut", Color(t.text_dim.r, t.text_dim.g, t.text_dim.b, 0.72f));
+		p_theme->set_font_size(SNAME("font_size"), "PMWorkspaceShortcut", MAX(1, (int)(11 * EDSCALE)));
+		Ref<StyleBoxFlat> shortcut_bg = _solers_flat(Color(1, 1, 1, 0.055f), rr, Color(), 0, 0);
+		shortcut_bg->set_content_margin(SIDE_LEFT, 7 * EDSCALE);
+		shortcut_bg->set_content_margin(SIDE_RIGHT, 7 * EDSCALE);
+		shortcut_bg->set_content_margin(SIDE_TOP, 1 * EDSCALE);
+		shortcut_bg->set_content_margin(SIDE_BOTTOM, 1 * EDSCALE);
+		p_theme->set_stylebox(SNAME("normal"), "PMWorkspaceShortcut", shortcut_bg);
+
+		p_theme->set_type_variation("PMWorkspaceSection", "Label");
+		p_theme->set_color(SNAME("font_color"), "PMWorkspaceSection", Color(t.text_dim.r, t.text_dim.g, t.text_dim.b, 0.52f));
+		p_theme->set_font_size(SNAME("font_size"), "PMWorkspaceSection", MAX(1, (int)(11 * EDSCALE)));
+		Ref<StyleBoxFlat> section_pad = _solers_flat(Color(0, 0, 0, 0), 0, Color(), 0, 0);
+		section_pad->set_content_margin(SIDE_LEFT, 10 * EDSCALE);
+		section_pad->set_content_margin(SIDE_TOP, 10 * EDSCALE);
+		section_pad->set_content_margin(SIDE_BOTTOM, 2 * EDSCALE);
+		p_theme->set_stylebox(SNAME("normal"), "PMWorkspaceSection", section_pad);
+
+		p_theme->set_type_variation("PMWorkspaceTabBar", "TabBar");
+		Ref<StyleBoxFlat> workspace_tab = _solers_flat(Color(0, 0, 0, 0), rr, Color(), 0, -1.0f);
+		workspace_tab->set_content_margin(SIDE_LEFT, 12 * EDSCALE);
+		workspace_tab->set_content_margin(SIDE_RIGHT, 12 * EDSCALE);
+		workspace_tab->set_content_margin(SIDE_TOP, 5 * EDSCALE);
+		workspace_tab->set_content_margin(SIDE_BOTTOM, 5 * EDSCALE);
+
+		Ref<StyleBoxFlat> workspace_tab_selected = workspace_tab->duplicate();
+		workspace_tab_selected->set_bg_color(Color(1, 1, 1, 0.085f));
+		Ref<StyleBoxFlat> workspace_tab_hovered = workspace_tab->duplicate();
+		workspace_tab_hovered->set_bg_color(Color(1, 1, 1, 0.055f));
+		Ref<StyleBoxFlat> workspace_tab_focus = workspace_tab->duplicate();
+		workspace_tab_focus->set_draw_center(false);
+		workspace_tab_focus->set_border_color(Color(t.accent.r, t.accent.g, t.accent.b, 0.38f));
+		workspace_tab_focus->set_border_width_all(hair);
+
+		p_theme->set_stylebox(SNAME("tab_selected"), "PMWorkspaceTabBar", workspace_tab_selected);
+		p_theme->set_stylebox(SNAME("tab_hovered"), "PMWorkspaceTabBar", workspace_tab_hovered);
+		p_theme->set_stylebox(SNAME("tab_unselected"), "PMWorkspaceTabBar", workspace_tab);
+		p_theme->set_stylebox(SNAME("tab_disabled"), "PMWorkspaceTabBar", workspace_tab->duplicate());
+		p_theme->set_stylebox(SNAME("tab_focus"), "PMWorkspaceTabBar", workspace_tab_focus);
+		p_theme->set_color(SNAME("font_selected_color"), "PMWorkspaceTabBar", t.text);
+		p_theme->set_color(SNAME("font_hovered_color"), "PMWorkspaceTabBar", t.text);
+		p_theme->set_color(SNAME("font_unselected_color"), "PMWorkspaceTabBar", Color(t.text_dim.r, t.text_dim.g, t.text_dim.b, 0.78f));
+		p_theme->set_color(SNAME("icon_selected_color"), "PMWorkspaceTabBar", t.text);
+		p_theme->set_color(SNAME("icon_hovered_color"), "PMWorkspaceTabBar", t.text);
+		p_theme->set_color(SNAME("icon_unselected_color"), "PMWorkspaceTabBar", Color(t.text_dim.r, t.text_dim.g, t.text_dim.b, 0.78f));
+		p_theme->set_constant(SNAME("tab_separation"), "PMWorkspaceTabBar", 6 * EDSCALE);
 
 		p_theme->set_type_variation("PMNavHeader", "Label");
 		p_theme->set_color(SNAME("font_color"), "PMNavHeader", Color(t.text_dim.r, t.text_dim.g, t.text_dim.b, 0.45));

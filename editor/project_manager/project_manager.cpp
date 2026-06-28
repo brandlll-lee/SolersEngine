@@ -44,6 +44,7 @@
 #include "editor/asset_library/asset_library_editor_plugin.h"
 #include "editor/docks/editor_dock.h"
 #include "editor/docks/editor_dock_manager.h"
+#include "editor/docks/filesystem_dock.h"
 #include "editor/doc/editor_help.h"
 #include "editor/editor_main_screen.h"
 #include "editor/editor_node.h"
@@ -66,6 +67,7 @@
 #include "editor/themes/editor_scale.h"
 #include "editor/themes/editor_theme_manager.h"
 #include "main/main.h"
+#include "scene/3d/node_3d.h"
 #include "scene/gui/button.h"
 #include "scene/gui/check_box.h"
 #include "scene/gui/flow_container.h"
@@ -82,6 +84,8 @@
 #include "scene/gui/split_container.h"
 #include "scene/gui/tab_bar.h"
 #include "scene/gui/tab_container.h"
+#include "scene/gui/texture_rect.h"
+#include "scene/main/canvas_item.h"
 #include "scene/main/window.h"
 #include "scene/resources/style_box_flat.h"
 #include "scene/theme/theme_db.h"
@@ -400,7 +404,7 @@ void ProjectManager::_update_theme(bool p_skip_creation) {
 		background_panel->add_theme_style_override(SceneStringName(panel), get_theme_stylebox("Background", EditorStringName(EditorStyles)));
 		main_view_container->add_theme_style_override(SceneStringName(panel), get_theme_stylebox("panel_container", "ProjectManager"));
 		if (shell_workspace_home) {
-			shell_workspace_home->add_theme_style_override(SceneStringName(panel), get_theme_stylebox("panel_container", "ProjectManager"));
+			shell_workspace_home->add_theme_style_override(SceneStringName(panel), get_theme_stylebox("workspace_home", "ProjectManager"));
 		}
 
 		// Project list.
@@ -474,12 +478,13 @@ void ProjectManager::_update_theme(bool p_skip_creation) {
 #endif
 }
 
-void ProjectManager::_show_workspace_home() {
+void ProjectManager::_show_workspace_launcher(bool p_show_tabs) {
 	if (!main_view_container || !shell_workspace_home || !shell_editor_host) {
 		return;
 	}
+	_set_workspace_canvas_mode(false);
 	if (shell_workspace_tab_bar) {
-		shell_workspace_tab_bar->hide();
+		shell_workspace_tab_bar->set_visible(p_show_tabs && shell_workspace_tab_bar->get_tab_count() > 0);
 	}
 	main_view_container->set_tabs_visible(false);
 	const int home_idx = main_view_container->get_tab_idx_from_control(shell_workspace_home);
@@ -491,6 +496,31 @@ void ProjectManager::_show_workspace_home() {
 	if (host_idx >= 0) {
 		main_view_container->set_tab_hidden(host_idx, true);
 	}
+}
+
+void ProjectManager::_set_workspace_canvas_mode(bool p_canvas_mode) {
+	if (shell_editor_node) {
+		shell_editor_node->set_distraction_free_mode(p_canvas_mode);
+	}
+	if (EditorTitleBar *editor_title_bar = EditorNode::get_title_bar()) {
+		editor_title_bar->set_visible(!p_canvas_mode);
+	}
+}
+
+void ProjectManager::_clear_workspace_tool_list() {
+	if (!shell_workspace_tool_list) {
+		return;
+	}
+	while (shell_workspace_tool_list->get_child_count() > 0) {
+		Node *child = shell_workspace_tool_list->get_child(0);
+		shell_workspace_tool_list->remove_child(child);
+		child->queue_free();
+	}
+}
+
+void ProjectManager::_show_workspace_home() {
+	_show_workspace_launcher(false);
+	_rebuild_workspace_launcher();
 }
 
 void ProjectManager::_show_workspace_editor() {
@@ -517,16 +547,43 @@ void ProjectManager::_rebuild_workspace_launcher() {
 		return;
 	}
 
-	while (shell_workspace_tool_list->get_child_count() > 0) {
-		Node *child = shell_workspace_tool_list->get_child(0);
-		shell_workspace_tool_list->remove_child(child);
-		child->queue_free();
+	_clear_workspace_tool_list();
+
+	_add_workspace_tool_button(shell_workspace_tool_list, "scene", TTR("Scene"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("PackedScene"))), Ref<Shortcut>());
+	_add_workspace_tool_button(shell_workspace_tool_list, "script", TTR("Script"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Script"))), Ref<Shortcut>());
+	_add_workspace_tool_button(shell_workspace_tool_list, "assets", TTR("Assets"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Folder"))), Ref<Shortcut>());
+	_add_workspace_tool_button(shell_workspace_tool_list, "game", TTR("Game"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Play"))), Ref<Shortcut>());
+	_add_workspace_tool_button(shell_workspace_tool_list, "studio", TTR("Studio"), SolersPMTheme::lucide_icon(SOLERS_LUCIDE_PANELS), Ref<Shortcut>());
+}
+
+void ProjectManager::_rebuild_workspace_assets_launcher() {
+	if (!shell_workspace_tool_list) {
+		return;
 	}
+
+	_clear_workspace_tool_list();
+
+	if (FileSystemDock *filesystem_dock = FileSystemDock::get_singleton()) {
+		_add_workspace_tool_button(shell_workspace_tool_list, "dock:" + uitos(filesystem_dock->get_instance_id()), TTR("Project Files"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Folder"))), filesystem_dock->get_dock_shortcut());
+	}
+
+	EditorMainScreen *main_screen = EditorNode::get_editor_main_screen();
+	if (main_screen && main_screen->is_button_enabled(EditorMainScreen::EDITOR_ASSETLIB)) {
+		_add_workspace_tool_button(shell_workspace_tool_list, "main:" + itos(EditorMainScreen::EDITOR_ASSETLIB), TTR("Asset Library"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("AssetLib"))), Ref<Shortcut>());
+	}
+}
+
+void ProjectManager::_rebuild_workspace_studio_launcher() {
+	if (!shell_workspace_tool_list) {
+		return;
+	}
+
+	_clear_workspace_tool_list();
 
 	EditorMainScreen *main_screen = EditorNode::get_editor_main_screen();
 	if (main_screen) {
 		Label *section = memnew(Label(TTR("Main Screens")));
-		section->add_theme_color_override(SceneStringName(font_color), get_theme_color("font_placeholder_color", EditorStringName(Editor)));
+		section->set_theme_type_variation("PMWorkspaceSection");
 		shell_workspace_tool_list->add_child(section);
 
 		for (int i = 0; i < main_screen->get_plugin_count(); i++) {
@@ -548,7 +605,7 @@ void ProjectManager::_rebuild_workspace_launcher() {
 	EditorDockManager *dock_manager = EditorDockManager::get_singleton();
 	if (dock_manager) {
 		Label *section = memnew(Label(TTR("Docks")));
-		section->add_theme_color_override(SceneStringName(font_color), get_theme_color("font_placeholder_color", EditorStringName(Editor)));
+		section->set_theme_type_variation("PMWorkspaceSection");
 		shell_workspace_tool_list->add_child(section);
 
 		for (int i = 0; i < dock_manager->get_dock_count(); i++) {
@@ -567,17 +624,53 @@ void ProjectManager::_rebuild_workspace_launcher() {
 
 void ProjectManager::_add_workspace_tool_button(VBoxContainer *p_list, const String &p_tool_id, const String &p_title, const Ref<Texture2D> &p_icon, const Ref<Shortcut> &p_shortcut) {
 	Button *button = memnew(Button);
-	button->set_theme_type_variation("PMShellAction");
+	button->set_theme_type_variation("PMWorkspaceTool");
 	button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
-	button->set_clip_text(true);
-	button->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
-	button->set_text(p_title);
+	button->set_custom_minimum_size(Size2(0, 48) * EDSCALE);
 	button->set_tooltip_text(p_title);
-	button->set_button_icon(p_icon);
+
+	MarginContainer *margin = memnew(MarginContainer);
+	margin->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
+	margin->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
+	margin->add_theme_constant_override("margin_left", 13 * EDSCALE);
+	margin->add_theme_constant_override("margin_right", 12 * EDSCALE);
+	button->add_child(margin);
+
+	HBoxContainer *row = memnew(HBoxContainer);
+	row->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	row->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	row->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
+	row->add_theme_constant_override("separation", 10 * EDSCALE);
+	margin->add_child(row);
+
+	TextureRect *icon = memnew(TextureRect);
+	icon->set_texture(p_icon);
+	icon->set_custom_minimum_size(Size2(18, 18) * EDSCALE);
+	icon->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
+	icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+	icon->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
+	row->add_child(icon);
+
+	Label *title = memnew(Label(p_title));
+	title->set_theme_type_variation("PMWorkspaceToolTitle");
+	title->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	title->set_vertical_alignment(VERTICAL_ALIGNMENT_CENTER);
+	title->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+	title->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
+	row->add_child(title);
+
 	if (p_shortcut.is_valid()) {
-		button->set_tooltip_text(p_title + "\n" + p_shortcut->get_as_text());
+		const String shortcut_text = p_shortcut->get_as_text();
+		if (!shortcut_text.is_empty()) {
+			button->set_tooltip_text(p_title + "\n" + shortcut_text);
+			Label *shortcut = memnew(Label(shortcut_text));
+			shortcut->set_theme_type_variation("PMWorkspaceShortcut");
+			shortcut->set_vertical_alignment(VERTICAL_ALIGNMENT_CENTER);
+			shortcut->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
+			row->add_child(shortcut);
+		}
 	}
+
 	button->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_workspace_tool_pressed).bind(p_tool_id, p_title, p_icon));
 	p_list->add_child(button);
 }
@@ -606,7 +699,6 @@ void ProjectManager::_workspace_tool_tab_changed(int p_tab) {
 	if (p_tab < 0 || p_tab >= shell_workspace_tab_bar->get_tab_count()) {
 		return;
 	}
-	_show_workspace_editor();
 	_activate_workspace_tool(String(shell_workspace_tab_bar->get_tab_metadata(p_tab)));
 }
 
@@ -629,14 +721,57 @@ void ProjectManager::_workspace_tool_tab_close_pressed(int p_tab) {
 }
 
 void ProjectManager::_activate_workspace_tool(const String &p_tool_id) {
-	if (p_tool_id.begins_with("main:")) {
+	if (p_tool_id == "assets") {
+		_show_workspace_launcher(true);
+		_rebuild_workspace_assets_launcher();
+		return;
+	}
+	if (p_tool_id == "studio") {
+		_show_workspace_launcher(true);
+		_rebuild_workspace_studio_launcher();
+		return;
+	}
+	if (p_tool_id == "scene") {
+		_show_workspace_editor();
 		EditorMainScreen *main_screen = EditorNode::get_editor_main_screen();
 		if (main_screen) {
-			main_screen->select(p_tool_id.substr(5).to_int());
+			Node *root = shell_editor_node ? shell_editor_node->get_edited_scene() : nullptr;
+			int target_screen = -1;
+			if (Object::cast_to<Node3D>(root)) {
+				target_screen = EditorMainScreen::EDITOR_3D;
+			} else if (Object::cast_to<CanvasItem>(root)) {
+				target_screen = EditorMainScreen::EDITOR_2D;
+			}
+			if (target_screen >= 0 && main_screen->is_button_enabled(target_screen)) {
+				main_screen->select(target_screen);
+			}
 		}
+		_set_workspace_canvas_mode(true);
+		return;
+	}
+	if (p_tool_id == "script" || p_tool_id == "game") {
+		_show_workspace_editor();
+		EditorMainScreen *main_screen = EditorNode::get_editor_main_screen();
+		const int target_screen = p_tool_id == "script" ? EditorMainScreen::EDITOR_SCRIPT : EditorMainScreen::EDITOR_GAME;
+		if (main_screen && main_screen->is_button_enabled(target_screen)) {
+			main_screen->select(target_screen);
+		}
+		_set_workspace_canvas_mode(true);
+		return;
+	}
+	if (p_tool_id.begins_with("main:")) {
+		_show_workspace_editor();
+		EditorMainScreen *main_screen = EditorNode::get_editor_main_screen();
+		const int target_screen = p_tool_id.substr(5).to_int();
+		if (main_screen && target_screen >= 0 && target_screen < main_screen->get_plugin_count() && main_screen->is_button_enabled(target_screen)) {
+			main_screen->select(target_screen);
+		}
+		_set_workspace_canvas_mode(true);
 		return;
 	}
 	if (p_tool_id.begins_with("dock:")) {
+		_show_workspace_editor();
+		_set_workspace_canvas_mode(false);
 		Object *object = ObjectDB::get_instance(ObjectID((uint64_t)p_tool_id.substr(5).to_int()));
 		EditorDock *dock = Object::cast_to<EditorDock>(object);
 		if (dock && EditorDockManager::get_singleton()) {
@@ -2259,7 +2394,7 @@ ProjectManager::ProjectManager() {
 
 	shell_workspace_tab_bar = memnew(TabBar);
 	shell_workspace_tab_bar->set_name("SolersWorkspaceTabBar");
-	shell_workspace_tab_bar->set_theme_type_variation("TabBarInner");
+	shell_workspace_tab_bar->set_theme_type_variation("PMWorkspaceTabBar");
 	shell_workspace_tab_bar->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	shell_workspace_tab_bar->set_tab_close_display_policy(TabBar::CLOSE_BUTTON_SHOW_ACTIVE_ONLY);
 	shell_workspace_tab_bar->set_max_tab_width(220 * EDSCALE);
@@ -2288,23 +2423,23 @@ ProjectManager::ProjectManager() {
 	shell_workspace_home->add_child(workspace_scroll);
 
 	MarginContainer *workspace_margin = memnew(MarginContainer);
-	workspace_margin->add_theme_constant_override("margin_left", 28 * EDSCALE);
-	workspace_margin->add_theme_constant_override("margin_right", 28 * EDSCALE);
-	workspace_margin->add_theme_constant_override("margin_top", 28 * EDSCALE);
-	workspace_margin->add_theme_constant_override("margin_bottom", 28 * EDSCALE);
+	workspace_margin->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	workspace_margin->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	workspace_margin->add_theme_constant_override("margin_left", 32 * EDSCALE);
+	workspace_margin->add_theme_constant_override("margin_right", 32 * EDSCALE);
+	workspace_margin->add_theme_constant_override("margin_top", 32 * EDSCALE);
+	workspace_margin->add_theme_constant_override("margin_bottom", 32 * EDSCALE);
 	workspace_scroll->add_child(workspace_margin);
 
 	VBoxContainer *workspace_body = memnew(VBoxContainer);
-	workspace_body->add_theme_constant_override("separation", 12 * EDSCALE);
-	workspace_body->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	workspace_body->add_theme_constant_override("separation", 7 * EDSCALE);
+	workspace_body->set_custom_minimum_size(Size2(668, 0) * EDSCALE);
+	workspace_body->set_h_size_flags(Control::SIZE_SHRINK_CENTER);
+	workspace_body->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
 	workspace_margin->add_child(workspace_body);
 
-	Label *workspace_title = memnew(Label(TTR("Workspace")));
-	workspace_title->set_theme_type_variation("HeaderMedium");
-	workspace_body->add_child(workspace_title);
-
 	shell_workspace_tool_list = memnew(VBoxContainer);
-	shell_workspace_tool_list->add_theme_constant_override("separation", 6 * EDSCALE);
+	shell_workspace_tool_list->add_theme_constant_override("separation", 7 * EDSCALE);
 	shell_workspace_tool_list->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	workspace_body->add_child(shell_workspace_tool_list);
 

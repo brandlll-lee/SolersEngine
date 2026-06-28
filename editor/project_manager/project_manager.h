@@ -118,9 +118,14 @@ class ProjectManager : public Control {
 	TabBar *shell_workspace_tab_bar = nullptr;
 	TabContainer *main_view_container = nullptr;
 
+	void _show_workspace_launcher(bool p_show_tabs);
+	void _set_workspace_canvas_mode(bool p_canvas_mode);
+	void _clear_workspace_tool_list();
 	void _show_workspace_home();
 	void _show_workspace_editor();
 	void _rebuild_workspace_launcher();
+	void _rebuild_workspace_assets_launcher();
+	void _rebuild_workspace_studio_launcher();
 	void _add_workspace_tool_button(VBoxContainer *p_list, const String &p_tool_id, const String &p_title, const Ref<Texture2D> &p_icon, const Ref<Shortcut> &p_shortcut);
 	void _workspace_tool_pressed(const String &p_tool_id, const String &p_title, const Ref<Texture2D> &p_icon);
 	void _workspace_tool_tab_changed(int p_tab);
