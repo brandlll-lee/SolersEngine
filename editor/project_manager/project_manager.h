@@ -36,6 +36,7 @@
 class CheckBox;
 class EditorAbout;
 class EditorAssetLibrary;
+class EditorFileSystemDirectory;
 class EditorFileDialog;
 class EditorNode;
 class EditorTitleBar;
@@ -124,8 +125,13 @@ class ProjectManager : public Control {
 	void _show_workspace_home();
 	void _show_workspace_editor();
 	void _rebuild_workspace_launcher();
-	void _rebuild_workspace_assets_launcher();
+	void _rebuild_workspace_scene_surface();
+	void _rebuild_workspace_script_surface();
+	void _rebuild_workspace_assets_surface();
+	void _rebuild_workspace_game_surface();
 	void _rebuild_workspace_studio_launcher();
+	void _add_workspace_section_label(const String &p_text);
+	void _add_workspace_asset_rows(EditorFileSystemDirectory *p_dir, int &r_count);
 	void _add_workspace_tool_button(VBoxContainer *p_list, const String &p_tool_id, const String &p_title, const Ref<Texture2D> &p_icon, const Ref<Shortcut> &p_shortcut);
 	void _workspace_tool_pressed(const String &p_tool_id, const String &p_title, const Ref<Texture2D> &p_icon);
 	void _workspace_tool_tab_changed(int p_tab);

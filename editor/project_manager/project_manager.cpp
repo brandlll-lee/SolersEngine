@@ -48,6 +48,7 @@
 #include "editor/doc/editor_help.h"
 #include "editor/editor_main_screen.h"
 #include "editor/editor_node.h"
+#include "editor/file_system/editor_file_system.h"
 #include "editor/editor_string_names.h"
 #include "editor/gui/editor_about.h"
 #include "editor/gui/editor_file_dialog.h"
@@ -63,6 +64,7 @@
 #include "editor/project_manager/solers_pm_ai_view.h"
 #include "editor/project_manager/solers_pm_theme.h"
 #include "editor/plugins/editor_plugin.h"
+#include "editor/run/editor_run_bar.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
 #include "editor/themes/editor_theme_manager.h"
@@ -518,6 +520,12 @@ void ProjectManager::_clear_workspace_tool_list() {
 	}
 }
 
+void ProjectManager::_add_workspace_section_label(const String &p_text) {
+	Label *section = memnew(Label(p_text));
+	section->set_theme_type_variation("PMWorkspaceSection");
+	shell_workspace_tool_list->add_child(section);
+}
+
 void ProjectManager::_show_workspace_home() {
 	_show_workspace_launcher(false);
 	_rebuild_workspace_launcher();
@@ -556,21 +564,77 @@ void ProjectManager::_rebuild_workspace_launcher() {
 	_add_workspace_tool_button(shell_workspace_tool_list, "studio", TTR("Studio"), SolersPMTheme::lucide_icon(SOLERS_LUCIDE_PANELS), Ref<Shortcut>());
 }
 
-void ProjectManager::_rebuild_workspace_assets_launcher() {
+void ProjectManager::_rebuild_workspace_scene_surface() {
 	if (!shell_workspace_tool_list) {
 		return;
 	}
 
 	_clear_workspace_tool_list();
+	_add_workspace_section_label(TTR("Scene"));
+	_add_workspace_tool_button(shell_workspace_tool_list, "studio:scene", TTR("Open Scene in Studio"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("PackedScene"))), Ref<Shortcut>());
+	_add_workspace_tool_button(shell_workspace_tool_list, "game", TTR("Playtest Game"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Play"))), Ref<Shortcut>());
+	_add_workspace_tool_button(shell_workspace_tool_list, "home", TTR("All Modes"), SolersPMTheme::lucide_icon(SOLERS_LUCIDE_PANELS), Ref<Shortcut>());
+}
 
-	if (FileSystemDock *filesystem_dock = FileSystemDock::get_singleton()) {
-		_add_workspace_tool_button(shell_workspace_tool_list, "dock:" + uitos(filesystem_dock->get_instance_id()), TTR("Project Files"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Folder"))), filesystem_dock->get_dock_shortcut());
+void ProjectManager::_rebuild_workspace_script_surface() {
+	if (!shell_workspace_tool_list) {
+		return;
 	}
 
-	EditorMainScreen *main_screen = EditorNode::get_editor_main_screen();
-	if (main_screen && main_screen->is_button_enabled(EditorMainScreen::EDITOR_ASSETLIB)) {
-		_add_workspace_tool_button(shell_workspace_tool_list, "main:" + itos(EditorMainScreen::EDITOR_ASSETLIB), TTR("Asset Library"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("AssetLib"))), Ref<Shortcut>());
+	_clear_workspace_tool_list();
+	_add_workspace_section_label(TTR("Script"));
+	_add_workspace_tool_button(shell_workspace_tool_list, "studio:script", TTR("Open Script Editor in Studio"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Script"))), Ref<Shortcut>());
+	_add_workspace_tool_button(shell_workspace_tool_list, "assets", TTR("Browse Project Assets"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Folder"))), Ref<Shortcut>());
+	_add_workspace_tool_button(shell_workspace_tool_list, "home", TTR("All Modes"), SolersPMTheme::lucide_icon(SOLERS_LUCIDE_PANELS), Ref<Shortcut>());
+}
+
+void ProjectManager::_add_workspace_asset_rows(EditorFileSystemDirectory *p_dir, int &r_count) {
+	if (!p_dir || r_count >= 12) {
+		return;
 	}
+
+	for (int i = 0; i < p_dir->get_file_count() && r_count < 12; i++) {
+		const String path = p_dir->get_file_path(i);
+		_add_workspace_tool_button(shell_workspace_tool_list, "studio:file:" + path, path.trim_prefix("res://"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("File"))), Ref<Shortcut>());
+		r_count++;
+	}
+
+	for (int i = 0; i < p_dir->get_subdir_count() && r_count < 12; i++) {
+		_add_workspace_asset_rows(p_dir->get_subdir(i), r_count);
+	}
+}
+
+void ProjectManager::_rebuild_workspace_assets_surface() {
+	if (!shell_workspace_tool_list) {
+		return;
+	}
+
+	_clear_workspace_tool_list();
+	_add_workspace_section_label(TTR("Assets"));
+	_add_workspace_tool_button(shell_workspace_tool_list, "studio:filesystem", TTR("Project Files in Studio"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Folder"))), Ref<Shortcut>());
+	_add_workspace_tool_button(shell_workspace_tool_list, "studio:assetlib", TTR("Asset Library in Studio"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("AssetLib"))), Ref<Shortcut>());
+
+	EditorFileSystem *efs = EditorFileSystem::get_singleton();
+	if (efs && efs->get_filesystem()) {
+		_add_workspace_section_label(TTR("Project Assets"));
+		int count = 0;
+		_add_workspace_asset_rows(efs->get_filesystem(), count);
+	}
+
+	_add_workspace_tool_button(shell_workspace_tool_list, "home", TTR("All Modes"), SolersPMTheme::lucide_icon(SOLERS_LUCIDE_PANELS), Ref<Shortcut>());
+}
+
+void ProjectManager::_rebuild_workspace_game_surface() {
+	if (!shell_workspace_tool_list) {
+		return;
+	}
+
+	_clear_workspace_tool_list();
+	_add_workspace_section_label(TTR("Game"));
+	_add_workspace_tool_button(shell_workspace_tool_list, "run:main", TTR("Run Project"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Play"))), Ref<Shortcut>());
+	_add_workspace_tool_button(shell_workspace_tool_list, "run:stop", TTR("Stop Game"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Stop"))), Ref<Shortcut>());
+	_add_workspace_tool_button(shell_workspace_tool_list, "studio:game", TTR("Open Game View in Studio"), SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Play"))), Ref<Shortcut>());
+	_add_workspace_tool_button(shell_workspace_tool_list, "home", TTR("All Modes"), SolersPMTheme::lucide_icon(SOLERS_LUCIDE_PANELS), Ref<Shortcut>());
 }
 
 void ProjectManager::_rebuild_workspace_studio_launcher() {
@@ -582,9 +646,7 @@ void ProjectManager::_rebuild_workspace_studio_launcher() {
 
 	EditorMainScreen *main_screen = EditorNode::get_editor_main_screen();
 	if (main_screen) {
-		Label *section = memnew(Label(TTR("Main Screens")));
-		section->set_theme_type_variation("PMWorkspaceSection");
-		shell_workspace_tool_list->add_child(section);
+		_add_workspace_section_label(TTR("Main Screens"));
 
 		for (int i = 0; i < main_screen->get_plugin_count(); i++) {
 			if (!main_screen->is_button_enabled(i)) {
@@ -598,15 +660,13 @@ void ProjectManager::_rebuild_workspace_studio_launcher() {
 			if (icon.is_null() && has_theme_icon(plugin->get_plugin_name(), EditorStringName(EditorIcons))) {
 				icon = get_editor_theme_icon(plugin->get_plugin_name());
 			}
-			_add_workspace_tool_button(shell_workspace_tool_list, "main:" + itos(i), plugin->get_plugin_name(), SolersPMTheme::mono_icon(icon), Ref<Shortcut>());
+			_add_workspace_tool_button(shell_workspace_tool_list, "studio:main:" + itos(i), plugin->get_plugin_name(), SolersPMTheme::mono_icon(icon), Ref<Shortcut>());
 		}
 	}
 
 	EditorDockManager *dock_manager = EditorDockManager::get_singleton();
 	if (dock_manager) {
-		Label *section = memnew(Label(TTR("Docks")));
-		section->set_theme_type_variation("PMWorkspaceSection");
-		shell_workspace_tool_list->add_child(section);
+		_add_workspace_section_label(TTR("Docks"));
 
 		for (int i = 0; i < dock_manager->get_dock_count(); i++) {
 			EditorDock *dock = dock_manager->get_dock(i);
@@ -617,7 +677,7 @@ void ProjectManager::_rebuild_workspace_studio_launcher() {
 			if (icon.is_null() && !dock->get_icon_name().is_empty() && has_theme_icon(dock->get_icon_name(), EditorStringName(EditorIcons))) {
 				icon = get_editor_theme_icon(dock->get_icon_name());
 			}
-			_add_workspace_tool_button(shell_workspace_tool_list, "dock:" + uitos(dock->get_instance_id()), dock->get_display_title(), SolersPMTheme::mono_icon(icon), dock->get_dock_shortcut());
+			_add_workspace_tool_button(shell_workspace_tool_list, "studio:dock:" + uitos(dock->get_instance_id()), dock->get_display_title(), SolersPMTheme::mono_icon(icon), dock->get_dock_shortcut());
 		}
 	}
 }
@@ -677,6 +737,11 @@ void ProjectManager::_add_workspace_tool_button(VBoxContainer *p_list, const Str
 
 void ProjectManager::_workspace_tool_pressed(const String &p_tool_id, const String &p_title, const Ref<Texture2D> &p_icon) {
 	ERR_FAIL_NULL(shell_workspace_tab_bar);
+	if (p_tool_id == "home" || p_tool_id == "scene" || p_tool_id == "script" || p_tool_id == "assets" || p_tool_id == "game" || p_tool_id == "studio" || p_tool_id.begins_with("run:")) {
+		_activate_workspace_tool(p_tool_id);
+		return;
+	}
+
 	int tab_idx = _find_workspace_tool_tab(p_tool_id);
 	if (tab_idx < 0) {
 		shell_workspace_tab_bar->add_tab(p_title, p_icon);
@@ -721,9 +786,28 @@ void ProjectManager::_workspace_tool_tab_close_pressed(int p_tab) {
 }
 
 void ProjectManager::_activate_workspace_tool(const String &p_tool_id) {
+	if (p_tool_id == "home") {
+		_show_workspace_home();
+		return;
+	}
+	if (p_tool_id == "scene") {
+		_show_workspace_launcher(false);
+		_rebuild_workspace_scene_surface();
+		return;
+	}
+	if (p_tool_id == "script") {
+		_show_workspace_launcher(false);
+		_rebuild_workspace_script_surface();
+		return;
+	}
 	if (p_tool_id == "assets") {
-		_show_workspace_launcher(true);
-		_rebuild_workspace_assets_launcher();
+		_show_workspace_launcher(false);
+		_rebuild_workspace_assets_surface();
+		return;
+	}
+	if (p_tool_id == "game") {
+		_show_workspace_launcher(false);
+		_rebuild_workspace_game_surface();
 		return;
 	}
 	if (p_tool_id == "studio") {
@@ -731,7 +815,19 @@ void ProjectManager::_activate_workspace_tool(const String &p_tool_id) {
 		_rebuild_workspace_studio_launcher();
 		return;
 	}
-	if (p_tool_id == "scene") {
+	if (p_tool_id == "run:main") {
+		if (EditorRunBar::get_singleton()) {
+			EditorRunBar::get_singleton()->play_main_scene(false, Vector<String>());
+		}
+		return;
+	}
+	if (p_tool_id == "run:stop") {
+		if (EditorRunBar::get_singleton()) {
+			EditorRunBar::get_singleton()->stop_playing();
+		}
+		return;
+	}
+	if (p_tool_id == "studio:scene") {
 		_show_workspace_editor();
 		EditorMainScreen *main_screen = EditorNode::get_editor_main_screen();
 		if (main_screen) {
@@ -746,33 +842,54 @@ void ProjectManager::_activate_workspace_tool(const String &p_tool_id) {
 				main_screen->select(target_screen);
 			}
 		}
-		_set_workspace_canvas_mode(true);
+		_set_workspace_canvas_mode(false);
 		return;
 	}
-	if (p_tool_id == "script" || p_tool_id == "game") {
+	if (p_tool_id == "studio:script" || p_tool_id == "studio:game" || p_tool_id == "studio:assetlib") {
 		_show_workspace_editor();
 		EditorMainScreen *main_screen = EditorNode::get_editor_main_screen();
-		const int target_screen = p_tool_id == "script" ? EditorMainScreen::EDITOR_SCRIPT : EditorMainScreen::EDITOR_GAME;
+		const int target_screen = p_tool_id == "studio:script" ? EditorMainScreen::EDITOR_SCRIPT : (p_tool_id == "studio:game" ? EditorMainScreen::EDITOR_GAME : EditorMainScreen::EDITOR_ASSETLIB);
 		if (main_screen && main_screen->is_button_enabled(target_screen)) {
 			main_screen->select(target_screen);
 		}
-		_set_workspace_canvas_mode(true);
+		_set_workspace_canvas_mode(false);
 		return;
 	}
-	if (p_tool_id.begins_with("main:")) {
+	if (p_tool_id.begins_with("studio:main:")) {
 		_show_workspace_editor();
 		EditorMainScreen *main_screen = EditorNode::get_editor_main_screen();
-		const int target_screen = p_tool_id.substr(5).to_int();
+		const int target_screen = p_tool_id.substr(12).to_int();
 		if (main_screen && target_screen >= 0 && target_screen < main_screen->get_plugin_count() && main_screen->is_button_enabled(target_screen)) {
 			main_screen->select(target_screen);
 		}
-		_set_workspace_canvas_mode(true);
+		_set_workspace_canvas_mode(false);
 		return;
 	}
-	if (p_tool_id.begins_with("dock:")) {
+	if (p_tool_id == "studio:filesystem") {
 		_show_workspace_editor();
 		_set_workspace_canvas_mode(false);
-		Object *object = ObjectDB::get_instance(ObjectID((uint64_t)p_tool_id.substr(5).to_int()));
+		if (FileSystemDock *filesystem_dock = FileSystemDock::get_singleton()) {
+			if (EditorDockManager::get_singleton()) {
+				EditorDockManager::get_singleton()->focus_dock(filesystem_dock);
+			}
+		}
+		return;
+	}
+	if (p_tool_id.begins_with("studio:file:")) {
+		_show_workspace_editor();
+		_set_workspace_canvas_mode(false);
+		if (FileSystemDock *filesystem_dock = FileSystemDock::get_singleton()) {
+			if (EditorDockManager::get_singleton()) {
+				EditorDockManager::get_singleton()->focus_dock(filesystem_dock);
+			}
+			filesystem_dock->navigate_to_path(p_tool_id.substr(12));
+		}
+		return;
+	}
+	if (p_tool_id.begins_with("studio:dock:")) {
+		_show_workspace_editor();
+		_set_workspace_canvas_mode(false);
+		Object *object = ObjectDB::get_instance(ObjectID((uint64_t)p_tool_id.substr(12).to_int()));
 		EditorDock *dock = Object::cast_to<EditorDock>(object);
 		if (dock && EditorDockManager::get_singleton()) {
 			EditorDockManager::get_singleton()->focus_dock(dock);
