@@ -17,6 +17,7 @@
 #include "modules/solers_ai/core/solers_tool.h"
 
 class SolersActionTimeline;
+class SolersAssetService;
 class SolersObservationService;
 class SolersReflectionService;
 class SolersResourceService;
@@ -29,6 +30,7 @@ class SolersToolRegistry : public Object {
 	HashMap<StringName, StringName> model_name_index;
 
 	SolersObservationService *observation_service = nullptr;
+	SolersAssetService *asset_service = nullptr;
 	SolersReflectionService *reflection_service = nullptr;
 	SolersResourceService *resource_service = nullptr;
 	SolersScriptService *script_service = nullptr;
@@ -52,6 +54,7 @@ class SolersToolRegistry : public Object {
 	void _register_observation_tools();
 	void _register_script_tools();
 	void _register_runtime_tools();
+	void _register_asset_tools();
 	void _register_reflection_tools();
 	void _register_search_tools();
 	Dictionary _run_control(const Dictionary &p_args) const;
@@ -65,6 +68,7 @@ protected:
 
 public:
 	void set_observation_service(SolersObservationService *p_observation_service);
+	void set_asset_service(SolersAssetService *p_asset_service);
 	void set_reflection_service(SolersReflectionService *p_reflection_service);
 	void set_resource_service(SolersResourceService *p_resource_service);
 	void set_script_service(SolersScriptService *p_script_service);

@@ -44,9 +44,10 @@ class SolersModelsDev {
 	void _run_refresh();
 
 public:
-	// Loads seed + cache (synchronous), then kicks a best-effort background
-	// fetch that refreshes the cache for the next launch.
+	// Loads seed + cache synchronously. Network refresh is kicked lazily by
+	// refresh() so editor startup can finish loading TLS certificates first.
 	void initialize();
+	void refresh();
 
 	bool has_provider(const StringName &p_id) const;
 	Dictionary get_provider(const StringName &p_id) const;

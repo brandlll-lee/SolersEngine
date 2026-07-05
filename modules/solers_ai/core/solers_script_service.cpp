@@ -195,6 +195,10 @@ Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
 	if (!existed_before && !create) {
 		return _error("FILE_NOT_FOUND", vformat("File does not exist and create=false: %s", res_path));
 	}
+	const bool is_script_text = has_text_content && ScriptServer::get_language_for_extension(res_path.get_extension().to_lower()) != nullptr;
+	if (is_script_text && !validate_if_script) {
+		return _error("SCRIPT_VALIDATION_REQUIRED", "Script writes must use validation.");
+	}
 
 	Dictionary checkpoint_result;
 	if (file_checkpoint && existed_before) {
@@ -205,9 +209,9 @@ Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
 	}
 
 	Dictionary validation_data;
-	if (has_text_content && validate_if_script) {
+	if (is_script_text) {
 		validation_data = _validate_source(res_path, content);
-		if ((bool)validation_data.get("supported", false) && !(bool)validation_data.get("valid", true)) {
+		if (!(bool)validation_data.get("valid", true)) {
 			Dictionary result = _error("SCRIPT_VALIDATE_FAILED", "Refusing to write script because validation failed.");
 			Dictionary error = result.get("error", Dictionary());
 			error["path"] = res_path;

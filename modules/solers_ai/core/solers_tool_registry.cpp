@@ -13,7 +13,9 @@
 #include "core/io/json.h"
 #include "core/object/class_db.h"
 #include "editor/editor_interface.h"
+#include "editor/settings/editor_command_palette.h"
 #include "modules/solers_ai/core/solers_action_timeline.h"
+#include "modules/solers_ai/core/solers_asset_service.h"
 #include "modules/solers_ai/core/solers_observation_service.h"
 #include "modules/solers_ai/core/solers_reflection_service.h"
 #include "modules/solers_ai/core/solers_resource_service.h"
@@ -22,6 +24,7 @@
 
 void SolersToolRegistry::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_observation_service", "observation_service"), &SolersToolRegistry::set_observation_service);
+	ClassDB::bind_method(D_METHOD("set_asset_service", "asset_service"), &SolersToolRegistry::set_asset_service);
 	ClassDB::bind_method(D_METHOD("set_reflection_service", "reflection_service"), &SolersToolRegistry::set_reflection_service);
 	ClassDB::bind_method(D_METHOD("set_resource_service", "resource_service"), &SolersToolRegistry::set_resource_service);
 	ClassDB::bind_method(D_METHOD("set_script_service", "script_service"), &SolersToolRegistry::set_script_service);
@@ -434,6 +437,10 @@ void SolersToolRegistry::set_observation_service(SolersObservationService *p_obs
 	observation_service = p_observation_service;
 }
 
+void SolersToolRegistry::set_asset_service(SolersAssetService *p_asset_service) {
+	asset_service = p_asset_service;
+}
+
 void SolersToolRegistry::set_reflection_service(SolersReflectionService *p_reflection_service) {
 	reflection_service = p_reflection_service;
 }
@@ -513,6 +520,34 @@ void SolersToolRegistry::_register_observation_tools() {
 				R"({"type":"object","properties":{"path":{"type":"string","description":"res:// resource path."},"method":{"type":"string","description":"Native method name."},"args":{"type":"array","description":"Positional arguments. Default []."},"save":{"type":"boolean","description":"Save after the call. Default false."},"type_hint":{"type":"string","description":"Optional ResourceLoader type hint."}},"required":["path","method"]})",
 				SolersPermissionManager::PERMISSION_EDIT_FILES, "resource_save", true, false, Vector<String>(), SolersToolExposure::DIRECT,
 				[svc](const SolersToolContext &, const Dictionary &a) { return svc->call_resource_method(a); });
+		_add_observe_exposed("native.load", "Load any res:// Resource and return a live Godot object handle for native.get/native.call.",
+				R"({"type":"object","properties":{"path":{"type":"string","description":"res:// resource path."},"type_hint":{"type":"string","description":"Optional ResourceLoader type hint."}},"required":["path"]})",
+				SolersToolExposure::DIRECT,
+				[svc](const SolersToolContext &, const Dictionary &a) { return svc->native_load(a); });
+		_add_observe_exposed("native.list_properties", "List the live Godot Object properties for a handle returned by native.load/native.call/editor.invoke.",
+				R"({"type":"object","properties":{"object_id":{"description":"object_id or full Godot object handle."}},"required":["object_id"]})",
+				SolersToolExposure::DIRECT,
+				[svc](const SolersToolContext &, const Dictionary &a) { return svc->native_list_properties(a); });
+		_add_observe_exposed("native.get", "Read one property from a live Godot Object handle.",
+				R"({"type":"object","properties":{"object_id":{"description":"object_id or full Godot object handle."},"property":{"type":"string","description":"Native property name."}},"required":["object_id","property"]})",
+				SolersToolExposure::DIRECT,
+				[svc](const SolersToolContext &, const Dictionary &a) { return svc->native_get(a); });
+		_add("native.set", "Set one property on a live Godot Object handle.",
+				R"({"type":"object","properties":{"object_id":{"description":"object_id or full Godot object handle."},"property":{"type":"string","description":"Native property name."},"value":{"description":"New value. Math types accept arrays; Color accepts {r,g,b,a}; Object properties accept res:// resource paths."},"save":{"type":"boolean","description":"When object_id is a Resource, save it with ResourceSaver after setting. Default false."}},"required":["object_id","property","value"]})",
+				SolersPermissionManager::PERMISSION_EDIT_SCENE, "native_set", true, false, Vector<String>(), SolersToolExposure::DIRECT,
+				[svc](const SolersToolContext &, const Dictionary &a) { return svc->native_set(a); });
+		_add_observe_exposed("native.list_methods", "List methods exposed by a live Godot Object handle.",
+				R"({"type":"object","properties":{"object_id":{"description":"object_id or full Godot object handle."}},"required":["object_id"]})",
+				SolersToolExposure::DIRECT,
+				[svc](const SolersToolContext &, const Dictionary &a) { return svc->native_list_methods(a); });
+		_add("native.call", "Call one method on a live Godot Object handle. Use class.introspect/native.list_methods first when unsure.",
+				R"({"type":"object","properties":{"object_id":{"description":"object_id or full Godot object handle."},"method":{"type":"string","description":"Native method name."},"args":{"type":"array","description":"Positional arguments. Default []. Object handles may be passed directly."},"save":{"type":"boolean","description":"When object_id is a Resource, save it with ResourceSaver after the call. Default false."}},"required":["object_id","method"]})",
+				SolersPermissionManager::PERMISSION_EDIT_SCENE, "native_call", true, false, Vector<String>(), SolersToolExposure::DIRECT,
+				[svc](const SolersToolContext &, const Dictionary &a) { return svc->native_call(a); });
+		_add_observe_exposed("native.free", "Release a handle retained by native.load or a temporary node returned by native.call.",
+				R"({"type":"object","properties":{"object_id":{"description":"object_id or full Godot object handle."}},"required":["object_id"]})",
+				SolersToolExposure::DIRECT,
+				[svc](const SolersToolContext &, const Dictionary &a) { return svc->native_free(a); });
 		_add_observe_exposed("export.list_presets", "List Godot export platforms and export presets from the current project.",
 				R"({"type":"object","properties":{"include_platforms":{"type":"boolean","description":"Include available export platforms. Default true."}}})",
 				SolersToolExposure::DEFERRED,
@@ -535,19 +570,19 @@ void SolersToolRegistry::_register_script_tools() {
 	SolersScriptService *svc = script_service;
 	const SolersPermissionManager::Permission edit_files = SolersPermissionManager::PERMISSION_EDIT_FILES;
 	const char *file_write_schema =
-			R"({"type":"object","properties":{"path":{"type":"string","description":"res:// path of the file to write."},"content":{"type":"string","description":"Full new text content. Mutually exclusive with content_base64."},"content_base64":{"type":"string","description":"Base64 raw bytes for binary assets. Mutually exclusive with content."},"create":{"type":"boolean","description":"Create the file when missing. Default true."},"overwrite":{"type":"boolean","description":"Overwrite existing content. Default true."},"validate_if_script":{"type":"boolean","description":"Run script-language validation for text content when the file is a script. Default true."}},"required":["path"]})";
+			R"({"type":"object","properties":{"path":{"type":"string","description":"res:// path of the file to write."},"content":{"type":"string","description":"Full new text content. Mutually exclusive with content_base64. Use script.patch for existing scripts."},"content_base64":{"type":"string","description":"Base64 raw bytes for binary assets. Mutually exclusive with content."},"create":{"type":"boolean","description":"Create the file when missing. Default true."},"overwrite":{"type":"boolean","description":"Overwrite existing content. Default true."}},"required":["path"]})";
 
 	Vector<String> file_write_redact;
 	file_write_redact.push_back("content");
 	file_write_redact.push_back("content_base64");
-	_add("project.write_file", "Write a project text or binary file with path safety, file checkpointing, optional script validation, and EditorFileSystem refresh.", file_write_schema,
+	_add("project.write_file", "Create or overwrite a project text/binary file. Existing scripts should be edited with script.patch; script validation is mandatory.", file_write_schema,
 			edit_files, "file_write", true, false, file_write_redact, SolersToolExposure::DIRECT,
 			[svc](const SolersToolContext &, const Dictionary &a) { return svc->write_file(a); });
 	Vector<String> file_patch_redact;
 	file_patch_redact.push_back("old_text");
 	file_patch_redact.push_back("new_text");
-	_add("script.patch", "Apply an exact text replacement to a script or text file with optional sha256 guard, checkpointing, and validation.",
-			R"({"type":"object","properties":{"path":{"type":"string","description":"res:// path of the file to patch."},"old_text":{"type":"string","description":"Exact existing text to replace."},"new_text":{"type":"string","description":"Replacement text."},"occurrence":{"type":"integer","description":"1-based occurrence of old_text to replace. Default 1."},"expected_sha256":{"type":"string","description":"Optional sha256 the current file content must match."},"validate_if_script":{"type":"boolean","description":"Run script validation after patching. Default true."}},"required":["path","old_text","new_text"]})",
+	_add("script.patch", "Apply an exact text replacement to a script or text file with optional sha256 guard, checkpointing, and mandatory script validation.",
+			R"({"type":"object","properties":{"path":{"type":"string","description":"res:// path of the file to patch."},"old_text":{"type":"string","description":"Exact existing text to replace."},"new_text":{"type":"string","description":"Replacement text."},"occurrence":{"type":"integer","description":"1-based occurrence of old_text to replace. Default 1."},"expected_sha256":{"type":"string","description":"Optional sha256 the current file content must match."}},"required":["path","old_text","new_text"]})",
 			edit_files, "file_patch", true, false, file_patch_redact, SolersToolExposure::DIRECT,
 			[svc](const SolersToolContext &, const Dictionary &a) { return svc->patch_file(a); });
 	_add_observe_exposed("script.validate", "Validate script source through Godot's registered ScriptLanguage implementation.",
@@ -562,6 +597,41 @@ void SolersToolRegistry::_register_runtime_tools() {
 			R"({"type":"object","properties":{"action":{"type":"string","description":"play_current_scene or stop."}},"required":["action"]})",
 			run_project, "runtime_only", true, false, Vector<String>(), SolersToolExposure::DIRECT,
 			[this](const SolersToolContext &, const Dictionary &a) { return _run_control(a); });
+}
+
+void SolersToolRegistry::_register_asset_tools() {
+	if (!asset_service) {
+		return;
+	}
+	SolersAssetService *svc = asset_service;
+	_add("asset.generate", "Queue a reusable local asset generation job and return its manifest immediately. Progress and final files are tracked in Solers Library and asset.status. kind=3d uses Meshy by default; music/sfx use ElevenLabs by default. Provider-native options pass through provider_options.",
+			R"({"type":"object","properties":{"kind":{"type":"string","description":"3d, music, or sfx."},"prompt":{"type":"string","description":"Asset generation prompt."},"name":{"type":"string","description":"Optional local asset display name."},"profile":{"type":"string","description":"game_default, high_quality, or custom. game_default uses lowpoly for 3d."},"provider":{"type":"string","description":"Optional provider id. Defaults by kind."},"provider_options":{"type":"object","description":"Provider-native parameters, passed through after Solers fills required prompt defaults."}},"required":["kind","prompt"]})",
+			SolersPermissionManager::PERMISSION_NETWORK, "asset_generate", true, false, Vector<String>(), SolersToolExposure::DIRECT,
+			[svc](const SolersToolContext &, const Dictionary &a) { return svc->generate(a); });
+	_add("asset.refine_to_ready", "Create a new ready 3D asset from a Meshy draft asset. The source asset is not modified.",
+			R"({"type":"object","properties":{"asset_id":{"type":"string","description":"Draft Solers 3D asset id."}},"required":["asset_id"]})",
+			SolersPermissionManager::PERMISSION_NETWORK, "asset_refine", true, false, Vector<String>(), SolersToolExposure::DIRECT,
+			[svc](const SolersToolContext &, const Dictionary &a) { return svc->refine_to_ready(a); });
+	_add("asset.optimize_geometry", "Create a new optimized 3D asset from an existing Meshy asset via remesh. The source asset is not modified.",
+			R"({"type":"object","properties":{"asset_id":{"type":"string","description":"Source Solers 3D asset id."},"quality":{"type":"string","description":"game_ready, balanced, or high_detail."}},"required":["asset_id"]})",
+			SolersPermissionManager::PERMISSION_NETWORK, "asset_remesh", true, false, Vector<String>(), SolersToolExposure::DIRECT,
+			[svc](const SolersToolContext &, const Dictionary &a) { return svc->optimize_geometry(a); });
+	_add("asset.restyle_material", "Create a new retextured 3D asset from an existing Meshy asset. The source asset is not modified.",
+			R"({"type":"object","properties":{"asset_id":{"type":"string","description":"Source Solers 3D asset id."},"text_style_prompt":{"type":"string","description":"Text description of the new material style."}},"required":["asset_id"]})",
+			SolersPermissionManager::PERMISSION_NETWORK, "asset_retexture", true, false, Vector<String>(), SolersToolExposure::DIRECT,
+			[svc](const SolersToolContext &, const Dictionary &a) { return svc->restyle_material(a); });
+	_add_observe_exposed("asset.status", "Read a local asset generation task or generated asset manifest by asset_id.",
+			R"({"type":"object","properties":{"asset_id":{"type":"string","description":"Local Solers asset id returned by asset.generate or asset.list_local."}},"required":["asset_id"]})",
+			SolersToolExposure::DIRECT,
+			[svc](const SolersToolContext &, const Dictionary &a) { return svc->status(a); });
+	_add_observe_exposed("asset.list_local", "List reusable assets in the local Solers Library. Optional kind/query filters search manifests only.",
+			R"({"type":"object","properties":{"kind":{"type":"string","description":"Optional 3d, music, or sfx."},"query":{"type":"string","description":"Optional text search over name and prompt."},"limit":{"type":"integer","description":"Maximum assets to return. Default 128."}}})",
+			SolersToolExposure::DIRECT,
+			[svc](const SolersToolContext &, const Dictionary &a) { return svc->list_local(a); });
+	_add("asset.import_to_project", "Copy a ready Solers Library asset into the current project under res:// and update Godot's native EditorFileSystem.",
+			R"({"type":"object","properties":{"asset_id":{"type":"string","description":"Local Solers asset id."},"target_dir":{"type":"string","description":"Optional res:// destination directory. Defaults to res://solers_assets/<kind>/<name>."}},"required":["asset_id"]})",
+			SolersPermissionManager::PERMISSION_EDIT_FILES, "asset_import", true, false, Vector<String>(), SolersToolExposure::DIRECT,
+			[svc](const SolersToolContext &, const Dictionary &a) { return svc->import_to_project(a); });
 }
 
 void SolersToolRegistry::_register_reflection_tools() {
@@ -593,10 +663,62 @@ void SolersToolRegistry::_register_reflection_tools() {
 			R"({"type":"object","properties":{"operations":{"type":"array","description":"Ordered operations. create_node example: {\"op\":\"create_node\",\"class_name\":\"Node3D\",\"name\":\"Tree\",\"parent_path\":\"Forest\"}. Alias parent is accepted. Reparent uses new_parent_path; alias new_parent is accepted."}},"required":["operations"]})",
 			edit_scene, "editor_undo_redo", true, true, batch_redact, SolersToolExposure::DIRECT,
 			[ref](const SolersToolContext &, const Dictionary &a) { return ref->batch(a); });
-	_add("editor.invoke", "Invoke a ClassDB-exposed EditorInterface method such as save_scene or open_scene_from_path. Destructive EditorInterface methods need human approval.",
+	_add("editor.invoke", "Invoke a ClassDB-exposed EditorInterface method such as save_scene or open_scene_from_path. Prefer this native editor API before writing code; destructive methods need human approval.",
 			R"({"type":"object","properties":{"method":{"type":"string","description":"EditorInterface method name; use class.introspect with class_name=EditorInterface for args."},"args":{"type":"array","description":"Positional JSON arguments. Default []."}},"required":["method"]})",
-			edit_scene, "editor_interface", true, false, Vector<String>(), SolersToolExposure::DEFERRED,
+			edit_scene, "editor_interface", true, false, Vector<String>(), SolersToolExposure::DIRECT,
 			[ref](const SolersToolContext &, const Dictionary &a) { return ref->invoke_editor(a); });
+	_add_observe("editor.action.list", "List native Godot editor command-palette action keys. Execute a key with editor.action.execute.",
+			R"({"type":"object","properties":{}})",
+			[this](const SolersToolContext &, const Dictionary &) {
+				EditorCommandPalette *palette = EditorCommandPalette::get_singleton();
+				if (!palette) {
+					return _error("EDITOR_COMMAND_PALETTE_UNAVAILABLE", "EditorCommandPalette is not available.", false);
+				}
+				List<String> actions;
+				palette->get_actions_list(&actions);
+				Vector<String> sorted;
+				for (const String &action : actions) {
+					sorted.push_back(action);
+				}
+				sorted.sort();
+				Array out;
+				for (const String &action : sorted) {
+					out.push_back(action);
+				}
+				Dictionary data;
+				data["actions"] = out;
+				data["count"] = out.size();
+				return _ok(data);
+			});
+	_add("editor.action.execute", "Execute a native Godot editor command-palette action key discovered with editor.action.list.",
+			R"({"type":"object","properties":{"action":{"type":"string","description":"Registered command-palette action key from editor.action.list."}},"required":["action"]})",
+			edit_scene, "editor_action", true, false, Vector<String>(), SolersToolExposure::DIRECT,
+			[this](const SolersToolContext &, const Dictionary &a) {
+				EditorCommandPalette *palette = EditorCommandPalette::get_singleton();
+				if (!palette) {
+					return _error("EDITOR_COMMAND_PALETTE_UNAVAILABLE", "EditorCommandPalette is not available.", false);
+				}
+				const String action = String(a.get("action", String())).strip_edges();
+				if (action.is_empty()) {
+					return _error("INVALID_ARGUMENT", "action is required.");
+				}
+				List<String> actions;
+				palette->get_actions_list(&actions);
+				bool found = false;
+				for (const String &registered_action : actions) {
+					if (registered_action == action) {
+						found = true;
+						break;
+					}
+				}
+				if (!found) {
+					return _error("UNKNOWN_EDITOR_ACTION", vformat("Editor action is not registered: %s", action));
+				}
+				palette->execute_command(action);
+				Dictionary data;
+				data["action"] = action;
+				return _ok(data);
+			});
 }
 
 void SolersToolRegistry::_register_search_tools() {
@@ -651,6 +773,7 @@ void SolersToolRegistry::register_default_tools() {
 	_register_observation_tools();
 	_register_script_tools();
 	_register_runtime_tools();
+	_register_asset_tools();
 	_register_search_tools();
 }
 

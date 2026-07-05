@@ -218,12 +218,17 @@ String SolersAgentSession::_default_system_prompt() const {
 			"Iron laws:\n"
 			"- Mutate scenes through objects.batch (undoable); never use menu-style scene tools.\n"
 			"- objects.batch create_node uses parent_path (parent alias accepted); reparent uses new_parent_path (new_parent alias accepted).\n"
+			"- Prefer native editor APIs/actions and object handles first: use editor.invoke, editor.action.*, native.*, and object.call_method before writing code.\n"
+			"- Code edits are patch-first only when native editor APIs/actions are insufficient: read existing scripts, use script.patch for the smallest exact replacement, then validate.\n"
+			"- project.write_file is for new files, non-script text, and binary assets; script validation is mandatory and cannot be disabled.\n"
 			"- project.write_file: send exactly one non-empty payload (content OR content_base64); omit unused/empty keys.\n"
 			"- Discover deferred tools with tool.search (token match), then call by canonical name.\n"
 			"- Persist scene edits through the harness commit path; do not script.patch scene resources.\n"
 			"- Scene edits save at turn end when the editor history is dirty; no manual scene save.\n"
 			"- For @tool scripts, do not claim generated preview/runtime children are persisted unless they have scene owners or are baked into the scene.\n"
-			"- Prefer class.introspect + object.call_method, project assets, and short GDScript via project.write_file/attach_script over dozens of CSG primitives.\n"
+			"- Reusable generated assets live in the Solers Library: use asset.generate, asset.status, asset.list_local, and asset.import_to_project before editing scenes around them.\n"
+			"- When a tool returns a godot_object handle, keep exploring it with native.list_properties/native.list_methods/native.get/native.call instead of guessing.\n"
+			"- Prefer class.introspect + native.* + editor.invoke + editor.action.execute + object.call_method, project assets, and small validated GDScript patches only as a last resort.\n"
 			"- Budget <=%d tool calls per user request; verify with editor.get_snapshot and runtime.control when needed.",
 			max_tool_iterations);
 }
@@ -943,6 +948,13 @@ Dictionary SolersAgentSession::get_status() const {
 		status["compaction_count"] = context_manager->get_compaction_count();
 	}
 	return status;
+}
+
+Array SolersAgentSession::list_model_providers() {
+	if (models_dev) {
+		models_dev->refresh();
+	}
+	return models_dev ? models_dev->list_providers() : Array();
 }
 
 SolersAgentSession::SolersAgentSession() {

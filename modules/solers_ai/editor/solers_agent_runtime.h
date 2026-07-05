@@ -14,6 +14,7 @@
 
 class SolersActionTimeline;
 class SolersAgentSession;
+class SolersAssetService;
 class SolersDock;
 class SolersFileCheckpoint;
 class SolersMCPAdapter;
@@ -29,6 +30,7 @@ class SolersToolRegistry;
 
 class SolersAgentRuntime {
 	SolersActionTimeline *action_timeline = nullptr;
+	SolersAssetService *asset_service = nullptr;
 	SolersAgentSession *agent_session = nullptr;
 	SolersFileCheckpoint *file_checkpoint = nullptr;
 	SolersMCPAdapter *mcp_adapter = nullptr;

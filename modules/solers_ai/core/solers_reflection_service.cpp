@@ -11,6 +11,7 @@
 #include "solers_reflection_service.h"
 
 #include "core/io/file_access.h"
+#include "core/io/resource.h"
 #include "core/io/resource_loader.h"
 #include "core/object/class_db.h"
 #include "core/object/script_language.h"
@@ -203,12 +204,55 @@ bool SolersReflectionService::_coerce_value(Node *p_node, const StringName &p_pr
 	return true;
 }
 
-static Variant _reflect_displayable(const Variant &p_value) {
-	if (p_value.get_type() != Variant::OBJECT) {
-		return p_value;
+static Dictionary _reflect_object_handle(Object *p_object) {
+	Dictionary data;
+	data["kind"] = "godot_object";
+	if (!p_object) {
+		data["object_id"] = String();
+		data["valid"] = false;
+		return data;
 	}
-	Object *object = p_value;
-	return object ? Variant(vformat("<%s:%s>", object->get_class(), itos(object->get_instance_id()))) : Variant("<null>");
+	data["valid"] = true;
+	data["object_id"] = String::num_int64((int64_t)p_object->get_instance_id());
+	data["class_name"] = p_object->get_class();
+
+	if (Resource *resource = Object::cast_to<Resource>(p_object)) {
+		data["path"] = resource->get_path();
+		data["resource_name"] = resource->get_name();
+	}
+	if (Node *node = Object::cast_to<Node>(p_object)) {
+		data["name"] = node->get_name();
+		data["inside_tree"] = node->is_inside_tree();
+		if (node->is_inside_tree()) {
+			data["node_path"] = node->get_path();
+		}
+	}
+	return data;
+}
+
+static Variant _reflect_displayable(const Variant &p_value) {
+	if (p_value.get_type() == Variant::OBJECT) {
+		Object *object = p_value;
+		return _reflect_object_handle(object);
+	}
+	if (p_value.get_type() == Variant::ARRAY) {
+		Array in = p_value;
+		Array out;
+		for (int i = 0; i < in.size(); i++) {
+			out.push_back(_reflect_displayable(in[i]));
+		}
+		return out;
+	}
+	if (p_value.get_type() == Variant::DICTIONARY) {
+		Dictionary in = p_value;
+		Dictionary out;
+		Array keys = in.keys();
+		for (int i = 0; i < keys.size(); i++) {
+			out[keys[i]] = _reflect_displayable(in[keys[i]]);
+		}
+		return out;
+	}
+	return p_value;
 }
 
 static Vector<StringName> _property_path_subnames(const String &p_property) {

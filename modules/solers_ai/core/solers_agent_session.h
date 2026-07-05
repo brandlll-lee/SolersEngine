@@ -148,6 +148,7 @@ public:
 	void set_session(const String &p_project_path, const String &p_session_id);
 	Array get_messages() const;
 	Dictionary get_status() const;
+	Array list_model_providers();
 	bool is_running() const { return running; }
 	bool is_executing_tool() const { return running && phase == PHASE_TOOL_EXECUTING; }
 

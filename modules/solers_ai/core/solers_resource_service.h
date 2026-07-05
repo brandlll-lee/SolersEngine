@@ -30,15 +30,25 @@
 
 #pragma once
 
+#include "core/io/resource.h"
 #include "core/object/object.h"
+#include "core/templates/hash_map.h"
 #include "core/variant/dictionary.h"
+
+class Node;
 
 class SolersResourceService : public Object {
 	GDCLASS(SolersResourceService, Object);
 
+	mutable HashMap<ObjectID, Ref<Resource>> retained_resources;
+	mutable HashMap<ObjectID, Node *> temp_nodes;
+
 	Dictionary _ok(const Variant &p_data) const;
 	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
 	bool _normalize_project_path(const String &p_path, String &r_res_path, String &r_error) const;
+	bool _resolve_native_object(const Variant &p_object_id, Object *&r_object, String &r_error) const;
+	Dictionary _native_object_handle(Object *p_object) const;
+	Variant _displayable(const Variant &p_value) const;
 	String _export_filter_to_string(int p_filter) const;
 	String _script_export_mode_to_string(int p_mode) const;
 	String _export_message_type_to_string(int p_type) const;
@@ -52,7 +62,16 @@ public:
 	Dictionary get_resource_property(const Dictionary &p_args) const;
 	Dictionary set_resource_property(const Dictionary &p_args) const;
 	Dictionary call_resource_method(const Dictionary &p_args) const;
+	Dictionary native_load(const Dictionary &p_args) const;
+	Dictionary native_list_properties(const Dictionary &p_args) const;
+	Dictionary native_get(const Dictionary &p_args) const;
+	Dictionary native_set(const Dictionary &p_args) const;
+	Dictionary native_list_methods(const Dictionary &p_args) const;
+	Dictionary native_call(const Dictionary &p_args) const;
+	Dictionary native_free(const Dictionary &p_args) const;
 	Dictionary list_export_presets(const Dictionary &p_args) const;
 	Dictionary validate_export_presets(const Dictionary &p_args) const;
 	Dictionary run_export_preset(const Dictionary &p_args) const;
+
+	~SolersResourceService();
 };

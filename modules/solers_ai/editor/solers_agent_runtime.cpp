@@ -10,6 +10,7 @@
 
 #include "modules/solers_ai/core/solers_action_timeline.h"
 #include "modules/solers_ai/core/solers_agent_session.h"
+#include "modules/solers_ai/core/solers_asset_service.h"
 #include "modules/solers_ai/core/solers_file_checkpoint.h"
 #include "modules/solers_ai/core/solers_observation_service.h"
 #include "modules/solers_ai/core/solers_permission_manager.h"
@@ -26,6 +27,7 @@
 
 SolersAgentRuntime::SolersAgentRuntime() {
 	action_timeline = memnew(SolersActionTimeline);
+	asset_service = memnew(SolersAssetService);
 	agent_session = memnew(SolersAgentSession);
 	file_checkpoint = memnew(SolersFileCheckpoint);
 	mcp_adapter = memnew(SolersMCPAdapter);
@@ -46,6 +48,7 @@ SolersAgentRuntime::SolersAgentRuntime() {
 	reflection_service->set_action_timeline(action_timeline);
 
 	tool_registry->set_action_timeline(action_timeline);
+	tool_registry->set_asset_service(asset_service);
 	tool_registry->set_observation_service(observation_service);
 	tool_registry->set_reflection_service(reflection_service);
 	tool_registry->set_permission_manager(permission_manager);
@@ -74,15 +77,20 @@ void SolersAgentRuntime::bind_dock(SolersDock *p_dock) {
 }
 
 void SolersAgentRuntime::poll() {
+	const bool rpc_running = rpc_server && rpc_server->is_running();
+	const bool session_running = agent_session && agent_session->is_running();
+	if (!rpc_running && !session_running) {
+		return;
+	}
 	if (in_poll) {
 		SOLERS_TRACE("agent_runtime.poll", "re-entrant poll skipped");
 		return;
 	}
 	in_poll = true;
-	if (rpc_server) {
+	if (rpc_running) {
 		rpc_server->poll();
 	}
-	if (agent_session) {
+	if (session_running) {
 		agent_session->poll();
 	}
 	in_poll = false;
@@ -115,6 +123,9 @@ Array SolersAgentRuntime::get_messages() const {
 SolersAgentRuntime::~SolersAgentRuntime() {
 	if (tool_registry) {
 		memdelete(tool_registry);
+	}
+	if (asset_service) {
+		memdelete(asset_service);
 	}
 	if (script_service) {
 		memdelete(script_service);

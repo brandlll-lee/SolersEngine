@@ -33,6 +33,7 @@
 #ifdef TOOLS_ENABLED
 #include "core/solers_action_timeline.h"
 #include "core/solers_agent_session.h"
+#include "core/solers_asset_service.h"
 #include "core/solers_file_checkpoint.h"
 #include "core/solers_observation_service.h"
 #include "core/solers_permission_manager.h"
@@ -56,6 +57,7 @@ void initialize_solers_ai_module(ModuleInitializationLevel p_level) {
 	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
 		GDREGISTER_CLASS(SolersActionTimeline);
 		GDREGISTER_CLASS(SolersAgentSession);
+		GDREGISTER_CLASS(SolersAssetService);
 		GDREGISTER_CLASS(SolersFileCheckpoint);
 		GDREGISTER_CLASS(SolersObservationService);
 		GDREGISTER_CLASS(SolersPermissionManager);

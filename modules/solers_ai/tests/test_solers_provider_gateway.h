@@ -268,6 +268,9 @@ TEST_CASE("[SolersToolRegistry] default model surface is primitive-first") {
 		"object.get_property",
 		"object.call_method",
 		"objects.batch",
+		"editor.invoke",
+		"editor.action.list",
+		"editor.action.execute",
 		"editor.get_snapshot",
 		"project.read_file",
 		"project.write_file",
@@ -279,6 +282,13 @@ TEST_CASE("[SolersToolRegistry] default model surface is primitive-first") {
 		"resource.get_property",
 		"resource.set_property",
 		"resource.call_method",
+		"native.load",
+		"native.list_properties",
+		"native.get",
+		"native.set",
+		"native.list_methods",
+		"native.call",
+		"native.free",
 	};
 	for (const char *name : required_direct) {
 		Dictionary tool = find_tool_def(tools, name);
@@ -298,6 +308,11 @@ TEST_CASE("[SolersToolRegistry] default model surface is primitive-first") {
 	Dictionary write_schema = write_file.get("input_schema", Dictionary());
 	Dictionary write_properties = write_schema.get("properties", Dictionary());
 	CHECK_FALSE(write_properties.has("reimport"));
+	CHECK_FALSE(write_properties.has("validate_if_script"));
+	Dictionary patch_file = find_tool_def(tools, "script.patch");
+	Dictionary patch_schema = patch_file.get("input_schema", Dictionary());
+	Dictionary patch_properties = patch_schema.get("properties", Dictionary());
+	CHECK_FALSE(patch_properties.has("validate_if_script"));
 
 	Dictionary set_property = find_tool_def(tools, "object.set_property");
 	REQUIRE_FALSE(set_property.is_empty());
@@ -316,7 +331,7 @@ TEST_CASE("[SolersToolRegistry] default model surface is primitive-first") {
 	CHECK(find_tool_def(tools, "editor.get_logs").is_empty());
 	Dictionary editor_invoke = find_tool_def(tools, "editor.invoke");
 	REQUIRE_FALSE(editor_invoke.is_empty());
-	CHECK(editor_invoke.get("exposure", String()) == "deferred");
+	CHECK(editor_invoke.get("exposure", String()) == "direct");
 	Dictionary export_run = find_tool_def(tools, "export.run_preset");
 	REQUIRE_FALSE(export_run.is_empty());
 	CHECK(export_run.get("exposure", String()) == "deferred");
@@ -345,6 +360,45 @@ TEST_CASE("[SolersToolRegistry] default model surface is primitive-first") {
 		CHECK(name != "runtime.capture_screenshot");
 	CHECK(name != "editor.capture_screenshot");
 	}
+}
+
+TEST_CASE("[SolersScriptService] script edits cannot bypass validation") {
+	const String path = "res://.solers_script_validation_contract.gd";
+	const String fs_path = ProjectSettings::get_singleton()->globalize_path(path);
+	if (FileAccess::exists(path)) {
+		DirAccess::remove_file_or_error(fs_path);
+	}
+
+	SolersScriptService script_service;
+
+	Dictionary bypass_args;
+	bypass_args["path"] = path;
+	bypass_args["content"] = "extends Node\n";
+	bypass_args["validate_if_script"] = false;
+	Dictionary bypass = script_service.write_file(bypass_args);
+	REQUIRE_FALSE((bool)bypass.get("ok", true));
+	Dictionary bypass_error = bypass.get("error", Dictionary());
+	CHECK(bypass_error.get("code", String()) == "SCRIPT_VALIDATION_REQUIRED");
+	CHECK_FALSE(FileAccess::exists(path));
+
+	const String valid_source = "extends Node\nfunc value() -> int:\n\treturn 1\n";
+	Dictionary write_args;
+	write_args["path"] = path;
+	write_args["content"] = valid_source;
+	Dictionary written = script_service.write_file(write_args);
+	REQUIRE((bool)written.get("ok", false));
+
+	Dictionary patch_args;
+	patch_args["path"] = path;
+	patch_args["old_text"] = "\treturn 1";
+	patch_args["new_text"] = "\treturn +";
+	Dictionary patched = script_service.patch_file(patch_args);
+	REQUIRE_FALSE((bool)patched.get("ok", true));
+	Dictionary patch_error = patched.get("error", Dictionary());
+	CHECK(patch_error.get("code", String()) == "SCRIPT_VALIDATE_FAILED");
+	CHECK(FileAccess::get_file_as_string(path) == valid_source);
+
+	DirAccess::remove_file_or_error(fs_path);
 }
 
 TEST_CASE("[SolersToolRegistry] batch failure summaries expose failed operation") {
@@ -397,13 +451,9 @@ TEST_CASE("[SolersToolRegistry] tool.search token match finds deferred tools") {
 	registry.set_script_service(&script_service);
 	registry.register_default_tools();
 
-	Dictionary editor_query = search_deferred_tools(registry, "editor invoke save_scene", 5);
-	REQUIRE((bool)editor_query.get("ok", false));
-	CHECK(search_result_has_tool(editor_query, "editor.invoke"));
-
-	Dictionary reordered_query = search_deferred_tools(registry, "save scene editor", 5);
-	REQUIRE((bool)reordered_query.get("ok", false));
-	CHECK(search_result_has_tool(reordered_query, "editor.invoke"));
+	Dictionary script_query = search_deferred_tools(registry, "script validate", 5);
+	REQUIRE((bool)script_query.get("ok", false));
+	CHECK(search_result_has_tool(script_query, "script.validate"));
 
 	Dictionary export_query = search_deferred_tools(registry, "export preset", 10);
 	REQUIRE((bool)export_query.get("ok", false));
@@ -437,6 +487,10 @@ TEST_CASE("[SolersToolRegistry] tool.search never returns direct tools") {
 		const Dictionary tool = matches[i];
 		CHECK(tool.get("exposure", String()) == "deferred");
 	}
+
+	Dictionary editor_result = search_deferred_tools(registry, "editor invoke", 20);
+	REQUIRE((bool)editor_result.get("ok", false));
+	CHECK_FALSE(search_result_has_tool(editor_result, "editor.invoke"));
 }
 
 TEST_CASE("[SolersToolRegistry] tool.search discovers synthetic deferred tools by schema text") {

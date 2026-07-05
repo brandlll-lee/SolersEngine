@@ -74,6 +74,7 @@ public:
 	Dictionary start(const Dictionary &p_args = Dictionary());
 	Dictionary stop();
 	void poll();
+	bool is_running() const { return running; }
 	Dictionary get_status() const;
 
 	SolersRpcServer();

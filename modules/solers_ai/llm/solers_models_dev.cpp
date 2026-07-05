@@ -160,6 +160,9 @@ void SolersModelsDev::_load_cache() {
 void SolersModelsDev::initialize() {
 	_load_seed();
 	_load_cache();
+}
+
+void SolersModelsDev::refresh() {
 	if (!refresh_started.is_set()) {
 		refresh_started.set();
 		refresh_thread.start(&SolersModelsDev::_refresh_func, this);
