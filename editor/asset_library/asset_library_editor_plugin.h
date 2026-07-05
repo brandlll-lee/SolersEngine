@@ -30,6 +30,8 @@
 
 #pragma once
 
+#include "core/math/aabb.h"
+#include "core/math/transform_3d.h"
 #include "editor/asset_library/editor_asset_installer.h"
 #include "editor/plugins/editor_plugin.h"
 #include "scene/gui/box_container.h"
@@ -47,8 +49,17 @@
 #include "scene/main/http_request.h"
 
 class EditorFileDialog;
+class Camera3D;
+class DirectionalLight3D;
+class HFlowContainer;
 class HSeparator;
 class MenuButton;
+class Node;
+class Node3D;
+class OptionButton;
+class SolersAssetService;
+class SubViewport;
+class SubViewportContainer;
 
 class EditorAssetLibraryItem : public PanelContainer {
 	GDCLASS(EditorAssetLibraryItem, PanelContainer);
@@ -210,6 +221,15 @@ class EditorAssetLibrary : public PanelContainer {
 	OptionButton *categories = nullptr;
 	OptionButton *repository = nullptr;
 	OptionButton *sort = nullptr;
+	VBoxContainer *source_choice = nullptr;
+	VBoxContainer *source_header = nullptr;
+	Button *source_back = nullptr;
+	Label *source_title = nullptr;
+	HFlowContainer *solers_filter_row = nullptr;
+	MenuButton *solers_kind_filter_menu = nullptr;
+	MenuButton *solers_status_filter_menu = nullptr;
+	HBoxContainer *search_hb = nullptr;
+	HBoxContainer *search_hb2 = nullptr;
 	HBoxContainer *error_hb = nullptr;
 	TextureRect *error_tr = nullptr;
 	Label *error_label = nullptr;
@@ -226,8 +246,75 @@ class EditorAssetLibrary : public PanelContainer {
 	bool templates_only = false;
 	bool initial_loading = true;
 	bool loading_blocked = false;
+	int source_mode = 0;
+	String solers_kind_filter;
+	String solers_status_filter;
+	uint64_t solers_library_next_refresh_msec = 0;
+	String solers_library_signature;
+	bool solers_detail_visible = false;
+	String solers_detail_asset_id;
+	Dictionary solers_detail_manifest;
+	BoxContainer *solers_detail = nullptr;
+	PanelContainer *solers_detail_viewer_panel = nullptr;
+	PanelContainer *solers_detail_info_panel = nullptr;
+	VBoxContainer *solers_detail_info_content = nullptr;
+	SubViewportContainer *solers_detail_viewport_container = nullptr;
+	SubViewport *solers_detail_viewport = nullptr;
+	PanelContainer *solers_detail_inspector_panel = nullptr;
+	VBoxContainer *solers_detail_inspector_content = nullptr;
+	Node3D *solers_detail_scene_root = nullptr;
+	Camera3D *solers_detail_camera = nullptr;
+	DirectionalLight3D *solers_detail_light_1 = nullptr;
+	DirectionalLight3D *solers_detail_light_2 = nullptr;
+	DirectionalLight3D *solers_detail_light_3 = nullptr;
+	Label *solers_detail_message = nullptr;
+	Label *solers_detail_import_status = nullptr;
+	Button *solers_detail_expand_button = nullptr;
+	Button *solers_detail_inspector_button = nullptr;
+	AABB solers_detail_aabb;
+	float solers_detail_cam_rot_x = -Math::PI / 5;
+	float solers_detail_cam_rot_y = Math::PI / 4;
+	float solers_detail_cam_zoom = 1.0f;
+	Vector3 solers_detail_cam_pan;
+	int solers_detail_view_mode = 0;
+	bool solers_detail_fullscreen = false;
+	SolersAssetService *solers_asset_service = nullptr;
+	LineEdit *solers_restyle_prompt = nullptr;
+	OptionButton *solers_optimize_quality = nullptr;
 
 	void _force_online_mode();
+	String _solers_library_signature() const;
+	Dictionary _read_solers_asset_manifest(const String &p_asset_id) const;
+	String _solers_asset_preview_path(const String &p_asset_id, const Dictionary &p_manifest) const;
+	String _solers_asset_source_path(const Dictionary &p_manifest) const;
+	void _set_source_mode(int p_mode);
+	void _source_back_pressed();
+	void _set_solers_kind_filter(const String &p_kind);
+	void _set_solers_status_filter(const String &p_status);
+	void _set_solers_kind_filter_id(int p_id);
+	void _set_solers_status_filter_id(int p_id);
+	void _sync_solers_filter_menus();
+	void _show_solers_library();
+	void _open_solers_asset_detail(const String &p_asset_id);
+	void _solers_asset_card_input(const Ref<InputEvent> &p_input, const String &p_asset_id);
+	void _show_solers_asset_detail(const String &p_asset_id, const Dictionary &p_manifest);
+	void _ensure_solers_detail_view();
+	void _clear_solers_detail_preview();
+	bool _load_solers_detail_preview(const String &p_model_path);
+	void _update_solers_detail_aabb(Node *p_node, const Transform3D &p_transform = Transform3D());
+	void _reset_solers_detail_camera();
+	void _update_solers_detail_camera();
+	void _solers_detail_viewport_input(const Ref<InputEvent> &p_input);
+	void _sync_solers_detail_fullscreen();
+	void _toggle_solers_detail_inspector();
+	void _set_solers_detail_view_mode(int p_mode);
+	void _refresh_solers_detail_inspector();
+	void _toggle_solers_detail_fullscreen();
+	void _import_solers_detail_asset();
+	void _refine_solers_detail_asset(Button *p_button);
+	void _optimize_solers_detail_asset(Button *p_button);
+	void _restyle_solers_detail_asset(Button *p_button);
+	void _set_solers_restyle_prompt(const String &p_prompt);
 
 	enum Support {
 		SUPPORT_FEATURED,
@@ -335,6 +422,7 @@ public:
 	void disable_community_support();
 
 	EditorAssetLibrary(bool p_templates_only = false);
+	~EditorAssetLibrary();
 };
 
 class AssetLibraryEditorPlugin : public EditorPlugin {
