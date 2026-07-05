@@ -21,6 +21,7 @@
 #include "core/config/project_settings.h"
 #include "core/input/input_event.h"
 #include "core/io/json.h"
+#include "core/templates/hash_set.h"
 #include "core/version.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
@@ -54,8 +55,9 @@ constexpr float SOLERS_COMPOSER_TOOLBAR_HEIGHT = 30.0f;
 constexpr float SOLERS_COMPOSER_VERTICAL_CHROME = 20.0f;
 
 // Codex-calibrated surface palette.
-static const Color SOLERS_BG = Color(0.070, 0.073, 0.078);
+static const Color SOLERS_BG = Color(0.030, 0.030, 0.023);
 static const Color SOLERS_COMPOSER_BG = Color(0.086, 0.088, 0.092);
+static const Color SOLERS_POPUP_BG = Color(0.118, 0.118, 0.122);
 // Hairline: ultra-subtle separator between sections.
 // Use a slightly warm gray instead of pure white to avoid cold "screen door" look.
 static const Color SOLERS_HAIRLINE = Color(0.95, 0.95, 0.97, 0.035);
@@ -85,6 +87,90 @@ static Ref<StyleBoxFlat> solers_make_stylebox(const Color &p_bg, const Color &p_
 		style->set_shadow_offset(Point2(0, 2 * EDSCALE));
 	}
 	return style;
+}
+
+static Ref<StyleBoxFlat> solers_make_stylebox_margins(const Color &p_bg, int p_radius, int p_left, int p_top, int p_right, int p_bottom) {
+	Ref<StyleBoxFlat> style = solers_make_stylebox(p_bg, Color(0, 0, 0, 0), p_radius, 0);
+	style->set_content_margin_individual(p_left * EDSCALE, p_top * EDSCALE, p_right * EDSCALE, p_bottom * EDSCALE);
+	return style;
+}
+
+static void solers_style_model_popup_row(Button *p_row, bool p_selected = false) {
+	p_row->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
+	p_row->set_toggle_mode(true);
+	p_row->set_pressed(p_selected);
+	p_row->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	p_row->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+	p_row->set_clip_text(true);
+	p_row->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+	p_row->set_custom_minimum_size(Size2(0, 28 * EDSCALE));
+	p_row->add_theme_font_size_override("font_size", int(13 * EDSCALE));
+	p_row->add_theme_color_override(SceneStringName(font_color), SOLERS_TEXT_BODY);
+	p_row->add_theme_color_override("font_hover_color", SOLERS_TEXT_PRIMARY);
+	p_row->add_theme_color_override("font_pressed_color", SOLERS_TEXT_PRIMARY);
+	p_row->add_theme_color_override("font_hover_pressed_color", SOLERS_TEXT_PRIMARY);
+	p_row->add_theme_style_override("normal", solers_make_stylebox_margins(Color(0, 0, 0, 0), 5, 8, 3, 8, 3));
+	p_row->add_theme_style_override("hover", solers_make_stylebox_margins(Color(1, 1, 1, 0.060), 5, 8, 3, 8, 3));
+	p_row->add_theme_style_override("pressed", solers_make_stylebox_margins(Color(1, 1, 1, 0.045), 5, 8, 3, 8, 3));
+	p_row->add_theme_style_override("hover_pressed", solers_make_stylebox_margins(Color(1, 1, 1, 0.070), 5, 8, 3, 8, 3));
+	p_row->add_theme_style_override("focus", solers_make_stylebox_margins(Color(0, 0, 0, 0), 5, 8, 3, 8, 3));
+}
+
+static Button *solers_make_model_popup_group(const String &p_title) {
+	Button *label = memnew(Button);
+	label->set_disabled(true);
+	label->set_focus_mode(Control::FOCUS_NONE);
+	label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	label->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+	label->set_clip_text(true);
+	label->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+	label->set_custom_minimum_size(Size2(0, 24 * EDSCALE));
+	label->set_text(p_title);
+	label->add_theme_font_size_override("font_size", int(12 * EDSCALE));
+	label->add_theme_color_override("font_disabled_color", Color(0.50, 0.55, 0.58));
+	label->add_theme_style_override("disabled", solers_make_stylebox_margins(Color(0, 0, 0, 0), 0, 8, 8, 8, 2));
+	return label;
+}
+
+static Button *solers_make_model_popup_row(const String &p_model, bool p_selected) {
+	Button *row = memnew(Button);
+	solers_style_model_popup_row(row, p_selected);
+	row->set_text(p_model);
+	return row;
+}
+
+static String solers_trim_url(const String &p_url) {
+	return p_url.strip_edges().trim_suffix("/");
+}
+
+static Dictionary solers_find_model_catalog_provider(const Array &p_catalog_providers, const String &p_provider_id, const String &p_base_url) {
+	for (const Variant &provider_v : p_catalog_providers) {
+		const Dictionary provider = provider_v;
+		if (String(provider.get("id", String())).strip_edges() == p_provider_id) {
+			return provider;
+		}
+	}
+
+	const String base_url = solers_trim_url(p_base_url);
+	if (base_url.is_empty()) {
+		return Dictionary();
+	}
+	for (const Variant &provider_v : p_catalog_providers) {
+		const Dictionary provider = provider_v;
+		if (solers_trim_url(String(provider.get("api", String()))) == base_url) {
+			return provider;
+		}
+	}
+	return Dictionary();
+}
+
+static void solers_add_unique_model(Array &r_models, HashSet<String> &r_seen, const String &p_model) {
+	const String model = p_model.strip_edges();
+	if (model.is_empty() || r_seen.has(model)) {
+		return;
+	}
+	r_seen.insert(model);
+	r_models.push_back(model);
 }
 
 static String solers_compact_model_label(const String &p_model) {
@@ -268,6 +354,7 @@ void SolersDock::_show_empty_state() {
 }
 
 void SolersDock::_scroll_chat_to_bottom() {
+	scroll_to_bottom_deferred = false;
 	if (!chat_scroll) {
 		return;
 	}
@@ -291,7 +378,8 @@ bool SolersDock::_is_scroll_pinned() const {
 }
 
 void SolersDock::_on_cell_content_changed() {
-	if (_is_scroll_pinned()) {
+	if (_is_scroll_pinned() && !scroll_to_bottom_deferred) {
+		scroll_to_bottom_deferred = true;
 		callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
 	}
 }
@@ -391,6 +479,7 @@ void SolersDock::_finish_turn_cells() {
 
 void SolersDock::_clear_chat_view(bool p_show_empty) {
 	chat_log = String();
+	scroll_to_bottom_deferred = false;
 	active_thinking_cell = nullptr;
 	active_text_cell = nullptr;
 	status_cell = nullptr;
@@ -440,7 +529,156 @@ void SolersDock::_on_session_menu_pressed() {
 }
 
 void SolersDock::_on_model_chip_pressed() {
-	_append_error_row(TTR("Open AI Settings from the project manager."));
+	if (!model_popup_overlay || !model_popup || !model_popup_scroll || !model_popup_box || !model_chip) {
+		return;
+	}
+
+	if (model_popup_overlay->is_visible()) {
+		_hide_model_popup();
+		return;
+	}
+
+	while (model_popup_box->get_child_count() > 0) {
+		Node *child = model_popup_box->get_child(0);
+		model_popup_box->remove_child(child);
+		child->queue_free();
+	}
+
+	Dictionary provider_data;
+	if (settings_service) {
+		provider_data = settings_service->get_provider_config().get("data", Dictionary());
+	}
+	const String active_provider = String(provider_data.get("provider", String())).strip_edges();
+	const String active_model = String(provider_data.get("model", String())).strip_edges();
+	const String active_base_url = String(provider_data.get("base_url", String())).strip_edges();
+
+	Array profiles;
+	if (settings_service) {
+		Dictionary profiles_data = settings_service->list_provider_profiles().get("data", Dictionary());
+		profiles = profiles_data.get("profiles", Array());
+	}
+	const Array catalog_providers = agent_session ? agent_session->list_model_providers() : Array();
+
+	HashSet<String> seen_profiles;
+	for (const Variant &profile_v : profiles) {
+		const Dictionary profile = profile_v;
+		const String provider = String(profile.get("id", String())).strip_edges();
+		if (provider.is_empty()) {
+			continue;
+		}
+		const bool selected = active_provider == provider;
+		const String label = String(profile.get("label", provider));
+		if (seen_profiles.has(provider)) {
+			continue;
+		}
+		seen_profiles.insert(provider);
+
+		Array models;
+		HashSet<String> seen_models;
+		if (selected) {
+			solers_add_unique_model(models, seen_models, active_model);
+		}
+		const Dictionary catalog_provider = solers_find_model_catalog_provider(catalog_providers, provider, selected ? active_base_url : String(profile.get("default_base_url", String())));
+		const Dictionary catalog_models = catalog_provider.get("models", Dictionary());
+		const Array catalog_model_ids = catalog_models.keys();
+		for (const Variant &model_id_v : catalog_model_ids) {
+			solers_add_unique_model(models, seen_models, String(model_id_v));
+		}
+		solers_add_unique_model(models, seen_models, String(profile.get("default_model", String())));
+		if (models.is_empty()) {
+			continue;
+		}
+		model_popup_box->add_child(solers_make_model_popup_group(label));
+		for (const Variant &model_v : models) {
+			const String model = String(model_v);
+			Button *row = solers_make_model_popup_row(model, selected && model == active_model);
+			row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_set_model_provider_from_popup).bind(provider, model));
+			model_popup_box->add_child(row);
+		}
+	}
+
+	Button *settings = solers_make_model_popup_row(TTR("AI Models"), false);
+	settings->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_open_model_settings_from_popup));
+	model_popup_box->add_child(settings);
+
+	model_popup_overlay->show();
+	model_popup_overlay->move_to_front();
+	model_popup->show();
+	_position_model_popup();
+}
+
+void SolersDock::_position_model_popup() {
+	if (!model_popup_overlay || !model_popup_overlay->is_visible() || !model_popup || !model_popup_scroll || !model_popup_box || !model_chip) {
+		return;
+	}
+
+	const Rect2 anchor = model_chip->get_screen_rect();
+	const Point2 base_screen_pos = model_popup_overlay->get_screen_position();
+	const Size2 overlay_size = model_popup_overlay->get_size();
+	const int margin = int(8 * EDSCALE);
+	const int gap = int(8 * EDSCALE);
+	const int popup_pad = int(8 * EDSCALE);
+	const int max_w = MAX(1, int(overlay_size.x) - margin * 2);
+	const int min_w = MIN(max_w, int(180 * EDSCALE));
+	const int popup_w = CLAMP(int(286 * EDSCALE), min_w, max_w);
+
+	const float natural_h = model_popup_box->get_combined_minimum_size().y + popup_pad * 2;
+	const int below_h = MAX(0, int(base_screen_pos.y + overlay_size.y - (anchor.position.y + anchor.size.y) - gap - margin));
+	const int above_h = MAX(0, int(anchor.position.y - base_screen_pos.y - gap - margin));
+	const bool open_above = below_h < 180 * EDSCALE && above_h > below_h;
+	const int max_h = MAX(1, int(overlay_size.y) - margin * 2);
+	const int available_h = MIN(MAX(open_above ? above_h : below_h, 1), max_h);
+	const int min_h = MIN(available_h, int(120 * EDSCALE));
+	const int popup_h = int(CLAMP(natural_h, float(min_h), float(available_h)));
+
+	const int content_w = MAX(1, popup_w - popup_pad * 2);
+	const int content_h = MAX(1, popup_h - popup_pad * 2);
+	model_popup_scroll->set_custom_minimum_size(Size2(content_w, content_h));
+	model_popup_box->set_custom_minimum_size(Size2(content_w, 0));
+	model_popup_scroll->get_v_scroll_bar()->set_value(0);
+
+	Point2 popup_pos(anchor.position.x + anchor.size.x - popup_w, open_above ? anchor.position.y - popup_h - gap : anchor.position.y + anchor.size.y + gap);
+	popup_pos.x = CLAMP(popup_pos.x, base_screen_pos.x + margin, base_screen_pos.x + overlay_size.x - popup_w - margin);
+	popup_pos.y = CLAMP(popup_pos.y, base_screen_pos.y + margin, base_screen_pos.y + overlay_size.y - popup_h - margin);
+
+	model_popup->set_size(Size2(popup_w, popup_h));
+	model_popup->set_position(popup_pos - base_screen_pos);
+}
+
+void SolersDock::_hide_model_popup() {
+	if (model_popup) {
+		model_popup->hide();
+	}
+	if (model_popup_overlay) {
+		model_popup_overlay->hide();
+	}
+}
+
+void SolersDock::_on_model_popup_overlay_gui_input(const Ref<InputEvent> &p_event) {
+	Ref<InputEventMouseButton> mouse_button = p_event;
+	if (mouse_button.is_valid() && mouse_button->is_pressed() && mouse_button->get_button_index() == MouseButton::LEFT) {
+		_hide_model_popup();
+		model_popup_overlay->accept_event();
+	}
+}
+
+void SolersDock::_set_model_provider_from_popup(const String &p_provider, const String &p_model) {
+	_hide_model_popup();
+	if (!settings_service) {
+		return;
+	}
+	Dictionary args;
+	args["provider"] = p_provider;
+	if (!p_model.is_empty()) {
+		args["model"] = p_model;
+	}
+	settings_service->set_provider_config(args);
+	_refresh_model_chip();
+}
+
+void SolersDock::_open_model_settings_from_popup() {
+	_hide_model_popup();
+	_append_error_row(TTR("Open AI Models from the project manager."));
 }
 
 void SolersDock::start_new_chat() {
@@ -745,9 +983,13 @@ void SolersDock::set_session_menu_callback(const Callable &p_callback) {
 	session_menu_callback = p_callback;
 }
 
+Rect2 SolersDock::get_session_menu_anchor_rect() const {
+	return session_button ? session_button->get_screen_rect() : Rect2();
+}
+
 SolersDock::SolersDock() {
 	set_name(TTRC("Solers"));
-	set_custom_minimum_size(Size2(520 * EDSCALE, 0));
+	set_custom_minimum_size(Size2(340 * EDSCALE, 0));
 	set_h_size_flags(Control::SIZE_FILL);
 	set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	add_theme_style_override("panel", solers_make_stylebox(SOLERS_BG, Color(0.16, 0.16, 0.17, 1), 0, 0));
@@ -913,7 +1155,7 @@ SolersDock::SolersDock() {
 	chat_input->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	chat_input->set_custom_minimum_size(Size2(0, SOLERS_COMPOSER_TEXT_MIN_HEIGHT * EDSCALE));
 	chat_input->set_line_wrapping_mode(TextEdit::LINE_WRAPPING_BOUNDARY);
-	chat_input->set_placeholder(TTR("Make, test, iterate..."));
+	chat_input->set_placeholder(TTR("Ask Solers to create..."));
 	chat_input->set_smooth_scroll_enabled(true);
 	chat_input->set_scroll_past_end_of_file_enabled(false);
 	chat_input->set_fit_content_height_enabled(false);
@@ -968,6 +1210,39 @@ SolersDock::SolersDock() {
 	send_chat_button->set_enabled(false);
 	composer_toolbar->add_child(send_chat_button);
 
+	model_popup_overlay = memnew(Control);
+	model_popup_overlay->set_mouse_filter(Control::MOUSE_FILTER_STOP);
+	model_popup_overlay->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
+	model_popup_overlay->connect(SceneStringName(gui_input), callable_mp(this, &SolersDock::_on_model_popup_overlay_gui_input));
+	model_popup_overlay->connect(SceneStringName(resized), callable_mp(this, &SolersDock::_hide_model_popup));
+	model_popup_overlay->hide();
+	add_child(model_popup_overlay);
+
+	model_popup = memnew(PanelContainer);
+	model_popup->set_mouse_filter(Control::MOUSE_FILTER_STOP);
+	model_popup->hide();
+	model_popup->add_theme_style_override(SceneStringName(panel), solers_make_stylebox(SOLERS_POPUP_BG, Color(0, 0, 0, 0), 20, 0, true));
+	model_popup_overlay->add_child(model_popup);
+	MarginContainer *model_popup_margin = memnew(MarginContainer);
+	model_popup_margin->add_theme_constant_override("margin_left", 8 * EDSCALE);
+	model_popup_margin->add_theme_constant_override("margin_right", 8 * EDSCALE);
+	model_popup_margin->add_theme_constant_override("margin_top", 8 * EDSCALE);
+	model_popup_margin->add_theme_constant_override("margin_bottom", 8 * EDSCALE);
+	model_popup->add_child(model_popup_margin);
+	model_popup_scroll = memnew(ScrollContainer);
+	model_popup_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
+	model_popup_scroll->set_vertical_scroll_mode(ScrollContainer::SCROLL_MODE_AUTO);
+	model_popup_scroll->add_theme_style_override(SceneStringName(panel), memnew(StyleBoxEmpty));
+	VScrollBar *model_scroll_bar = model_popup_scroll->get_v_scroll_bar();
+	model_scroll_bar->add_theme_style_override("scroll", memnew(StyleBoxEmpty));
+	model_scroll_bar->add_theme_style_override("grabber", solers_make_stylebox(Color(1, 1, 1, 0.14), Color(0, 0, 0, 0), 3, 0));
+	model_scroll_bar->add_theme_style_override("grabber_highlight", solers_make_stylebox(Color(1, 1, 1, 0.22), Color(0, 0, 0, 0), 3, 0));
+	model_scroll_bar->add_theme_style_override("grabber_pressed", solers_make_stylebox(Color(1, 1, 1, 0.30), Color(0, 0, 0, 0), 3, 0));
+	model_popup_box = memnew(VBoxContainer);
+	model_popup_box->add_theme_constant_override("separation", 2 * EDSCALE);
+	model_popup_scroll->add_child(model_popup_box);
+	model_popup_margin->add_child(model_popup_scroll);
+
 	_update_chat_input_height();
 }
 
@@ -997,7 +1272,7 @@ void SolersDock::set_agent_session(SolersAgentSession *p_agent_session) {
 
 void SolersDock::_on_agent_model_request_started() {
 	// Covers both the first request and every follow-up after a tool batch.
-	_ensure_status_cell(TTR("Waiting for model"));
+	_ensure_status_cell(TTR("Thinking"));
 }
 
 void SolersDock::_on_agent_reasoning_delta(const String &p_text) {

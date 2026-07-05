@@ -1694,6 +1694,8 @@ void ThemeModern::populate_editor_styles(const Ref<EditorTheme> &p_theme, Editor
 		// Game view.
 		p_theme->set_type_variation("GamePanel", "Panel");
 		Ref<StyleBoxFlat> game_panel = p_theme->get_stylebox(SceneStringName(panel), SNAME("Panel"))->duplicate();
+		game_panel->set_bg_color(Color(0.030, 0.030, 0.023));
+		game_panel->set_border_width_all(0);
 		game_panel->set_corner_radius_all(0);
 		p_theme->set_stylebox(SceneStringName(panel), "GamePanel", game_panel);
 
@@ -2715,6 +2717,7 @@ void ThemeModern::populate_editor_styles(const Ref<EditorTheme> &p_theme, Editor
 	p_theme->set_stylebox("bg", "AssetLib", EditorThemeManager::make_empty_stylebox(p_config.base_margin, p_config.base_margin, p_config.base_margin, p_config.base_margin));
 	p_theme->set_stylebox(SceneStringName(panel), "AssetLib", p_config.foreground_panel);
 	p_theme->set_stylebox("downloads", "AssetLib", p_theme->get_stylebox(SceneStringName(panel), SNAME("ScrollContainerSecondary")));
+	p_theme->set_stylebox("solers_asset_card", "AssetLib", p_config.foreground_panel);
 	p_theme->set_color("status_color", "AssetLib", Color(0.5, 0.5, 0.5)); // FIXME: Use a defined color instead.
 	p_theme->set_icon("dismiss", "AssetLib", p_theme->get_icon(SNAME("Close"), EditorStringName(EditorIcons)));
 

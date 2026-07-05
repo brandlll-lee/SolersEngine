@@ -160,11 +160,10 @@ static const Color SOLERS_GLYPH_IDLE = Color(0.64, 0.65, 0.69);
 static const Color SOLERS_GLYPH_HOVER = Color(0.94, 0.95, 0.97);
 static const Color SOLERS_TEXT_STRONG = Color(0.90, 0.91, 0.94);
 static const Color SOLERS_TEXT_MUTED = Color(0.57, 0.58, 0.62);
-// Send action: Cursor-style accent blue (#3b82f6), white glyph.
-static const Color SOLERS_PRIMARY_FILL = Color(0.231, 0.510, 0.965);
-static const Color SOLERS_PRIMARY_FILL_HOVER = Color(0.353, 0.588, 0.980);
-static const Color SOLERS_PRIMARY_FILL_PRESS = Color(0.184, 0.435, 0.878);
-static const Color SOLERS_PRIMARY_GLYPH = Color(1, 1, 1);
+static const Color SOLERS_PRIMARY_FILL = Color(0.94, 0.94, 0.92);
+static const Color SOLERS_PRIMARY_FILL_HOVER = Color(1.0, 1.0, 0.98);
+static const Color SOLERS_PRIMARY_FILL_PRESS = Color(0.82, 0.82, 0.80);
+static const Color SOLERS_PRIMARY_GLYPH = Color(0.055, 0.055, 0.052);
 
 static void solers_draw_wash(Control *p_control, const Rect2 &p_rect, float p_alpha, float p_radius) {
 	if (p_alpha <= 0.001f) {
@@ -302,10 +301,8 @@ void SolersGlyphButton::_notification(int p_what) {
 			if (skin == SKIN_PRIMARY) {
 				Color fill;
 				if (!enabled_state) {
-					// Cursor keeps the send pill blue at rest; dim it slightly
-					// rather than collapsing to a gray ring.
-					fill = SOLERS_PRIMARY_FILL.darkened(0.18f);
-					glyph_color = Color(1, 1, 1, 0.85f);
+					fill = Color(0.245, 0.245, 0.252);
+					glyph_color = Color(0.70, 0.70, 0.70, 0.62f);
 				} else {
 					fill = pressing ? SOLERS_PRIMARY_FILL_PRESS : SOLERS_PRIMARY_FILL.lerp(SOLERS_PRIMARY_FILL_HOVER, anim);
 					glyph_color = SOLERS_PRIMARY_GLYPH;
@@ -460,7 +457,7 @@ void SolersSelectChip::_notification(int p_what) {
 			const Rect2 r(Point2(), get_size());
 			const float ed = EDSCALE;
 
-			solers_draw_wash(this, r, 0.055f * anim + (pressing ? 0.04f : 0.0f), 7.0f * ed);
+			solers_draw_wash(this, r, 0.055f * anim + (pressing ? 0.04f : 0.0f), 12.0f * ed);
 
 			const bool accented = solers_has_accent(accent);
 			const Color strong_idle = accented ? accent : SOLERS_TEXT_STRONG;

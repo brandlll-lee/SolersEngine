@@ -28,15 +28,11 @@ static const Color SOLERS_CELL_TEXT_DIM = Color(0.667, 0.690, 0.733);
 static const Color SOLERS_CELL_TEXT_FAINT = Color(0.667, 0.690, 0.733, 0.78f);
 static const Color SOLERS_CELL_OK = Color(0.478, 0.772, 0.525);
 static const Color SOLERS_CELL_ERROR = Color(0.875, 0.478, 0.420);
-static const Color SOLERS_CELL_CARD_BG = Color(1, 1, 1, 0.038f);
 // User bubble: Cursor-style accent-blue (#3b82f6) wash over the dark canvas.
 static const Color SOLERS_CELL_BUBBLE_BG = Color(0.231, 0.510, 0.965, 0.26f);
 
 // Shimmer sweep period for "Thinking"/status headers, seconds.
 static constexpr float SOLERS_SHIMMER_PERIOD = 1.6f;
-// Spinner: angular speed (rad/s) and arc sweep.
-static constexpr float SOLERS_SPINNER_SPEED = 6.8f;
-static constexpr float SOLERS_SPINNER_SWEEP = 4.4f;
 
 // Reasoning tail: wrapped lines kept visible while the model is thinking.
 static constexpr int SOLERS_THINKING_TAIL_LINES = 4;
@@ -90,12 +86,6 @@ static float solers_draw_shimmer_text(Control *p_control, const Point2 &p_baseli
 		pos.x += p_font->draw_char(ci, pos, c, p_font_size, color);
 	}
 	return pos.x - p_baseline_pos.x;
-}
-
-// Indeterminate spinner: a rotating arc, drawn around `p_center`.
-static void solers_draw_spinner(Control *p_control, const Point2 &p_center, float p_radius, float p_phase, const Color &p_color) {
-	const float width = MAX(1.4f, 1.6f * EDSCALE);
-	p_control->draw_arc(p_center, p_radius, p_phase, p_phase + SOLERS_SPINNER_SWEEP, 24, p_color, width, true);
 }
 
 static String _summarize_streaming_tool_args(const String &p_raw) {
@@ -267,13 +257,22 @@ void SolersAssistantCell::append_delta(const String &p_text) {
 	if (p_text.is_empty()) {
 		return;
 	}
-	// opencode model: append the delta and render the committed text now. No
-	// reveal timer — the typing cadence is the network's, not a local clock.
-	full_text += p_text;
+	pending_delta += p_text;
+	set_process_internal(true);
+}
+
+void SolersAssistantCell::_flush_pending_delta() {
+	if (pending_delta.is_empty()) {
+		return;
+	}
+	full_text += pending_delta;
+	pending_delta = String();
 	_update_markdown();
 }
 
 void SolersAssistantCell::finalize(const String &p_full_text) {
+	_flush_pending_delta();
+	set_process_internal(false);
 	if (!p_full_text.is_empty() && p_full_text != full_text) {
 		full_text = p_full_text;
 		rendered_chars = -1;
@@ -283,6 +282,8 @@ void SolersAssistantCell::finalize(const String &p_full_text) {
 }
 
 void SolersAssistantCell::set_full_text_immediate(const String &p_text) {
+	pending_delta = String();
+	set_process_internal(false);
 	full_text = p_text;
 	stream_done = true;
 	rendered_chars = -1;
@@ -295,7 +296,16 @@ void SolersAssistantCell::_update_markdown() {
 	}
 	const int len = full_text.length();
 	const bool caret = !stream_done; // caret only while the stream is open
-	const float width = MAX(get_size().x, 60.0f * EDSCALE);
+	float width = get_size().x;
+	if (width <= 60.0f * EDSCALE) {
+		if (Control *parent = get_parent_control()) {
+			width = parent->get_size().x;
+		}
+	}
+	if (width <= 60.0f * EDSCALE) {
+		set_process_internal(true);
+		return;
+	}
 	if (rendered_chars == len && Math::is_equal_approx(rendered_width, width)) {
 		if (rendered_caret == caret) {
 			return;
@@ -354,6 +364,12 @@ void SolersAssistantCell::_notification(int p_what) {
 			rendered_chars = -1;
 			_update_markdown();
 			queue_redraw();
+		} break;
+		case NOTIFICATION_INTERNAL_PROCESS: {
+			_flush_pending_delta();
+			if (pending_delta.is_empty() && rendered_chars == full_text.length()) {
+				set_process_internal(false);
+			}
 		} break;
 	}
 }
@@ -634,14 +650,11 @@ void SolersToolCell::_notification(int p_what) {
 			queue_redraw();
 		} break;
 		case NOTIFICATION_INTERNAL_PROCESS: {
-			spin_phase = Math::fmod(spin_phase + SOLERS_SPINNER_SPEED * float(get_process_delta_time()), float(Math::TAU));
 			queue_redraw();
 		} break;
 		case NOTIFICATION_DRAW: {
 			_shape(get_size().x);
 			const float ed = EDSCALE;
-			const Rect2 card(Point2(), get_size());
-			solers_cell_fill(this, card, SOLERS_CELL_CARD_BG, 10.0f * ed, Color(1, 1, 1, 0.045f));
 
 			const Ref<Font> font = solers_cell_font(this);
 			const Ref<Font> mono = solers_cell_mono_font(this);
@@ -651,30 +664,24 @@ void SolersToolCell::_notification(int p_what) {
 
 			const float header_h = 28.0f * ed;
 			const float type_cx = 14.0f * ed;
-			const float status_cx = 32.0f * ed;
 			const float icon_cy = header_h * 0.5f;
 
 			Ref<Texture2D> type_icon = SolersChatGlyphs::get(tool_glyph, int(Math::round(12.0f * ed)), 2.1f);
 			if (type_icon.is_valid()) {
-				draw_texture(type_icon, Point2(type_cx - type_icon->get_width() * 0.5f, icon_cy - type_icon->get_height() * 0.5f).floor(), SOLERS_CELL_TEXT_FAINT);
-			}
-
-			// Status glyph.
-			if (status == STATUS_RUNNING) {
-				solers_draw_spinner(this, Point2(status_cx, icon_cy), 5.2f * ed, spin_phase, SOLERS_CELL_TEXT_DIM);
-			} else {
-				Ref<Texture2D> mark = SolersChatGlyphs::get(status == STATUS_OK ? SNAME("check") : SNAME("cross"), int(Math::round(12.0f * ed)), 2.4f);
-				if (mark.is_valid()) {
-					draw_texture(mark, Point2(status_cx - mark->get_width() * 0.5f, icon_cy - mark->get_height() * 0.5f).floor(), status == STATUS_OK ? SOLERS_CELL_OK : SOLERS_CELL_ERROR);
-				}
+				const Color icon_color = status == STATUS_ERROR ? SOLERS_CELL_ERROR : SOLERS_CELL_TEXT_FAINT;
+				draw_texture(type_icon, Point2(type_cx - type_icon->get_width() * 0.5f, icon_cy - type_icon->get_height() * 0.5f).floor(), icon_color);
 			}
 
 			// Name + argument summary + duration.
 			const int name_size = int(12 * ed);
 			const int args_size = int(11 * ed);
-			float x = 44.0f * ed;
+			float x = 28.0f * ed;
 			const float name_baseline = (header_h - font->get_height(name_size)) * 0.5f + font->get_ascent(name_size);
-			draw_string(font, Point2(x, name_baseline).floor(), tool_name, HORIZONTAL_ALIGNMENT_LEFT, -1, name_size, Color(0.90f, 0.91f, 0.94f));
+			if (status == STATUS_RUNNING) {
+				solers_draw_shimmer_text(this, Point2(x, name_baseline).floor(), tool_name, font, name_size, Math::fmod(float(OS::get_singleton()->get_ticks_msec()) / (SOLERS_SHIMMER_PERIOD * 1000.0f), 1.0f), SOLERS_CELL_TEXT_FAINT, Color(0.95f, 0.96f, 0.98f));
+			} else {
+				draw_string(font, Point2(x, name_baseline).floor(), tool_name, HORIZONTAL_ALIGNMENT_LEFT, -1, name_size, status == STATUS_ERROR ? SOLERS_CELL_ERROR : Color(0.90f, 0.91f, 0.94f));
+			}
 			x += font->get_string_size(tool_name, HORIZONTAL_ALIGNMENT_LEFT, -1, name_size).x + 8.0f * ed;
 
 			String trail;
@@ -703,7 +710,7 @@ void SolersToolCell::_notification(int p_what) {
 
 			// Error detail block.
 			if (status == STATUS_ERROR && error_paragraph->get_line_count() > 0) {
-				error_paragraph->draw(get_canvas_item(), Point2(44.0f * ed, header_h + 2.0f * ed), Color(SOLERS_CELL_ERROR, 0.92f));
+				error_paragraph->draw(get_canvas_item(), Point2(28.0f * ed, header_h + 2.0f * ed), Color(SOLERS_CELL_ERROR, 0.92f));
 			}
 		} break;
 	}
@@ -734,7 +741,7 @@ SolersToolCell *SolersToolGroupCell::add_tool() {
 	body->add_child(cell);
 	total++;
 	running++;
-	set_process_internal(true); // Drive the header spinner while calls run.
+	set_process_internal(true);
 	_relayout();
 	queue_redraw();
 	return cell;
@@ -752,6 +759,7 @@ void SolersToolGroupCell::note_finished(bool p_ok) {
 }
 
 void SolersToolGroupCell::settle() {
+	running = 0;
 	set_process_internal(false);
 	queue_redraw();
 }
@@ -822,17 +830,15 @@ void SolersToolGroupCell::_notification(int p_what) {
 			queue_redraw();
 		} break;
 		case NOTIFICATION_INTERNAL_PROCESS: {
-			spin_phase = Math::fmod(spin_phase + SOLERS_SPINNER_SPEED * float(get_process_delta_time()), float(Math::TAU));
 			queue_redraw();
 		} break;
 		case NOTIFICATION_DRAW: {
 			const float ed = EDSCALE;
 			const float header_h = _header_height();
-			// Persistent rounded pill with a hairline border, like Cursor's
-			// "N actions" chip; brightens a touch on hover.
 			const Rect2 header_rect(Point2(), Size2(get_size().x, header_h));
-			const Color pill_bg = hovering ? Color(1, 1, 1, 0.055f) : Color(1, 1, 1, 0.032f);
-			solers_cell_fill(this, header_rect, pill_bg, 9.0f * ed, Color(1, 1, 1, 0.05f));
+			if (hovering) {
+				solers_cell_fill(this, header_rect, Color(1, 1, 1, 0.045f), 7.0f * ed);
+			}
 
 			const Ref<Font> font = solers_cell_font(this);
 			if (font.is_null()) {
@@ -842,51 +848,32 @@ void SolersToolGroupCell::_notification(int p_what) {
 			const int font_size = int(12 * ed);
 			const float baseline = (header_h - font->get_height(font_size)) * 0.5f + font->get_ascent(font_size);
 			float x = 8.0f * ed;
-			if (expanded) {
-				const float chip = 22.0f * ed;
-				const Rect2 chip_rect(Point2(x, (header_h - chip) * 0.5f), Size2(chip, chip));
-				solers_cell_fill(this, chip_rect, Color(1, 1, 1, 0.038f), 7.0f * ed, Color(1, 1, 1, 0.055f));
-				Ref<Texture2D> chevron = SolersChatGlyphs::get(SNAME("chevron_up"), int(Math::round(9.0f * ed)), 2.2f);
-				if (chevron.is_valid()) {
-					draw_texture(chevron, Point2(chip_rect.position.x + (chip - chevron->get_width()) * 0.5f, (header_h - chevron->get_height()) * 0.5f).floor(), SOLERS_CELL_TEXT_DIM);
+			const float icon_step = 17.0f * ed;
+			for (int i = 0; i < body->get_child_count() && i < 3; i++) {
+				SolersToolCell *tool_cell = Object::cast_to<SolersToolCell>(body->get_child(i));
+				if (!tool_cell) {
+					continue;
 				}
-				x += chip + 9.0f * ed;
-				draw_string(font, Point2(x, baseline).floor(), TTR("Show less"), HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, SOLERS_CELL_TEXT_DIM);
-			} else {
-				const String label = total == 1 ? TTR("1 action") : vformat(TTR("%d actions"), total);
-				Ref<Texture2D> chevron = SolersChatGlyphs::get(SNAME("chevron_right"), int(Math::round(9.0f * ed)), 2.2f);
-				const float label_w = font->get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
-				const float chevron_w = chevron.is_valid() ? chevron->get_width() : 0.0f;
-				const float icon_limit = MAX(x, get_size().x - label_w - chevron_w - 20.0f * ed);
-				const float chip = 22.0f * ed;
-				const float icon_y = (header_h - chip) * 0.5f;
-				for (int i = 0; i < body->get_child_count(); i++) {
-					if (x + chip > icon_limit) {
-						break;
-					}
-					SolersToolCell *tool_cell = Object::cast_to<SolersToolCell>(body->get_child(i));
-					if (!tool_cell) {
-						continue;
-					}
-					const SolersToolCell::Status status = tool_cell->get_status();
-					const Rect2 chip_rect(Point2(x, icon_y), Size2(chip, chip));
-					const Color tint = status == SolersToolCell::STATUS_ERROR ? SOLERS_CELL_ERROR : (status == SolersToolCell::STATUS_OK ? SOLERS_CELL_OK : SOLERS_CELL_TEXT_DIM);
-					solers_cell_fill(this, chip_rect, Color(1, 1, 1, 0.028f), 7.0f * ed, Color(tint, 0.22f));
-					Ref<Texture2D> icon = SolersChatGlyphs::get(tool_cell->get_tool_glyph(), int(Math::round(12.0f * ed)), 2.1f);
-					if (icon.is_valid()) {
-						draw_texture(icon, Point2(x + (chip - icon->get_width()) * 0.5f, icon_y + (chip - icon->get_height()) * 0.5f).floor(), tint);
-					}
-					if (status == SolersToolCell::STATUS_RUNNING) {
-						solers_draw_spinner(this, Point2(x + chip - 4.5f * ed, icon_y + 4.5f * ed), 2.2f * ed, spin_phase, SOLERS_CELL_TEXT_FAINT);
-					}
-					x += chip + 3.0f * ed;
+				const Color tint = tool_cell->get_status() == SolersToolCell::STATUS_ERROR ? SOLERS_CELL_ERROR : SOLERS_CELL_TEXT_DIM;
+				Ref<Texture2D> icon = SolersChatGlyphs::get(tool_cell->get_tool_glyph(), int(Math::round(12.0f * ed)), 2.1f);
+				if (icon.is_valid()) {
+					draw_texture(icon, Point2(x, (header_h - icon->get_height()) * 0.5f).floor(), tint);
+					x += icon_step;
 				}
-				x += 6.0f * ed;
+			}
+			const String label = vformat(String::utf8("已运行 %d 条命令"), total);
+			x += 4.0f * ed;
+			const float phase = Math::fmod(float(OS::get_singleton()->get_ticks_msec()) / (SOLERS_SHIMMER_PERIOD * 1000.0f), 1.0f);
+			const float label_w = running > 0 ?
+					solers_draw_shimmer_text(this, Point2(x, baseline).floor(), label, font, font_size, phase, SOLERS_CELL_TEXT_FAINT, Color(0.95f, 0.96f, 0.98f)) :
+					font->get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
+			if (running == 0) {
 				draw_string(font, Point2(x, baseline).floor(), label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, SOLERS_CELL_TEXT_DIM);
-				x += label_w + 6.0f * ed;
-				if (chevron.is_valid()) {
-					draw_texture(chevron, Point2(x, (header_h - chevron->get_height()) * 0.5f).floor(), SOLERS_CELL_TEXT_DIM);
-				}
+			}
+			x += label_w + 6.0f * ed;
+			Ref<Texture2D> chevron = SolersChatGlyphs::get(expanded ? SNAME("chevron_down") : SNAME("chevron_right"), int(Math::round(9.0f * ed)), 2.2f);
+			if (chevron.is_valid()) {
+				draw_texture(chevron, Point2(x, (header_h - chevron->get_height()) * 0.5f).floor(), SOLERS_CELL_TEXT_DIM);
 			}
 		} break;
 	}
@@ -919,7 +906,6 @@ void SolersStatusCell::_notification(int p_what) {
 		case NOTIFICATION_INTERNAL_PROCESS: {
 			const float dt = float(get_process_delta_time());
 			shimmer_phase = Math::fmod(shimmer_phase + dt / SOLERS_SHIMMER_PERIOD, 1.0f);
-			spin_phase = Math::fmod(spin_phase + SOLERS_SPINNER_SPEED * dt, float(Math::TAU));
 			queue_redraw();
 		} break;
 		case NOTIFICATION_DRAW: {
@@ -929,10 +915,9 @@ void SolersStatusCell::_notification(int p_what) {
 				break;
 			}
 			const float h = get_size().y;
-			solers_draw_spinner(this, Point2(7.0f * ed, h * 0.5f), 5.0f * ed, spin_phase, SOLERS_CELL_TEXT_DIM);
 			const int font_size = int(12 * ed);
 			const float baseline = (h - font->get_height(font_size)) * 0.5f + font->get_ascent(font_size);
-			solers_draw_shimmer_text(this, Point2(20.0f * ed, baseline), status_text, font, font_size, shimmer_phase, SOLERS_CELL_TEXT_FAINT, Color(0.95f, 0.96f, 0.98f));
+			solers_draw_shimmer_text(this, Point2(0, baseline), status_text, font, font_size, shimmer_phase, SOLERS_CELL_TEXT_FAINT, Color(0.95f, 0.96f, 0.98f));
 		} break;
 	}
 }

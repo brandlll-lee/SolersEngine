@@ -63,6 +63,10 @@ class SolersDock : public PanelContainer {
 	SolersGlyphButton *add_context_button = nullptr;
 	SolersGlyphButton *send_chat_button = nullptr;
 	SolersSelectChip *model_chip = nullptr;
+	Control *model_popup_overlay = nullptr;
+	PanelContainer *model_popup = nullptr;
+	ScrollContainer *model_popup_scroll = nullptr;
+	VBoxContainer *model_popup_box = nullptr;
 	SolersSelectChip *context_chip = nullptr;
 	SolersSelectChip *approval_mode_chip = nullptr;
 	MarginContainer *approval_overlay_inset = nullptr;
@@ -85,6 +89,7 @@ class SolersDock : public PanelContainer {
 	bool approval_always_confirming = false;
 	int active_approval_id = 0;
 	int composer_margin_px = -1;
+	bool scroll_to_bottom_deferred = false;
 
 	String chat_log;
 
@@ -106,6 +111,11 @@ class SolersDock : public PanelContainer {
 	void _on_workspace_toggle_pressed();
 	void _on_session_menu_pressed();
 	void _on_model_chip_pressed();
+	void _position_model_popup();
+	void _hide_model_popup();
+	void _on_model_popup_overlay_gui_input(const Ref<InputEvent> &p_event);
+	void _set_model_provider_from_popup(const String &p_provider, const String &p_model);
+	void _open_model_settings_from_popup();
 	void _submit_chat_prompt(const String &p_prompt);
 	void _on_agent_model_request_started();
 	void _on_agent_assistant_delta(const String &p_text);
@@ -155,6 +165,7 @@ public:
 	void load_chat_history(const Array &p_messages);
 	void set_workspace_toggle_callback(const Callable &p_callback);
 	void set_session_menu_callback(const Callable &p_callback);
+	Rect2 get_session_menu_anchor_rect() const;
 
 	SolersDock();
 	~SolersDock();

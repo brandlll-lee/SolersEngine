@@ -47,7 +47,9 @@ class ConfirmationDialog;
 class Control;
 class FileDialog;
 class HBoxContainer;
+class HSplitContainer;
 class ImageTexture;
+class InputEvent;
 class Label;
 class MenuBar;
 class MenuButton;
@@ -55,10 +57,10 @@ class OptionButton;
 class Panel;
 class PanelContainer;
 class PopupMenu;
-class PopupPanel;
 class RichTextLabel;
 class SolersAgentRuntime;
 class SolersDock;
+class SolersGlyphButton;
 class TabContainer;
 class SubViewport;
 class TextureProgressBar;
@@ -313,11 +315,13 @@ private:
 	DockSplitContainer *right_r_vsplit = nullptr;
 	DockSplitContainer *center_split = nullptr;
 	PopupMenu *solers_run_options_popup = nullptr;
-	PopupPanel *solers_session_popup = nullptr;
+	Control *solers_session_overlay = nullptr;
+	PanelContainer *solers_session_popup = nullptr;
 	VBoxContainer *solers_session_popup_list = nullptr;
-	DockSplitContainer *solers_editor_split = nullptr;
+	SolersGlyphButton *solers_viewport_chrome_button = nullptr;
+	HSplitContainer *solers_editor_split = nullptr;
 	VBoxContainer *solers_editor_host = nullptr;
-	DockSplitContainer *solers_workspace_split = nullptr;
+	HSplitContainer *solers_workspace_split = nullptr;
 	PanelContainer *solers_side_panel = nullptr;
 	HBoxContainer *solers_main_screen_buttons = nullptr;
 	HBoxContainer *solers_side_tabs = nullptr;
@@ -339,6 +343,7 @@ private:
 	String solers_project_path;
 	String solers_session_id;
 	bool solers_side_panel_visible = false;
+	bool solers_viewport_chrome_visible = false;
 
 	// Main tabs.
 	EditorSceneTabs *scene_tabs = nullptr;
@@ -764,11 +769,16 @@ private:
 
 	void _bottom_panel_resized();
 	void _show_solers_session_popup(const Rect2 &p_anchor);
+	void _position_solers_session_popup();
+	void _hide_solers_session_popup();
+	void _solers_session_overlay_gui_input(const Ref<InputEvent> &p_event);
 	void _solers_session_pressed(const String &p_session_id);
 	void _solers_new_session_pressed();
 	void _set_solers_session(const String &p_project_path, const String &p_session_id);
 	void _set_solers_side_panel_visible(bool p_visible);
 	void _toggle_solers_side_panel();
+	void _toggle_solers_viewport_chrome();
+	void _sync_solers_viewport_chrome();
 	void _solers_side_tab_pressed(int p_tab);
 	void _sync_solers_side_tabs();
 	void _rebuild_solers_side_panel();

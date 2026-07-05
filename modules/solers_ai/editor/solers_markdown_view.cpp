@@ -649,9 +649,8 @@ static int solers_md_text(MD_TEXTTYPE p_type, const MD_CHAR *p_text, MD_SIZE p_s
 		case MD_TEXT_BR: {
 			s.rtl->add_newline();
 		} break;
-		case MD_TEXT_SOFTBR: {
-			s.rtl->add_text(" ");
-		} break;
+		case MD_TEXT_SOFTBR:
+			break;
 		case MD_TEXT_ENTITY: {
 			s.rtl->add_text(solers_md_entity(solers_md_str(p_text, p_size)));
 		} break;
@@ -1030,7 +1029,6 @@ void SolersMarkdownView::_render_paragraph(RichTextLabel *p_label, const String 
 	String source = p_source;
 	if (p_caret) {
 		source = solers_heal_open_markdown(source);
-		source += String::chr(SOLERS_MD_CARET);
 	}
 	p_label->clear();
 	if (!solers_md_render(p_label, source, int(14 * EDSCALE))) {
@@ -1074,7 +1072,11 @@ void SolersMarkdownView::append_markdown_delta(const String &p_delta, bool p_str
 		rendered_streaming = p_streaming;
 		if (!blocks.is_empty()) {
 			const int last_index = int(blocks.size()) - 1;
-			const Block &last = blocks[last_index];
+			Block &last = blocks[last_index];
+			if (!last.is_code && solers_heal_open_markdown(last.source) == last.source) {
+				last.rendered_caret = p_streaming;
+				return;
+			}
 			Segment segment;
 			segment.is_code = last.is_code;
 			segment.lang = last.lang;
@@ -1087,6 +1089,11 @@ void SolersMarkdownView::append_markdown_delta(const String &p_delta, bool p_str
 	const String markdown = rendered_md + p_delta;
 	const bool starts_new_block = (rendered_md.ends_with("\n") && p_delta.begins_with("\n")) || p_delta.find("\n\n") >= 0;
 	const bool touches_fence = p_delta.find("```") >= 0 || p_delta.find("~~~") >= 0;
+	if (blocks.is_empty()) {
+		set_markdown(markdown, p_streaming);
+		return;
+	}
+	Block &last = blocks[blocks.size() - 1];
 	if (!rendered_md_valid || !rendered_streaming || !p_streaming || blocks.is_empty() ||
 			!Math::is_equal_approx(get_size().x, layout_width) || starts_new_block || touches_fence || blocks[blocks.size() - 1].is_code) {
 		set_markdown(markdown, p_streaming);
@@ -1094,7 +1101,6 @@ void SolersMarkdownView::append_markdown_delta(const String &p_delta, bool p_str
 	}
 
 	Segment segment;
-	Block &last = blocks[blocks.size() - 1];
 	segment.is_code = last.is_code;
 	segment.lang = last.lang;
 	segment.text = last.source + p_delta;

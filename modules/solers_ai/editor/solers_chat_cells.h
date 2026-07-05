@@ -15,8 +15,8 @@
 /*    in place as events arrive: user bubble, streaming assistant prose   */
 /*    (typewriter pacing with adaptive catch-up, like Codex's commit      */
 /*    animation), a collapsible thinking cell (shimmer header + tail of   */
-/*    the live reasoning), tool-call cards (spinner -> check/cross with   */
-/*    duration), and a transient status row ("Waiting for model...").     */
+/*    the live reasoning), compact tool-call rows, and a transient        */
+/*    shimmer status row ("Thinking").                                   */
 /*  - Settled cells stop processing entirely: like the rest of the        */
 /*    Solers chat chrome, steady state costs zero CPU and zero redraws.   */
 /*                                                                        */
@@ -80,9 +80,11 @@ class SolersAssistantCell : public Control {
 	bool rendered_caret = false;
 	float rendered_width = -1.0f;
 	float cell_height = 0.0f;
+	String pending_delta;
 
 	Callable content_changed;
 
+	void _flush_pending_delta();
 	void _update_markdown();
 
 protected:
@@ -150,10 +152,8 @@ public:
 	SolersThinkingCell();
 };
 
-// One tool invocation, updated in place across its lifecycle:
-//   running (spinner + tool name + compact argument summary)
-//   -> ok    (check, duration)
-//   -> error (cross, wrapped error message).
+// One tool invocation, updated in place across its lifecycle. Running rows
+// use shimmer text; settled rows keep only the tool icon, label and duration.
 class SolersToolCell : public Control {
 	GDCLASS(SolersToolCell, Control);
 
@@ -175,8 +175,6 @@ private:
 	Ref<TextParagraph> error_paragraph;
 	float shaped_for_width = -1.0f;
 	float cell_height = 0.0f;
-
-	float spin_phase = 0.0f;
 
 	Callable content_changed;
 
@@ -212,7 +210,6 @@ class SolersToolGroupCell : public Control {
 	int error_count = 0;
 	bool expanded = false;
 	bool hovering = false;
-	float spin_phase = 0.0f;
 	float cell_height = 0.0f;
 
 	Callable content_changed;
@@ -239,7 +236,7 @@ public:
 	SolersToolGroupCell();
 };
 
-// Transient turn status row: spinner + shimmer label ("Waiting for model...").
+// Transient turn status row: shimmer label ("Thinking").
 // Lives at the tail of the timeline while the agent is between visible
 // outputs; the dock retargets or removes it as the turn progresses.
 class SolersStatusCell : public Control {
@@ -247,7 +244,6 @@ class SolersStatusCell : public Control {
 
 	String status_text;
 	float shimmer_phase = 0.0f;
-	float spin_phase = 0.0f;
 
 protected:
 	void _notification(int p_what);
