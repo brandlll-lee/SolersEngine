@@ -87,6 +87,14 @@
 #define DWMWA_WINDOW_CORNER_PREFERENCE 33
 #endif
 
+#ifndef DWMWA_BORDER_COLOR
+#define DWMWA_BORDER_COLOR 34
+#endif
+
+#ifndef DWMWA_CAPTION_COLOR
+#define DWMWA_CAPTION_COLOR 35
+#endif
+
 #ifndef DWMWCP_DEFAULT
 #define DWMWCP_DEFAULT 0
 #endif
@@ -1995,6 +2003,16 @@ Size2i DisplayServerWindows::window_get_title_size(const String &p_title, Window
 		size.x += 16;
 	}
 	return size;
+}
+
+void DisplayServerWindows::window_set_color(const Color &p_color) {
+	_THREAD_SAFE_METHOD_
+
+	const COLORREF color = RGB(p_color.get_r8(), p_color.get_g8(), p_color.get_b8());
+	for (KeyValue<WindowID, WindowData> &E : windows) {
+		::DwmSetWindowAttribute(E.value.hWnd, DWMWA_CAPTION_COLOR, &color, sizeof(color));
+		::DwmSetWindowAttribute(E.value.hWnd, DWMWA_BORDER_COLOR, &color, sizeof(color));
+	}
 }
 
 void DisplayServerWindows::window_set_mouse_passthrough(const Vector<Vector2> &p_region, WindowID p_window) {

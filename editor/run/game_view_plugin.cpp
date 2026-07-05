@@ -522,6 +522,10 @@ void GameView::_play_pressed() {
 	}
 }
 
+void GameView::_state_play_pressed() {
+	EditorRunBar::get_singleton()->play_main_scene();
+}
+
 void GameView::_stop_pressed() {
 	if (!is_feature_enabled) {
 		return;
@@ -711,6 +715,29 @@ void GameView::_embed_options_menu_menu_id_pressed(int p_id) {
 	_update_ui();
 }
 
+void GameView::_state_run_mode_menu_id_pressed(int p_id) {
+	switch (p_id) {
+		case RUN_MODE_WINDOW: {
+			embed_on_play = false;
+			make_floating_on_play = false;
+		} break;
+		case RUN_MODE_EMBEDDED: {
+			embed_on_play = true;
+			make_floating_on_play = false;
+		} break;
+		default:
+			return;
+	}
+
+	if ((int)EDITOR_GET("run/window_placement/game_embed_mode") == 0) {
+		EditorSettings::get_singleton()->set_project_metadata("game_view", "embed_on_play", embed_on_play);
+		EditorSettings::get_singleton()->set_project_metadata("game_view", "make_floating_on_play", make_floating_on_play);
+	}
+
+	_update_embed_menu_options();
+	_update_ui();
+}
+
 void GameView::_reset_time_scales() {
 	time_scale_index = DEFAULT_TIME_SCALE_INDEX;
 	debugger->reset_time_scale();
@@ -800,53 +827,69 @@ GameView::EmbedAvailability GameView::_get_embed_available() {
 void GameView::_update_ui() {
 	bool show_game_size = false;
 	EmbedAvailability available = _get_embed_available();
+	bool warning = false;
+	const bool playing = EditorRunBar::get_singleton()->is_playing();
+	const bool embedding_done = embedded_process->is_embedding_completed();
+	const bool embedding_starting = embedded_process->is_embedding_in_progress();
 
-	switch (available) {
-		case EMBED_AVAILABLE:
-			if (embedded_process->is_embedding_completed()) {
-				state_label->set_text("");
-				show_game_size = true;
-			} else if (embedded_process->is_embedding_in_progress()) {
-				state_label->set_text(TTRC("Game starting..."));
-			} else if (EditorRunBar::get_singleton()->is_playing()) {
-				state_label->set_text(TTRC("Game running not embedded."));
-			} else if (embed_on_play) {
-				state_label->set_text(TTRC("Press play to start the game."));
-			} else {
-				state_label->set_text(TTRC("Embedding is disabled."));
-			}
-			break;
-		case EMBED_NOT_AVAILABLE_FEATURE_NOT_SUPPORTED:
-			state_label->set_text(TTRC("Game embedding not available on your OS."));
-			break;
-		case EMBED_NOT_AVAILABLE_PROJECT_DISPLAY_DRIVER:
-			state_label->set_text(vformat(TTR("Game embedding not available for the Display Server: '%s'.\nDisplay Server can be modified in the Project Settings (Display > Display Server > Driver)."), GLOBAL_GET("display/display_server/driver")));
-			break;
-		case EMBED_NOT_AVAILABLE_MINIMIZED:
-			state_label->set_text(TTR("Game embedding not available when the game starts minimized.") + "\n" + TTR("Consider overriding the window mode project setting with the editor feature tag to Windowed to use game embedding while leaving the exported project intact."));
-			break;
-		case EMBED_NOT_AVAILABLE_MAXIMIZED:
-			state_label->set_text(TTR("Game embedding not available when the game starts maximized.") + "\n" + TTR("Consider overriding the window mode project setting with the editor feature tag to Windowed to use game embedding while leaving the exported project intact."));
-			break;
-		case EMBED_NOT_AVAILABLE_FULLSCREEN:
-			state_label->set_text(TTR("Game embedding not available when the game starts in fullscreen.") + "\n" + TTR("Consider overriding the window mode project setting with the editor feature tag to Windowed to use game embedding while leaving the exported project intact."));
-			break;
-		case EMBED_NOT_AVAILABLE_SINGLE_WINDOW_MODE:
-			state_label->set_text(TTRC("Game embedding not available in single window mode."));
-			break;
-		case EMBED_NOT_AVAILABLE_HEADLESS:
-			state_label->set_text(TTRC("Game embedding not available when the game starts in headless mode."));
-			break;
-	}
-
-	if (available == EMBED_AVAILABLE) {
-		if (state_label->has_theme_color_override(SceneStringName(font_color))) {
-			state_label->remove_theme_color_override(SceneStringName(font_color));
-		}
+	if (!embed_on_play) {
+		state_label->set_text(playing ? TTRC("Game running in a separate window.") : TTRC("Run the game in a separate window."));
 	} else {
-		state_label->add_theme_color_override(SceneStringName(font_color), state_label->get_theme_color(SNAME("warning_color"), EditorStringName(Editor)));
+		switch (available) {
+			case EMBED_AVAILABLE:
+				if (embedding_done) {
+					state_label->set_text("");
+					show_game_size = true;
+				} else if (embedding_starting) {
+					state_label->set_text(TTRC("Game starting..."));
+				} else if (playing) {
+					state_label->set_text(TTRC("Game running not embedded."));
+				} else {
+					state_label->set_text(TTRC("Press play to start the game."));
+				}
+				break;
+			case EMBED_NOT_AVAILABLE_FEATURE_NOT_SUPPORTED:
+				state_label->set_text(TTRC("Game embedding not available on your OS."));
+				warning = true;
+				break;
+			case EMBED_NOT_AVAILABLE_PROJECT_DISPLAY_DRIVER:
+				state_label->set_text(vformat(TTR("Game embedding not available for the Display Server: '%s'.\nDisplay Server can be modified in the Project Settings (Display > Display Server > Driver)."), GLOBAL_GET("display/display_server/driver")));
+				warning = true;
+				break;
+			case EMBED_NOT_AVAILABLE_MINIMIZED:
+				state_label->set_text(TTR("Game embedding not available when the game starts minimized.") + "\n" + TTR("Consider overriding the window mode project setting with the editor feature tag to Windowed to use game embedding while leaving the exported project intact."));
+				warning = true;
+				break;
+			case EMBED_NOT_AVAILABLE_MAXIMIZED:
+				state_label->set_text(TTR("Game embedding not available when the game starts maximized.") + "\n" + TTR("Consider overriding the window mode project setting with the editor feature tag to Windowed to use game embedding while leaving the exported project intact."));
+				warning = true;
+				break;
+			case EMBED_NOT_AVAILABLE_FULLSCREEN:
+				state_label->set_text(TTR("Game embedding not available when the game starts in fullscreen.") + "\n" + TTR("Consider overriding the window mode project setting with the editor feature tag to Windowed to use game embedding while leaving the exported project intact."));
+				warning = true;
+				break;
+			case EMBED_NOT_AVAILABLE_SINGLE_WINDOW_MODE:
+				state_label->set_text(TTRC("Game embedding not available in single window mode."));
+				warning = true;
+				break;
+			case EMBED_NOT_AVAILABLE_HEADLESS:
+				state_label->set_text(TTRC("Game embedding not available when the game starts in headless mode."));
+				warning = true;
+				break;
+		}
 	}
 
+	if (warning) {
+		state_label->add_theme_color_override(SceneStringName(font_color), state_label->get_theme_color(SNAME("warning_color"), EditorStringName(Editor)));
+	} else if (state_label->has_theme_color_override(SceneStringName(font_color))) {
+		state_label->remove_theme_color_override(SceneStringName(font_color));
+	}
+
+	if (state_actions) {
+		const bool can_start = !playing && !embedding_starting && (!embed_on_play || available == EMBED_AVAILABLE);
+		state_actions->set_visible(!playing && !embedding_done && !embedding_starting);
+		state_play_button->set_disabled(!can_start);
+	}
 	game_size_label->set_visible(show_game_size);
 }
 
@@ -861,6 +904,13 @@ void GameView::_update_embed_menu_options() {
 	menu->set_item_checked(menu->get_item_index(SIZE_MODE_STRETCH), embed_size_mode == SIZE_MODE_STRETCH);
 
 	menu->set_item_disabled(menu->get_item_index(EMBED_MAKE_FLOATING_ON_PLAY), !embed_on_play || !is_multi_window);
+
+	if (state_run_mode_button) {
+		PopupMenu *run_menu = state_run_mode_button->get_popup();
+		run_menu->set_item_checked(run_menu->get_item_index(RUN_MODE_WINDOW), !embed_on_play);
+		run_menu->set_item_checked(run_menu->get_item_index(RUN_MODE_EMBEDDED), embed_on_play);
+		state_run_mode_button->set_text(embed_on_play ? TTRC("Embedded") : TTRC("Window"));
+	}
 }
 
 void GameView::_update_embed_window_size() {
@@ -967,6 +1017,7 @@ void GameView::_notification(int p_what) {
 			hide_selection->set_button_icon(get_editor_theme_icon(hide_selection->is_pressed() ? SNAME("GuiVisibilityHidden") : SNAME("GuiVisibilityVisible")));
 			selection_options_menu->set_button_icon(get_editor_theme_icon(SNAME("GuiTabMenuHl")));
 			embed_options_menu->set_button_icon(get_editor_theme_icon(SNAME("KeepAspect")));
+			state_play_button->set_button_icon(get_editor_theme_icon(SNAME("Play")));
 
 			debug_mute_audio_button->set_button_icon(get_editor_theme_icon(debug_mute_audio ? SNAME("AudioMute") : SNAME("AudioStreamPlayer")));
 
@@ -995,8 +1046,8 @@ void GameView::_notification(int p_what) {
 						make_floating_on_play = true;
 					} break;
 					default: {
-						embed_on_play = EditorSettings::get_singleton()->get_project_metadata("game_view", "embed_on_play", true);
-						make_floating_on_play = EditorSettings::get_singleton()->get_project_metadata("game_view", "make_floating_on_play", true);
+						embed_on_play = EditorSettings::get_singleton()->get_project_metadata("game_view", "embed_on_play", false);
+						make_floating_on_play = EditorSettings::get_singleton()->get_project_metadata("game_view", "make_floating_on_play", false);
 					} break;
 				}
 				embed_size_mode = (EmbedSizeMode)(int)EditorSettings::get_singleton()->get_project_metadata("game_view", "embed_size_mode", SIZE_MODE_FIXED);
@@ -1480,12 +1531,36 @@ GameView::GameView(Ref<GameViewDebugger> p_debugger, EmbeddedProcessBase *p_embe
 #endif
 
 	panel->add_child(state_container);
+	VBoxContainer *state_vbox = memnew(VBoxContainer);
+	state_vbox->set_anchors_and_offsets_preset(PRESET_FULL_RECT);
+	state_vbox->set_alignment(BoxContainer::ALIGNMENT_CENTER);
+	state_container->add_child(state_vbox);
+
 	state_label = memnew(Label());
-	state_container->add_child(state_label);
+	state_vbox->add_child(state_label);
 	state_label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
-	state_label->set_vertical_alignment(VERTICAL_ALIGNMENT_CENTER);
 	state_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD);
-	state_label->set_anchors_and_offsets_preset(PRESET_FULL_RECT);
+
+	state_actions = memnew(HBoxContainer);
+	state_actions->set_alignment(BoxContainer::ALIGNMENT_CENTER);
+	state_vbox->add_child(state_actions);
+
+	state_play_button = memnew(Button);
+	state_actions->add_child(state_play_button);
+	state_play_button->set_text(TTRC("Play"));
+	state_play_button->set_theme_type_variation("FlatButton");
+	state_play_button->connect(SceneStringName(pressed), callable_mp(this, &GameView::_state_play_pressed));
+
+	state_run_mode_button = memnew(MenuButton);
+	state_actions->add_child(state_run_mode_button);
+	state_run_mode_button->set_flat(false);
+	state_run_mode_button->set_theme_type_variation("FlatMenuButton");
+	state_run_mode_button->set_tooltip_text(TTRC("Choose where the game runs."));
+
+	PopupMenu *run_mode_menu = state_run_mode_button->get_popup();
+	run_mode_menu->connect(SceneStringName(id_pressed), callable_mp(this, &GameView::_state_run_mode_menu_id_pressed));
+	run_mode_menu->add_radio_check_item(TTRC("Window"), RUN_MODE_WINDOW);
+	run_mode_menu->add_radio_check_item(TTRC("Embedded"), RUN_MODE_EMBEDDED);
 
 	_update_debugger_buttons();
 

@@ -121,6 +121,8 @@ class GameView : public VBoxContainer {
 		EMBED_MAKE_FLOATING_ON_PLAY,
 		SELECTION_AVOID_LOCKED,
 		SELECTION_PREFER_GROUP,
+		RUN_MODE_WINDOW,
+		RUN_MODE_EMBEDDED,
 	};
 
 	enum EmbedSizeMode {
@@ -184,7 +186,10 @@ class GameView : public VBoxContainer {
 	Label *game_size_label = nullptr;
 	Panel *panel = nullptr;
 	EmbeddedProcessBase *embedded_process = nullptr;
+	HBoxContainer *state_actions = nullptr;
 	Label *state_label = nullptr;
+	Button *state_play_button = nullptr;
+	MenuButton *state_run_mode_button = nullptr;
 
 	int const DEFAULT_TIME_SCALE_INDEX = 5;
 	Array time_scale_range = { 0.0625f, 0.125f, 0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f, 4.0f, 8.0f, 16.0f };
@@ -206,6 +211,7 @@ class GameView : public VBoxContainer {
 	void _select_mode_pressed(int p_option);
 	void _selection_options_menu_id_pressed(int p_id);
 	void _embed_options_menu_menu_id_pressed(int p_id);
+	void _state_run_mode_menu_id_pressed(int p_id);
 
 	void _reset_time_scales();
 	void _speed_state_menu_pressed(int p_id);
@@ -214,6 +220,7 @@ class GameView : public VBoxContainer {
 	void _update_speed_state_size();
 
 	void _play_pressed();
+	void _state_play_pressed();
 	static void _instance_starting_static(int p_idx, List<String> &r_arguments);
 	void _instance_starting(int p_idx, List<String> &r_arguments);
 	static bool _instance_rq_screenshot_static(const Callable &p_callback);
