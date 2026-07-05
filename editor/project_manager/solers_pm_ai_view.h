@@ -28,6 +28,7 @@ class LineEdit;
 class ScrollContainer;
 class SolersCategoryCard;
 class SolersProviderRegistry;
+class Texture2D;
 class VBoxContainer;
 
 class SolersPMAIView : public HBoxContainer {
@@ -37,26 +38,46 @@ class SolersPMAIView : public HBoxContainer {
 
 	// Left rail.
 	VBoxContainer *nav_list = nullptr;
+	String selected_category;
 	String selected_provider;
 
 	// Right pane.
+	VBoxContainer *provider_list_view = nullptr;
+	VBoxContainer *provider_list = nullptr;
+	VBoxContainer *provider_detail_view = nullptr;
+	Label *provider_list_title = nullptr;
+	Label *provider_list_notes = nullptr;
+	Button *detail_back_btn = nullptr;
 	Label *provider_title = nullptr;
 	Label *provider_notes = nullptr;
+	Label *model_label = nullptr;
 	LineEdit *model_edit = nullptr;
+	Label *base_url_label = nullptr;
 	LineEdit *base_url_edit = nullptr;
 	LineEdit *api_key_edit = nullptr;
 	Button *api_key_reveal = nullptr;
 	Label *env_hint = nullptr;
+	Label *privacy_header = nullptr;
 	CheckBox *privacy_check = nullptr;
+	Label *privacy_note = nullptr;
 	VBoxContainer *status_list = nullptr;
 	Button *save_btn = nullptr;
 	Label *saved_feedback = nullptr;
 
 	String _setting_path(const String &p_key) const;
+	String _asset_setting_path(const String &p_kind, const String &p_key) const;
 	String _stored_string(const String &p_key, const String &p_default = String()) const;
+	String _stored_asset_string(const String &p_kind, const String &p_key, const String &p_default = String()) const;
 	bool _stored_bool(const String &p_key, bool p_default) const;
+	bool _is_asset_provider(const String &p_id) const;
+	String _asset_kind_from_provider(const String &p_id) const;
 
 	void _build_nav();
+	void _select_category(const String &p_id);
+	void _build_provider_list();
+	void _add_provider_row(const String &p_id, const String &p_title, const Ref<Texture2D> &p_icon);
+	void _open_provider(const String &p_id);
+	void _show_provider_list();
 	void _select_provider(const String &p_id, bool p_load_stored);
 	void _refresh_form(bool p_load_stored);
 	void _refresh_status();

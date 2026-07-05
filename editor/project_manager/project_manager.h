@@ -42,12 +42,12 @@ class EditorTitleBar;
 class HFlowContainer;
 class HBoxContainer;
 class HSplitContainer;
+class InputEvent;
 class LineEdit;
 class MarginContainer;
 class MenuButton;
 class OptionButton;
 class PanelContainer;
-class PopupPanel;
 class PopupMenu;
 class ProjectDialog;
 class ProjectList;
@@ -103,7 +103,8 @@ class ProjectManager : public Control {
 	PanelContainer *shell_chat_panel = nullptr;
 	PanelContainer *shell_workspace_panel = nullptr;
 	HSplitContainer *shell_work_split = nullptr;
-	PopupPanel *shell_session_popup = nullptr;
+	Control *shell_session_overlay = nullptr;
+	PanelContainer *shell_session_popup = nullptr;
 	VBoxContainer *shell_session_popup_list = nullptr;
 	Control *shell_editor_host = nullptr;
 	Control *shell_editor_gui = nullptr;
@@ -143,6 +144,9 @@ class ProjectManager : public Control {
 	void _show_shell_chat();
 	void _show_shell_global_view(Control *p_view);
 	void _show_shell_session_popup(const Rect2 &p_anchor);
+	void _position_shell_session_popup();
+	void _hide_shell_session_popup();
+	void _shell_session_overlay_gui_input(const Ref<InputEvent> &p_event);
 	void _shell_session_pressed(const String &p_session_id);
 	void _shell_new_session_pressed();
 	void _shell_asset_pressed();
@@ -159,6 +163,7 @@ class ProjectManager : public Control {
 	SolersDock *solers_home_dock = nullptr;
 
 	EditorAbout *about_dialog = nullptr;
+	AcceptDialog *ai_settings_dialog = nullptr;
 
 	void _show_about();
 	void _open_asset_library_confirmed();

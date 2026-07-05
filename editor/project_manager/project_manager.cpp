@@ -36,6 +36,7 @@
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/json.h"
+#include "core/input/input_event.h"
 #include "core/os/keyboard.h"
 #include "core/os/os.h"
 #include "core/os/time.h"
@@ -1094,7 +1095,12 @@ void ProjectManager::_show_shell_global_view(Control *p_view) {
 }
 
 void ProjectManager::_show_shell_session_popup(const Rect2 &p_anchor) {
-	if (!shell_session_popup || !shell_session_popup_list) {
+	(void)p_anchor;
+	if (!shell_session_overlay || !shell_session_popup || !shell_session_popup_list) {
+		return;
+	}
+	if (shell_session_overlay->is_visible()) {
+		_hide_shell_session_popup();
 		return;
 	}
 
@@ -1140,26 +1146,60 @@ void ProjectManager::_show_shell_session_popup(const Rect2 &p_anchor) {
 		shell_session_popup_list->add_child(empty);
 	}
 
-	shell_session_popup->reset_size();
-	Point2 pos = p_anchor.get_end() + Vector2(-shell_session_popup->get_size().x, 4 * EDSCALE);
-	Window *win = get_window();
-	if (win) {
-		const float win_right = win->get_position().x + win->get_size().x;
-		const float overflow = (pos.x + shell_session_popup->get_size().x) - (win_right - 8 * EDSCALE);
-		if (overflow > 0) {
-			pos.x -= overflow;
+	shell_session_overlay->show();
+	shell_session_overlay->move_to_front();
+	shell_session_popup->show();
+	_position_shell_session_popup();
+}
+
+void ProjectManager::_position_shell_session_popup() {
+	if (!shell_session_overlay || !shell_session_overlay->is_visible() || !shell_session_popup || !solers_home_dock) {
+		return;
+	}
+
+	const Rect2 anchor = solers_home_dock->get_session_menu_anchor_rect();
+	const Size2 popup_size = shell_session_popup->get_combined_minimum_size();
+	shell_session_popup->set_size(popup_size);
+	Point2 pos = anchor.position + Vector2(anchor.size.x - popup_size.x, anchor.size.y + 8 * EDSCALE);
+	const Point2 base_screen_pos = shell_session_overlay->get_screen_position();
+	const float base_right = base_screen_pos.x + shell_session_overlay->get_size().x;
+	const float base_bottom = base_screen_pos.y + shell_session_overlay->get_size().y;
+	pos.x = MAX(pos.x, base_screen_pos.x + 8 * EDSCALE);
+	const float overflow = (pos.x + popup_size.x) - (base_right - 8 * EDSCALE);
+	if (overflow > 0) {
+		pos.x -= overflow;
+	}
+	pos.y = MAX(pos.y, base_screen_pos.y + 8 * EDSCALE);
+	const float bottom_overflow = (pos.y + popup_size.y) - (base_bottom - 8 * EDSCALE);
+	if (bottom_overflow > 0) {
+		pos.y -= bottom_overflow;
+	}
+	shell_session_popup->set_position(pos - base_screen_pos);
+}
+
+void ProjectManager::_hide_shell_session_popup() {
+	if (shell_session_popup) {
+		shell_session_popup->hide();
+	}
+	if (shell_session_overlay) {
+		shell_session_overlay->hide();
+	}
+}
+
+void ProjectManager::_shell_session_overlay_gui_input(const Ref<InputEvent> &p_event) {
+	Ref<InputEventMouseButton> mouse_button = p_event;
+	if (mouse_button.is_valid() && mouse_button->is_pressed() && mouse_button->get_button_index() == MouseButton::LEFT) {
+		_hide_shell_session_popup();
+		if (shell_session_overlay) {
+			shell_session_overlay->accept_event();
 		}
 	}
-	shell_session_popup->set_position(pos);
-	shell_session_popup->popup();
 }
 
 void ProjectManager::_shell_session_pressed(const String &p_session_id) {
 	_show_shell_chat();
 	_set_shell_session(shell_project_path, p_session_id);
-	if (shell_session_popup) {
-		shell_session_popup->hide();
-	}
+	_hide_shell_session_popup();
 }
 
 void ProjectManager::_set_shell_session(const String &p_project_path, const String &p_session_id) {
@@ -1191,9 +1231,7 @@ void ProjectManager::_shell_new_session_pressed() {
 		const Dictionary status = solers_agent_runtime->get_status();
 		shell_session_id = status.get("session_id", String());
 	}
-	if (shell_session_popup) {
-		shell_session_popup->hide();
-	}
+	_hide_shell_session_popup();
 #else
 	_show_shell_chat();
 #endif
@@ -1216,7 +1254,9 @@ void ProjectManager::_shell_ai_pressed() {
 			nav_ai_card->set_selected(true);
 		}
 	}
-	_show_shell_global_view(shell_ai_view);
+	if (ai_settings_dialog) {
+		ai_settings_dialog->popup_centered(Size2(980, 640) * EDSCALE);
+	}
 }
 
 void ProjectManager::_load_shell_editor(const String &p_project_path) {
@@ -2595,24 +2635,36 @@ ProjectManager::ProjectManager() {
 		solers_agent_runtime->bind_dock(solers_home_dock);
 		shell_chat_panel->add_child(solers_home_dock);
 
-		shell_session_popup = memnew(PopupPanel);
+		shell_session_overlay = memnew(Control);
+		shell_session_overlay->set_mouse_filter(Control::MOUSE_FILTER_STOP);
+		shell_session_overlay->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
+		shell_session_overlay->connect(SceneStringName(gui_input), callable_mp(this, &ProjectManager::_shell_session_overlay_gui_input));
+		shell_session_overlay->connect(SceneStringName(resized), callable_mp(this, &ProjectManager::_hide_shell_session_popup));
+		shell_session_overlay->hide();
+		add_child(shell_session_overlay);
+
+		shell_session_popup = memnew(PanelContainer);
+		shell_session_popup->set_mouse_filter(Control::MOUSE_FILTER_STOP);
+		shell_session_popup->hide();
 		Ref<StyleBoxFlat> session_popup_style;
 		session_popup_style.instantiate();
-		session_popup_style->set_bg_color(Color(0.075, 0.078, 0.086));
-		session_popup_style->set_corner_radius_all(int(12 * EDSCALE));
+		session_popup_style->set_bg_color(Color(0.125, 0.126, 0.130));
+		session_popup_style->set_corner_radius_all(int(22 * EDSCALE));
+		session_popup_style->set_shadow_color(Color(0, 0, 0, 0.22));
+		session_popup_style->set_shadow_size(int(18 * EDSCALE));
 		shell_session_popup->add_theme_style_override(SceneStringName(panel), session_popup_style);
-		add_child(shell_session_popup);
+		shell_session_overlay->add_child(shell_session_popup);
 
 		MarginContainer *session_popup_margin = memnew(MarginContainer);
-		session_popup_margin->set_custom_minimum_size(Size2(360, 0) * EDSCALE);
-		session_popup_margin->add_theme_constant_override("margin_left", 8 * EDSCALE);
-		session_popup_margin->add_theme_constant_override("margin_right", 8 * EDSCALE);
-		session_popup_margin->add_theme_constant_override("margin_top", 8 * EDSCALE);
-		session_popup_margin->add_theme_constant_override("margin_bottom", 8 * EDSCALE);
+		session_popup_margin->set_custom_minimum_size(Size2(376, 0) * EDSCALE);
+		session_popup_margin->add_theme_constant_override("margin_left", 20 * EDSCALE);
+		session_popup_margin->add_theme_constant_override("margin_right", 20 * EDSCALE);
+		session_popup_margin->add_theme_constant_override("margin_top", 18 * EDSCALE);
+		session_popup_margin->add_theme_constant_override("margin_bottom", 18 * EDSCALE);
 		shell_session_popup->add_child(session_popup_margin);
 
 		shell_session_popup_list = memnew(VBoxContainer);
-		shell_session_popup_list->add_theme_constant_override("separation", 4 * EDSCALE);
+		shell_session_popup_list->add_theme_constant_override("separation", 8 * EDSCALE);
 		session_popup_margin->add_child(shell_session_popup_list);
 
 		set_process(true);
@@ -3026,17 +3078,6 @@ ProjectManager::ProjectManager() {
 		shell_asset_view = asset_library_filler;
 	}
 
-	// Solers: BYOK AI model configuration view.
-	{
-		SolersPMAIView *ai_view = memnew(SolersPMAIView);
-		ai_view->set_name("AIModelsOverlay");
-		ai_view->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		ai_view->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-		ai_view->hide();
-		shell_chat_panel->add_child(ai_view);
-		shell_ai_view = ai_view;
-	}
-
 	// Footer bar.
 	{
 		HBoxContainer *footer_bar = memnew(HBoxContainer);
@@ -3150,6 +3191,19 @@ ProjectManager::ProjectManager() {
 		error_dialog = memnew(AcceptDialog);
 		error_dialog->set_title(TTRC("Error"));
 		add_child(error_dialog);
+
+		ai_settings_dialog = memnew(AcceptDialog);
+		ai_settings_dialog->set_title(TTRC("Provider Settings"));
+		ai_settings_dialog->set_min_size(Size2(980, 640) * EDSCALE);
+		ai_settings_dialog->get_ok_button()->hide();
+		add_child(ai_settings_dialog);
+
+		SolersPMAIView *ai_view = memnew(SolersPMAIView);
+		ai_view->set_name("ProviderSettings");
+		ai_view->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		ai_view->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+		ai_settings_dialog->add_child(ai_view);
+		shell_ai_view = ai_view;
 
 		about_dialog = memnew(EditorAbout);
 		add_child(about_dialog);
