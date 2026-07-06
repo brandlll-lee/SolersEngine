@@ -226,7 +226,7 @@ String SolersAgentSession::_default_system_prompt() const {
 			"- Persist scene edits through the harness commit path; do not script.patch scene resources.\n"
 			"- Scene edits save at turn end when the editor history is dirty; no manual scene save.\n"
 			"- For @tool scripts, do not claim generated preview/runtime children are persisted unless they have scene owners or are baked into the scene.\n"
-			"- Reusable generated assets live in the Solers Library: use asset.generate, asset.status, asset.list_local, and asset.import_to_project before editing scenes around them.\n"
+			"- Reusable generated assets live in the Solers Library: use asset.generate, asset.capabilities, asset.run_operation, asset.status, asset.list_local, and asset.import_to_project before editing scenes around them.\n"
 			"- When a tool returns a godot_object handle, keep exploring it with native.list_properties/native.list_methods/native.get/native.call instead of guessing.\n"
 			"- Prefer class.introspect + native.* + editor.invoke + editor.action.execute + object.call_method, project assets, and small validated GDScript patches only as a last resort.\n"
 			"- Budget <=%d tool calls per user request; verify with editor.get_snapshot and runtime.control when needed.",

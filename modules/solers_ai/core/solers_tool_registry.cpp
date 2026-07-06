@@ -608,15 +608,23 @@ void SolersToolRegistry::_register_asset_tools() {
 			R"({"type":"object","properties":{"kind":{"type":"string","description":"3d, music, or sfx."},"prompt":{"type":"string","description":"Asset generation prompt."},"name":{"type":"string","description":"Optional local asset display name."},"profile":{"type":"string","description":"game_default, high_quality, or custom. game_default uses lowpoly for 3d."},"provider":{"type":"string","description":"Optional provider id. Defaults by kind."},"provider_options":{"type":"object","description":"Provider-native parameters, passed through after Solers fills required prompt defaults."}},"required":["kind","prompt"]})",
 			SolersPermissionManager::PERMISSION_NETWORK, "asset_generate", true, false, Vector<String>(), SolersToolExposure::DIRECT,
 			[svc](const SolersToolContext &, const Dictionary &a) { return svc->generate(a); });
-	_add("asset.refine_to_ready", "Create a new ready 3D asset from a Meshy draft asset. The source asset is not modified.",
+	_add_observe_exposed("asset.capabilities", "List the operations currently available for a Solers Library asset, including option schemas and provider documentation links.",
+			R"({"type":"object","properties":{"asset_id":{"type":"string","description":"Local Solers asset id."}},"required":["asset_id"]})",
+			SolersToolExposure::DIRECT,
+			[svc](const SolersToolContext &, const Dictionary &a) { return svc->capabilities(a); });
+	_add("asset.run_operation", "Run one available operation on an existing Solers Library asset. The operation creates a new derived asset and never overwrites the source.",
+			R"({"type":"object","properties":{"asset_id":{"type":"string","description":"Local Solers asset id."},"operation_id":{"type":"string","description":"Operation id returned by asset.capabilities."},"options":{"type":"object","description":"Operation options that match the schema returned by asset.capabilities."},"raw_provider_options":{"type":"object","description":"Advanced provider-native options. Requires raw_confirmed=true."},"raw_confirmed":{"type":"boolean","description":"Set true only after the user explicitly confirms raw provider options."}},"required":["asset_id","operation_id"]})",
+			SolersPermissionManager::PERMISSION_NETWORK, "asset_operation", true, false, Vector<String>(), SolersToolExposure::DIRECT,
+			[svc](const SolersToolContext &, const Dictionary &a) { return svc->run_operation(a); });
+	_add("asset.refine_to_ready", "Deprecated compatibility tool. Prefer asset.capabilities followed by asset.run_operation.",
 			R"({"type":"object","properties":{"asset_id":{"type":"string","description":"Draft Solers 3D asset id."}},"required":["asset_id"]})",
 			SolersPermissionManager::PERMISSION_NETWORK, "asset_refine", true, false, Vector<String>(), SolersToolExposure::DIRECT,
 			[svc](const SolersToolContext &, const Dictionary &a) { return svc->refine_to_ready(a); });
-	_add("asset.optimize_geometry", "Create a new optimized 3D asset from an existing Meshy asset via remesh. The source asset is not modified.",
+	_add("asset.optimize_geometry", "Deprecated compatibility tool. Prefer asset.capabilities followed by asset.run_operation.",
 			R"({"type":"object","properties":{"asset_id":{"type":"string","description":"Source Solers 3D asset id."},"quality":{"type":"string","description":"game_ready, balanced, or high_detail."}},"required":["asset_id"]})",
 			SolersPermissionManager::PERMISSION_NETWORK, "asset_remesh", true, false, Vector<String>(), SolersToolExposure::DIRECT,
 			[svc](const SolersToolContext &, const Dictionary &a) { return svc->optimize_geometry(a); });
-	_add("asset.restyle_material", "Create a new retextured 3D asset from an existing Meshy asset. The source asset is not modified.",
+	_add("asset.restyle_material", "Deprecated compatibility tool. Prefer asset.capabilities followed by asset.run_operation.",
 			R"({"type":"object","properties":{"asset_id":{"type":"string","description":"Source Solers 3D asset id."},"text_style_prompt":{"type":"string","description":"Text description of the new material style."}},"required":["asset_id"]})",
 			SolersPermissionManager::PERMISSION_NETWORK, "asset_retexture", true, false, Vector<String>(), SolersToolExposure::DIRECT,
 			[svc](const SolersToolContext &, const Dictionary &a) { return svc->restyle_material(a); });

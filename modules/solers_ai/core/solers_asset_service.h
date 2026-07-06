@@ -67,6 +67,8 @@ protected:
 
 public:
 	Dictionary generate(const Dictionary &p_args);
+	Dictionary capabilities(const Dictionary &p_args) const;
+	Dictionary run_operation(const Dictionary &p_args);
 	Dictionary refine_to_ready(const Dictionary &p_args);
 	Dictionary optimize_geometry(const Dictionary &p_args);
 	Dictionary restyle_material(const Dictionary &p_args);
