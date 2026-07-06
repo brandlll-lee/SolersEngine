@@ -56,6 +56,7 @@
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/visual_instance_3d.h"
 #include "scene/3d/world_environment.h"
+#include "scene/gui/check_box.h"
 #include "scene/gui/flow_container.h"
 #include "scene/gui/menu_button.h"
 #include "scene/gui/popup_menu.h"
@@ -264,8 +265,57 @@ static void solers_mark_asset_action_creating(Button *p_button) {
 	if (!p_button) {
 		return;
 	}
-	p_button->set_text(TTRC("Creating improved version..."));
+	p_button->set_text(TTRC("Creating new version..."));
 	p_button->set_disabled(true);
+}
+
+static Control *solers_make_operation_option_control(const String &p_name, const Dictionary &p_property) {
+	const String type = String(p_property.get("type", String()));
+	const String label = String(p_property.get("label", p_name.capitalize()));
+	const Array enum_values = p_property.get("enum", Array());
+	Control *control = nullptr;
+	if (!enum_values.is_empty()) {
+		OptionButton *option = memnew(OptionButton);
+		option->set_theme_type_variation("FlatMenuButton");
+		for (int i = 0; i < enum_values.size(); i++) {
+			option->add_item(String(enum_values[i]));
+		}
+		control = option;
+	} else if (type == "boolean") {
+		CheckBox *check = memnew(CheckBox);
+		check->set_text(label);
+		control = check;
+	} else {
+		LineEdit *line = memnew(LineEdit);
+		line->set_placeholder(label);
+		control = line;
+	}
+	control->set_meta("solers_option_name", p_name);
+	control->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	return control;
+}
+
+static void solers_collect_operation_options(Control *p_root, Dictionary &r_options) {
+	if (!p_root) {
+		return;
+	}
+	if (p_root->has_meta("solers_option_name")) {
+		const String name = String(p_root->get_meta("solers_option_name"));
+		if (LineEdit *line = Object::cast_to<LineEdit>(p_root)) {
+			r_options[name] = line->get_text();
+		} else if (OptionButton *option = Object::cast_to<OptionButton>(p_root)) {
+			if (option->get_selected() >= 0) {
+				r_options[name] = option->get_item_text(option->get_selected());
+			}
+		} else if (CheckBox *check = Object::cast_to<CheckBox>(p_root)) {
+			r_options[name] = check->is_pressed();
+		}
+	}
+	for (int i = 0; i < p_root->get_child_count(); i++) {
+		if (Control *child = Object::cast_to<Control>(p_root->get_child(i))) {
+			solers_collect_operation_options(child, r_options);
+		}
+	}
 }
 
 static void solers_convert_importer_meshes(Node *p_root) {
@@ -2372,8 +2422,6 @@ void EditorAssetLibrary::_show_solers_asset_detail(const String &p_asset_id, con
 	for (int i = solers_detail_info_content->get_child_count() - 1; i >= 0; i--) {
 		memdelete(solers_detail_info_content->get_child(i));
 	}
-	solers_restyle_prompt = nullptr;
-	solers_optimize_quality = nullptr;
 
 	HBoxContainer *badge_row = memnew(HBoxContainer);
 	badge_row->add_theme_constant_override("separation", 8 * EDSCALE);
@@ -2401,14 +2449,6 @@ void EditorAssetLibrary::_show_solers_asset_detail(const String &p_asset_id, con
 	}
 
 	solers_detail_info_content->add_spacer();
-	if (display_status == "draft") {
-		Button *refine_button = memnew(Button);
-		refine_button->set_text(TTRC("Refine to Ready"));
-		refine_button->set_theme_type_variation("SolersFlatPillButton");
-		refine_button->connect(SceneStringName(pressed), callable_mp(this, &EditorAssetLibrary::_refine_solers_detail_asset).bind(refine_button));
-		solers_detail_info_content->add_child(refine_button);
-	}
-
 	Button *import_button = memnew(Button);
 	import_button->set_text(display_status == "draft" ? TTRC("Import Draft") : TTRC("Import to Project"));
 	import_button->set_theme_type_variation("SolersFlatPillButton");
@@ -2416,48 +2456,48 @@ void EditorAssetLibrary::_show_solers_asset_detail(const String &p_asset_id, con
 	import_button->connect(SceneStringName(pressed), callable_mp(this, &EditorAssetLibrary::_import_solers_detail_asset));
 	solers_detail_info_content->add_child(import_button);
 
-	if (display_status == "ready") {
-		solers_detail_info_content->add_child(solers_make_label(TTRC("Improve Asset"), 13, Color(0.92f, 0.92f, 0.88f)));
-		solers_detail_info_content->add_child(solers_make_label(TTRC("Geometry"), 11, Color(0.58f, 0.64f, 0.74f)));
-		solers_optimize_quality = memnew(OptionButton);
-		solers_optimize_quality->set_theme_type_variation("FlatMenuButton");
-		solers_optimize_quality->add_item(TTRC("Balanced"), 0);
-		solers_optimize_quality->add_item(TTRC("Game Ready"), 1);
-		solers_optimize_quality->add_item(TTRC("High Detail"), 2);
-		solers_optimize_quality->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-
-		Button *optimize_button = memnew(Button);
-		optimize_button->set_text(TTRC("Optimize Geometry"));
-		optimize_button->set_theme_type_variation("SolersFlatPillButton");
-		optimize_button->connect(SceneStringName(pressed), callable_mp(this, &EditorAssetLibrary::_optimize_solers_detail_asset).bind(optimize_button));
-		HBoxContainer *geometry_row = memnew(HBoxContainer);
-		geometry_row->add_theme_constant_override("separation", 8 * EDSCALE);
-		geometry_row->add_child(solers_optimize_quality);
-		geometry_row->add_child(optimize_button);
-		solers_detail_info_content->add_child(geometry_row);
-
-		solers_detail_info_content->add_child(solers_make_label(TTRC("Material"), 11, Color(0.58f, 0.64f, 0.74f)));
-		HBoxContainer *preset_row = memnew(HBoxContainer);
-		preset_row->add_theme_constant_override("separation", 6 * EDSCALE);
-		solers_detail_info_content->add_child(preset_row);
-		const char *presets[] = { "More realistic", "Stylized", "Cleaner game material" };
-		for (const char *preset : presets) {
-			Button *preset_button = memnew(Button);
-			preset_button->set_text(TTRC(preset));
-			preset_button->set_theme_type_variation("SolersFlatPillButton");
-			preset_button->connect(SceneStringName(pressed), callable_mp(this, &EditorAssetLibrary::_set_solers_restyle_prompt).bind(String(preset)));
-			preset_row->add_child(preset_button);
+	Dictionary capability_args;
+	capability_args["asset_id"] = p_asset_id;
+	const Dictionary capability_result = solers_asset_service->capabilities(capability_args);
+	if ((bool)capability_result.get("ok", false)) {
+		const Dictionary capability_data = capability_result.get("data", Dictionary());
+		const Array operations = capability_data.get("available_operations", Array());
+		String last_category;
+		bool added_actions = false;
+		for (int i = 0; i < operations.size(); i++) {
+			const Dictionary operation = operations[i];
+			if (!(bool)operation.get("ui_supported", false)) {
+				continue;
+			}
+			const String category = String(operation.get("category", String()));
+			if (category != last_category) {
+				if (!added_actions) {
+					solers_detail_info_content->add_child(solers_make_label(TTRC("Available Actions"), 13, Color(0.92f, 0.92f, 0.88f)));
+					added_actions = true;
+				}
+				if (!category.is_empty()) {
+					solers_detail_info_content->add_child(solers_make_label(category, 11, Color(0.58f, 0.64f, 0.74f)));
+				}
+				last_category = category;
+			}
+			VBoxContainer *operation_box = memnew(VBoxContainer);
+			operation_box->add_theme_constant_override("separation", 6 * EDSCALE);
+			const Dictionary schema = operation.get("options_schema", Dictionary());
+			const Dictionary properties = schema.get("properties", Dictionary());
+			const Array required = schema.get("required", Array());
+			for (int j = 0; j < required.size(); j++) {
+				const String option_name = String(required[j]);
+				const Dictionary property = properties.get(option_name, Dictionary());
+				operation_box->add_child(solers_make_operation_option_control(option_name, property));
+			}
+			Button *operation_button = memnew(Button);
+			operation_button->set_text(String(operation.get("label", operation.get("operation_id", String()))));
+			operation_button->set_theme_type_variation("SolersFlatPillButton");
+			operation_button->set_meta("solers_operation_id", operation.get("operation_id", String()));
+			operation_button->connect(SceneStringName(pressed), callable_mp(this, &EditorAssetLibrary::_run_solers_detail_operation).bind(operation_button));
+			operation_box->add_child(operation_button);
+			solers_detail_info_content->add_child(operation_box);
 		}
-
-		solers_restyle_prompt = memnew(LineEdit);
-		solers_restyle_prompt->set_placeholder(TTRC("Describe the new material..."));
-		solers_detail_info_content->add_child(solers_restyle_prompt);
-
-		Button *restyle_button = memnew(Button);
-		restyle_button->set_text(TTRC("Restyle Material"));
-		restyle_button->set_theme_type_variation("SolersFlatPillButton");
-		restyle_button->connect(SceneStringName(pressed), callable_mp(this, &EditorAssetLibrary::_restyle_solers_detail_asset).bind(restyle_button));
-		solers_detail_info_content->add_child(restyle_button);
 	}
 
 	solers_detail_import_status = solers_make_label(String(), 12, Color(0.66f, 0.74f, 0.86f), true);
@@ -2723,69 +2763,30 @@ void EditorAssetLibrary::_import_solers_detail_asset() {
 	}
 }
 
-void EditorAssetLibrary::_refine_solers_detail_asset(Button *p_button) {
+void EditorAssetLibrary::_run_solers_detail_operation(Button *p_button) {
 	if (solers_detail_asset_id.is_empty()) {
 		return;
 	}
+	const String operation_id = p_button ? String(p_button->get_meta("solers_operation_id", String())) : String();
+	if (operation_id.is_empty()) {
+		return;
+	}
+	Dictionary options;
+	if (Control *parent = Object::cast_to<Control>(p_button->get_parent())) {
+		solers_collect_operation_options(parent, options);
+	}
 	Dictionary args;
 	args["asset_id"] = solers_detail_asset_id;
-	const Dictionary result = solers_asset_service->refine_to_ready(args);
+	args["operation_id"] = operation_id;
+	args["options"] = options;
+	const Dictionary result = solers_asset_service->run_operation(args);
 	if ((bool)result.get("ok", false)) {
 		solers_mark_asset_action_creating(p_button);
 		solers_detail_import_status->set_text(String());
 		solers_library_signature = String();
 	} else {
 		const Dictionary error = result.get("error", Dictionary());
-		solers_detail_import_status->set_text(String(error.get("message", TTRC("Refine failed."))));
-	}
-}
-
-void EditorAssetLibrary::_optimize_solers_detail_asset(Button *p_button) {
-	if (solers_detail_asset_id.is_empty()) {
-		return;
-	}
-	Dictionary args;
-	args["asset_id"] = solers_detail_asset_id;
-	String quality = "balanced";
-	if (solers_optimize_quality) {
-		const int selected = solers_optimize_quality->get_selected_id();
-		quality = selected == 1 ? "game_ready" : (selected == 2 ? "high_detail" : "balanced");
-	}
-	args["quality"] = quality;
-	const Dictionary result = solers_asset_service->optimize_geometry(args);
-	if ((bool)result.get("ok", false)) {
-		solers_mark_asset_action_creating(p_button);
-		solers_detail_import_status->set_text(String());
-		solers_library_signature = String();
-	} else {
-		const Dictionary error = result.get("error", Dictionary());
-		solers_detail_import_status->set_text(String(error.get("message", TTRC("Optimize failed."))));
-	}
-}
-
-void EditorAssetLibrary::_restyle_solers_detail_asset(Button *p_button) {
-	if (solers_detail_asset_id.is_empty()) {
-		return;
-	}
-	Dictionary args;
-	args["asset_id"] = solers_detail_asset_id;
-	if (solers_restyle_prompt) {
-		args["text_style_prompt"] = solers_restyle_prompt->get_text();
-	}
-	const Dictionary result = solers_asset_service->restyle_material(args);
-	if ((bool)result.get("ok", false)) {
-		solers_mark_asset_action_creating(p_button);
-		solers_detail_import_status->set_text(String());
-		solers_library_signature = String();
-	} else {
-		const Dictionary error = result.get("error", Dictionary());
-		solers_detail_import_status->set_text(String(error.get("message", TTRC("Restyle failed."))));
-	}
-}
-
-void EditorAssetLibrary::_set_solers_restyle_prompt(const String &p_prompt) {
-	if (solers_restyle_prompt) {
-		solers_restyle_prompt->set_text(p_prompt);
+		solers_detail_import_status->set_text(String(error.get("message", TTRC("Operation failed."))));
 	}
 }
 

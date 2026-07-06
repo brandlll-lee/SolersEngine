@@ -279,8 +279,6 @@ class EditorAssetLibrary : public PanelContainer {
 	int solers_detail_view_mode = 0;
 	bool solers_detail_fullscreen = false;
 	SolersAssetService *solers_asset_service = nullptr;
-	LineEdit *solers_restyle_prompt = nullptr;
-	OptionButton *solers_optimize_quality = nullptr;
 
 	void _force_online_mode();
 	String _solers_library_signature() const;
@@ -311,10 +309,7 @@ class EditorAssetLibrary : public PanelContainer {
 	void _refresh_solers_detail_inspector();
 	void _toggle_solers_detail_fullscreen();
 	void _import_solers_detail_asset();
-	void _refine_solers_detail_asset(Button *p_button);
-	void _optimize_solers_detail_asset(Button *p_button);
-	void _restyle_solers_detail_asset(Button *p_button);
-	void _set_solers_restyle_prompt(const String &p_prompt);
+	void _run_solers_detail_operation(Button *p_button);
 
 	enum Support {
 		SUPPORT_FEATURED,
