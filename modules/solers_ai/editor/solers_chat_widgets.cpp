@@ -84,6 +84,9 @@ static String solers_glyph_body(const StringName &p_name) {
 		// lucide: arrow-up
 		return "<path d=\"m5 12 7-7 7 7\"/><path d=\"M12 19V5\"/>";
 	}
+	if (p_name == SNAME("stop")) {
+		return "<rect width=\"10\" height=\"10\" x=\"7\" y=\"7\" rx=\"1.5\" fill=\"#FFFFFF\" stroke=\"none\"/>";
+	}
 	if (p_name == SNAME("tool_observe")) {
 		// lucide: eye
 		return "<path d=\"M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0\"/><circle cx=\"12\" cy=\"12\" r=\"3\"/>";

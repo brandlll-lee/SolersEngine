@@ -470,6 +470,9 @@ SolersAssistantCell *SolersDock::_ensure_text_cell() {
 void SolersDock::_finish_turn_cells() {
 	_settle_thinking_cell();
 	_settle_tool_group();
+	if (active_text_cell) {
+		active_text_cell->finalize(String());
+	}
 	active_thinking_cell = nullptr;
 	active_text_cell = nullptr;
 	tool_cells_by_id.clear();
@@ -504,6 +507,10 @@ void SolersDock::_on_send_chat_pressed() {
 	if (!chat_input) {
 		return;
 	}
+	if (agent_session && agent_session->is_running()) {
+		_on_stop_chat_pressed();
+		return;
+	}
 
 	const String prompt = chat_input->get_text().strip_edges();
 	if (prompt.is_empty()) {
@@ -514,6 +521,24 @@ void SolersDock::_on_send_chat_pressed() {
 	_update_send_enabled();
 	_refresh_model_chip();
 	_submit_chat_prompt(prompt);
+}
+
+void SolersDock::_on_stop_chat_pressed() {
+	if (!agent_session || !agent_session->is_running()) {
+		_update_send_enabled();
+		return;
+	}
+	agent_session->abort();
+	if (permission_manager) {
+		const Array pending = permission_manager->list_pending_requests();
+		for (int i = 0; i < pending.size(); i++) {
+			const Dictionary request = pending[i];
+			permission_manager->reject_request(request.get("id", 0));
+		}
+	}
+	_finish_turn_cells();
+	_refresh_status();
+	_update_send_enabled();
 }
 
 void SolersDock::_on_workspace_toggle_pressed() {
@@ -781,8 +806,17 @@ void SolersDock::_on_chat_input_text_changed() {
 void SolersDock::_update_send_enabled() {
 	if (send_chat_button && chat_input) {
 		const bool blocked = permission_manager && permission_manager->get_pending_request_count() > 0;
-		chat_input->set_editable(!blocked);
-		send_chat_button->set_enabled(!blocked && !chat_input->get_text().strip_edges().is_empty());
+		const bool running = agent_session && agent_session->is_running();
+		chat_input->set_editable(!blocked && !running);
+		if (running) {
+			send_chat_button->configure(SNAME("stop"), SolersGlyphButton::SKIN_PRIMARY, TTR("Stop generation"), 14);
+			send_chat_button->set_pressed_callback(callable_mp(this, &SolersDock::_on_stop_chat_pressed));
+			send_chat_button->set_enabled(true);
+		} else {
+			send_chat_button->configure(SNAME("send_up"), SolersGlyphButton::SKIN_PRIMARY, TTR("Send"), 16);
+			send_chat_button->set_pressed_callback(callable_mp(this, &SolersDock::_on_send_chat_pressed));
+			send_chat_button->set_enabled(!blocked && !chat_input->get_text().strip_edges().is_empty());
+		}
 	}
 }
 
@@ -1273,6 +1307,7 @@ void SolersDock::set_agent_session(SolersAgentSession *p_agent_session) {
 void SolersDock::_on_agent_model_request_started() {
 	// Covers both the first request and every follow-up after a tool batch.
 	_ensure_status_cell(TTR("Thinking"));
+	_update_send_enabled();
 }
 
 void SolersDock::_on_agent_reasoning_delta(const String &p_text) {
@@ -1376,6 +1411,7 @@ void SolersDock::_on_agent_tool_awaiting_approval(const String &p_id, const Stri
 	// the session resolves the same call in place the moment the user decides.
 	_ensure_status_cell(TTR("Awaiting approval"));
 	_refresh_status();
+	_update_send_enabled();
 	_on_cell_content_changed();
 }
 
@@ -1417,12 +1453,14 @@ void SolersDock::_on_agent_tool_finished(const String &p_id, const String &p_nam
 void SolersDock::_on_agent_turn_completed(const Dictionary &p_result) {
 	_finish_turn_cells();
 	_refresh_status();
+	_update_send_enabled();
 }
 
 void SolersDock::_on_agent_turn_failed(const Dictionary &p_error) {
 	_finish_turn_cells();
 	_append_error_row(String::utf8("\u26a0 ") + String(p_error.get("message", "Agent turn failed.")));
 	_refresh_status();
+	_update_send_enabled();
 }
 
 void SolersDock::_on_agent_turn_retrying(int p_attempt, const String &p_message) {
@@ -1430,4 +1468,5 @@ void SolersDock::_on_agent_turn_retrying(int p_attempt, const String &p_message)
 	// keep the turn alive and show a shimmer status instead of an error row.
 	_settle_thinking_cell();
 	_ensure_status_cell(vformat(TTR("Reconnecting (attempt %d)..."), p_attempt));
+	_update_send_enabled();
 }

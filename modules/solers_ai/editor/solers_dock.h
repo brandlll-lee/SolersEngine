@@ -108,6 +108,7 @@ class SolersDock : public PanelContainer {
 	void _refresh_model_chip();
 	void _sync_layout_widths();
 	void _on_send_chat_pressed();
+	void _on_stop_chat_pressed();
 	void _on_workspace_toggle_pressed();
 	void _on_session_menu_pressed();
 	void _on_model_chip_pressed();
