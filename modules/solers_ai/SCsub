@@ -4,14 +4,25 @@ from misc.utility.scons_hints import *
 Import("env")
 Import("env_modules")
 
+import solers_skills_builder
+
 env_solers_ai = env_modules.Clone()
 
 module_obj = []
+
+skill_sources = Glob("#modules/solers_ai/skills/*/SKILL.md")
+generated_skills_header = "#modules/solers_ai/generated/solers_builtin_skills.gen.h"
+env_solers_ai.CommandNoCache(
+    generated_skills_header,
+    skill_sources,
+    env_solers_ai.Run(solers_skills_builder.make_builtin_skills_header),
+)
 
 env_solers_ai.add_source_files(module_obj, "*.cpp")
 env_solers_ai.add_source_files(module_obj, "core/*.cpp")
 env_solers_ai.add_source_files(module_obj, "llm/*.cpp")
 env_solers_ai.add_source_files(module_obj, "protocol/*.cpp")
+env_solers_ai.Depends(module_obj, generated_skills_header)
 
 if env.editor_build:
     env_solers_ai.add_source_files(module_obj, "editor/*.cpp")

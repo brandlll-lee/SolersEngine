@@ -35,6 +35,7 @@
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/inspector/multi_node_edit.h"
 #include "editor/scene/3d/node_3d_editor_plugin.h"
+#include "editor/settings/editor_command_palette.h"
 #include "editor/themes/editor_scale.h"
 #include "scene/3d/navigation/navigation_region_3d.h"
 #include "scene/3d/physics/collision_shape_3d.h"
@@ -425,6 +426,7 @@ void MeshInstance3DEditor::_create_collision_shape() {
 }
 
 void MeshInstance3DEditor::_menu_option(int p_option) {
+	ERR_FAIL_NULL_MSG(node, "Select a MeshInstance3D before running a mesh command.");
 	Ref<Mesh> mesh = node->get_mesh();
 	if (mesh.is_null()) {
 		err_dialog->set_text(TTR("Mesh is empty!"));
@@ -813,6 +815,8 @@ MeshInstance3DEditor::MeshInstance3DEditor() {
 	options->get_popup()->add_item(TTR("Unwrap UV2 for Lightmap/AO"), MENU_OPTION_CREATE_UV2);
 
 	options->get_popup()->connect(SceneStringName(id_pressed), callable_mp(this, &MeshInstance3DEditor::_menu_option));
+	EditorCommandPalette::get_singleton()->add_command(TTR("3D: Unwrap Mesh UV2 for Lightmap/AO"), "3d/mesh/unwrap_uv2",
+			callable_mp(this, &MeshInstance3DEditor::_menu_option), varray(MENU_OPTION_CREATE_UV2), nullptr);
 
 	outline_dialog = memnew(ConfirmationDialog);
 	outline_dialog->set_title(TTR("Create Outline Mesh"));

@@ -20,6 +20,7 @@
 #pragma once
 
 #include "core/string/ustring.h"
+#include "core/templates/safe_refcount.h"
 #include "core/templates/vector.h"
 #include "core/variant/dictionary.h"
 #include "modules/solers_ai/core/solers_permission_manager.h"
@@ -42,6 +43,11 @@ enum class SolersToolExposure {
 	HIDDEN,
 };
 
+enum class SolersToolExecution {
+	MAIN_THREAD,
+	WORKER_THREAD,
+};
+
 // Authoritative capability metadata. Permission/approval/redaction are decided
 // from these structured facts — never from matching the tool name. Adding a
 // new tool with new risk characteristics needs no change to the orchestrator.
@@ -54,6 +60,21 @@ struct SolersToolCapability {
 	// True when the mutation is reversible through EditorUndoRedoManager. The
 	// user can always Ctrl+Z an undoable tool — Solers' native safety net.
 	bool undoable = false;
+	// Observation payloads that are only needed for the next model step.
+	bool ephemeral_result = false;
+	// When true, identical read-only calls reuse the session cache across
+	// authored revision bumps (ClassDB/catalog facts do not change with edits).
+	bool cache_across_revisions = false;
+	// Successful completion proves spatial relations for the current scene
+	// revision. Declared by the validation tool, never inferred from its name.
+	bool produces_scene_validation = false;
+	// Godot/editor APIs stay on the main thread. Handlers opt into a worker
+	// only when they are explicitly thread-safe.
+	SolersToolExecution execution = SolersToolExecution::MAIN_THREAD;
+	// Optional parameter-aware resolver. Each item is { mode: "read"|"write",
+	// key: String }. Tools without one are conservatively treated as touching
+	// the global resource; the scheduler never guesses side effects from names.
+	std::function<Array(const Dictionary &)> resource_access;
 	// Argument keys whose values must be redacted from the timeline/logs
 	// (replaces the old per-tool-name `if` redaction in the dispatcher).
 	Vector<String> redact_args;
@@ -63,7 +84,10 @@ struct SolersToolCapability {
 // Carries identity and the approval token resolved by the orchestrator.
 struct SolersToolContext {
 	String call_id;
+	String session_id;
+	String retry_of;
 	int approval_id = 0;
+	const SafeFlag *cancel_requested = nullptr;
 };
 
 // The tool interface. Faithful to codex `ToolExecutor` / opencode `Tool.Def`:
@@ -81,6 +105,21 @@ public:
 	// Execute the call. Returns the canonical { ok, data } / { ok, error }
 	// envelope used everywhere in the module.
 	virtual Dictionary execute(const SolersToolContext &p_ctx, const Dictionary &p_args) = 0;
+	// Continue work started by execute(). The orchestrator calls this only when
+	// execute() returned data.status=pending with data.poll_args. Keeping the
+	// continuation separate guarantees that a pending call is started once.
+	virtual Dictionary poll(const SolersToolContext &, const Dictionary &) {
+		Dictionary error;
+		error["code"] = "TOOL_CONTINUATION_UNAVAILABLE";
+		error["message"] = "The tool returned pending without declaring a continuation callback.";
+		error["recoverable"] = false;
+		Dictionary result;
+		result["ok"] = false;
+		result["error"] = error;
+		return result;
+	}
+	virtual bool is_continuation_ready(const SolersToolContext &, const Dictionary &) const { return true; }
+	virtual void complete(const SolersToolContext &, const Dictionary &, const Dictionary &) {}
 
 	virtual ~SolersTool() {}
 };
@@ -91,6 +130,9 @@ public:
 class SolersFunctionTool : public SolersTool {
 public:
 	using Handler = std::function<Dictionary(const SolersToolContext &, const Dictionary &)>;
+	using PollHandler = std::function<Dictionary(const SolersToolContext &, const Dictionary &)>;
+	using ReadyHandler = std::function<bool(const SolersToolContext &, const Dictionary &)>;
+	using CompletionHandler = std::function<void(const SolersToolContext &, const Dictionary &, const Dictionary &)>;
 
 private:
 	StringName tool_name;
@@ -99,6 +141,9 @@ private:
 	SolersToolExposure tool_exposure = SolersToolExposure::DIRECT;
 	SolersToolCapability tool_capability;
 	Handler handler;
+	PollHandler poll_handler;
+	ReadyHandler ready_handler;
+	CompletionHandler completion_handler;
 
 public:
 	StringName name() const override { return tool_name; }
@@ -110,13 +155,27 @@ public:
 	Dictionary execute(const SolersToolContext &p_ctx, const Dictionary &p_args) override {
 		return handler(p_ctx, p_args);
 	}
+	Dictionary poll(const SolersToolContext &p_ctx, const Dictionary &p_args) override {
+		return poll_handler ? poll_handler(p_ctx, p_args) : SolersTool::poll(p_ctx, p_args);
+	}
+	bool is_continuation_ready(const SolersToolContext &p_ctx, const Dictionary &p_args) const override {
+		return ready_handler ? ready_handler(p_ctx, p_args) : SolersTool::is_continuation_ready(p_ctx, p_args);
+	}
+	void complete(const SolersToolContext &p_ctx, const Dictionary &p_args, const Dictionary &p_result) override {
+		if (completion_handler) {
+			completion_handler(p_ctx, p_args, p_result);
+		}
+	}
 
 	SolersFunctionTool(const StringName &p_name, const String &p_description, const Dictionary &p_schema,
-			SolersToolExposure p_exposure, const SolersToolCapability &p_capability, Handler p_handler) :
+			SolersToolExposure p_exposure, const SolersToolCapability &p_capability, Handler p_handler, PollHandler p_poll_handler = {}, ReadyHandler p_ready_handler = {}, CompletionHandler p_completion_handler = {}) :
 			tool_name(p_name),
 			tool_description(p_description),
 			schema(p_schema),
 			tool_exposure(p_exposure),
 			tool_capability(p_capability),
-			handler(std::move(p_handler)) {}
+			handler(std::move(p_handler)),
+			poll_handler(std::move(p_poll_handler)),
+			ready_handler(std::move(p_ready_handler)),
+			completion_handler(std::move(p_completion_handler)) {}
 };

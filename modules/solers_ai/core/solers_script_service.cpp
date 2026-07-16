@@ -34,12 +34,14 @@
 #include "core/core_bind.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
+#include "core/io/resource_format_binary.h"
 #include "core/io/resource_loader.h"
 #include "core/object/class_db.h"
 #include "core/object/script_language.h"
 #include "editor/file_system/editor_file_system.h"
 #include "modules/solers_ai/core/solers_action_timeline.h"
 #include "modules/solers_ai/core/solers_file_checkpoint.h"
+#include "scene/resources/resource_format_text.h"
 
 void SolersScriptService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_action_timeline", "action_timeline"), &SolersScriptService::set_action_timeline);
@@ -92,7 +94,7 @@ bool SolersScriptService::_normalize_project_path(const String &p_path, String &
 		return false;
 	}
 	const String project_data_path = ProjectSettings::get_singleton() ? ProjectSettings::get_singleton()->get_project_data_path() : "res://.godot";
-	if (!p_allow_project_data && (path == project_data_path || path.begins_with(project_data_path.path_join("")))) {
+	if (!p_allow_project_data && (path == project_data_path || path.begins_with(project_data_path + "/"))) {
 		r_error = "Refusing to edit Godot project data directly.";
 		return false;
 	}
@@ -169,6 +171,22 @@ void SolersScriptService::set_file_checkpoint(SolersFileCheckpoint *p_file_check
 	file_checkpoint = p_file_checkpoint;
 }
 
+static bool _solers_is_native_serialized_resource_path(const String &p_path) {
+	List<String> extensions;
+	if (ResourceFormatLoaderText::singleton) {
+		ResourceFormatLoaderText::singleton->get_recognized_extensions(&extensions);
+	}
+	ResourceFormatLoaderBinary binary_loader;
+	binary_loader.get_recognized_extensions(&extensions);
+	const String extension = p_path.get_extension().to_lower();
+	for (const String &recognized : extensions) {
+		if (extension == recognized.to_lower()) {
+			return true;
+		}
+	}
+	return false;
+}
+
 Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
 	const String path_arg = p_args.get("path", String());
 	const String content = p_args.get("content", String());
@@ -186,6 +204,9 @@ Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
 	String path_error;
 	if (!_normalize_project_path(path_arg, res_path, path_error)) {
 		return _error("INVALID_PATH", path_error);
+	}
+	if (_solers_is_native_serialized_resource_path(res_path)) {
+		return _error("NATIVE_RESOURCE_WRITE_BLOCKED", "Godot serialized resources must be created and edited through native Resource, scene, and UndoRedo APIs, not project.write_file.");
 	}
 
 	const bool existed_before = FileAccess::exists(res_path);
@@ -291,8 +312,8 @@ Dictionary SolersScriptService::patch_file(const Dictionary &p_args) {
 	if (!FileAccess::exists(res_path)) {
 		return _error("FILE_NOT_FOUND", vformat("File does not exist: %s", res_path));
 	}
-	if (ResourceLoader::get_resource_type(res_path) == "PackedScene") {
-		return _error("SCENE_RESOURCE_PATCH_BLOCKED", "PackedScene resources must be edited with objects.batch and saved through the harness commit path or editor.invoke, not script.patch.");
+	if (_solers_is_native_serialized_resource_path(res_path)) {
+		return _error("NATIVE_RESOURCE_PATCH_BLOCKED", "Godot serialized resources must be edited through native Resource, scene, and UndoRedo APIs, not script.patch.");
 	}
 
 	if (!expected_sha256.is_empty()) {

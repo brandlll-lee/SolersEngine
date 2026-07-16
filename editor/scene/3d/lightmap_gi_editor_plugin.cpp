@@ -33,6 +33,7 @@
 #include "editor/editor_node.h"
 #include "editor/editor_string_names.h"
 #include "editor/gui/editor_file_dialog.h"
+#include "editor/settings/editor_command_palette.h"
 
 #include "modules/modules_enabled.gen.h" // For lightmapper_rd.
 
@@ -126,6 +127,7 @@ void LightmapGIEditorPlugin::_bake_select_file(const String &p_file) {
 }
 
 void LightmapGIEditorPlugin::_bake() {
+	ERR_FAIL_NULL_MSG(lightmap, "Select a LightmapGI before running the lightmap bake command.");
 	_bake_select_file("");
 }
 
@@ -205,6 +207,8 @@ LightmapGIEditorPlugin::LightmapGIEditorPlugin() {
 	bake->hide();
 	bake->connect(SceneStringName(pressed), Callable(this, "_bake"));
 	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, bake);
+	EditorCommandPalette::get_singleton()->add_command(TTR("3D: Bake LightmapGI"), "3d/lightmap_gi/bake",
+			callable_mp(this, &LightmapGIEditorPlugin::_bake), Vector<Variant>(), nullptr);
 	lightmap = nullptr;
 
 	file_dialog = memnew(EditorFileDialog);

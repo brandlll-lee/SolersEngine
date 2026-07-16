@@ -28,7 +28,7 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#include "solers_resource_service.h"
+#include "modules/solers_ai/core/solers_resource_service.h"
 
 #include "core/config/project_settings.h"
 #include "core/io/dir_access.h"
@@ -41,20 +41,23 @@
 #include "core/os/os.h"
 #include "editor/file_system/editor_file_system.h"
 #include "editor/export/editor_export.h"
+#include "modules/solers_ai/core/solers_geometry_facts.h"
 #include "scene/main/node.h"
+#include "scene/resources/packed_scene.h"
 
 void SolersResourceService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_resource_info", "args"), &SolersResourceService::get_resource_info);
 	ClassDB::bind_method(D_METHOD("create_resource", "args"), &SolersResourceService::create_resource);
 	ClassDB::bind_method(D_METHOD("get_resource_property", "args"), &SolersResourceService::get_resource_property);
 	ClassDB::bind_method(D_METHOD("set_resource_property", "args"), &SolersResourceService::set_resource_property);
-	ClassDB::bind_method(D_METHOD("call_resource_method", "args"), &SolersResourceService::call_resource_method);
+	ClassDB::bind_method(D_METHOD("native_instantiate", "args"), &SolersResourceService::native_instantiate);
 	ClassDB::bind_method(D_METHOD("native_load", "args"), &SolersResourceService::native_load);
 	ClassDB::bind_method(D_METHOD("native_list_properties", "args"), &SolersResourceService::native_list_properties);
 	ClassDB::bind_method(D_METHOD("native_get", "args"), &SolersResourceService::native_get);
 	ClassDB::bind_method(D_METHOD("native_set", "args"), &SolersResourceService::native_set);
 	ClassDB::bind_method(D_METHOD("native_list_methods", "args"), &SolersResourceService::native_list_methods);
 	ClassDB::bind_method(D_METHOD("native_call", "args"), &SolersResourceService::native_call);
+	ClassDB::bind_method(D_METHOD("native_save", "args"), &SolersResourceService::native_save);
 	ClassDB::bind_method(D_METHOD("native_free", "args"), &SolersResourceService::native_free);
 	ClassDB::bind_method(D_METHOD("list_export_presets", "args"), &SolersResourceService::list_export_presets);
 	ClassDB::bind_method(D_METHOD("validate_export_presets", "args"), &SolersResourceService::validate_export_presets);
@@ -69,10 +72,10 @@ SolersResourceService::~SolersResourceService() {
 	}
 }
 
-bool SolersResourceService::_resolve_native_object(const Variant &p_object_id, Object *&r_object, String &r_error) const {
+static bool _solers_resolve_object_handle(const Variant &p_object_id, Object *&r_object, String &r_error) {
 	if (p_object_id.get_type() == Variant::DICTIONARY) {
 		const Dictionary handle = p_object_id;
-		return _resolve_native_object(handle.get("object_id", Variant()), r_object, r_error);
+		return _solers_resolve_object_handle(handle.get("object_id", Variant()), r_object, r_error);
 	}
 	int64_t id = 0;
 	if (p_object_id.get_type() == Variant::STRING) {
@@ -82,7 +85,7 @@ bool SolersResourceService::_resolve_native_object(const Variant &p_object_id, O
 	} else if (p_object_id.get_type() == Variant::FLOAT) {
 		id = (int64_t)(double)p_object_id;
 	} else {
-		r_error = "object_id must be the string or integer returned by native.load/native.call.";
+		r_error = "object_id must be the string or integer returned by a native object tool.";
 		return false;
 	}
 	if (id == 0) {
@@ -97,6 +100,10 @@ bool SolersResourceService::_resolve_native_object(const Variant &p_object_id, O
 	return true;
 }
 
+bool SolersResourceService::_resolve_native_object(const Variant &p_object_id, Object *&r_object, String &r_error) const {
+	return _solers_resolve_object_handle(p_object_id, r_object, r_error);
+}
+
 Dictionary SolersResourceService::_native_object_handle(Object *p_object) const {
 	Dictionary data;
 	data["kind"] = "godot_object";
@@ -109,10 +116,12 @@ Dictionary SolersResourceService::_native_object_handle(Object *p_object) const 
 	data["valid"] = true;
 	data["object_id"] = String::num_int64((int64_t)id);
 	data["class_name"] = p_object->get_class();
+	if (RefCounted *ref_counted = Object::cast_to<RefCounted>(p_object)) {
+		retained_refcounted[id] = Ref<RefCounted>(ref_counted);
+	}
 
 	Resource *resource = Object::cast_to<Resource>(p_object);
 	if (resource) {
-		retained_resources[id] = Ref<Resource>(resource);
 		data["path"] = resource->get_path();
 		data["resource_name"] = resource->get_name();
 	}
@@ -169,6 +178,26 @@ static bool _solers_find_property(Object *p_object, const StringName &p_property
 	return false;
 }
 
+static bool _solers_matches_allowed_class(Object *p_object, const StringName &p_allowed_classes) {
+	if (!p_object || p_allowed_classes == StringName()) {
+		return true;
+	}
+
+	bool matched = false;
+	const Vector<String> classes = String(p_allowed_classes).split(",");
+	for (const String &entry : classes) {
+		const String class_name = entry.strip_edges();
+		if (class_name.begins_with("-")) {
+			if (p_object->is_class(StringName(class_name.trim_prefix("-")))) {
+				return false;
+			}
+		} else if (p_object->is_class(StringName(class_name))) {
+			matched = true;
+		}
+	}
+	return matched;
+}
+
 static bool _solers_construct_variant(Variant::Type p_type, const Array &p_args, Variant &r_out) {
 	Vector<Variant> argv;
 	for (int i = 0; i < p_args.size(); i++) {
@@ -183,52 +212,200 @@ static bool _solers_construct_variant(Variant::Type p_type, const Array &p_args,
 	return call_error.error == Callable::CallError::CALL_OK;
 }
 
-static bool _solers_coerce_property_value(Object *p_object, const StringName &p_property, const Variant &p_value, Variant &r_out, String &r_error) {
+static Variant::Type _solers_packed_array_element_type(Variant::Type p_type) {
+	switch (p_type) {
+		case Variant::PACKED_BYTE_ARRAY:
+		case Variant::PACKED_INT32_ARRAY:
+		case Variant::PACKED_INT64_ARRAY:
+			return Variant::INT;
+		case Variant::PACKED_FLOAT32_ARRAY:
+		case Variant::PACKED_FLOAT64_ARRAY:
+			return Variant::FLOAT;
+		case Variant::PACKED_STRING_ARRAY:
+			return Variant::STRING;
+		case Variant::PACKED_VECTOR2_ARRAY:
+			return Variant::VECTOR2;
+		case Variant::PACKED_VECTOR3_ARRAY:
+			return Variant::VECTOR3;
+		case Variant::PACKED_COLOR_ARRAY:
+			return Variant::COLOR;
+		case Variant::PACKED_VECTOR4_ARRAY:
+			return Variant::VECTOR4;
+		default:
+			return Variant::NIL;
+	}
+}
+
+static bool _solers_construct_variant_value(Variant::Type p_type, const Variant &p_value, Variant &r_out) {
+	if (p_value.get_type() == p_type) {
+		r_out = p_value;
+		return true;
+	}
+	if (p_value.get_type() == Variant::ARRAY) {
+		const Variant::Type element_type = _solers_packed_array_element_type(p_type);
+		if (element_type != Variant::NIL) {
+			const Array values = p_value;
+			Array converted;
+			for (int i = 0; i < values.size(); i++) {
+				Variant element;
+				if (!_solers_construct_variant_value(element_type, values[i], element)) {
+					return false;
+				}
+				converted.push_back(element);
+			}
+			Array one_arg;
+			one_arg.push_back(converted);
+			return _solers_construct_variant(p_type, one_arg, r_out);
+		}
+		if (_solers_construct_variant(p_type, Array(p_value), r_out)) {
+			return true;
+		}
+		Array one_arg;
+		one_arg.push_back(p_value);
+		return _solers_construct_variant(p_type, one_arg, r_out);
+	}
+	if (p_value.get_type() != Variant::DICTIONARY) {
+		Array one_arg;
+		one_arg.push_back(p_value);
+		return _solers_construct_variant(p_type, one_arg, r_out);
+	}
+
+	Variant constructed;
+	Array no_args;
+	if (!_solers_construct_variant(p_type, no_args, constructed)) {
+		return false;
+	}
+	const Dictionary components = p_value;
+	for (const Variant *key = components.next(nullptr); key; key = components.next(key)) {
+		if (key->get_type() != Variant::STRING && key->get_type() != Variant::STRING_NAME) {
+			return false;
+		}
+		const StringName component_name = StringName(String(*key));
+		bool valid = false;
+		const Variant current = constructed.get_named(component_name, valid);
+		if (!valid) {
+			return false;
+		}
+		Variant component = components[*key];
+		if (component.get_type() != current.get_type()) {
+			Variant coerced;
+			if (!_solers_construct_variant_value(current.get_type(), component, coerced)) {
+				return false;
+			}
+			component = coerced;
+		}
+		constructed.set_named(component_name, component, valid);
+		if (!valid) {
+			return false;
+		}
+	}
+	r_out = constructed;
+	return true;
+}
+
+static bool _solers_coerce_value(const PropertyInfo &p_info, const Variant &p_value, Variant &r_out, String &r_error) {
+	if (p_info.type == Variant::NIL || (p_info.type != Variant::OBJECT && p_value.get_type() == p_info.type)) {
+		r_out = p_value;
+		return true;
+	}
+	if (p_info.type == Variant::OBJECT) {
+		Object *object = nullptr;
+		Variant object_value;
+		if (p_value.get_type() == Variant::NIL) {
+			r_out = Variant();
+			return true;
+		}
+		if (p_value.get_type() == Variant::OBJECT) {
+			object = p_value;
+			object_value = p_value;
+		} else if (p_value.get_type() == Variant::DICTIONARY) {
+			if (!_solers_resolve_object_handle(p_value, object, r_error)) {
+				return false;
+			}
+			object_value = object;
+		} else if (p_value.get_type() == Variant::STRING) {
+			const String path = String(p_value).strip_edges().replace_char('\\', '/').simplify_path();
+			if (path.begins_with("res://")) {
+				Error load_error = OK;
+				const Ref<Resource> resource = ResourceLoader::load(path, String(), ResourceFormatLoader::CACHE_MODE_REUSE, &load_error);
+				if (resource.is_null() || load_error != OK) {
+					r_error = vformat("Failed to load resource '%s' (error %d).", path, (int)load_error);
+					return false;
+				}
+				object = resource.ptr();
+				object_value = resource;
+			}
+		}
+		if (!object) {
+			r_error = vformat("Expected %s or a res:// resource path, not %s.", String(p_info.class_name), Variant::get_type_name(p_value.get_type()));
+			return false;
+		}
+		if (!_solers_matches_allowed_class(object, p_info.class_name)) {
+			r_error = vformat("Object is %s, expected %s.", object->get_class(), String(p_info.class_name));
+			return false;
+		}
+		r_out = object_value;
+		return true;
+	}
+	if (_solers_construct_variant_value(p_info.type, p_value, r_out)) {
+		return true;
+	}
+	r_error = vformat("Could not construct %s from %s.", Variant::get_type_name(p_info.type), Variant::get_type_name(p_value.get_type()));
+	return false;
+}
+
+static bool _solers_property_matches(const Variant &p_actual, const Variant &p_expected) {
+	if ((p_actual.get_type() == Variant::FLOAT || p_actual.get_type() == Variant::INT) &&
+			(p_expected.get_type() == Variant::FLOAT || p_expected.get_type() == Variant::INT)) {
+		return Math::is_equal_approx((double)p_actual, (double)p_expected);
+	}
+	return p_actual == p_expected;
+}
+
+bool solers_coerce_property_value(Object *p_object, const StringName &p_property, const Variant &p_value, Variant &r_out, String &r_error) {
 	PropertyInfo info;
 	if (!_solers_find_property(p_object, p_property, info)) {
 		r_error = vformat("Property '%s' is not exposed by %s.", String(p_property), p_object->get_class());
 		return false;
 	}
-	if (p_value.get_type() == info.type) {
-		r_out = p_value;
+	if (_solers_coerce_value(info, p_value, r_out, r_error)) {
 		return true;
 	}
-	if (info.type == Variant::OBJECT && p_value.get_type() == Variant::STRING) {
-		String path = String(p_value).strip_edges().replace_char('\\', '/').simplify_path();
-		if (path.begins_with("res://")) {
-			Error load_error = OK;
-			Ref<Resource> resource = ResourceLoader::load(path, String(info.class_name), ResourceFormatLoader::CACHE_MODE_REUSE, &load_error);
-			if (resource.is_null() || load_error != OK) {
-				r_error = vformat("Failed to load resource '%s' for property '%s' (error %d).", path, String(p_property), (int)load_error);
-				return false;
-			}
-			if (info.class_name != StringName() && !ClassDB::is_parent_class(resource->get_class_name(), info.class_name)) {
-				r_error = vformat("Resource '%s' is %s, expected %s.", path, resource->get_class(), String(info.class_name));
-				return false;
-			}
-			r_out = resource;
-			return true;
-		}
-	}
-	if (p_value.get_type() == Variant::ARRAY && _solers_construct_variant(info.type, p_value, r_out)) {
-		return true;
-	}
-	if (info.type == Variant::COLOR && p_value.get_type() == Variant::DICTIONARY) {
-		const Dictionary components = p_value;
-		if (components.has("r") && components.has("g") && components.has("b")) {
-			Array args;
-			args.push_back(components["r"]);
-			args.push_back(components["g"]);
-			args.push_back(components["b"]);
-			args.push_back(components.get("a", 1.0));
-			if (_solers_construct_variant(info.type, args, r_out)) {
-				return true;
-			}
-		}
-		r_error = "Could not construct Color from the provided dictionary; expected r, g, b and optional a.";
+	r_error = vformat("Property '%s': %s", String(p_property), r_error);
+	return false;
+}
+
+bool solers_call_method(Object *p_object, const MethodInfo &p_method, const Array &p_args, Variant &r_result, String &r_error_code, String &r_error) {
+	const int declared_args = p_method.arguments.size();
+	const int required_args = declared_args - p_method.default_arguments.size();
+	const bool vararg = (p_method.flags & METHOD_FLAG_VARARG) != 0;
+	if (p_args.size() < required_args || (!vararg && p_args.size() > declared_args)) {
+		r_error_code = "INVALID_ARGUMENT_COUNT";
+		r_error = vformat("%s.%s expects %d-%s arguments, got %d.", p_object->get_class(), String(p_method.name), required_args, vararg ? String("many") : String::num_int64(declared_args), p_args.size());
 		return false;
 	}
-	r_out = p_value;
+
+	Vector<Variant> argv;
+	for (int i = 0; i < p_args.size(); i++) {
+		Variant value = p_args[i];
+		if (i < declared_args && !_solers_coerce_value(p_method.arguments[i], value, value, r_error)) {
+			r_error_code = "INVALID_ARGUMENT_VALUE";
+			r_error = vformat("Argument %d ('%s') for %s.%s: %s", i, String(p_method.arguments[i].name), p_object->get_class(), String(p_method.name), r_error);
+			return false;
+		}
+		argv.push_back(value);
+	}
+	Vector<const Variant *> argp;
+	for (int i = 0; i < argv.size(); i++) {
+		argp.push_back(&argv[i]);
+	}
+	Callable::CallError call_error;
+	r_result = p_object->callp(p_method.name, argp.ptrw(), argp.size(), call_error);
+	if (call_error.error != Callable::CallError::CALL_OK) {
+		r_error_code = "METHOD_CALL_FAILED";
+		r_error = vformat("Calling %s.%s(%d args) failed (error %d).", p_object->get_class(), String(p_method.name), p_args.size(), (int)call_error.error);
+		return false;
+	}
 	return true;
 }
 
@@ -238,28 +415,6 @@ static Dictionary _solers_resource_data(const Ref<Resource> &p_resource, const S
 	data["class_name"] = p_resource->get_class();
 	data["resource_name"] = p_resource->get_name();
 	return data;
-}
-
-static bool _solers_save_resource_object(Object *p_object, String &r_error) {
-	Resource *resource = Object::cast_to<Resource>(p_object);
-	if (!resource) {
-		r_error = vformat("%s is not a Resource and cannot be saved with ResourceSaver.", p_object->get_class());
-		return false;
-	}
-	const String path = resource->get_path();
-	if (path.is_empty()) {
-		r_error = vformat("%s has no resource path to save.", resource->get_class());
-		return false;
-	}
-	const Error save_err = ResourceSaver::save(resource, path);
-	if (save_err != OK) {
-		r_error = vformat("Failed to save resource '%s' (error %d).", path, (int)save_err);
-		return false;
-	}
-	if (EditorFileSystem::get_singleton()) {
-		EditorFileSystem::get_singleton()->update_file(path);
-	}
-	return true;
 }
 
 Dictionary SolersResourceService::_ok(const Variant &p_data) const {
@@ -368,6 +523,21 @@ Dictionary SolersResourceService::get_resource_info(const Dictionary &p_args) co
 	data["is_imported"] = ResourceLoader::is_imported(path);
 	data["import_valid"] = ResourceLoader::is_import_valid(path);
 	data["import_group_file"] = ResourceLoader::get_import_group_file(path);
+	if ((bool)data["resource_exists"]) {
+		Error load_error = OK;
+		const Ref<Resource> resource = ResourceLoader::load(path, String(), ResourceFormatLoader::CACHE_MODE_REUSE, &load_error);
+		const Ref<Mesh> mesh = resource;
+		const Ref<PackedScene> scene = resource;
+		if (load_error == OK && mesh.is_valid()) {
+			data["geometry"] = solers_describe_mesh(mesh);
+		} else if (load_error == OK && scene.is_valid()) {
+			Node *root = scene->instantiate(PackedScene::GEN_EDIT_STATE_DISABLED);
+			if (root) {
+				data["geometry"] = solers_describe_geometry(root);
+				memdelete(root);
+			}
+		}
+	}
 
 	if (include_dependencies) {
 		List<String> dependencies;
@@ -412,6 +582,26 @@ Dictionary SolersResourceService::create_resource(const Dictionary &p_args) cons
 		return _error("RESOURCE_INSTANTIATION_FAILED", vformat("Failed to instantiate resource type: %s", class_name), false);
 	}
 
+	const Variant initial_properties = p_args.get("properties", Dictionary());
+	if (initial_properties.get_type() != Variant::DICTIONARY) {
+		return _error("INVALID_ARGUMENT", "properties must be an object.");
+	}
+	const Dictionary properties = initial_properties;
+	const Array property_names = properties.keys();
+	for (int i = 0; i < property_names.size(); i++) {
+		const StringName property = StringName(property_names[i]);
+		Variant value;
+		String error;
+		if (!solers_coerce_property_value(resource.ptr(), property, properties[property_names[i]], value, error)) {
+			return _error("INVALID_PROPERTY_VALUE", error);
+		}
+		bool valid = false;
+		resource->set(property, value, &valid);
+		if (!valid) {
+			return _error("PROPERTY_SET_FAILED", vformat("Setting property '%s' failed on %s.", String(property), resource->get_class()));
+		}
+	}
+
 	Error dir_err = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(path.get_base_dir()));
 	if (dir_err != OK) {
 		return _error("DIRECTORY_CREATE_FAILED", vformat("Failed to create parent directory, error code %d.", dir_err));
@@ -423,7 +613,9 @@ Dictionary SolersResourceService::create_resource(const Dictionary &p_args) cons
 	if (EditorFileSystem::get_singleton()) {
 		EditorFileSystem::get_singleton()->update_file(path);
 	}
-	return _ok(_solers_resource_data(resource, path));
+	Dictionary data = _solers_resource_data(resource, path);
+	data["initialized_property_count"] = property_names.size();
+	return _ok(data);
 }
 
 Dictionary SolersResourceService::get_resource_property(const Dictionary &p_args) const {
@@ -460,13 +652,22 @@ Dictionary SolersResourceService::get_resource_property(const Dictionary &p_args
 
 Dictionary SolersResourceService::set_resource_property(const Dictionary &p_args) const {
 	const String path_arg = p_args.get("path", String());
-	const String property = String(p_args.get("property", String())).strip_edges();
 	const String type_hint = p_args.get("type_hint", String());
-	if (property.is_empty()) {
-		return _error("INVALID_ARGUMENT", "property is required.");
-	}
-	if (!p_args.has("value")) {
-		return _error("INVALID_ARGUMENT", "value is required.");
+	Dictionary properties;
+	if (p_args.has("properties")) {
+		if (p_args["properties"].get_type() != Variant::DICTIONARY || Dictionary(p_args["properties"]).is_empty()) {
+			return _error("INVALID_ARGUMENT", "properties must be a non-empty object.");
+		}
+		if (p_args.has("property") || p_args.has("value")) {
+			return _error("INVALID_ARGUMENT", "Use properties or property/value, not both.");
+		}
+		properties = p_args["properties"];
+	} else {
+		const String property = String(p_args.get("property", String())).strip_edges();
+		if (property.is_empty() || !p_args.has("value")) {
+			return _error("INVALID_ARGUMENT", "Provide a non-empty properties object or property and value.");
+		}
+		properties[property] = p_args["value"];
 	}
 
 	String path;
@@ -480,19 +681,35 @@ Dictionary SolersResourceService::set_resource_property(const Dictionary &p_args
 		return _error("RESOURCE_LOAD_FAILED", vformat("Failed to load resource '%s' (error %d).", path, (int)load_error));
 	}
 
-	const StringName property_sn = StringName(property);
-	Variant value;
-	String error;
-	if (!_solers_coerce_property_value(resource.ptr(), property_sn, p_args["value"], value, error)) {
-		return _error("INVALID_PROPERTY_VALUE", error);
+	const Array names = properties.keys();
+	Array values;
+	Array old_values;
+	for (int i = 0; i < names.size(); i++) {
+		const StringName property = StringName(names[i]);
+		Variant value;
+		String error;
+		if (!solers_coerce_property_value(resource.ptr(), property, properties[names[i]], value, error)) {
+			return _error("INVALID_PROPERTY_VALUE", error);
+		}
+		values.push_back(value);
+		old_values.push_back(resource->get(property));
 	}
-	bool valid = false;
-	resource->set(property_sn, value, &valid);
-	if (!valid) {
-		return _error("PROPERTY_SET_FAILED", vformat("Setting property '%s' failed on %s.", property, resource->get_class()));
+	for (int i = 0; i < names.size(); i++) {
+		const StringName property = StringName(names[i]);
+		bool valid = false;
+		resource->set(property, values[i], &valid);
+		if (!valid || !_solers_property_matches(resource->get(property), values[i])) {
+			for (int restore = 0; restore <= i; restore++) {
+				resource->set(StringName(names[restore]), old_values[restore]);
+			}
+			return _error("PROPERTY_SET_FAILED", vformat("Setting property '%s' failed on %s.", String(property), resource->get_class()));
+		}
 	}
 	Error save_err = ResourceSaver::save(resource, path);
 	if (save_err != OK) {
+		for (int i = 0; i < names.size(); i++) {
+			resource->set(StringName(names[i]), old_values[i]);
+		}
 		return _error("RESOURCE_SAVE_FAILED", vformat("Failed to save resource, error code %d.", save_err));
 	}
 	if (EditorFileSystem::get_singleton()) {
@@ -500,65 +717,34 @@ Dictionary SolersResourceService::set_resource_property(const Dictionary &p_args
 	}
 
 	Dictionary data = _solers_resource_data(resource, path);
-	data["property"] = property;
-	data["value"] = _displayable(resource->get(property_sn));
+	Dictionary updated;
+	for (int i = 0; i < names.size(); i++) {
+		updated[names[i]] = _displayable(resource->get(StringName(names[i])));
+	}
+	data["properties"] = updated;
+	data["updated_property_count"] = names.size();
+	if (names.size() == 1) {
+		data["property"] = names[0];
+		data["value"] = updated[names[0]];
+	}
 	return _ok(data);
 }
 
-Dictionary SolersResourceService::call_resource_method(const Dictionary &p_args) const {
-	const String path_arg = p_args.get("path", String());
-	const String method = String(p_args.get("method", String())).strip_edges();
-	const String type_hint = p_args.get("type_hint", String());
-	const Array args = p_args.get("args", Array());
-	const bool save = p_args.get("save", false);
-	if (method.is_empty()) {
-		return _error("INVALID_ARGUMENT", "method is required.");
+Dictionary SolersResourceService::native_instantiate(const Dictionary &p_args) const {
+	const String class_name = String(p_args.get("class_name", String())).strip_edges();
+	if (class_name.is_empty()) {
+		return _error("INVALID_ARGUMENT", "class_name is required.");
 	}
-
-	String path;
-	String path_error;
-	if (!_normalize_project_path(path_arg, path, path_error)) {
-		return _error("INVALID_PATH", path_error);
+	const StringName class_sn = StringName(class_name);
+	if (!ClassDB::class_exists(class_sn) || !ClassDB::can_instantiate(class_sn) || !ClassDB::is_parent_class(class_sn, SNAME("RefCounted"))) {
+		return _error("INVALID_REFCOUNTED_TYPE", vformat("Class is not an instantiable RefCounted type: %s", class_name));
 	}
-	Error load_error = OK;
-	Ref<Resource> resource = ResourceLoader::load(path, type_hint, ResourceFormatLoader::CACHE_MODE_REUSE, &load_error);
-	if (resource.is_null() || load_error != OK) {
-		return _error("RESOURCE_LOAD_FAILED", vformat("Failed to load resource '%s' (error %d).", path, (int)load_error));
+	RefCounted *object = Object::cast_to<RefCounted>(ClassDB::instantiate(class_sn));
+	if (!object) {
+		return _error("NATIVE_INSTANTIATION_FAILED", vformat("Failed to instantiate RefCounted type: %s", class_name), false);
 	}
-
-	const StringName method_sn = StringName(method);
-	if (!resource->has_method(method_sn)) {
-		return _error("UNKNOWN_METHOD", vformat("Method '%s' is not available on %s.", method, resource->get_class()));
-	}
-	Vector<Variant> argv;
-	for (int i = 0; i < args.size(); i++) {
-		argv.push_back(args[i]);
-	}
-	Vector<const Variant *> argp;
-	for (int i = 0; i < argv.size(); i++) {
-		argp.push_back(&argv[i]);
-	}
-	Callable::CallError call_error;
-	const Variant ret = resource->callp(method_sn, argp.ptrw(), argp.size(), call_error);
-	if (call_error.error != Callable::CallError::CALL_OK) {
-		return _error("METHOD_CALL_FAILED", vformat("Calling %s.%s(%d args) failed (error %d).", resource->get_class(), method, args.size(), (int)call_error.error));
-	}
-	if (save) {
-		Error save_err = ResourceSaver::save(resource, path);
-		if (save_err != OK) {
-			return _error("RESOURCE_SAVE_FAILED", vformat("Failed to save resource, error code %d.", save_err));
-		}
-		if (EditorFileSystem::get_singleton()) {
-			EditorFileSystem::get_singleton()->update_file(path);
-		}
-	}
-
-	Dictionary data = _solers_resource_data(resource, path);
-	data["method"] = method;
-	data["arg_count"] = args.size();
-	data["saved"] = save;
-	data["result"] = _displayable(ret);
-	return _ok(data);
+	retained_refcounted[object->get_instance_id()] = Ref<RefCounted>(object);
+	return _ok(_native_object_handle(object));
 }
 
 Dictionary SolersResourceService::native_load(const Dictionary &p_args) const {
@@ -575,7 +761,7 @@ Dictionary SolersResourceService::native_load(const Dictionary &p_args) const {
 	if (resource.is_null() || load_error != OK) {
 		return _error("RESOURCE_LOAD_FAILED", vformat("Failed to load resource '%s' (error %d).", path, (int)load_error));
 	}
-	retained_resources[resource->get_instance_id()] = resource;
+	retained_refcounted[resource->get_instance_id()] = resource;
 
 	Dictionary data = _native_object_handle(resource.ptr());
 	data["path"] = path;
@@ -637,7 +823,6 @@ Dictionary SolersResourceService::native_set(const Dictionary &p_args) const {
 		return _error("INVALID_OBJECT", error);
 	}
 	const String property = String(p_args.get("property", String())).strip_edges();
-	const bool save = p_args.get("save", false);
 	if (property.is_empty()) {
 		return _error("INVALID_ARGUMENT", "property is required.");
 	}
@@ -647,7 +832,7 @@ Dictionary SolersResourceService::native_set(const Dictionary &p_args) const {
 
 	const StringName property_sn = StringName(property);
 	Variant value;
-	if (!_solers_coerce_property_value(object, property_sn, p_args["value"], value, error)) {
+	if (!solers_coerce_property_value(object, property_sn, p_args["value"], value, error)) {
 		return _error("INVALID_PROPERTY_VALUE", error);
 	}
 	bool valid = false;
@@ -655,14 +840,9 @@ Dictionary SolersResourceService::native_set(const Dictionary &p_args) const {
 	if (!valid) {
 		return _error("PROPERTY_SET_FAILED", vformat("Setting property '%s' failed on %s.", property, object->get_class()));
 	}
-	if (save && !_solers_save_resource_object(object, error)) {
-		return _error("RESOURCE_SAVE_FAILED", error);
-	}
-
 	Dictionary data;
 	data["object"] = _native_object_handle(object);
 	data["property"] = property;
-	data["saved"] = save;
 	data["value"] = _displayable(object->get(property_sn));
 	return _ok(data);
 }
@@ -699,46 +879,65 @@ Dictionary SolersResourceService::native_call(const Dictionary &p_args) const {
 	}
 	const String method = String(p_args.get("method", String())).strip_edges();
 	const Array args = p_args.get("args", Array());
-	const bool save = p_args.get("save", false);
 	if (method.is_empty()) {
 		return _error("INVALID_ARGUMENT", "method is required.");
 	}
 	const StringName method_sn = StringName(method);
-	if (!object->has_method(method_sn)) {
+	MethodInfo method_info;
+	bool found_method = false;
+	List<MethodInfo> methods;
+	object->get_method_list(&methods);
+	for (const MethodInfo &candidate : methods) {
+		if (candidate.name == method_sn) {
+			method_info = candidate;
+			found_method = true;
+			break;
+		}
+	}
+	if (!found_method) {
 		return _error("UNKNOWN_METHOD", vformat("Method '%s' is not available on %s.", method, object->get_class()));
 	}
-
-	Vector<Variant> argv;
-	for (int i = 0; i < args.size(); i++) {
-		Variant value = args[i];
-		if (value.get_type() == Variant::DICTIONARY) {
-			Object *arg_object = nullptr;
-			String arg_error;
-			if (_resolve_native_object(value, arg_object, arg_error)) {
-				value = arg_object;
-			}
-		}
-		argv.push_back(value);
-	}
-	Vector<const Variant *> argp;
-	for (int i = 0; i < argv.size(); i++) {
-		argp.push_back(&argv[i]);
-	}
-	Callable::CallError call_error;
-	const Variant ret = object->callp(method_sn, argp.ptrw(), argp.size(), call_error);
-	if (call_error.error != Callable::CallError::CALL_OK) {
-		return _error("METHOD_CALL_FAILED", vformat("Calling %s.%s(%d args) failed (error %d).", object->get_class(), method, args.size(), (int)call_error.error));
-	}
-	if (save && !_solers_save_resource_object(object, error)) {
-		return _error("RESOURCE_SAVE_FAILED", error);
+	Variant ret;
+	String error_code;
+	if (!solers_call_method(object, method_info, args, ret, error_code, error)) {
+		return _error(error_code, error);
 	}
 
 	Dictionary data;
 	data["object"] = _native_object_handle(object);
 	data["method"] = method;
 	data["arg_count"] = args.size();
-	data["saved"] = save;
 	data["result"] = _displayable(ret);
+	return _ok(data);
+}
+
+Dictionary SolersResourceService::native_save(const Dictionary &p_args) const {
+	Object *object = nullptr;
+	String error;
+	if (!_resolve_native_object(p_args.get("object_id", Variant()), object, error)) {
+		return _error("INVALID_OBJECT", error);
+	}
+	Resource *resource = Object::cast_to<Resource>(object);
+	if (!resource) {
+		return _error("INVALID_RESOURCE", vformat("%s cannot be saved with ResourceSaver.", object->get_class()));
+	}
+	String path;
+	if (!_normalize_project_path(p_args.get("path", String()), path, error)) {
+		return _error("INVALID_PATH", error);
+	}
+	const Error dir_error = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(path.get_base_dir()));
+	if (dir_error != OK) {
+		return _error("DIRECTORY_CREATE_FAILED", vformat("Failed to create parent directory, error code %d.", dir_error));
+	}
+	const Error save_error = ResourceSaver::save(resource, path);
+	if (save_error != OK) {
+		return _error("RESOURCE_SAVE_FAILED", vformat("Failed to save resource '%s' (error %d).", path, (int)save_error));
+	}
+	if (EditorFileSystem::get_singleton()) {
+		EditorFileSystem::get_singleton()->update_file(path);
+	}
+	Dictionary data = _native_object_handle(resource);
+	data["path"] = path;
 	return _ok(data);
 }
 
@@ -749,10 +948,10 @@ Dictionary SolersResourceService::native_free(const Dictionary &p_args) const {
 		return _error("INVALID_OBJECT", error);
 	}
 	const ObjectID id = object->get_instance_id();
-	const bool had_resource = retained_resources.has(id);
+	const bool had_refcounted = retained_refcounted.has(id);
 	const bool had_temp = temp_nodes.has(id);
-	if (had_resource) {
-		retained_resources.erase(id);
+	if (had_refcounted) {
+		retained_refcounted.erase(id);
 	}
 	if (had_temp) {
 		Node *node = temp_nodes[id];
@@ -762,7 +961,7 @@ Dictionary SolersResourceService::native_free(const Dictionary &p_args) const {
 
 	Dictionary data;
 	data["object_id"] = String::num_int64((int64_t)id);
-	data["freed"] = had_resource || had_temp;
+	data["freed"] = had_refcounted || had_temp;
 	return _ok(data);
 }
 

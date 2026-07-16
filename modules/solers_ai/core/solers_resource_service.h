@@ -37,10 +37,13 @@
 
 class Node;
 
+bool solers_coerce_property_value(Object *p_object, const StringName &p_property, const Variant &p_value, Variant &r_out, String &r_error);
+bool solers_call_method(Object *p_object, const MethodInfo &p_method, const Array &p_args, Variant &r_result, String &r_error_code, String &r_error);
+
 class SolersResourceService : public Object {
 	GDCLASS(SolersResourceService, Object);
 
-	mutable HashMap<ObjectID, Ref<Resource>> retained_resources;
+	mutable HashMap<ObjectID, Ref<RefCounted>> retained_refcounted;
 	mutable HashMap<ObjectID, Node *> temp_nodes;
 
 	Dictionary _ok(const Variant &p_data) const;
@@ -61,13 +64,14 @@ public:
 	Dictionary create_resource(const Dictionary &p_args) const;
 	Dictionary get_resource_property(const Dictionary &p_args) const;
 	Dictionary set_resource_property(const Dictionary &p_args) const;
-	Dictionary call_resource_method(const Dictionary &p_args) const;
+	Dictionary native_instantiate(const Dictionary &p_args) const;
 	Dictionary native_load(const Dictionary &p_args) const;
 	Dictionary native_list_properties(const Dictionary &p_args) const;
 	Dictionary native_get(const Dictionary &p_args) const;
 	Dictionary native_set(const Dictionary &p_args) const;
 	Dictionary native_list_methods(const Dictionary &p_args) const;
 	Dictionary native_call(const Dictionary &p_args) const;
+	Dictionary native_save(const Dictionary &p_args) const;
 	Dictionary native_free(const Dictionary &p_args) const;
 	Dictionary list_export_presets(const Dictionary &p_args) const;
 	Dictionary validate_export_presets(const Dictionary &p_args) const;
