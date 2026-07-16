@@ -59,11 +59,12 @@ void EditorLog::_error_handler(void *p_self, const char *p_func, const char *p_f
 	}
 
 	MessageType message_type = p_type == ERR_HANDLER_WARNING ? MSG_TYPE_WARNING : MSG_TYPE_ERROR;
+	const Thread::ID source_thread = Thread::get_caller_id();
 
 	if (!Thread::is_main_thread()) {
-		MessageQueue::get_main_singleton()->push_callable(callable_mp(self, &EditorLog::add_message), err_str, message_type);
+		MessageQueue::get_main_singleton()->push_callable(callable_mp(self, &EditorLog::add_message), err_str, message_type, source_thread);
 	} else {
-		self->add_message(err_str, message_type);
+		self->add_message(err_str, message_type, source_thread);
 	}
 }
 
@@ -255,7 +256,7 @@ void EditorLog::clear() {
 	_clear_request();
 }
 
-void EditorLog::_process_message(const String &p_msg, MessageType p_type, bool p_clear) {
+void EditorLog::_process_message(const String &p_msg, MessageType p_type, bool p_clear, Thread::ID p_source_thread) {
 	if (messages.size() > 0 && messages[messages.size() - 1].text == p_msg && messages[messages.size() - 1].type == p_type) {
 		// If previous message is the same as the new one, increase previous count rather than adding another
 		// instance to the messages list.
@@ -271,9 +272,25 @@ void EditorLog::_process_message(const String &p_msg, MessageType p_type, bool p
 	}
 
 	type_filter_map[p_type]->set_message_count(type_filter_map[p_type]->get_message_count() + 1);
+	if (message_audit_callback.is_valid()) {
+		message_audit_callback.call(p_msg, (int)p_type, (int64_t)p_source_thread);
+	}
 }
 
-void EditorLog::add_message(const String &p_msg, MessageType p_type) {
+void EditorLog::set_message_audit_callback(const Callable &p_callback) {
+	message_audit_callback = p_callback;
+}
+
+void EditorLog::clear_message_audit_callback(const Callable &p_callback) {
+	if (message_audit_callback == p_callback) {
+		message_audit_callback = Callable();
+	}
+}
+
+void EditorLog::add_message(const String &p_msg, MessageType p_type, Thread::ID p_source_thread) {
+	if (p_source_thread == Thread::UNASSIGNED_ID) {
+		p_source_thread = Thread::get_caller_id();
+	}
 	// Make text split by new lines their own message.
 	// See #41321 for reasoning. At time of writing, multiple print()'s in running projects
 	// get grouped together and sent to the editor log as one message. This can mess with the
@@ -283,7 +300,7 @@ void EditorLog::add_message(const String &p_msg, MessageType p_type) {
 	int line_count = lines.size();
 
 	for (int i = 0; i < line_count; i++) {
-		_process_message(lines[i], p_type, i == line_count - 1);
+		_process_message(lines[i], p_type, i == line_count - 1, p_source_thread);
 	}
 }
 

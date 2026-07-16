@@ -284,6 +284,12 @@ void GameViewDebugger::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("session_stopped"));
 }
 
+GameViewDebugger *GameViewDebugger::singleton = nullptr;
+
+bool GameViewDebugger::request_root_viewport_screenshot(const Callable &p_callback) {
+	return singleton && singleton->add_screenshot_callback(p_callback, Rect2i());
+}
+
 bool GameViewDebugger::add_screenshot_callback(const Callable &p_callaback, const Rect2i &p_rect) {
 	bool found = false;
 	for (Ref<EditorDebuggerSession> &I : sessions) {
@@ -340,12 +346,19 @@ bool GameViewDebugger::has_capture(const String &p_capture) const {
 }
 
 GameViewDebugger::GameViewDebugger() {
+	singleton = this;
 	EditorFeatureProfileManager::get_singleton()->connect("current_feature_profile_changed", callable_mp(this, &GameViewDebugger::_feature_profile_changed));
 
 	ED_SHORTCUT("editor/suspend_resume_embedded_project", TTRC("Suspend/Resume Embedded Project"), Key::F9);
 	ED_SHORTCUT_OVERRIDE("editor/suspend_resume_embedded_project", "macos", KeyModifierMask::META | KeyModifierMask::SHIFT | Key::B);
 
 	ED_SHORTCUT("editor/next_frame_embedded_project", TTRC("Next Frame"), Key::F10);
+}
+
+GameViewDebugger::~GameViewDebugger() {
+	if (singleton == this) {
+		singleton = nullptr;
+	}
 }
 
 ///////

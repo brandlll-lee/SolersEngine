@@ -7,58 +7,61 @@
 /**************************************************************************/
 /* Solers: AI-native game engine.                                        */
 /*                                                                        */
-/* Context management — the harness's third necessary element. Modeled on  */
-/* opencode `session/compaction.ts` and Claude Code's tiered cascade:      */
-/*                                                                         */
-/*   Tier 1 (prune, no LLM): clear the oldest tool-result payloads,        */
-/*     keeping the most recent ones within a token budget. Surgical,       */
-/*     cheap, runs every request.                                          */
-/*   Tier 2 (elide, no LLM): if still over budget, drop whole middle       */
-/*     turns, preserving the first turn (intent) and the most recent       */
-/*     turns, replacing the gap with a single elision marker.              */
-/*                                                                         */
-/* Together these bound the request size deterministically, which is the   */
-/* fix for the unbounded-history OOM. An LLM-summary tier can layer on top  */
-/* later without changing this contract.                                   */
+/* Context management derived from Kimi Code's FullCompaction and         */
+/* MicroCompaction. Provider usage is authoritative for messages already  */
+/* sent; a cheap estimator covers pending messages. Old tool payloads are  */
+/* cleared only in the request projection, while full compaction replaces */
+/* history with recent real user input plus one model-written handoff.     */
 /**************************************************************************/
 
 #pragma once
 
+#include "core/typedefs.h"
 #include "core/string/ustring.h"
 #include "core/variant/array.h"
 #include "core/variant/dictionary.h"
 
 class SolersContextManager {
-	// Reclaim oldest tool outputs once recent tool output exceeds this many
-	// (estimated) tokens. Mirrors opencode's PRUNE_PROTECT.
-	static constexpr int TOOL_RESULT_PROTECT_TOKENS = 40000;
-	// Whole turns to always keep at the tail during tier-2 elision.
-	static constexpr int KEEP_RECENT_TURNS = 4;
-	static constexpr int MIN_KEEP_RECENT_TURNS = 1;
+	static constexpr int COMPACT_USER_MESSAGE_MAX_TOKENS = 20000;
+	static constexpr double COMPACTION_TRIGGER_RATIO = 0.85;
+	static constexpr int RESERVED_CONTEXT_TOKENS = 50000;
+	static constexpr int MEDIA_TOKEN_ESTIMATE = 2000;
 
+	int authoritative_tokens = 0;
+	int covered_message_count = 0;
+	int micro_cutoff = 0;
 	int last_estimated_tokens = 0;
-	int prune_count = 0;
+	int micro_compaction_count = 0;
 	int compaction_count = 0;
+	int last_compacted_token_count = -1;
 
-	static int _estimate_tokens(const Array &p_messages);
-	static int _estimate_text_tokens(const String &p_text);
-	// Tier 1: replace stale tool-result content with a placeholder in place.
-	int _prune(Array &p_messages) const;
-	// Tier 2: drop whole middle turns, keeping first + recent turns.
-	Array _elide(const Array &p_messages, int p_context_window, int p_output_reserve, int p_keep_recent) const;
+	static int _estimate_message_tokens(const Dictionary &p_message);
+	static String _truncate_text(const String &p_text, int p_max_tokens);
+	static Array _select_recent_user_messages(const Array &p_messages);
+	static String _build_summary_text(const String &p_summary, const Dictionary &p_plan);
+	Array _micro_project(const Array &p_messages) const;
 
 public:
 	static const char *TOOL_RESULT_PLACEHOLDER;
-	static const char *ELISION_MARKER;
+	static const char *COMPACTION_SUMMARY_PREFIX;
+	static const char *COMPACTION_INSTRUCTION;
 
-	bool is_overflow(const Array &p_messages, int p_context_window, int p_output_reserve) const;
+	static int estimate_tokens(const String &p_text);
+	static int estimate_messages_tokens(const Array &p_messages);
 
-	// Returns a compacted copy of the conversation that fits the budget. The
-	// caller adopts the result as its canonical history (compaction is
-	// intentionally destructive, exactly like opencode/Claude Code).
-	Array compact(const Array &p_messages, int p_context_window, int p_output_reserve);
+	void record_usage(int p_input_tokens, int p_covered_message_count);
+	int get_token_count_with_pending(const Array &p_messages, const String &p_system_prompt, const Array &p_tools) const;
+	bool should_compact(int p_used_tokens, int p_context_window) const;
+	bool should_compact(const Array &p_messages, const String &p_system_prompt, const Array &p_tools, int p_context_window) const;
+	bool is_overflow(const Array &p_messages, const String &p_system_prompt, const Array &p_tools, int p_context_window) const;
+
+	Array prepare_request(const Array &p_messages, const String &p_system_prompt, const Array &p_tools);
+	Dictionary apply_compaction(const Array &p_messages, const String &p_summary, const Dictionary &p_plan = Dictionary());
+	Array shrink_compaction_history(const Array &p_messages, int p_attempt) const;
+	void reset();
 
 	int get_last_estimated_tokens() const { return last_estimated_tokens; }
-	int get_prune_count() const { return prune_count; }
+	int get_micro_compaction_count() const { return micro_compaction_count; }
 	int get_compaction_count() const { return compaction_count; }
+	int get_micro_cutoff() const { return micro_cutoff; }
 };

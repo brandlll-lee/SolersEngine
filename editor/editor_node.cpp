@@ -54,6 +54,7 @@
 #include "modules/modules_enabled.gen.h" // For gdscript, mono, svg.
 
 #ifdef MODULE_SOLERS_AI_ENABLED
+#include "modules/solers_ai/core/solers_trace.h"
 #include "modules/solers_ai/editor/solers_agent_runtime.h"
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
 #include "modules/solers_ai/editor/solers_dock.h"
@@ -484,22 +485,20 @@ static Vector<SolersEditorSessionInfo> _solers_editor_read_sessions(const String
 	Vector<SolersEditorSessionInfo> sessions;
 	HashMap<String, int> by_id;
 
-	Ref<FileAccess> file = FileAccess::open("user://solers_ai_transcript.jsonl", FileAccess::READ);
-	if (file.is_null()) {
+	const Vector<String> transcript_lines = solers_transcript_read_snapshot();
+	if (transcript_lines.is_empty()) {
 		return sessions;
 	}
 
-	while (!file->eof_reached()) {
-		const String line = file->get_line().strip_edges();
+	for (const String &record : transcript_lines) {
+		const String line = record.strip_edges();
 		if (line.is_empty()) {
 			continue;
 		}
-		const Variant parsed = JSON::parse_string(line);
-		if (parsed.get_type() != Variant::DICTIONARY) {
+		Dictionary event;
+		if (!solers_transcript_parse_record(line, event)) {
 			continue;
 		}
-
-		const Dictionary event = parsed;
 		if (String(event.get("project_path", String())) != p_project_path) {
 			continue;
 		}
@@ -1262,6 +1261,9 @@ void EditorNode::_notification(int p_what) {
 
 		case NOTIFICATION_EXIT_TREE: {
 #ifdef MODULE_SOLERS_AI_ENABLED
+			if (solers_agent_runtime) {
+				solers_agent_runtime->shutdown();
+			}
 			_restore_solers_native_scene_panel();
 			_restore_solers_native_file_panel();
 #endif

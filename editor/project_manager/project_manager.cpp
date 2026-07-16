@@ -107,6 +107,7 @@
 #include "modules/modules_enabled.gen.h" // For gdscript, mono. (For editor help highlighter).
 
 #ifdef MODULE_SOLERS_AI_ENABLED
+#include "modules/solers_ai/core/solers_trace.h"
 #include "modules/solers_ai/editor/solers_agent_runtime.h"
 #include "modules/solers_ai/editor/solers_dock.h"
 #endif
@@ -173,24 +174,26 @@ static String _solers_shell_time_ago(int64_t p_wall) {
 
 static Vector<SolersShellSessionInfo> _solers_read_shell_sessions(const String &p_project_path) {
 	Vector<SolersShellSessionInfo> sessions;
-	HashMap<String, int> by_id;
 
-	Ref<FileAccess> file = FileAccess::open("user://solers_ai_transcript.jsonl", FileAccess::READ);
-	if (file.is_null()) {
+#ifndef MODULE_SOLERS_AI_ENABLED
+	(void)p_project_path;
+	return sessions;
+#else
+	HashMap<String, int> by_id;
+	const Vector<String> transcript_lines = solers_transcript_read_snapshot();
+	if (transcript_lines.is_empty()) {
 		return sessions;
 	}
 
-	while (!file->eof_reached()) {
-		const String line = file->get_line().strip_edges();
+	for (const String &record : transcript_lines) {
+		const String line = record.strip_edges();
 		if (line.is_empty()) {
 			continue;
 		}
-		const Variant parsed = JSON::parse_string(line);
-		if (parsed.get_type() != Variant::DICTIONARY) {
+		Dictionary event;
+		if (!solers_transcript_parse_record(line, event)) {
 			continue;
 		}
-
-		const Dictionary event = parsed;
 		if (String(event.get("project_path", String())) != p_project_path) {
 			continue;
 		}
@@ -234,6 +237,7 @@ static Vector<SolersShellSessionInfo> _solers_read_shell_sessions(const String &
 		}
 	}
 	return visible_sessions;
+#endif
 }
 
 // Notifications.

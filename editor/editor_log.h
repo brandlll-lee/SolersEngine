@@ -31,6 +31,7 @@
 #pragma once
 
 #include "core/variant/array.h"
+#include "core/variant/callable.h"
 #include "core/variant/dictionary.h"
 #include "core/os/thread.h"
 #include "editor/docks/editor_dock.h"
@@ -128,6 +129,7 @@ private:
 	int line_limit = 10000;
 
 	Vector<LogMessage> messages;
+	Callable message_audit_callback;
 	// Maps MessageTypes to LogFilters for convenient access and storage (don't need 1 member per filter).
 	HashMap<MessageType, LogFilter *> type_filter_map;
 
@@ -166,7 +168,7 @@ private:
 	void _set_search_visible(bool p_visible);
 	void _search_changed(const String &p_text);
 
-	void _process_message(const String &p_msg, MessageType p_type, bool p_clear);
+	void _process_message(const String &p_msg, MessageType p_type, bool p_clear, Thread::ID p_source_thread);
 	void _reset_message_counts();
 	void _set_dock_tab_icon(Ref<Texture2D> p_icon);
 
@@ -183,7 +185,9 @@ protected:
 	void _notification(int p_what);
 
 public:
-	void add_message(const String &p_msg, MessageType p_type = MSG_TYPE_STD);
+	void set_message_audit_callback(const Callable &p_callback);
+	void clear_message_audit_callback(const Callable &p_callback);
+	void add_message(const String &p_msg, MessageType p_type = MSG_TYPE_STD, Thread::ID p_source_thread = Thread::UNASSIGNED_ID);
 	Array get_messages(int p_max_messages = 200) const;
 	Dictionary get_message_counts() const;
 	void register_undo_redo(UndoRedo *p_undo_redo);

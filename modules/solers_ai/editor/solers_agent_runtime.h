@@ -44,10 +44,12 @@ class SolersAgentRuntime {
 	SolersSettingsService *settings_service = nullptr;
 	SolersToolRegistry *tool_registry = nullptr;
 	bool in_poll = false;
+	bool shutting_down = false;
 
 public:
 	void bind_dock(SolersDock *p_dock);
 	void poll();
+	void shutdown();
 	bool is_running() const;
 	void set_project_path(const String &p_project_path);
 	void set_session(const String &p_project_path, const String &p_session_id);

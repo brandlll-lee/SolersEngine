@@ -55,6 +55,7 @@ SolersAgentRuntime::SolersAgentRuntime() {
 	tool_registry->set_resource_service(resource_service);
 	tool_registry->set_script_service(script_service);
 	tool_registry->register_default_tools();
+	tool_registry->validate_builtin_skills();
 
 	agent_session->set_action_timeline(action_timeline);
 	agent_session->set_settings_service(settings_service);
@@ -77,9 +78,11 @@ void SolersAgentRuntime::bind_dock(SolersDock *p_dock) {
 }
 
 void SolersAgentRuntime::poll() {
+	if (shutting_down) {
+		return;
+	}
 	const bool rpc_running = rpc_server && rpc_server->is_running();
-	const bool session_running = agent_session && agent_session->is_running();
-	if (!rpc_running && !session_running) {
+	if (!rpc_running && !agent_session && !asset_service) {
 		return;
 	}
 	if (in_poll) {
@@ -87,28 +90,62 @@ void SolersAgentRuntime::poll() {
 		return;
 	}
 	in_poll = true;
+	if (settings_service) {
+		settings_service->poll_auth();
+	}
 	if (rpc_running) {
 		rpc_server->poll();
 	}
-	if (session_running) {
+	// The session admission pass runs first so every independent pending call
+	// from one model response can enter its service queue. Services then
+	// advance once, which gives import_to_project a single native scan wave
+	// instead of starting a wave after the first call only.
+	if (agent_session && agent_session->is_running()) {
 		agent_session->poll();
+	}
+	if (asset_service) {
+		asset_service->poll(!agent_session || !agent_session->is_admitting_tool_calls());
+	}
+	if (asset_service && agent_session) {
+		const String session_id = agent_session->get_status().get("session_id", String());
+		const Array completed = asset_service->take_terminal_events(session_id);
+		for (int i = 0; i < completed.size(); i++) {
+			const Dictionary manifest = completed[i];
+			agent_session->enqueue_background_asset(manifest);
+			asset_service->mark_terminal_delivered(manifest.get("id", String()), session_id);
+		}
+		if (agent_session->is_waiting_for_background_assets()) {
+			agent_session->resume_background_assets();
+		}
 	}
 	in_poll = false;
 }
 
 bool SolersAgentRuntime::is_running() const {
-	return agent_session && agent_session->is_running();
+	return !shutting_down && agent_session && agent_session->is_running();
 }
 
 void SolersAgentRuntime::set_project_path(const String &p_project_path) {
-	if (agent_session) {
+	if (!shutting_down && agent_session) {
 		agent_session->set_project_path(p_project_path);
 	}
 }
 
 void SolersAgentRuntime::set_session(const String &p_project_path, const String &p_session_id) {
-	if (agent_session) {
+	if (!shutting_down && agent_session) {
 		agent_session->set_session(p_project_path, p_session_id);
+		if (asset_service) {
+			const String session_id = agent_session->get_status().get("session_id", String());
+			const Array completed = asset_service->pending_terminal_events(session_id);
+			for (int i = 0; i < completed.size(); i++) {
+				const Dictionary manifest = completed[i];
+				agent_session->enqueue_background_asset(manifest);
+				asset_service->mark_terminal_delivered(manifest.get("id", String()), session_id);
+			}
+			if (agent_session->is_waiting_for_background_assets()) {
+				agent_session->resume_background_assets();
+			}
+		}
 	}
 }
 
@@ -120,46 +157,65 @@ Array SolersAgentRuntime::get_messages() const {
 	return agent_session ? agent_session->get_messages() : Array();
 }
 
-SolersAgentRuntime::~SolersAgentRuntime() {
+void SolersAgentRuntime::shutdown() {
+	if (shutting_down) {
+		return;
+	}
+	shutting_down = true;
+	if (rpc_server) {
+		rpc_server->stop();
+	}
+	if (agent_session) {
+		agent_session->shutdown();
+	}
 	if (tool_registry) {
-		memdelete(tool_registry);
+		tool_registry->set_asset_service(nullptr);
 	}
 	if (asset_service) {
 		memdelete(asset_service);
+		asset_service = nullptr;
 	}
-	if (script_service) {
-		memdelete(script_service);
-	}
-	if (settings_service) {
-		memdelete(settings_service);
-	}
-	if (permission_manager) {
-		memdelete(permission_manager);
-	}
-	if (provider_registry) {
-		memdelete(provider_registry);
-	}
-	if (resource_service) {
-		memdelete(resource_service);
-	}
+}
+
+SolersAgentRuntime::~SolersAgentRuntime() {
+	shutdown();
 	if (rpc_server) {
-		rpc_server->stop();
 		memdelete(rpc_server);
 	}
-	if (observation_service) {
-		memdelete(observation_service);
+	// Tear down in reverse dependency order after shutdown has stopped
+	// admission, released editor subscriptions, and joined asset workers.
+	if (agent_session) {
+		memdelete(agent_session);
 	}
 	if (mcp_adapter) {
 		memdelete(mcp_adapter);
 	}
-	if (file_checkpoint) {
-		memdelete(file_checkpoint);
+	if (tool_registry) {
+		memdelete(tool_registry);
+	}
+	if (settings_service) {
+		memdelete(settings_service);
+	}
+	if (script_service) {
+		memdelete(script_service);
+	}
+	if (resource_service) {
+		memdelete(resource_service);
 	}
 	if (reflection_service) {
 		memdelete(reflection_service);
 	}
-	if (agent_session) {
-		memdelete(agent_session);
+	if (provider_registry) {
+		memdelete(provider_registry);
+	}
+	if (permission_manager) {
+		memdelete(permission_manager);
+	}
+	if (observation_service) {
+		memdelete(observation_service);
+	}
+	if (file_checkpoint) {
+		memdelete(file_checkpoint);
 	}
 	if (action_timeline) {
 		memdelete(action_timeline);
