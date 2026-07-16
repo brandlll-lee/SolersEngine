@@ -24,7 +24,7 @@ The transcript remains append-only audit data. Restore skips blank records and p
 
 ### Operation and failure identity
 
-The provider tool-call ID is the canonical operation ID. Every terminal tool result exposes that exact ID in its JSON payload so the model can cite it, and the transcript and completion index use the same value.
+The usable provider tool-call ID is the canonical operation ID. If a Chat-compatible gateway leaks a Responses `fc_*` item ID instead, the protocol seam deterministically normalizes that provider-unique value once; it never generates an ID from array position. A call with no identity is rejected. Every terminal tool result exposes the resulting exact ID in its JSON payload so the model can cite it, and the transcript and completion index use the same value.
 
 A failure ID has a separate meaning: it identifies one logical unresolved failure. Retrying it appends an attempt to the same root. Only a successful operation with the same tool and resource scope resolves that root.
 
@@ -42,7 +42,7 @@ Extend `scene.validate_structure` with optional placement roots and support rela
 - native geometry is validated as individual logical members;
 - generated bake artifacts remain excluded.
 
-Every logical placement member must have exactly one declared `supported_by` relation. The relation names the support node, support axis and direction, and an explicit project-unit tolerance. Validation measures the transformed visible bounds, requires overlap on the two support-plane axes, and measures separation on the support axis. Missing members, self-support, support inside the same logical member, duplicate relations, gaps, and unsupported native geometry fail the contract.
+Every logical placement member must have exactly one declared `supported_by` relation. The relation names the support node, support axis and direction, and an explicit project-unit tolerance. Validation uses transformed bounds only as a broad phase, then confirms contact against transformed Mesh/CSG triangles. Missing members, self-support, support inside the same logical member, duplicate relations, gaps, AABB-only false contacts, and unsupported native geometry fail the contract.
 
 Structural contacts keep their existing exact graph rules. Placement tolerance is explicit data supplied for the project scale, not a scene name, asset name, or built-in magic threshold.
 

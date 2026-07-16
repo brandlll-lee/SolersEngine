@@ -4,6 +4,8 @@
 Godot 基线：`4.6.3-stable`  
 Fork 路径：`F:\CodeHub\solers\godot-ai-native`
 
+> 本文保留 v0.1 的交付背景，但工具名和 Agent Runtime 描述已同步到当前实现。早期独立 editor/runtime 截图路径已删除，当前唯一入口是 `viewport.capture`。
+
 ## 本轮结论
 
 Solers v0.1 已经从“品牌化 Godot fork”推进到“可编译、可启动、可审计、可由 AI 以工具方式操控真实 Godot Editor 状态的原生 operator runtime 底座”。
@@ -148,10 +150,9 @@ runtime.get_status
 runtime.get_logs
 runtime.play_current_scene
 runtime.stop
-runtime.capture_screenshot
+viewport.capture
 editor.get_snapshot
 editor.get_logs
-editor.capture_screenshot
 timeline.list_actions
 timeline.rollback_last
 validation.validate_project_scripts
@@ -221,21 +222,21 @@ rpc.stop
 - 持久信号连接和连接列表读取。
 - 场景打开、保存、另存。
 - 运行/停止当前场景。
-- 编辑器截图。
+- 通过 `viewport.capture` 获取当前 3D editor viewport 或运行中游戏的 root viewport。
 - Godot UndoRedo rollback。
 
 场景/节点 mutation 均优先走 Godot editor API 与 `EditorUndoRedoManager`，避免直接写坏 editor 状态。
 
 ## Agent Runtime
 
-`SolersAgentRuntime` 已实现 v0.1 同步工具循环：
+`SolersAgentSession` 当前实现单一、无固定工具轮数的长任务循环：
 
-- turn id 与 agent state。
-- `idle/running/waiting_for_approval/completed/failed/aborted` 状态。
-- 工具 batch 顺序执行。
-- 遇到 `USER_APPROVAL_REQUIRED` 自动进入等待审批状态。
-- abort 入口。
-- 每轮记录到 Action Timeline。
+- 工具结果继续驱动同一 turn，不使用固定工具轮数或猜测式完成阈值。
+- `update_plan` 保存 Codex 三状态计划并实时更新 Dock 计划卡片。
+- `done(message)` 是唯一 completed 信号；普通无工具回复记录为 paused。
+- `PHASE_COMPACTING` 复用当前 LLM 做 Full Compaction；旧大型 tool result 由 Micro Compaction 投影清理。
+- plan、turn outcome 与 context compaction 使用 typed transcript 事件，可在会话恢复时 reduce。
+- `USER_APPROVAL_REQUIRED`、abort 与 fatal error 保持独立权威路径。
 
 `SolersMCPAdapter` 额外暴露 Agent 控制方法：
 
@@ -243,7 +244,7 @@ rpc.stop
 - `solers/agent/status`
 - `solers/agent/abort`
 
-这是后续 Planner/Executor/Verifier/Reporter 组合的底座；当前不绑定外部模型 provider。
+该闭环直接复用 session、tool registry、transcript 与 provider client，不维护并行的 Planner/Executor 服务。
 
 ## MCP / JSON-RPC / RPC Loopback
 
@@ -323,7 +324,7 @@ Solers Engine v4.6.3.stable.custom_build.35e80b3a8 - https://solers.ai
 - 已清理 `modules/solers_ai/__pycache__`。
 - `.codegraph/` 是本地索引状态，不应提交。
 - 新增 Solers 代码集中在 `modules/solers_ai`。
-- 当前工具注册数复核为 `52`。
+- 工具面由 registry 契约测试复核，避免在文档中维护易过期的固定数量。
 
 ## 仍未完成的 v0.1 深水区
 
@@ -331,10 +332,8 @@ Solers Engine v4.6.3.stable.custom_build.35e80b3a8 - https://solers.ai
 
 下一批硬任务：
 
-- 外部模型 Provider Gateway：OpenAI/Anthropic/Gemini/DeepSeek/Qwen/Ollama/LM Studio 的 BYOK 实际调用。当前已完成 Provider Registry、配置存储、profile 列表与离线验证。
 - 更完整的审批 UI：每个待批准工具调用显示参数、影响范围、diff/checkpoint 和允许/拒绝按钮；当前已支持 pending queue 与一次性批准/拒绝。
-- 真正 game-view runtime bridge：接入 Godot debugger game-view screenshot、运行时日志、错误树、节点查询；当前 `runtime.capture_screenshot` 是 editor-visible viewport capture。
-- Visual Verification Loop：运行场景、截图、读取错误、回传 verifier，并自动修复。
+- 扩展视觉回归：统一 `viewport.capture` 已接入 editor 3D viewport、`GameViewDebugger` runtime root screenshot 和 OpenAI/Anthropic 图片回灌；后续重点是更多真实项目与模型矩阵测试。
 - 更细粒度 rollback：把 Timeline event 与 UndoRedo/file checkpoint 映射成可选择回滚。
 - 自动化 editor integration tests：节点 mutation、保存重开、UndoRedo、script patch、provider key 脱敏、RPC auth。
 

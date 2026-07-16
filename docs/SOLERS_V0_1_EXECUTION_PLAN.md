@@ -5,6 +5,8 @@
 源码目录：`F:\CodeHub\solers\godot-ai-native`  
 目标：把 Solers 做成兼容 Godot 的 AI 原生游戏引擎发行版，而不是项目级聊天插件。
 
+> 历史说明：本文记录 v0.1 planning draft。当前实现以 README 和 `SOLERS_ARCHITECTURE.md` 为准；早期双截图工具与 GDScript 截图 bridge 已由单一原生 `viewport.capture` 取代。
+
 ## 目录
 
 1. 产品定义与 v0.1 北极星
@@ -233,11 +235,11 @@ v0.1 采用项目 autoload 方式注入一个轻量运行时桥，类似当前 G
 - 节点属性读取。
 - 后续可扩展为运行时断言、性能采样、测试录制。
 
-### 4.6 `SolersProviderGateway`
+### 4.6 Provider 子系统
 
-模型供应商网关。
+`SolersProviderRegistry` 是 Provider profile、协议、认证方式和模型权限的唯一事实源；`SolersSettingsService` 负责每个 Provider 的本机配置与凭据；`SolersLLMProtocol` 适配具体线协议，不再保留重复的 Gateway/Catalog 层。
 
-v0.1 支持 BYOK：
+v0.1 支持 BYOK 与 ChatGPT Codex OAuth：
 
 - OpenAI-compatible endpoint。
 - Anthropic。
@@ -295,7 +297,7 @@ auth = per-session token
 Tools：
 
 - 会修改或观察编辑器/运行时状态的操作。
-- 例如 `scene.add_node`、`node.set_properties`、`runtime.capture_screenshot`。
+- 例如 `scene.add_node`、`node.set_properties`、`viewport.capture`。
 
 Resources：
 
@@ -430,7 +432,7 @@ Runtime：
 - `runtime.stop`
 - `runtime.get_status`
 - `runtime.get_logs`
-- `runtime.capture_screenshot`
+- `viewport.capture`（`target=editor|runtime`）
 
 Validation：
 
@@ -813,7 +815,7 @@ Dictionary SolersNodeTools::set_properties(const Dictionary &p_args) {
 }
 ```
 
-### 10.6 GDScript 运行时 bridge
+### 10.6 GDScript 运行时 bridge（历史原型）
 
 ```gdscript
 @tool
@@ -845,17 +847,6 @@ func _connect_to_editor() -> void:
 	if err != OK:
 		push_warning("Solers runtime bridge failed to connect: %s" % err)
 
-func capture_screenshot(path: String) -> Dictionary:
-	await get_tree().process_frame
-	await get_tree().process_frame
-	var image := get_viewport().get_texture().get_image()
-	var err := image.save_png(path)
-	return {
-		"ok": err == OK,
-		"path": path,
-		"error": err,
-	}
-
 func query_node(path: NodePath, properties: Array[String]) -> Dictionary:
 	var node := get_node_or_null(path)
 	if node == null:
@@ -865,6 +856,8 @@ func query_node(path: NodePath, properties: Array[String]) -> Dictionary:
 		result[property] = node.get(property)
 	return {"ok": true, "path": str(path), "properties": result}
 ```
+
+当前截图不经过该 autoload。`viewport.capture` 直接读取 editor 3D viewport，或复用 `GameViewDebugger` 请求运行中游戏的 root viewport。
 
 ### 10.7 Python MCP gateway 原型
 
@@ -894,10 +887,13 @@ async def scene_get_tree(depth: int = 8) -> dict:
     })
 
 @mcp.tool()
-async def runtime_capture_screenshot() -> dict:
+async def viewport_capture(target: str = "runtime", capture_id: str = "") -> dict:
+    arguments = {"target": target}
+    if capture_id:
+        arguments["capture_id"] = capture_id
     return await call_solers("tools/call", {
-        "name": "runtime.capture_screenshot",
-        "arguments": {},
+        "name": "viewport.capture",
+        "arguments": arguments,
     })
 
 if __name__ == "__main__":
@@ -994,37 +990,37 @@ if __name__ == "__main__":
 
 交付物：
 
-- runtime autoload bridge。
-- `runtime.play_current_scene/stop/get_status/get_logs/capture_screenshot`。
+- 原生 `runtime.control` 与 editor/debugger 状态读取。
+- 单一 `viewport.capture`，覆盖 editor 3D viewport 和 runtime root viewport。
 - `validation.run_scene_smoke`。
-- 截图结果进入 Timeline。
+- PNG 作为 tool-result attachment 回灌 vision provider。
 
 风险点：
 
-- autoload 注入污染项目。
-- WebSocket 超时导致 editor 卡住。
-- wait 阻塞主线程。
+- runtime screenshot callback 未返回时保持 pending。
+- 非 vision provider 错误接收图片。
+- capture 轮询阻塞主线程。
 
 验证：
 
-- bridge 自动注册/移除。
-- 运行后截图非空。
-- 非阻塞 timer 测试。
-- 20s timeout cap。
+- 非 3D 主屏返回权威错误。
+- runtime 首次返回 `pending + capture_id`，同一 ID 轮询得到非空 PNG。
+- OpenAI/Anthropic lowering 契约测试。
 
 ### Phase 5：Agent Orchestrator
 
 交付物：
 
-- Planner -> Executor -> Verifier -> Reporter 四段式 turn。
-- 每轮计划可编辑/批准。
-- 每个 mutation 前可显示影响摘要。
-- 错误时自动进入修复循环，最多 N 次。
+- 单一 agent loop，工具结果继续驱动同一 turn。
+- `update_plan` 实时计划快照与 `done` 显式完成。
+- 无工具回复只暂停，不猜测任务完成。
+- Full/Micro Compaction 在 context pressure 或 overflow 后继续原 turn。
 
 风险点：
 
 - agent 长任务失控。
 - 用户不清楚 AI 在做什么。
+- 重复 compaction 堆叠 summary 或丢失当前 plan。
 
 验证：
 

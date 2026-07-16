@@ -92,8 +92,19 @@ and blocks remote providers until the user explicitly disables it.
   `Object` APIs.
 - **Script feedback**: script writes and patches can validate through Godot's
   registered `ScriptLanguage`; raw validation errors are returned to the model.
-- **Run loop**: the agent can play the current scene, inspect the editor/runtime
-  snapshot, then stop playback.
+- **Run loop**: runtime play/stop has its own lifecycle epoch and never invalidates
+  evidence for unchanged authored content. `done` owns the final save/capture/run/stop
+  transaction instead of asking the model to repeat it.
+- **Long-task loop**: tasks have no fixed tool-iteration cutoff. The model uses
+  `update_plan` when a live plan adds value, calls `done` only after completion, and
+  drops consumed ephemeral observations before compaction is needed.
+- **Visual verification**: `viewport.capture` waits for renderer convergence and
+  returns immutable PNG evidence with SHA-256, luminance percentiles, contrast,
+  saturation and clipping statistics. Identical evidence is not reattached.
+- **Built-in domain workflows**: compiled skills cover Godot's native capability
+  map, rendering/lighting, 3D scene construction, gameplay physics/navigation,
+  character animation, and evidence-driven release acceptance without wrapping
+  Godot's native APIs.
 - **Auditable actions**: tool calls, permissions, arguments, results and
   transcripts are recorded under the Solers user data directory.
 - **MCP-compatible adapter**: tools can also be exposed through the local
@@ -138,6 +149,8 @@ Run focused Solers tests, for example:
 bin\solers.windows.editor.dev.x86_64.console.exe --test --tc="*[SolersToolRegistry] default model surface*"
 bin\solers.windows.editor.dev.x86_64.console.exe --test --tc="*tool.search*"
 bin\solers.windows.editor.dev.x86_64.console.exe --test --tc="*batch*"
+bin\solers.windows.editor.dev.x86_64.console.exe --test --tc="*[SolersContextManager]*"
+bin\solers.windows.editor.dev.x86_64.console.exe --test --tc="*[SolersLLMProtocol]*"
 ```
 
 ## Documentation
@@ -155,6 +168,7 @@ modules/solers_ai/
   editor/     Solers dock, chat cells, markdown view, editor plugin
   llm/        Provider catalog, protocols, streaming client, retry logic
   protocol/   MCP adapter and local RPC server
+  skills/     Built-in execution workflows compiled into the engine at build time
   tests/      Solers behavior and contract tests
 ```
 

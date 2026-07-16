@@ -91,7 +91,11 @@ MVP 阶段可以先做 dock。成熟产品阶段，Solers 应该把 AI 操作变
 
 ### 4.3 Agent 编排器
 
-编排器负责协调模型调用、工具调用、上下文、用户审批和验证流程。它应保持模型无关，并支持多种执行模式：
+编排器负责协调模型调用、工具调用、上下文、用户审批和验证流程。当前实现保持单一 agent loop，不复制 Planner/Executor 服务：`update_plan` 保存可恢复的执行快照，`done` 是唯一完成信号；普通无工具回复只暂停当前 turn。
+
+长任务不使用固定工具轮数。工具结果继续驱动同一 turn，接近 provider context window 时进入 `PHASE_COMPACTING`，摘要完成后恢复原 turn；用户中止、审批和致命错误仍走各自权威状态。
+
+产品层可在同一内核上支持多种执行模式：
 
 - Ask mode：只回答项目问题，不修改文件。
 - Plan mode：生成执行计划，等待用户批准。
@@ -118,7 +122,9 @@ MVP 阶段可以先做 dock。成熟产品阶段，Solers 应该把 AI 操作变
 - Export presets 与目标平台设置。
 - Project memory：玩法目标、美术风格、机制约束、命名规范、长期设计决策。
 
-上下文必须有优先级。大型二进制资源、完整场景文件和长日志默认应摘要化或以资源链接形式提供，只有需要时再展开。
+上下文必须有优先级。当前上下文管理使用两层压缩：Micro Compaction 只清理较旧的大型 tool result，Full Compaction 由当前模型生成可继续执行的 handoff summary，并保留近期真实用户请求与当前 plan。Provider usage 覆盖已计数消息，pending 消息按文本与媒体估值补齐；重复压缩只保留一个 summary。
+
+大型二进制资源、完整场景文件和长日志默认应摘要化或以资源链接形式提供，只有需要时再展开。用户参考图始终保留，工具截图在请求投影中只保留最新一张。
 
 ### 4.5 操作工具内核
 
@@ -154,7 +160,7 @@ Solers Editor API 是工具内核与 Godot 编辑器之间的内部桥。最初�
 - `ProjectSettings`
 - `InputMap`
 - 编辑器 debugger 与运行时 Remote Scene Tree
-- 2D/3D viewport 截图能力
+- 统一 `viewport.capture`：读取当前 3D editor viewport，或通过 debugger 异步抓取运行中游戏的 root viewport
 
 ### 4.7 观察事件总线
 
@@ -256,7 +262,7 @@ Solers Editor API 是工具内核与 Godot 编辑器之间的内部桥。最初�
 - `run.stop`
 - `run.get_status`
 - `run.get_logs`
-- `run.capture_screenshot`
+- `viewport.capture`：`target=editor|runtime`；runtime 首次返回 `pending + capture_id`，使用同一工具轮询
 - `run.get_remote_scene_tree`
 - `run.call_remote_method`，仅在高权限下开放
 
@@ -519,7 +525,7 @@ Asset-aware Agent 不应盲目导入资产。license 和 source metadata 对商�
 
 - 添加 C++ command bus。
 - 添加 scene operation transaction API。
-- 添加稳定 viewport screenshot API。
+- 已落地统一 `viewport.capture`，复用 editor 3D viewport 与 `GameViewDebugger` root screenshot 回调。
 - 添加结构化 editor observation events。
 - 添加 export hooks。
 - 提升 undo/redo 覆盖率。
@@ -538,12 +544,12 @@ Asset-aware Agent 不应盲目导入资产。license 和 source metadata 对商�
 
 任务：
 
-- 实现稳定 planner/executor/verifier loop。
+- 完善单一 agent loop 的 `update_plan → native tools → viewport.capture → done` 验证闭环。
 - 添加 project memory。
 - 添加角色化 agents。
 - 添加 intent-to-scene blueprint artifact。
-- 添加视觉验证。
-- 添加 template 与 skill pack 系统。
+- 扩展视觉验证的真实场景回归覆盖。
+- 扩展内置 skill 内容；当前通用 3D skill 已覆盖比例、白盒、PBR、布光与复验。
 - 添加 onboarding。
 - 添加项目 backup/checkpoint UX。
 
