@@ -41,6 +41,7 @@
 #include "editor/editor_main_screen.h"
 #include "editor/editor_node.h"
 #include "editor/editor_string_names.h"
+#include "editor/file_system/editor_file_system.h"
 #include "editor/file_system/editor_paths.h"
 #include "editor/gui/editor_file_dialog.h"
 #include "editor/settings/editor_settings.h"
@@ -50,13 +51,15 @@
 #include "modules/gltf/gltf_document.h"
 #include "modules/gltf/gltf_state.h"
 #include "modules/solers_ai/core/solers_asset_service.h"
+#include "scene/3d/skeleton_3d.h"
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/importer_mesh_instance_3d.h"
 #include "scene/3d/light_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/visual_instance_3d.h"
 #include "scene/3d/world_environment.h"
-#include "scene/gui/check_box.h"
+#include "scene/animation/animation_player.h"
+#include "scene/gui/color_rect.h"
 #include "scene/gui/flow_container.h"
 #include "scene/gui/menu_button.h"
 #include "scene/gui/popup_menu.h"
@@ -65,6 +68,8 @@
 #include "scene/main/viewport.h"
 #include "scene/resources/environment.h"
 #include "scene/resources/3d/sky_material.h"
+#include "scene/resources/animation.h"
+#include "scene/resources/immediate_mesh.h"
 #include "scene/resources/image_texture.h"
 #include "scene/resources/material.h"
 #include "scene/resources/mesh.h"
@@ -107,6 +112,7 @@ enum {
 	SOLERS_DETAIL_VIEW_UNSHADED,
 	SOLERS_DETAIL_VIEW_WIREFRAME,
 	SOLERS_DETAIL_VIEW_NORMALS,
+	SOLERS_DETAIL_VIEW_SKELETON,
 };
 
 static String solers_kind_filter_value_from_id(int p_id) {
@@ -225,6 +231,56 @@ static String solers_asset_display_status(const Dictionary &p_manifest) {
 	return String(p_manifest.get("status", "unknown")).to_lower();
 }
 
+static Color solers_asset_status_color(const String &p_status) {
+	if (p_status == "ready") {
+		return Color(0.35f, 0.88f, 0.58f);
+	}
+	if (p_status == "draft") {
+		return Color(0.85f, 0.70f, 0.42f);
+	}
+	if (p_status == "failed") {
+		return Color(0.95f, 0.36f, 0.36f);
+	}
+	return Color(0.35f, 0.67f, 1.0f);
+}
+
+static String solers_asset_group_status(const Array &p_asset_ids, const Dictionary &p_manifests_by_id) {
+	bool has_ready = false;
+	bool has_failed = false;
+	for (int i = 0; i < p_asset_ids.size(); i++) {
+		const Dictionary manifest = p_manifests_by_id.get(p_asset_ids[i], Dictionary());
+		const String status = solers_asset_display_status(manifest);
+		if (status == "queued" || status == "running") {
+			return status;
+		}
+		has_ready = has_ready || status == "ready" || status == "draft";
+		has_failed = has_failed || status == "failed";
+	}
+	if (has_ready) {
+		return "ready";
+	}
+	if (has_failed) {
+		return "failed";
+	}
+	return "unknown";
+}
+
+static String solers_asset_version_label(const String &p_asset_id, const Dictionary &p_manifest, const String &p_root_asset_id) {
+	if (p_asset_id == p_root_asset_id) {
+		return TTRC("Static");
+	}
+	const String label = String(p_manifest.get("operation_label", String())).strip_edges();
+	if (!label.is_empty()) {
+		const Dictionary options = p_manifest.get("provider_options", Dictionary());
+		const Variant action = options.get("action_id", Variant());
+		if (action.get_type() != Variant::NIL) {
+			return vformat("%s %s", label, String(action));
+		}
+		return label;
+	}
+	return String(p_manifest.get("name", p_asset_id));
+}
+
 static Label *solers_make_label(const String &p_text, int p_font_size, const Color &p_color, bool p_wrap = false) {
 	Label *label = memnew(Label(p_text));
 	label->add_theme_font_size_override(SceneStringName(font_size), p_font_size * EDSCALE);
@@ -261,11 +317,97 @@ static Button *solers_make_viewer_button(const String &p_text) {
 	return button;
 }
 
+static Ref<StyleBoxFlat> solers_make_action_stylebox(const Color &p_bg, const Color &p_border, int p_radius, int p_padding) {
+	Ref<StyleBoxFlat> style;
+	style.instantiate();
+	style->set_bg_color(p_bg);
+	style->set_border_color(p_border);
+	style->set_border_width_all(p_border.a > 0.0f ? 1 * EDSCALE : 0);
+	style->set_corner_radius_all(p_radius * EDSCALE);
+	style->set_content_margin_all(p_padding * EDSCALE);
+	return style;
+}
+
+static void solers_style_segment_button(Button *p_button, bool p_selected) {
+	p_button->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
+	p_button->set_custom_minimum_size(Size2(88, 30) * EDSCALE);
+	p_button->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+	p_button->add_theme_style_override(CoreStringName(normal), solers_make_action_stylebox(p_selected ? Color(0.105f, 0.112f, 0.118f) : Color(0.050f, 0.050f, 0.050f), Color(0.22f, 0.26f, 0.30f, 0.55f), 0, 8));
+	p_button->add_theme_style_override(SceneStringName(hover), solers_make_action_stylebox(p_selected ? Color(0.130f, 0.140f, 0.150f) : Color(0.068f, 0.070f, 0.072f), Color(0.28f, 0.34f, 0.40f, 0.65f), 0, 8));
+	p_button->add_theme_style_override(SceneStringName(pressed), solers_make_action_stylebox(Color(0.135f, 0.145f, 0.155f), Color(0.32f, 0.45f, 0.55f, 0.72f), 0, 8));
+	p_button->add_theme_style_override("focus", solers_make_action_stylebox(Color(0, 0, 0, 0), Color(0.32f, 0.75f, 1.0f, 0.28f), 0, 8));
+	p_button->add_theme_color_override(SceneStringName(font_color), p_selected ? Color(0.86f, 0.93f, 1.0f) : Color(0.62f, 0.67f, 0.73f));
+	p_button->add_theme_color_override("font_hover_color", Color(0.88f, 0.94f, 1.0f));
+	p_button->add_theme_color_override("font_pressed_color", Color(0.32f, 0.75f, 1.0f));
+}
+
+static void solers_style_action_button(Button *p_button, bool p_primary = false) {
+	p_button->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
+	p_button->set_custom_minimum_size(Size2(p_primary ? 82 : 74, 28) * EDSCALE);
+	p_button->set_h_size_flags(Control::SIZE_SHRINK_END);
+	p_button->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
+	p_button->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+	p_button->add_theme_style_override(CoreStringName(normal), solers_make_action_stylebox(p_primary ? Color(0.145f, 0.112f, 0.060f) : Color(0.072f, 0.070f, 0.064f), Color(0, 0, 0, 0), 7, 6));
+	p_button->add_theme_style_override(SceneStringName(hover), solers_make_action_stylebox(p_primary ? Color(0.190f, 0.140f, 0.070f) : Color(0.096f, 0.090f, 0.074f), Color(0, 0, 0, 0), 7, 6));
+	p_button->add_theme_style_override(SceneStringName(pressed), solers_make_action_stylebox(p_primary ? Color(0.215f, 0.152f, 0.072f) : Color(0.118f, 0.102f, 0.070f), Color(0, 0, 0, 0), 7, 6));
+	p_button->add_theme_style_override("hover_pressed", solers_make_action_stylebox(p_primary ? Color(0.215f, 0.152f, 0.072f) : Color(0.118f, 0.102f, 0.070f), Color(0, 0, 0, 0), 7, 6));
+	p_button->add_theme_style_override("disabled", solers_make_action_stylebox(Color(0.052f, 0.050f, 0.046f), Color(0, 0, 0, 0), 7, 6));
+	p_button->add_theme_style_override("focus", solers_make_action_stylebox(Color(0, 0, 0, 0), Color(0.95f, 0.78f, 0.50f, 0.18f), 7, 6));
+	p_button->add_theme_color_override(SceneStringName(font_color), p_primary ? Color(0.96f, 0.94f, 0.86f) : Color(0.80f, 0.79f, 0.72f));
+	p_button->add_theme_color_override("font_hover_color", Color(0.96f, 0.94f, 0.86f));
+	p_button->add_theme_color_override("font_pressed_color", Color(0.98f, 0.84f, 0.58f));
+	p_button->add_theme_color_override("font_hover_pressed_color", Color(0.98f, 0.84f, 0.58f));
+	p_button->add_theme_color_override("font_disabled_color", Color(0.43f, 0.43f, 0.39f));
+}
+
+static void solers_style_action_input(LineEdit *p_line) {
+	p_line->set_custom_minimum_size(Size2(0, 30) * EDSCALE);
+	p_line->add_theme_style_override(CoreStringName(normal), solers_make_action_stylebox(Color(0.044f, 0.043f, 0.039f), Color(0.110f, 0.104f, 0.086f), 7, 8));
+	p_line->add_theme_style_override("focus", solers_make_action_stylebox(Color(0.052f, 0.050f, 0.044f), Color(0.165f, 0.135f, 0.078f), 7, 8));
+	p_line->add_theme_color_override(SceneStringName(font_color), Color(0.84f, 0.84f, 0.78f));
+	p_line->add_theme_color_override("font_placeholder_color", Color(0.48f, 0.48f, 0.43f));
+	p_line->add_theme_color_override("caret_color", Color(0.92f, 0.78f, 0.50f));
+	p_line->add_theme_color_override("selection_color", Color(0.95f, 0.72f, 0.38f, 0.20f));
+}
+
+static PanelContainer *solers_make_action_panel() {
+	PanelContainer *panel = memnew(PanelContainer);
+	panel->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	panel->add_theme_style_override(SceneStringName(panel), solers_make_action_stylebox(Color(0.049f, 0.048f, 0.044f), Color(0, 0, 0, 0), 10, 0));
+	return panel;
+}
+
+static HBoxContainer *solers_add_action_row(VBoxContainer *p_parent, bool p_separator = true) {
+	if (p_separator) {
+		ColorRect *separator = memnew(ColorRect);
+		separator->set_color(Color(0.110f, 0.104f, 0.086f));
+		separator->set_custom_minimum_size(Size2(0, 1) * EDSCALE);
+		p_parent->add_child(separator);
+	}
+	MarginContainer *margin = memnew(MarginContainer);
+	margin->add_theme_constant_override("margin_left", 12 * EDSCALE);
+	margin->add_theme_constant_override("margin_right", 12 * EDSCALE);
+	margin->add_theme_constant_override("margin_top", 8 * EDSCALE);
+	margin->add_theme_constant_override("margin_bottom", 8 * EDSCALE);
+	p_parent->add_child(margin);
+
+	HBoxContainer *row = memnew(HBoxContainer);
+	row->add_theme_constant_override("separation", 12 * EDSCALE);
+	row->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	margin->add_child(row);
+	return row;
+}
+
+static void solers_add_action_copy(VBoxContainer *p_parent, const String &p_title, const String &p_description) {
+	p_parent->add_child(solers_make_label(p_title, 13, Color(0.88f, 0.87f, 0.80f)));
+	p_parent->add_child(solers_make_label(p_description, 11, Color(0.56f, 0.57f, 0.53f), true));
+}
+
 static void solers_mark_asset_action_creating(Button *p_button) {
 	if (!p_button) {
 		return;
 	}
-	p_button->set_text(TTRC("Creating new version..."));
+	p_button->set_text(TTRC("Creating..."));
 	p_button->set_disabled(true);
 }
 
@@ -277,21 +419,34 @@ static Control *solers_make_operation_option_control(const String &p_name, const
 	if (!enum_values.is_empty()) {
 		OptionButton *option = memnew(OptionButton);
 		option->set_theme_type_variation("FlatMenuButton");
+		const String default_value = String(p_property.get("default", String()));
 		for (int i = 0; i < enum_values.size(); i++) {
-			option->add_item(String(enum_values[i]));
+			const String enum_value = String(enum_values[i]);
+			option->add_item(enum_value);
+			if (enum_value == default_value) {
+				option->select(i);
+			}
 		}
 		control = option;
 	} else if (type == "boolean") {
-		CheckBox *check = memnew(CheckBox);
-		check->set_text(label);
-		control = check;
+		Button *toggle = memnew(Button);
+		toggle->set_text(TTRC("Confirm"));
+		toggle->set_toggle_mode(true);
+		solers_style_action_button(toggle);
+		control = toggle;
 	} else {
 		LineEdit *line = memnew(LineEdit);
 		line->set_placeholder(label);
+		if (type == "integer" && p_property.has("default")) {
+			line->set_text(itos((int)p_property.get("default", 0)));
+		}
+		solers_style_action_input(line);
 		control = line;
 	}
 	control->set_meta("solers_option_name", p_name);
-	control->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	control->set_meta("solers_option_type", type);
+	control->set_h_size_flags(type == "boolean" ? Control::SIZE_SHRINK_END : Control::SIZE_EXPAND_FILL);
+	control->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
 	return control;
 }
 
@@ -301,14 +456,18 @@ static void solers_collect_operation_options(Control *p_root, Dictionary &r_opti
 	}
 	if (p_root->has_meta("solers_option_name")) {
 		const String name = String(p_root->get_meta("solers_option_name"));
+		const String type = String(p_root->get_meta("solers_option_type", String()));
 		if (LineEdit *line = Object::cast_to<LineEdit>(p_root)) {
-			r_options[name] = line->get_text();
+			const String text = line->get_text().strip_edges();
+			if (!text.is_empty()) {
+				r_options[name] = type == "integer" ? Variant(text.to_int()) : Variant(text);
+			}
 		} else if (OptionButton *option = Object::cast_to<OptionButton>(p_root)) {
 			if (option->get_selected() >= 0) {
 				r_options[name] = option->get_item_text(option->get_selected());
 			}
-		} else if (CheckBox *check = Object::cast_to<CheckBox>(p_root)) {
-			r_options[name] = check->is_pressed();
+		} else if (Button *button = Object::cast_to<Button>(p_root)) {
+			r_options[name] = button->is_pressed();
 		}
 	}
 	for (int i = 0; i < p_root->get_child_count(); i++) {
@@ -364,6 +523,9 @@ static bool solers_mesh_array_has(const Array &p_arrays, Mesh::ArrayType p_type)
 }
 
 static void solers_collect_preview_mesh_stats(Node *p_node, int &r_meshes, int &r_surfaces, int &r_triangles, int &r_materials, int &r_textured_surfaces, int &r_texture_slots, int &r_uv_surfaces, int &r_normal_surfaces) {
+	if (p_node->has_meta("solers_preview_overlay")) {
+		return;
+	}
 	MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(p_node);
 	if (mesh_instance) {
 		const Ref<Mesh> mesh = mesh_instance->get_mesh();
@@ -411,6 +573,38 @@ static void solers_collect_preview_mesh_stats(Node *p_node, int &r_meshes, int &
 	for (int i = 0; i < p_node->get_child_count(); i++) {
 		solers_collect_preview_mesh_stats(p_node->get_child(i), r_meshes, r_surfaces, r_triangles, r_materials, r_textured_surfaces, r_texture_slots, r_uv_surfaces, r_normal_surfaces);
 	}
+}
+
+static Skeleton3D *solers_find_skeleton(Node *p_node) {
+	if (!p_node) {
+		return nullptr;
+	}
+	if (Skeleton3D *skeleton = Object::cast_to<Skeleton3D>(p_node)) {
+		return skeleton->get_bone_count() > 0 ? skeleton : nullptr;
+	}
+	for (int i = 0; i < p_node->get_child_count(); i++) {
+		if (Skeleton3D *skeleton = solers_find_skeleton(p_node->get_child(i))) {
+			return skeleton;
+		}
+	}
+	return nullptr;
+}
+
+static AnimationPlayer *solers_find_animation_player(Node *p_node) {
+	if (!p_node) {
+		return nullptr;
+	}
+	if (AnimationPlayer *player = Object::cast_to<AnimationPlayer>(p_node)) {
+		List<StringName> animations;
+		player->get_animation_list(&animations);
+		return animations.is_empty() ? nullptr : player;
+	}
+	for (int i = 0; i < p_node->get_child_count(); i++) {
+		if (AnimationPlayer *player = solers_find_animation_player(p_node->get_child(i))) {
+			return player;
+		}
+	}
+	return nullptr;
 }
 
 static void solers_apply_preview_fallback_material(Node *p_node, const Ref<Material> &p_material) {
@@ -1101,6 +1295,9 @@ void EditorAssetLibrary::_notification(int p_what) {
 
 		case NOTIFICATION_PROCESS: {
 			if (source_mode == ASSET_SOURCE_SOLERS) {
+				if (solers_detail_visible) {
+					_update_solers_detail_animation_time();
+				}
 				const uint64_t now = OS::get_singleton()->get_ticks_msec();
 				if (now >= solers_library_next_refresh_msec) {
 					solers_library_next_refresh_msec = now + 1000;
@@ -1108,6 +1305,10 @@ void EditorAssetLibrary::_notification(int p_what) {
 					if (signature != solers_library_signature) {
 						if (solers_detail_visible) {
 							solers_library_signature = signature;
+							Dictionary manifest = _read_solers_asset_manifest(solers_detail_asset_id);
+							if (!manifest.is_empty()) {
+								_show_solers_asset_detail(solers_detail_asset_id, manifest);
+							}
 						} else {
 							_show_solers_library();
 						}
@@ -2060,6 +2261,38 @@ Dictionary EditorAssetLibrary::_read_solers_asset_manifest(const String &p_asset
 	return parsed;
 }
 
+String EditorAssetLibrary::_solers_asset_root_id(const String &p_asset_id, const Dictionary &p_manifests_by_id) const {
+	String asset_id = p_asset_id;
+	for (int i = 0; i < 64; i++) {
+		const Dictionary manifest = p_manifests_by_id.get(asset_id, Dictionary());
+		const String parent_id = String(manifest.get("parent_asset_id", String()));
+		if (parent_id.is_empty() || !p_manifests_by_id.has(parent_id)) {
+			return asset_id;
+		}
+		asset_id = parent_id;
+	}
+	return p_asset_id;
+}
+
+Array EditorAssetLibrary::_solers_asset_group_ids(const String &p_root_asset_id) const {
+	Dictionary manifests_by_id;
+	const PackedStringArray dirs = DirAccess::get_directories_at("user://solers_library/assets");
+	for (int i = 0; i < dirs.size(); i++) {
+		const Dictionary manifest = _read_solers_asset_manifest(dirs[i]);
+		if (!manifest.is_empty()) {
+			manifests_by_id[dirs[i]] = manifest;
+		}
+	}
+
+	Array group_ids;
+	for (int i = 0; i < dirs.size(); i++) {
+		if (manifests_by_id.has(dirs[i]) && _solers_asset_root_id(dirs[i], manifests_by_id) == p_root_asset_id) {
+			group_ids.push_back(dirs[i]);
+		}
+	}
+	return group_ids;
+}
+
 String EditorAssetLibrary::_solers_asset_preview_path(const String &p_asset_id, const Dictionary &p_manifest) const {
 	const String preview_file = p_manifest.get("preview_file", String());
 	if (!preview_file.is_empty() && FileAccess::exists(preview_file)) {
@@ -2100,32 +2333,67 @@ void EditorAssetLibrary::_show_solers_library() {
 	if (solers_detail) {
 		solers_detail->hide();
 	}
+	if (solers_detail_version_row) {
+		solers_detail_version_row->hide();
+	}
 	_update_asset_items_columns();
 	for (int i = asset_items->get_child_count() - 1; i >= 0; i--) {
 		memdelete(asset_items->get_child(i));
 	}
 
 	const PackedStringArray dirs = DirAccess::get_directories_at("user://solers_library/assets");
+	Dictionary manifests_by_id;
+	Dictionary groups_by_root;
+	Array root_order;
 	for (int i = 0; i < dirs.size(); i++) {
 		const Dictionary manifest = _read_solers_asset_manifest(dirs[i]);
 		if (manifest.is_empty()) {
 			continue;
 		}
+		manifests_by_id[dirs[i]] = manifest;
+	}
+	for (int i = 0; i < dirs.size(); i++) {
+		if (!manifests_by_id.has(dirs[i])) {
+			continue;
+		}
+		const String root_id = _solers_asset_root_id(dirs[i], manifests_by_id);
+		Array group_ids = groups_by_root.get(root_id, Array());
+		if (group_ids.is_empty()) {
+			root_order.push_back(root_id);
+		}
+		group_ids.push_back(dirs[i]);
+		groups_by_root[root_id] = group_ids;
+	}
+
+	for (int i = 0; i < root_order.size(); i++) {
+		const String root_id = root_order[i];
+		const Dictionary manifest = manifests_by_id.get(root_id, Dictionary());
+		if (manifest.is_empty()) {
+			continue;
+		}
+		const Array group_ids = groups_by_root.get(root_id, Array());
+		bool group_matches = false;
+		for (int j = 0; j < group_ids.size(); j++) {
+			const Dictionary item_manifest = manifests_by_id.get(group_ids[j], Dictionary());
+			const String item_kind = String(item_manifest.get("kind", "asset")).to_lower();
+			const String item_status = solers_asset_display_status(item_manifest);
+			if ((solers_kind_filter.is_empty() || item_kind == solers_kind_filter) && solers_asset_status_matches(solers_status_filter, item_status)) {
+				group_matches = true;
+				break;
+			}
+		}
+		if (!group_matches) {
+			continue;
+		}
 		const String manifest_kind = String(manifest.get("kind", "asset")).to_lower();
-		const String manifest_status = solers_asset_display_status(manifest);
-		if (!solers_kind_filter.is_empty() && manifest_kind != solers_kind_filter) {
-			continue;
-		}
-		if (!solers_asset_status_matches(solers_status_filter, manifest_status)) {
-			continue;
-		}
+		const String manifest_status = solers_asset_group_status(group_ids, manifests_by_id);
 		PanelContainer *card = memnew(PanelContainer);
 		card->set_custom_minimum_size(Size2(196, 210) * EDSCALE);
 		card->add_theme_style_override(SceneStringName(panel), get_theme_stylebox(SNAME("solers_asset_card"), SNAME("AssetLib")));
-		if (manifest_kind == "3d" && (manifest_status == "ready" || manifest_status == "draft")) {
+		if (manifest_kind == "3d") {
 			card->set_mouse_filter(Control::MOUSE_FILTER_STOP);
-			card->connect(SceneStringName(gui_input), callable_mp(this, &EditorAssetLibrary::_solers_asset_card_input).bind(dirs[i]));
-			card->set_tooltip_text(TTR("Open 3D preview"));
+			card->connect(SceneStringName(gui_input), callable_mp(this, &EditorAssetLibrary::_solers_asset_card_input).bind(root_id));
+			card->set_tooltip_text(TTR("Open asset details"));
 		}
 		asset_items->add_child(card);
 
@@ -2133,7 +2401,7 @@ void EditorAssetLibrary::_show_solers_library() {
 		content->add_theme_constant_override("separation", 6 * EDSCALE);
 		card->add_child(content);
 
-		const String preview_path = _solers_asset_preview_path(dirs[i], manifest);
+		const String preview_path = _solers_asset_preview_path(root_id, manifest);
 		TextureRect *preview = memnew(TextureRect);
 		preview->set_custom_minimum_size(Size2(180, 102) * EDSCALE);
 		preview->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
@@ -2168,7 +2436,7 @@ void EditorAssetLibrary::_show_solers_library() {
 		}
 		content->add_child(preview);
 
-		Label *title = memnew(Label(String(manifest.get("name", dirs[i]))));
+		Label *title = memnew(Label(String(manifest.get("name", root_id))));
 		title->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
 		title->add_theme_font_size_override(SceneStringName(font_size), 14 * EDSCALE);
 		title->add_theme_color_override(SceneStringName(font_color), Color(0.91f, 0.94f, 0.98f));
@@ -2178,15 +2446,23 @@ void EditorAssetLibrary::_show_solers_library() {
 		meta_row->add_theme_constant_override("separation", 6 * EDSCALE);
 		content->add_child(meta_row);
 
-		const Color status_color = manifest_status == "ready" ? Color(0.35f, 0.88f, 0.58f) : (manifest_status == "draft" ? Color(0.85f, 0.70f, 0.42f) : (manifest_status == "failed" ? Color(0.95f, 0.36f, 0.36f) : Color(0.35f, 0.67f, 1.0f)));
+		const Color status_color = solers_asset_status_color(manifest_status);
 		Label *status_label = memnew(Label(manifest_status.to_upper()));
 		status_label->add_theme_font_size_override(SceneStringName(font_size), 11 * EDSCALE);
 		status_label->add_theme_color_override(SceneStringName(font_color), status_color);
 		meta_row->add_child(status_label);
 
+		int rig_count = 0;
+		int animation_count = 0;
+		for (int j = 0; j < group_ids.size(); j++) {
+			const Dictionary item_manifest = manifests_by_id.get(group_ids[j], Dictionary());
+			const String operation = String(item_manifest.get("operation", String()));
+			rig_count += operation == "rig_humanoid" ? 1 : 0;
+			animation_count += operation == "animate_humanoid" ? 1 : 0;
+		}
 		String kind_text = manifest_kind.to_upper();
-		if (manifest.has("progress")) {
-			kind_text += vformat(" %d%%", (int)manifest.get("progress", 0));
+		if (rig_count > 0 || animation_count > 0) {
+			kind_text = vformat("%s%s%s", TTRC("Static"), rig_count > 0 ? String(" · ") + TTRC("Rig") : String(), animation_count > 0 ? vformat(" · %d %s", animation_count, TTRC("Animations")) : String());
 		}
 		Label *kind = memnew(Label(kind_text));
 		kind->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
@@ -2226,11 +2502,41 @@ void EditorAssetLibrary::_open_solers_asset_detail(const String &p_asset_id) {
 	if (manifest.is_empty()) {
 		return;
 	}
-	const String status = solers_asset_display_status(manifest);
-	if (String(manifest.get("kind", String())).to_lower() != "3d" || (status != "ready" && status != "draft")) {
+	if (String(manifest.get("kind", String())).to_lower() != "3d") {
 		return;
 	}
 	_show_solers_asset_detail(p_asset_id, manifest);
+}
+
+void EditorAssetLibrary::_populate_solers_detail_versions(const String &p_root_asset_id, const String &p_selected_asset_id) {
+	if (!solers_detail_version_row) {
+		return;
+	}
+	for (int i = solers_detail_version_row->get_child_count() - 1; i >= 0; i--) {
+		Node *child = solers_detail_version_row->get_child(i);
+		solers_detail_version_row->remove_child(child);
+		child->queue_free();
+	}
+
+	const Array group_ids = _solers_asset_group_ids(p_root_asset_id);
+	if (group_ids.size() <= 1) {
+		solers_detail_version_row->hide();
+		return;
+	}
+	for (int i = 0; i < group_ids.size(); i++) {
+		const String asset_id = group_ids[i];
+		const Dictionary manifest = _read_solers_asset_manifest(asset_id);
+		if (String(manifest.get("kind", String())).to_lower() != "3d") {
+			continue;
+		}
+		Button *button = memnew(Button);
+		button->set_text(solers_asset_version_label(asset_id, manifest, p_root_asset_id));
+		button->set_tooltip_text(String(manifest.get("name", asset_id)));
+		solers_style_segment_button(button, asset_id == p_selected_asset_id);
+		button->connect(SceneStringName(pressed), callable_mp(this, &EditorAssetLibrary::_open_solers_asset_detail).bind(asset_id), CONNECT_DEFERRED);
+		solers_detail_version_row->add_child(button);
+	}
+	solers_detail_version_row->set_visible(solers_detail_version_row->get_child_count() > 1);
 }
 
 void EditorAssetLibrary::_ensure_solers_detail_view() {
@@ -2245,6 +2551,20 @@ void EditorAssetLibrary::_ensure_solers_detail_view() {
 	solers_detail->hide();
 	library_vb->add_child(solers_detail);
 
+	solers_detail_content = memnew(VBoxContainer);
+	solers_detail_content->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	solers_detail_content->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	solers_detail_content->add_theme_constant_override("separation", 10 * EDSCALE);
+	solers_detail->add_child(solers_detail_content);
+
+	solers_detail_version_row = memnew(HFlowContainer);
+	solers_detail_version_row->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	solers_detail_version_row->set_alignment(FlowContainer::ALIGNMENT_BEGIN);
+	solers_detail_version_row->add_theme_constant_override("h_separation", 0 * EDSCALE);
+	solers_detail_version_row->add_theme_constant_override("v_separation", 6 * EDSCALE);
+	solers_detail_version_row->hide();
+	solers_detail_content->add_child(solers_detail_version_row);
+
 	solers_detail_viewer_panel = memnew(PanelContainer);
 	solers_detail_viewer_panel->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	solers_detail_viewer_panel->set_v_size_flags(Control::SIZE_EXPAND_FILL);
@@ -2256,7 +2576,7 @@ void EditorAssetLibrary::_ensure_solers_detail_view() {
 	viewer_style->set_border_width_all(1 * EDSCALE);
 	viewer_style->set_corner_radius_all(12 * EDSCALE);
 	solers_detail_viewer_panel->add_theme_style_override(SceneStringName(panel), viewer_style);
-	solers_detail->add_child(solers_detail_viewer_panel);
+	solers_detail_content->add_child(solers_detail_viewer_panel);
 
 	Control *viewer_root = memnew(Control);
 	viewer_root->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
@@ -2286,16 +2606,19 @@ void EditorAssetLibrary::_ensure_solers_detail_view() {
 	Ref<Sky> sky;
 	sky.instantiate();
 	sky->set_material(sky_material);
+	sky->set_radiance_size(Sky::RADIANCE_SIZE_512);
 	Ref<Environment> environment;
 	environment.instantiate();
-	environment->set_background(Environment::BG_SKY);
+	environment->set_background(Environment::BG_COLOR);
+	environment->set_bg_color(Color(0.135f, 0.137f, 0.140f));
 	environment->set_sky(sky);
 	environment->set_ambient_source(Environment::AMBIENT_SOURCE_SKY);
-	environment->set_ambient_light_energy(0.10);
+	environment->set_ambient_light_energy(0.72);
+	environment->set_reflection_source(Environment::REFLECTION_SOURCE_SKY);
 	environment->set_tonemapper(Environment::TONE_MAPPER_AGX);
-	environment->set_tonemap_exposure(0.62);
+	environment->set_tonemap_exposure(1.02);
 	environment->set_tonemap_agx_white(16.0);
-	environment->set_tonemap_agx_contrast(1.08);
+	environment->set_tonemap_agx_contrast(1.02);
 	world_environment->set_environment(environment);
 	solers_detail_viewport->add_child(world_environment);
 
@@ -2309,22 +2632,22 @@ void EditorAssetLibrary::_ensure_solers_detail_view() {
 
 	solers_detail_light_1 = memnew(DirectionalLight3D);
 	solers_detail_light_1->set_color(Color(1.0f, 0.96f, 0.90f));
-	solers_detail_light_1->set_param(Light3D::PARAM_ENERGY, 0.55);
-	solers_detail_light_1->set_param(Light3D::PARAM_SPECULAR, 0.25);
+	solers_detail_light_1->set_param(Light3D::PARAM_ENERGY, 1.80);
+	solers_detail_light_1->set_param(Light3D::PARAM_SPECULAR, 0.30);
 	solers_detail_light_1->set_transform(Transform3D(Basis::looking_at(Vector3(-0.75f, -0.85f, -0.45f))));
 	solers_detail_camera->add_child(solers_detail_light_1);
 
 	solers_detail_light_2 = memnew(DirectionalLight3D);
-	solers_detail_light_2->set_color(Color(0.55f, 0.62f, 0.72f));
-	solers_detail_light_2->set_param(Light3D::PARAM_ENERGY, 0.18);
-	solers_detail_light_2->set_param(Light3D::PARAM_SPECULAR, 0.12);
+	solers_detail_light_2->set_color(Color(0.68f, 0.74f, 0.82f));
+	solers_detail_light_2->set_param(Light3D::PARAM_ENERGY, 0.52);
+	solers_detail_light_2->set_param(Light3D::PARAM_SPECULAR, 0.10);
 	solers_detail_light_2->set_transform(Transform3D(Basis::looking_at(Vector3(0.8f, -0.45f, 0.55f))));
 	solers_detail_camera->add_child(solers_detail_light_2);
 
 	solers_detail_light_3 = memnew(DirectionalLight3D);
-	solers_detail_light_3->set_color(Color(0.68f, 0.76f, 0.90f));
-	solers_detail_light_3->set_param(Light3D::PARAM_ENERGY, 0.20);
-	solers_detail_light_3->set_param(Light3D::PARAM_SPECULAR, 0.12);
+	solers_detail_light_3->set_color(Color(0.74f, 0.82f, 1.0f));
+	solers_detail_light_3->set_param(Light3D::PARAM_ENERGY, 0.95);
+	solers_detail_light_3->set_param(Light3D::PARAM_SPECULAR, 0.16);
 	solers_detail_light_3->set_transform(Transform3D(Basis::looking_at(Vector3(0.25f, -0.55f, 1.0f))));
 	solers_detail_camera->add_child(solers_detail_light_3);
 
@@ -2398,6 +2721,15 @@ void EditorAssetLibrary::_show_solers_asset_detail(const String &p_asset_id, con
 	solers_detail_visible = true;
 	solers_detail_asset_id = p_asset_id;
 	solers_detail_manifest = p_manifest;
+	Dictionary manifests_by_id;
+	const PackedStringArray dirs = DirAccess::get_directories_at("user://solers_library/assets");
+	for (int i = 0; i < dirs.size(); i++) {
+		const Dictionary manifest = _read_solers_asset_manifest(dirs[i]);
+		if (!manifest.is_empty()) {
+			manifests_by_id[dirs[i]] = manifest;
+		}
+	}
+	solers_detail_root_asset_id = _solers_asset_root_id(p_asset_id, manifests_by_id);
 	solers_library_signature = _solers_library_signature();
 
 	asset_items->hide();
@@ -2408,6 +2740,9 @@ void EditorAssetLibrary::_show_solers_asset_detail(const String &p_asset_id, con
 	solers_filter_row->hide();
 	solers_detail_fullscreen = false;
 	solers_detail_view_mode = SOLERS_DETAIL_VIEW_FINAL;
+	solers_detail_show_skeleton = false;
+	solers_detail_animation_loop = true;
+	solers_detail_delete_confirm = false;
 	if (solers_detail_viewport) {
 		solers_detail_viewport->set_debug_draw(Viewport::DEBUG_DRAW_DISABLED);
 	}
@@ -2418,6 +2753,7 @@ void EditorAssetLibrary::_show_solers_asset_detail(const String &p_asset_id, con
 	solers_detail->set_vertical(get_size().x < 980 * EDSCALE);
 	_sync_solers_detail_fullscreen();
 	source_title->set_text(String(p_manifest.get("name", p_asset_id)));
+	_populate_solers_detail_versions(solers_detail_root_asset_id, p_asset_id);
 
 	for (int i = solers_detail_info_content->get_child_count() - 1; i >= 0; i--) {
 		memdelete(solers_detail_info_content->get_child(i));
@@ -2439,6 +2775,10 @@ void EditorAssetLibrary::_show_solers_asset_detail(const String &p_asset_id, con
 	solers_add_info_row(solers_detail_info_content, TTRC("Provider"), String(p_manifest.get("provider", String())));
 	solers_add_info_row(solers_detail_info_content, TTRC("Profile"), String(p_manifest.get("profile", String())));
 	solers_add_info_row(solers_detail_info_content, TTRC("Updated"), String(p_manifest.get("updated_at", p_manifest.get("created_at", String()))));
+	if (display_status == "failed") {
+		const Dictionary error = p_manifest.get("error", Dictionary());
+		solers_add_info_row(solers_detail_info_content, TTRC("Error"), String(error.get("message", TTRC("Unknown failure"))));
+	}
 
 	const Array files = p_manifest.get("files", Array());
 	solers_add_info_row(solers_detail_info_content, TTRC("Files"), itos(files.size()));
@@ -2447,14 +2787,65 @@ void EditorAssetLibrary::_show_solers_asset_detail(const String &p_asset_id, con
 		Dictionary parent = _read_solers_asset_manifest(parent_asset_id);
 		solers_add_info_row(solers_detail_info_content, TTRC("Derived From"), String(parent.get("name", parent_asset_id)));
 	}
+	const Dictionary animation_data = p_manifest.get("animations", Dictionary());
+	const Dictionary basic_animations = animation_data.get("basic", Dictionary());
+	if (!basic_animations.is_empty()) {
+		solers_detail_info_content->add_spacer();
+		solers_detail_info_content->add_child(solers_make_label(TTRC("Basic Animations"), 13, Color(0.92f, 0.92f, 0.88f)));
+		PanelContainer *animation_panel = solers_make_action_panel();
+		VBoxContainer *animation_list = memnew(VBoxContainer);
+		animation_list->add_theme_constant_override("separation", 0);
+		animation_panel->add_child(animation_list);
+		solers_detail_info_content->add_child(animation_panel);
+
+		Array names = basic_animations.keys();
+		names.sort();
+		for (int i = 0; i < names.size(); i++) {
+			const Dictionary item = basic_animations[names[i]];
+			const String path = String(item.get("glb_file", String()));
+			HBoxContainer *row = solers_add_action_row(animation_list, i > 0);
+			VBoxContainer *copy = memnew(VBoxContainer);
+			copy->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+			copy->add_theme_constant_override("separation", 3 * EDSCALE);
+			solers_add_action_copy(copy, String(item.get("name", String(names[i]).capitalize())), TTRC("Meshy rigging basic animation."));
+			row->add_child(copy);
+
+			Button *view = memnew(Button);
+			view->set_text(TTRC("View"));
+			solers_style_action_button(view);
+			view->set_disabled(path.is_empty() || !FileAccess::exists(path));
+			view->connect(SceneStringName(pressed), callable_mp(this, &EditorAssetLibrary::_view_solers_basic_animation).bind(path));
+			row->add_child(view);
+
+			Button *import = memnew(Button);
+			import->set_text(TTRC("Import"));
+			solers_style_action_button(import);
+			import->set_disabled(path.is_empty() || !FileAccess::exists(path));
+			import->connect(SceneStringName(pressed), callable_mp(this, &EditorAssetLibrary::_import_solers_basic_animation).bind(path));
+			row->add_child(import);
+		}
+	}
 
 	solers_detail_info_content->add_spacer();
+	solers_detail_info_content->add_child(solers_make_label(TTRC("Actions"), 13, Color(0.92f, 0.92f, 0.88f)));
+	PanelContainer *action_panel = solers_make_action_panel();
+	VBoxContainer *action_list = memnew(VBoxContainer);
+	action_list->add_theme_constant_override("separation", 0);
+	action_panel->add_child(action_list);
+	solers_detail_info_content->add_child(action_panel);
+
+	HBoxContainer *import_row = solers_add_action_row(action_list, false);
+	VBoxContainer *import_copy = memnew(VBoxContainer);
+	import_copy->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	import_copy->add_theme_constant_override("separation", 3 * EDSCALE);
+	solers_add_action_copy(import_copy, TTRC("Project Import"), display_status == "draft" ? TTRC("Add this draft to the current project.") : TTRC("Add this asset to the current project."));
+	import_row->add_child(import_copy);
 	Button *import_button = memnew(Button);
-	import_button->set_text(display_status == "draft" ? TTRC("Import Draft") : TTRC("Import to Project"));
-	import_button->set_theme_type_variation("SolersFlatPillButton");
+	import_button->set_text(display_status == "draft" ? TTRC("Import Draft") : TTRC("Import"));
+	solers_style_action_button(import_button, true);
 	import_button->set_disabled(files.is_empty());
 	import_button->connect(SceneStringName(pressed), callable_mp(this, &EditorAssetLibrary::_import_solers_detail_asset));
-	solers_detail_info_content->add_child(import_button);
+	import_row->add_child(import_button);
 
 	Dictionary capability_args;
 	capability_args["asset_id"] = p_asset_id;
@@ -2462,43 +2853,70 @@ void EditorAssetLibrary::_show_solers_asset_detail(const String &p_asset_id, con
 	if ((bool)capability_result.get("ok", false)) {
 		const Dictionary capability_data = capability_result.get("data", Dictionary());
 		const Array operations = capability_data.get("available_operations", Array());
-		String last_category;
-		bool added_actions = false;
 		for (int i = 0; i < operations.size(); i++) {
 			const Dictionary operation = operations[i];
 			if (!(bool)operation.get("ui_supported", false)) {
 				continue;
 			}
-			const String category = String(operation.get("category", String()));
-			if (category != last_category) {
-				if (!added_actions) {
-					solers_detail_info_content->add_child(solers_make_label(TTRC("Available Actions"), 13, Color(0.92f, 0.92f, 0.88f)));
-					added_actions = true;
-				}
-				if (!category.is_empty()) {
-					solers_detail_info_content->add_child(solers_make_label(category, 11, Color(0.58f, 0.64f, 0.74f)));
-				}
-				last_category = category;
-			}
-			VBoxContainer *operation_box = memnew(VBoxContainer);
-			operation_box->add_theme_constant_override("separation", 6 * EDSCALE);
+			const String operation_id = String(operation.get("operation_id", String()));
+			HBoxContainer *operation_row = solers_add_action_row(action_list);
+			VBoxContainer *operation_copy = memnew(VBoxContainer);
+			operation_copy->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+			operation_copy->add_theme_constant_override("separation", 5 * EDSCALE);
+			solers_add_action_copy(operation_copy, String(operation.get("label", operation_id)), String(operation.get("description", TTRC("Create a new asset version."))));
+
+			Button *operation_button = memnew(Button);
+			operation_button->set_text(String(operation.get("label", operation_id)));
+			solers_style_action_button(operation_button);
+			operation_button->set_meta("solers_operation_id", operation_id);
+			operation_button->connect(SceneStringName(pressed), callable_mp(this, &EditorAssetLibrary::_run_solers_detail_operation).bind(operation_button));
+
 			const Dictionary schema = operation.get("options_schema", Dictionary());
 			const Dictionary properties = schema.get("properties", Dictionary());
-			const Array required = schema.get("required", Array());
-			for (int j = 0; j < required.size(); j++) {
-				const String option_name = String(required[j]);
-				const Dictionary property = properties.get(option_name, Dictionary());
-				operation_box->add_child(solers_make_operation_option_control(option_name, property));
+			Array option_names = schema.get("ui_order", Array());
+			if (option_names.is_empty()) {
+				option_names = schema.get("required", Array());
 			}
-			Button *operation_button = memnew(Button);
-			operation_button->set_text(String(operation.get("label", operation.get("operation_id", String()))));
-			operation_button->set_theme_type_variation("SolersFlatPillButton");
-			operation_button->set_meta("solers_operation_id", operation.get("operation_id", String()));
-			operation_button->connect(SceneStringName(pressed), callable_mp(this, &EditorAssetLibrary::_run_solers_detail_operation).bind(operation_button));
-			operation_box->add_child(operation_button);
-			solers_detail_info_content->add_child(operation_box);
+			for (int j = 0; j < option_names.size(); j++) {
+				const String option_name = String(option_names[j]);
+				const Dictionary property = properties.get(option_name, Dictionary());
+				if (property.is_empty()) {
+					continue;
+				}
+				Control *option_control = solers_make_operation_option_control(option_name, property);
+				if (String(property.get("type", String())) == "boolean") {
+					HBoxContainer *toggle_row = memnew(HBoxContainer);
+					toggle_row->add_theme_constant_override("separation", 10 * EDSCALE);
+					Label *toggle_label = solers_make_label(String(property.get("label", option_name.capitalize())), 12, Color(0.70f, 0.70f, 0.65f));
+					toggle_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+					toggle_row->add_child(toggle_label);
+					if (Button *toggle = Object::cast_to<Button>(option_control)) {
+						toggle->connect(SceneStringName(pressed), callable_mp(this, &EditorAssetLibrary::_set_solers_bool_option).bind(toggle, operation_button));
+						toggle_row->add_child(toggle);
+						operation_button->set_disabled(true);
+					}
+					operation_copy->add_child(toggle_row);
+				} else {
+					operation_copy->add_child(solers_make_label(String(property.get("label", option_name.capitalize())), 11, Color(0.58f, 0.58f, 0.53f)));
+					operation_copy->add_child(option_control);
+				}
+			}
+			operation_row->add_child(operation_copy);
+			operation_row->add_child(operation_button);
 		}
 	}
+
+	HBoxContainer *delete_row = solers_add_action_row(action_list);
+	VBoxContainer *delete_copy = memnew(VBoxContainer);
+	delete_copy->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	delete_copy->add_theme_constant_override("separation", 3 * EDSCALE);
+	solers_add_action_copy(delete_copy, TTRC("Delete from Library"), TTRC("Permanently remove this local Solers Library asset."));
+	delete_row->add_child(delete_copy);
+	Button *delete_button = memnew(Button);
+	delete_button->set_text(TTRC("Delete"));
+	solers_style_action_button(delete_button);
+	delete_button->connect(SceneStringName(pressed), callable_mp(this, &EditorAssetLibrary::_delete_solers_detail_asset).bind(delete_button));
+	delete_row->add_child(delete_button);
 
 	solers_detail_import_status = solers_make_label(String(), 12, Color(0.66f, 0.74f, 0.86f), true);
 	solers_detail_info_content->add_child(solers_detail_import_status);
@@ -2520,6 +2938,10 @@ void EditorAssetLibrary::_clear_solers_detail_preview() {
 	if (!solers_detail_scene_root) {
 		return;
 	}
+	solers_detail_skeleton_overlay = nullptr;
+	solers_detail_animation_player = nullptr;
+	solers_detail_animation_picker = nullptr;
+	solers_detail_animation_time = nullptr;
 	for (int i = solers_detail_scene_root->get_child_count() - 1; i >= 0; i--) {
 		memdelete(solers_detail_scene_root->get_child(i));
 	}
@@ -2562,7 +2984,13 @@ bool EditorAssetLibrary::_load_solers_detail_preview(const String &p_model_path)
 		memdelete(scene);
 		return false;
 	}
+	solers_detail_animation_player = solers_find_animation_player(scene);
+	if (solers_detail_animation_player) {
+		solers_detail_animation_player->set_active(true);
+		solers_detail_animation_player->set_callback_mode_process(AnimationMixer::ANIMATION_CALLBACK_MODE_PROCESS_IDLE);
+	}
 	_reset_solers_detail_camera();
+	_refresh_solers_detail_skeleton_overlay();
 	return true;
 }
 
@@ -2577,6 +3005,26 @@ void EditorAssetLibrary::_update_solers_detail_aabb(Node *p_node, const Transfor
 			solers_detail_aabb = aabb;
 		} else {
 			solers_detail_aabb.merge_with(aabb);
+		}
+	}
+
+	Skeleton3D *skeleton = Object::cast_to<Skeleton3D>(p_node);
+	if (skeleton && skeleton->get_bone_count() > 0) {
+		AABB skeleton_aabb;
+		for (int i = 0; i < skeleton->get_bone_count(); i++) {
+			const Vector3 point = current.xform(skeleton->get_bone_global_pose(i).origin);
+			if (i == 0) {
+				skeleton_aabb = AABB(point, Vector3());
+			} else {
+				skeleton_aabb.expand_to(point);
+			}
+		}
+		const float padding = MAX(0.01f, skeleton_aabb.get_longest_axis_size() * 0.04f);
+		skeleton_aabb = skeleton_aabb.grow(padding);
+		if (solers_detail_aabb.size == Vector3()) {
+			solers_detail_aabb = skeleton_aabb;
+		} else {
+			solers_detail_aabb.merge_with(skeleton_aabb);
 		}
 	}
 
@@ -2678,6 +3126,7 @@ void EditorAssetLibrary::_set_solers_detail_view_mode(int p_mode) {
 		return;
 	}
 
+	_set_solers_detail_skeleton_visible(p_mode == SOLERS_DETAIL_VIEW_SKELETON);
 	switch (p_mode) {
 		case SOLERS_DETAIL_VIEW_LIGHTING:
 			solers_detail_viewport->set_debug_draw(Viewport::DEBUG_DRAW_LIGHTING);
@@ -2691,9 +3140,132 @@ void EditorAssetLibrary::_set_solers_detail_view_mode(int p_mode) {
 		case SOLERS_DETAIL_VIEW_NORMALS:
 			solers_detail_viewport->set_debug_draw(Viewport::DEBUG_DRAW_NORMAL_BUFFER);
 			break;
+		case SOLERS_DETAIL_VIEW_SKELETON:
+			solers_detail_viewport->set_debug_draw(Viewport::DEBUG_DRAW_DISABLED);
+			break;
 		default:
 			solers_detail_viewport->set_debug_draw(Viewport::DEBUG_DRAW_DISABLED);
 			break;
+	}
+}
+
+void EditorAssetLibrary::_set_solers_detail_skeleton_visible(bool p_visible) {
+	solers_detail_show_skeleton = p_visible && solers_find_skeleton(solers_detail_scene_root);
+	_refresh_solers_detail_skeleton_overlay();
+}
+
+void EditorAssetLibrary::_refresh_solers_detail_skeleton_overlay() {
+	if (solers_detail_skeleton_overlay) {
+		if (Node *parent = solers_detail_skeleton_overlay->get_parent()) {
+			parent->remove_child(solers_detail_skeleton_overlay);
+		}
+		memdelete(solers_detail_skeleton_overlay);
+		solers_detail_skeleton_overlay = nullptr;
+	}
+	if (!solers_detail_show_skeleton || !solers_detail_scene_root) {
+		return;
+	}
+
+	Skeleton3D *skeleton = solers_find_skeleton(solers_detail_scene_root);
+	if (!skeleton) {
+		return;
+	}
+
+	Ref<StandardMaterial3D> line_material;
+	line_material.instantiate();
+	line_material->set_albedo(Color(0.92f, 0.76f, 0.42f, 0.92f));
+	line_material->set_shading_mode(BaseMaterial3D::SHADING_MODE_UNSHADED);
+	line_material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
+	line_material->set_flag(BaseMaterial3D::FLAG_DISABLE_DEPTH_TEST, true);
+
+	Ref<ImmediateMesh> mesh;
+	mesh.instantiate();
+	mesh->surface_begin(Mesh::PRIMITIVE_LINES, line_material);
+	const Transform3D root_inv = solers_detail_scene_root->get_global_transform().affine_inverse();
+	int lines = 0;
+	for (int i = 0; i < skeleton->get_bone_count(); i++) {
+		const int parent = skeleton->get_bone_parent(i);
+		if (parent < 0) {
+			continue;
+		}
+		const Vector3 from = root_inv.xform(skeleton->get_global_transform().xform(skeleton->get_bone_global_pose(parent).origin));
+		const Vector3 to = root_inv.xform(skeleton->get_global_transform().xform(skeleton->get_bone_global_pose(i).origin));
+		mesh->surface_add_vertex(from);
+		mesh->surface_add_vertex(to);
+		lines++;
+	}
+	mesh->surface_end();
+	if (lines == 0) {
+		return;
+	}
+
+	solers_detail_skeleton_overlay = memnew(MeshInstance3D);
+	solers_detail_skeleton_overlay->set_name("__SolersSkeletonOverlay");
+	solers_detail_skeleton_overlay->set_meta("solers_preview_overlay", true);
+	solers_detail_skeleton_overlay->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+	solers_detail_skeleton_overlay->set_mesh(mesh);
+	solers_detail_scene_root->add_child(solers_detail_skeleton_overlay);
+}
+
+void EditorAssetLibrary::_set_solers_detail_animation(int p_index) {
+	if (!solers_detail_animation_player || !solers_detail_animation_picker || p_index < 0) {
+		return;
+	}
+	const StringName animation(solers_detail_animation_picker->get_item_text(p_index));
+	if (solers_detail_animation_player->has_animation(animation)) {
+		solers_detail_animation_player->set_assigned_animation(animation);
+		solers_detail_animation_player->seek(0.0, true);
+		_refresh_solers_detail_skeleton_overlay();
+		_update_solers_detail_animation_time();
+	}
+}
+
+void EditorAssetLibrary::_play_solers_detail_animation() {
+	if (!solers_detail_animation_player || !solers_detail_animation_picker || solers_detail_animation_picker->get_selected() < 0) {
+		return;
+	}
+	const StringName animation(solers_detail_animation_picker->get_item_text(solers_detail_animation_picker->get_selected()));
+	Ref<Animation> resource = solers_detail_animation_player->get_animation(animation);
+	if (resource.is_valid()) {
+		resource->set_loop_mode(solers_detail_animation_loop ? Animation::LOOP_LINEAR : Animation::LOOP_NONE);
+	}
+	solers_detail_animation_player->play(animation);
+	_update_solers_detail_animation_time();
+}
+
+void EditorAssetLibrary::_pause_solers_detail_animation() {
+	if (solers_detail_animation_player) {
+		solers_detail_animation_player->pause();
+		_update_solers_detail_animation_time();
+	}
+}
+
+void EditorAssetLibrary::_stop_solers_detail_animation() {
+	if (solers_detail_animation_player) {
+		solers_detail_animation_player->stop(true);
+		solers_detail_animation_player->seek(0.0, true);
+		_refresh_solers_detail_skeleton_overlay();
+		_update_solers_detail_animation_time();
+	}
+}
+
+void EditorAssetLibrary::_toggle_solers_detail_animation_loop(Button *p_toggle) {
+	if (!p_toggle) {
+		return;
+	}
+	solers_detail_animation_loop = p_toggle->is_pressed();
+	p_toggle->set_text(solers_detail_animation_loop ? TTRC("Loop On") : TTRC("Loop Off"));
+}
+
+void EditorAssetLibrary::_update_solers_detail_animation_time() {
+	if (!solers_detail_animation_player || !solers_detail_animation_time) {
+		return;
+	}
+	const double pos = solers_detail_animation_player->get_current_animation_position();
+	const double len = solers_detail_animation_player->get_current_animation_length();
+	solers_detail_animation_time->set_text(vformat("%.1fs / %.1fs", pos, len));
+	if (solers_detail_show_skeleton && solers_detail_animation_player->is_playing()) {
+		_refresh_solers_detail_skeleton_overlay();
 	}
 }
 
@@ -2702,6 +3274,8 @@ void EditorAssetLibrary::_refresh_solers_detail_inspector() {
 		return;
 	}
 
+	solers_detail_animation_picker = nullptr;
+	solers_detail_animation_time = nullptr;
 	for (int i = solers_detail_inspector_content->get_child_count() - 1; i >= 0; i--) {
 		memdelete(solers_detail_inspector_content->get_child(i));
 	}
@@ -2718,9 +3292,59 @@ void EditorAssetLibrary::_refresh_solers_detail_inspector() {
 	render_mode->add_item(TTRC("Unshaded"), SOLERS_DETAIL_VIEW_UNSHADED);
 	render_mode->add_item(TTRC("Wireframe"), SOLERS_DETAIL_VIEW_WIREFRAME);
 	render_mode->add_item(TTRC("Normals"), SOLERS_DETAIL_VIEW_NORMALS);
+	if (solers_find_skeleton(solers_detail_scene_root)) {
+		render_mode->add_item(TTRC("Skeleton"), SOLERS_DETAIL_VIEW_SKELETON);
+	}
 	render_mode->select(solers_detail_view_mode);
 	render_mode->connect(SceneStringName(item_selected), callable_mp(this, &EditorAssetLibrary::_set_solers_detail_view_mode));
 	solers_detail_inspector_content->add_child(render_mode);
+
+	solers_detail_animation_player = solers_find_animation_player(solers_detail_scene_root);
+	if (solers_detail_animation_player) {
+		solers_add_inspector_section(solers_detail_inspector_content, TTRC("Animation"));
+		solers_detail_animation_picker = memnew(OptionButton);
+		solers_detail_animation_picker->set_theme_type_variation("FlatMenuButton");
+		solers_detail_animation_picker->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		List<StringName> animations;
+		solers_detail_animation_player->get_animation_list(&animations);
+		for (const StringName &E : animations) {
+			solers_detail_animation_picker->add_item(String(E));
+		}
+		solers_detail_animation_picker->connect(SceneStringName(item_selected), callable_mp(this, &EditorAssetLibrary::_set_solers_detail_animation));
+		solers_detail_inspector_content->add_child(solers_detail_animation_picker);
+
+		HBoxContainer *animation_controls = memnew(HBoxContainer);
+		animation_controls->add_theme_constant_override("separation", 6 * EDSCALE);
+		Button *play = memnew(Button);
+		play->set_text(TTRC("Play"));
+		solers_style_action_button(play);
+		play->connect(SceneStringName(pressed), callable_mp(this, &EditorAssetLibrary::_play_solers_detail_animation));
+		animation_controls->add_child(play);
+		Button *pause = memnew(Button);
+		pause->set_text(TTRC("Pause"));
+		solers_style_action_button(pause);
+		pause->connect(SceneStringName(pressed), callable_mp(this, &EditorAssetLibrary::_pause_solers_detail_animation));
+		animation_controls->add_child(pause);
+		Button *stop = memnew(Button);
+		stop->set_text(TTRC("Stop"));
+		solers_style_action_button(stop);
+		stop->connect(SceneStringName(pressed), callable_mp(this, &EditorAssetLibrary::_stop_solers_detail_animation));
+		animation_controls->add_child(stop);
+		Button *loop = memnew(Button);
+		loop->set_text(TTRC("Loop On"));
+		loop->set_toggle_mode(true);
+		loop->set_pressed(solers_detail_animation_loop);
+		solers_style_action_button(loop);
+		loop->connect(SceneStringName(pressed), callable_mp(this, &EditorAssetLibrary::_toggle_solers_detail_animation_loop).bind(loop));
+		animation_controls->add_child(loop);
+		solers_detail_inspector_content->add_child(animation_controls);
+
+		solers_detail_animation_time = solers_make_label(String(), 12, Color(0.68f, 0.74f, 0.84f), true);
+		solers_detail_inspector_content->add_child(solers_detail_animation_time);
+		if (solers_detail_animation_picker->get_item_count() > 0) {
+			_set_solers_detail_animation(0);
+		}
+	}
 
 	int meshes = 0;
 	int surfaces = 0;
@@ -2763,6 +3387,78 @@ void EditorAssetLibrary::_import_solers_detail_asset() {
 	}
 }
 
+void EditorAssetLibrary::_view_solers_basic_animation(const String &p_path) {
+	if (p_path.is_empty() || !FileAccess::exists(p_path)) {
+		solers_detail_import_status->set_text(TTRC("Animation file is missing."));
+		return;
+	}
+	if (!_load_solers_detail_preview(p_path)) {
+		solers_detail_import_status->set_text(TTRC("Godot could not load this animation."));
+		return;
+	}
+	_refresh_solers_detail_inspector();
+	solers_detail_import_status->set_text(TTRC("Animation loaded in viewer."));
+}
+
+void EditorAssetLibrary::_import_solers_basic_animation(const String &p_path) {
+	if (p_path.is_empty() || !FileAccess::exists(p_path)) {
+		solers_detail_import_status->set_text(TTRC("Animation file is missing."));
+		return;
+	}
+	const String target_dir = String("res://solers_assets/3d").path_join(solers_detail_asset_id).path_join("animations");
+	if (DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(target_dir)) != OK) {
+		solers_detail_import_status->set_text(TTRC("Could not create animation import folder."));
+		return;
+	}
+	const String dst = target_dir.path_join(p_path.get_file());
+	if (DirAccess::copy_absolute(ProjectSettings::get_singleton()->globalize_path(p_path), ProjectSettings::get_singleton()->globalize_path(dst)) != OK) {
+		solers_detail_import_status->set_text(TTRC("Animation import failed."));
+		return;
+	}
+	if (EditorFileSystem::get_singleton()) {
+		EditorFileSystem::get_singleton()->update_file(dst);
+	}
+	solers_detail_import_status->set_text(TTRC("Animation imported into the project."));
+}
+
+void EditorAssetLibrary::_delete_solers_detail_asset(Button *p_button) {
+	if (solers_detail_asset_id.is_empty() || !solers_asset_service || !p_button) {
+		return;
+	}
+	if (!solers_detail_delete_confirm) {
+		solers_detail_delete_confirm = true;
+		p_button->set_text(TTRC("Confirm Delete"));
+		if (solers_detail_import_status) {
+			solers_detail_import_status->set_text(TTRC("Click Confirm Delete to permanently remove this Library asset."));
+		}
+		return;
+	}
+	Dictionary args;
+	args["asset_id"] = solers_detail_asset_id;
+	const Dictionary result = solers_asset_service->delete_asset(args);
+	if ((bool)result.get("ok", false)) {
+		_show_solers_library();
+		return;
+	}
+	solers_detail_delete_confirm = false;
+	p_button->set_text(TTRC("Delete"));
+	const Dictionary error = result.get("error", Dictionary());
+	if (solers_detail_import_status) {
+		solers_detail_import_status->set_text(String(error.get("message", TTRC("Delete failed."))));
+	}
+}
+
+void EditorAssetLibrary::_set_solers_bool_option(Button *p_toggle, Button *p_action_button) {
+	if (!p_toggle) {
+		return;
+	}
+	const bool confirmed = p_toggle->is_pressed();
+	p_toggle->set_text(confirmed ? TTRC("Confirmed") : TTRC("Confirm"));
+	if (p_action_button) {
+		p_action_button->set_disabled(!confirmed);
+	}
+}
+
 void EditorAssetLibrary::_run_solers_detail_operation(Button *p_button) {
 	if (solers_detail_asset_id.is_empty()) {
 		return;
@@ -2794,6 +3490,9 @@ void EditorAssetLibrary::_source_back_pressed() {
 	if (source_mode == ASSET_SOURCE_SOLERS && solers_detail_visible) {
 		source_title->set_text(TTRC("Solers Library"));
 		solers_filter_row->show();
+		if (solers_detail_version_row) {
+			solers_detail_version_row->hide();
+		}
 		_show_solers_library();
 		return;
 	}
@@ -2814,6 +3513,9 @@ void EditorAssetLibrary::_set_source_mode(int p_mode) {
 		source_title->set_text(solers ? TTRC("Solers Library") : TTRC("Godot Assets"));
 	}
 	solers_filter_row->set_visible(solers);
+	if (solers_detail_version_row) {
+		solers_detail_version_row->hide();
+	}
 	search_hb->set_visible(godot);
 	search_hb2->set_visible(godot);
 	library_mc->set_visible(godot || solers);
