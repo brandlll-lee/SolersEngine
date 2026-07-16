@@ -12,9 +12,11 @@
 #include "core/math/geometry_2d.h"
 #include "core/math/math_funcs.h"
 #include "core/templates/hash_set.h"
+#include "modules/solers_modeling/core/solers_model_modifier.h"
 #include "scene/resources/mesh.h"
 #include "scene/resources/material.h"
 #include "scene/resources/surface_tool.h"
+#include "scene/resources/3d/shape_3d.h"
 
 static Array _ids_to_array(const Vector<int64_t> &p_ids) {
 	Array out;
@@ -117,6 +119,7 @@ void SolersEditableMesh::clear() {
 	edge_lookup.clear();
 	material_paths.clear();
 	modifiers.clear();
+	build_settings.clear();
 }
 
 int64_t SolersEditableMesh::add_vertex(const Vector3 &p_position) {
@@ -611,6 +614,7 @@ Dictionary SolersEditableMesh::to_dictionary() const {
 		modifier_array.push_back(item);
 	}
 	data["modifiers"] = modifier_array;
+	data["build_settings"] = build_settings.duplicate(true);
 	return data;
 }
 
@@ -722,6 +726,14 @@ Error SolersEditableMesh::from_dictionary(const Dictionary &p_data, String *r_er
 		modifier.enabled = item.get("enabled", true);
 		modifiers.push_back(modifier);
 	}
+	const Variant settings = p_data.get("build_settings", Dictionary());
+	if (settings.get_type() != Variant::DICTIONARY) {
+		if (r_error) {
+			*r_error = "Model field 'build_settings' must be an object.";
+		}
+		return ERR_INVALID_DATA;
+	}
+	build_settings = ((Dictionary)settings).duplicate(true);
 	_rebuild_indices();
 	for (KeyValue<int64_t, Loop> &entry : loops) {
 		Edge *edge = edges.getptr(entry.value.edge);
@@ -832,13 +844,14 @@ Dictionary SolersEditableMesh::inspect() const {
 	result["non_manifold_edge_count"] = non_manifold_edges;
 	result["materials"] = material_paths.size();
 	result["modifiers"] = modifiers.size();
+	result["build_settings"] = build_settings.duplicate(true);
 	result["selected_vertices"] = _ids_to_array(get_selected_vertices());
 	result["selected_edges"] = _ids_to_array(get_selected_edges());
 	result["selected_faces"] = _ids_to_array(get_selected_faces());
 	return result;
 }
 
-static Vector3 _face_normal(const SolersEditableMesh &p_mesh, const SolersEditableMesh::Face &p_face) {
+static Vector3 _face_weighted_normal(const SolersEditableMesh &p_mesh, const SolersEditableMesh::Face &p_face) {
 	Vector3 normal;
 	for (int i = 0; i < p_face.loops.size(); i++) {
 		const SolersEditableMesh::Loop *current_loop = p_mesh.get_loop(p_face.loops[i]);
@@ -852,7 +865,59 @@ static Vector3 _face_normal(const SolersEditableMesh &p_mesh, const SolersEditab
 		normal.y += (current.z - next.z) * (current.x + next.x);
 		normal.z += (current.x - next.x) * (current.y + next.y);
 	}
-	return normal.normalized();
+	return normal;
+}
+
+struct _NormalCornerKey {
+	int64_t face = 0;
+	int64_t vertex = 0;
+
+	static uint32_t hash(const _NormalCornerKey &p_key) {
+		return hash_one_uint64((uint64_t)p_key.face) ^ hash_murmur3_one_64((uint64_t)p_key.vertex);
+	}
+
+	bool operator==(const _NormalCornerKey &p_other) const {
+		return face == p_other.face && vertex == p_other.vertex;
+	}
+};
+
+static Vector3 _corner_normal(const SolersEditableMesh &p_mesh, const SolersEditableMesh::Face &p_face, int64_t p_vertex, bool p_weighted) {
+	const Vector3 flat = _face_weighted_normal(p_mesh, p_face).normalized();
+	if (!p_face.smooth) {
+		return flat;
+	}
+	HashSet<int64_t> visited;
+	Vector<int64_t> pending;
+	visited.insert(p_face.id);
+	pending.push_back(p_face.id);
+	Vector3 normal;
+	while (!pending.is_empty()) {
+		const int64_t face_id = pending[pending.size() - 1];
+		pending.remove_at(pending.size() - 1);
+		const SolersEditableMesh::Face *face = p_mesh.get_face(face_id);
+		const Vector3 face_normal = _face_weighted_normal(p_mesh, *face);
+		normal += p_weighted ? face_normal : face_normal.normalized();
+		for (int64_t loop_id : face->loops) {
+			const SolersEditableMesh::Loop *loop = p_mesh.get_loop(loop_id);
+			const SolersEditableMesh::Loop *next = p_mesh.get_loop(loop->next);
+			if (loop->vertex != p_vertex && next->vertex != p_vertex) {
+				continue;
+			}
+			const SolersEditableMesh::Edge *edge = p_mesh.get_edge(loop->edge);
+			if (edge->sharp) {
+				continue;
+			}
+			for (int64_t radial_loop : edge->loops) {
+				const int64_t neighbor_id = p_mesh.get_loop(radial_loop)->face;
+				const SolersEditableMesh::Face *neighbor = p_mesh.get_face(neighbor_id);
+				if (neighbor && neighbor->smooth && !visited.has(neighbor_id)) {
+					visited.insert(neighbor_id);
+					pending.push_back(neighbor_id);
+				}
+			}
+		}
+	}
+	return normal.is_zero_approx() ? flat : normal.normalized();
 }
 
 static PackedVector2Array _project_face(const SolersEditableMesh &p_mesh, const SolersEditableMesh::Face &p_face, const Vector3 &p_normal) {
@@ -872,6 +937,52 @@ static PackedVector2Array _project_face(const SolersEditableMesh &p_mesh, const 
 	return polygon;
 }
 
+static PackedInt32Array _generate_lod(const Array &p_arrays, double p_ratio) {
+	PackedInt32Array result;
+	if (!SurfaceTool::simplify_with_attrib_func) {
+		return result;
+	}
+	const PackedVector3Array vertices = p_arrays[Mesh::ARRAY_VERTEX];
+	const PackedVector3Array normals = p_arrays[Mesh::ARRAY_NORMAL];
+	const PackedVector2Array uvs = p_arrays[Mesh::ARRAY_TEX_UV];
+	const PackedInt32Array indices = p_arrays[Mesh::ARRAY_INDEX];
+	if (vertices.is_empty() || normals.size() != vertices.size() || uvs.size() != vertices.size() || indices.size() < 6) {
+		return result;
+	}
+	Vector<float> attributes;
+	Vector<float> positions;
+	attributes.resize(vertices.size() * 5);
+	positions.resize(vertices.size() * 3);
+	for (int i = 0; i < vertices.size(); i++) {
+		positions.write[i * 3] = vertices[i].x;
+		positions.write[i * 3 + 1] = vertices[i].y;
+		positions.write[i * 3 + 2] = vertices[i].z;
+		attributes.write[i * 5] = normals[i].x;
+		attributes.write[i * 5 + 1] = normals[i].y;
+		attributes.write[i * 5 + 2] = normals[i].z;
+		attributes.write[i * 5 + 3] = uvs[i].x;
+		attributes.write[i * 5 + 4] = uvs[i].y;
+	}
+	Vector<unsigned int> simplified;
+	simplified.resize(indices.size());
+	const float weights[5] = { 1.0f, 1.0f, 1.0f, 0.5f, 0.5f };
+	const int target = MAX(3, ((int)(indices.size() * CLAMP(p_ratio, 0.01, 0.99)) / 3) * 3);
+	float simplification_error = 0.0f;
+	const size_t count = SurfaceTool::simplify_with_attrib_func(
+			simplified.ptrw(), reinterpret_cast<const unsigned int *>(indices.ptr()), indices.size(),
+			positions.ptr(), vertices.size(), sizeof(float) * 3,
+			attributes.ptr(), sizeof(float) * 5, weights, 5, nullptr, target, 1.0f,
+			SurfaceTool::SIMPLIFY_LOCK_BORDER, &simplification_error);
+	if (count < 3 || count >= (size_t)indices.size() || count % 3 != 0) {
+		return result;
+	}
+	result.resize(count);
+	for (uint32_t i = 0; i < count; i++) {
+		result.set(i, simplified[i]);
+	}
+	return result;
+}
+
 Ref<ArrayMesh> SolersEditableMesh::compile(String *r_error) const {
 	String validation_error;
 	if (validate(&validation_error) != OK) {
@@ -880,9 +991,18 @@ Ref<ArrayMesh> SolersEditableMesh::compile(String *r_error) const {
 		}
 		return Ref<ArrayMesh>();
 	}
+	if (!modifiers.is_empty()) {
+		SolersEditableMesh evaluated;
+		if (SolersModelModifierEvaluator::evaluate(*this, evaluated, r_error) != OK) {
+			return Ref<ArrayMesh>();
+		}
+		return evaluated.compile(r_error);
+	}
 
 	Ref<ArrayMesh> mesh;
 	mesh.instantiate();
+	const bool weighted_normals = build_settings.get("weighted_normals", true);
+	HashMap<_NormalCornerKey, Vector3, _NormalCornerKey> corner_normals;
 	HashMap<int, Vector<int64_t>> faces_by_material;
 	for (int64_t face_id : get_face_ids()) {
 		faces_by_material[faces[face_id].material].push_back(face_id);
@@ -899,7 +1019,7 @@ Ref<ArrayMesh> SolersEditableMesh::compile(String *r_error) const {
 		surface->begin(Mesh::PRIMITIVE_TRIANGLES);
 		for (int64_t face_id : faces_by_material[material_index]) {
 			const Face &face = faces[face_id];
-			const Vector3 normal = _face_normal(*this, face);
+			const Vector3 normal = _face_weighted_normal(*this, face).normalized();
 			if (normal.is_zero_approx()) {
 				if (r_error) {
 					*r_error = vformat("Face %d has zero area.", face.id);
@@ -916,14 +1036,37 @@ Ref<ArrayMesh> SolersEditableMesh::compile(String *r_error) const {
 			}
 			for (int index : triangles) {
 				const Loop &loop = loops[face.loops[index]];
+				const _NormalCornerKey normal_key{ face.id, loop.vertex };
+				if (!corner_normals.has(normal_key)) {
+					corner_normals.insert(normal_key, _corner_normal(*this, face, loop.vertex, weighted_normals));
+				}
 				surface->set_uv(loop.uv);
-				surface->set_normal(normal);
+				surface->set_normal(corner_normals[normal_key]);
 				surface->add_vertex(vertices[loop.vertex].position);
 			}
 		}
-		const int previous_surfaces = mesh->get_surface_count();
+		if ((bool)build_settings.get("generate_tangents", true)) {
+			surface->generate_tangents();
+		}
 		surface->index();
-		surface->commit(mesh);
+		surface->optimize_indices_for_cache();
+		const Array arrays = surface->commit_to_arrays();
+		Dictionary lods;
+		const Array lod_levels = build_settings.get("lod_levels", Array());
+		for (const Variant &level_value : lod_levels) {
+			if (level_value.get_type() != Variant::DICTIONARY) {
+				continue;
+			}
+			const Dictionary level = level_value;
+			const double ratio = level.get("ratio", 0.5);
+			const double distance = level.get("distance", 10.0);
+			const PackedInt32Array generated = _generate_lod(arrays, ratio);
+			if (!generated.is_empty()) {
+				lods[distance] = generated;
+			}
+		}
+		const int previous_surfaces = mesh->get_surface_count();
+		mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays, TypedArray<Array>(), lods);
 		if (mesh->get_surface_count() != previous_surfaces + 1) {
 			if (r_error) {
 				*r_error = "ArrayMesh compilation failed.";
@@ -937,5 +1080,21 @@ Ref<ArrayMesh> SolersEditableMesh::compile(String *r_error) const {
 			}
 		}
 	}
+	if ((bool)build_settings.get("generate_uv2", false) && mesh->get_surface_count() > 0) {
+		const float texel_size = build_settings.get("lightmap_texel_size", 0.05);
+		if (mesh->lightmap_unwrap(Transform3D(), texel_size) != OK) {
+			if (r_error) {
+				*r_error = "xatlas could not generate lightmap UV2 coordinates.";
+			}
+			return Ref<ArrayMesh>();
+		}
+	}
+	const String collision_mode = build_settings.get("collision", "none");
+	if (collision_mode == "trimesh" && mesh->get_surface_count() > 0) {
+		mesh->set_meta("solers/collision_shape", mesh->create_trimesh_shape());
+	} else if (collision_mode == "convex" && mesh->get_surface_count() > 0) {
+		mesh->set_meta("solers/collision_shape", mesh->create_convex_shape());
+	}
+	mesh->set_meta("solers/build_settings", build_settings.duplicate(true));
 	return mesh;
 }

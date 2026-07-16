@@ -4,6 +4,7 @@ Import("env")
 Import("env_modules")
 
 env_modeling = env_modules.Clone()
+env_modeling.Prepend(CPPPATH=["#thirdparty/manifold/include", "#thirdparty/xatlas"])
 module_obj = []
 
 env_modeling.add_source_files(module_obj, "*.cpp")

@@ -94,6 +94,7 @@ private:
 	HashMap<EdgeKey, int64_t, EdgeKey> edge_lookup;
 	Vector<String> material_paths;
 	Vector<Modifier> modifiers;
+	Dictionary build_settings;
 
 	int64_t _allocate_id();
 	void _rebuild_indices();
@@ -155,6 +156,8 @@ public:
 	const Vector<String> &get_material_paths() const { return material_paths; }
 	Vector<Modifier> &get_modifiers() { return modifiers; }
 	const Vector<Modifier> &get_modifiers() const { return modifiers; }
+	Dictionary &get_build_settings() { return build_settings; }
+	const Dictionary &get_build_settings() const { return build_settings; }
 	int64_t add_modifier(const StringName &p_type, const Dictionary &p_parameters);
 	bool remove_modifier(int64_t p_id);
 
