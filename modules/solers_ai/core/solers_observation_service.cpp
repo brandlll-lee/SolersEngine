@@ -42,7 +42,6 @@
 #include "editor/editor_data.h"
 #include "editor/editor_interface.h"
 #include "editor/editor_log.h"
-#include "editor/editor_main_screen.h"
 #include "editor/editor_node.h"
 #include "editor/debugger/editor_debugger_node.h"
 #include "editor/debugger/script_editor_debugger.h"
@@ -676,11 +675,10 @@ Dictionary SolersObservationService::capture_viewport(const Dictionary &p_args) 
 
 	const String target = String(p_args.get("target", String())).strip_edges().to_lower();
 	if (target == "editor") {
-		EditorNode *editor_node = EditorNode::get_singleton();
-		if (!editor_node || editor_node->get_editor_main_screen()->get_selected_index() != EditorMainScreen::EDITOR_3D) {
-			return _capture_error("EDITOR_3D_NOT_ACTIVE", "The 3D editor must be the active main screen before capturing it.", true);
-		}
 		Node3DEditor *editor_3d = Node3DEditor::get_singleton();
+		if (!editor_3d || !editor_3d->is_visible_in_tree()) {
+			return _capture_error("EDITOR_3D_NOT_ACTIVE", "The 3D or Modeling workspace must be active before capturing its shared viewport.", true);
+		}
 		Node3DEditorViewport *editor_viewport = editor_3d ? editor_3d->get_last_used_viewport() : nullptr;
 		if (!editor_viewport || !editor_viewport->get_viewport_node()) {
 			return _capture_error("EDITOR_VIEWPORT_UNAVAILABLE", "The active 3D editor viewport is unavailable.", true);

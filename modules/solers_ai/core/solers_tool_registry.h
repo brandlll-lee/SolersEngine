@@ -77,6 +77,7 @@ class SolersToolRegistry : public Object {
 	void _register_script_tools();
 	void _register_runtime_tools();
 	void _register_asset_tools();
+	void _register_modeling_tools();
 	void _register_reflection_tools();
 	void _register_skill_tools();
 	void _register_search_tools();

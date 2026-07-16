@@ -21,6 +21,8 @@
 #include "modules/solers_ai/core/solers_secret_store.h"
 #include "modules/solers_ai/core/solers_script_service.h"
 #include "modules/solers_ai/core/solers_trace.h"
+#include "modules/solers_modeling/core/solers_model_operation.h"
+#include "modules/solers_modeling/core/solers_model_source.h"
 #include "scene/main/node.h"
 
 void SolersToolRegistry::_bind_methods() {
@@ -205,6 +207,27 @@ static std::function<Array(const Dictionary &)> _access_by_arg(const char *p_mod
 		accesses.push_back(access);
 		return accesses;
 	};
+}
+
+static Dictionary _modeling_operation_schema(const Dictionary &p_operation_schema) {
+	Dictionary schema = p_operation_schema.duplicate(true);
+	Dictionary properties = schema.get("properties", Dictionary());
+	Dictionary path;
+	path["type"] = "string";
+	path["description"] = "Normalized res:// path of the editable .smodel source.";
+	properties["path"] = path;
+	Dictionary revision;
+	revision["type"] = "integer";
+	revision["minimum"] = 0;
+	revision["description"] = "Optional revision from model.inspect; rejects stale concurrent edits.";
+	properties["expected_revision"] = revision;
+	schema["properties"] = properties;
+	Array required = schema.get("required", Array()).duplicate();
+	if (!required.has("path")) {
+		required.push_back("path");
+	}
+	schema["required"] = required;
+	return schema;
 }
 
 static String _trace_result(const Dictionary &p_result) {
@@ -799,6 +822,73 @@ void SolersToolRegistry::_register_skill_tools() {
 			}, false);
 }
 
+void SolersToolRegistry::_register_modeling_tools() {
+	SolersModelingService *service = SolersModelingService::get_singleton();
+	ERR_FAIL_NULL(service);
+	const auto model_access = _access_by_arg("write", "project:", "path");
+
+	_add("model.create", "Create a new editable Solers model source from an exact native primitive.",
+			R"({"type":"object","properties":{"path":{"type":"string","description":"Normalized res:// destination ending in .smodel."},"primitive":{"type":"string","enum":["box","plane","cylinder"]},"parameters":{"type":"object","description":"Primitive dimensions and center, using the matching create operation schema."}},"required":["path","primitive"]})",
+			SolersPermissionManager::PERMISSION_EDIT_FILES, "editor_undo_redo", true, true, Vector<String>(), SolersToolExposure::DIRECT,
+			[service](const SolersToolContext &, const Dictionary &a) { return service->create(a.get("path", String()), StringName(a.get("primitive", String())), a.get("parameters", Dictionary())); }, false,
+			SolersToolExecution::MAIN_THREAD, model_access);
+	_add_observe_exposed("model.inspect", "Inspect editable topology, persistent IDs, selection, modifiers, build settings, revision, and source hash.",
+			R"({"type":"object","properties":{"path":{"type":"string","description":"Normalized res:// path of the editable .smodel source."}},"required":["path"]})",
+			SolersToolExposure::DIRECT,
+			[service](const SolersToolContext &, const Dictionary &a) { return service->inspect(a.get("path", String())); }, true,
+			_access_by_arg("read", "project:", "path"));
+	_add_observe_exposed("model.validate", "Validate editable topology and compile the exact runtime ArrayMesh without modifying the source.",
+			R"({"type":"object","properties":{"path":{"type":"string","description":"Normalized res:// path of the editable .smodel source."}},"required":["path"]})",
+			SolersToolExposure::DIRECT,
+			[service](const SolersToolContext &, const Dictionary &a) { return service->validate_source(a.get("path", String())); }, true,
+			_access_by_arg("read", "project:", "path"));
+	_add("model.save", "Save an editable model source to a new normalized res:// .smodel path.",
+			R"({"type":"object","properties":{"source_path":{"type":"string"},"destination_path":{"type":"string"}},"required":["source_path","destination_path"]})",
+			SolersPermissionManager::PERMISSION_EDIT_FILES, "editor_undo_redo", true, true, Vector<String>(), SolersToolExposure::DIRECT,
+			[service](const SolersToolContext &, const Dictionary &a) { return service->save_as(a.get("source_path", String()), a.get("destination_path", String())); }, false,
+			SolersToolExecution::MAIN_THREAD, [](const Dictionary &a) {
+				Array accesses;
+				for (const char *key : { "source_path", "destination_path" }) {
+					Dictionary access;
+					access["mode"] = String(key) == "source_path" ? "read" : "write";
+					access["key"] = "project:" + String(a.get(key, String()));
+					accesses.push_back(access);
+				}
+				return accesses;
+			});
+	_add("model.batch", "Apply an ordered native modeling transaction to one working copy; every operation must succeed before one undoable commit.",
+			R"({"type":"object","properties":{"path":{"type":"string","description":"Normalized res:// path of the editable .smodel source."},"operations":{"type":"array","minItems":1,"items":{"type":"object","properties":{"operation":{"type":"string"},"parameters":{"type":"object"}},"required":["operation"],"additionalProperties":false}},"expected_revision":{"type":"integer","minimum":0}},"required":["path","operations"]})",
+			SolersPermissionManager::PERMISSION_EDIT_FILES, "editor_undo_redo", true, true, Vector<String>(), SolersToolExposure::DIRECT,
+			[service](const SolersToolContext &, const Dictionary &a) { return service->batch(a.get("path", String()), a.get("operations", Array()), a.get("expected_revision", -1)); }, false,
+			SolersToolExecution::MAIN_THREAD, model_access);
+
+	SolersToolCapability capability;
+	capability.permission = SolersPermissionManager::PERMISSION_EDIT_FILES;
+	capability.mutation_kind = "editor_undo_redo";
+	capability.requires_approval = true;
+	capability.undoable = true;
+	capability.resource_access = model_access;
+	for (const SolersModelOperationDefinition &operation : SolersModelOperationRegistry::get_singleton()->get_operations()) {
+		const StringName operation_id = operation.id;
+		const Dictionary operation_schema = operation.parameters_schema;
+		_register(memnew(SolersFunctionTool(
+				StringName("model." + String(operation_id)),
+				operation.description,
+				_modeling_operation_schema(operation_schema), SolersToolExposure::DEFERRED, capability,
+				[service, operation_id, operation_schema](const SolersToolContext &, const Dictionary &a) {
+					Dictionary parameters;
+					const Dictionary properties = operation_schema.get("properties", Dictionary());
+					const Variant *key = nullptr;
+					while ((key = properties.next(key))) {
+						if (a.has(*key)) {
+							parameters[*key] = a[*key];
+						}
+					}
+					return service->apply(a.get("path", String()), operation_id, parameters, a.get("expected_revision", -1));
+				})));
+	}
+}
+
 void SolersToolRegistry::_register_reflection_tools() {
 	if (!reflection_service) {
 		return;
@@ -944,6 +1034,7 @@ void SolersToolRegistry::register_default_tools() {
 	_register_script_tools();
 	_register_runtime_tools();
 	_register_asset_tools();
+	_register_modeling_tools();
 	_register_search_tools();
 }
 
