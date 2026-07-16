@@ -186,6 +186,12 @@ class EditorFileSystem : public Node {
 	bool filesystem_changed_queued = false;
 	bool scanning = false;
 	bool importing = false;
+	struct PendingImportOptions {
+		String importer;
+		HashMap<StringName, Variant> options;
+	};
+	Mutex pending_import_options_mutex;
+	HashMap<String, PendingImportOptions> pending_import_options;
 	bool first_scan = true;
 	bool scan_changes_pending = false;
 	float scan_total;
@@ -386,6 +392,7 @@ public:
 	bool is_importing() const { return importing; }
 	bool doing_first_scan() const { return first_scan; }
 	float get_scanning_progress() const;
+	bool requires_import_format_support(const Vector<String> &p_files) const;
 	void scan();
 	void scan_changes();
 	void update_file(const String &p_file);
@@ -402,6 +409,7 @@ public:
 	Error reimport_append(const String &p_file, const HashMap<StringName, Variant> &p_custom_options, const String &p_custom_importer, Variant p_generator_parameters);
 
 	void reimport_file_with_custom_parameters(const String &p_file, const String &p_importer, const HashMap<StringName, Variant> &p_custom_params);
+	void queue_import_options(const String &p_file, const String &p_importer, const HashMap<StringName, Variant> &p_custom_params);
 
 	bool is_group_file(const String &p_path) const;
 	void move_group_file(const String &p_path, const String &p_new_path);

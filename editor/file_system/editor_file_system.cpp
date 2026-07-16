@@ -2797,10 +2797,16 @@ Error EditorFileSystem::_reimport_file(const String &p_file, const HashMap<Strin
 	//try to obtain existing params
 
 	HashMap<StringName, Variant> params = p_custom_options;
-	String importer_name; //empty by default though
-
-	if (!p_custom_importer.is_empty()) {
-		importer_name = p_custom_importer;
+	String importer_name = p_custom_importer;
+	if (params.is_empty() && importer_name.is_empty()) {
+		const String normalized_path = p_file.replace_char('\\', '/').simplify_path();
+		MutexLock lock(pending_import_options_mutex);
+		PendingImportOptions *pending = pending_import_options.getptr(normalized_path);
+		if (pending) {
+			params = pending->options;
+			importer_name = pending->importer;
+			pending_import_options.erase(normalized_path);
+		}
 	}
 
 	ResourceUID::ID uid = ResourceUID::INVALID_ID;
@@ -3084,6 +3090,9 @@ void EditorFileSystem::_find_group_files(EditorFileSystemDirectory *efd, HashMap
 }
 
 void EditorFileSystem::reimport_file_with_custom_parameters(const String &p_file, const String &p_importer, const HashMap<StringName, Variant> &p_custom_params) {
+	ERR_FAIL_COND_MSG(importing, "Attempted to start a custom reimport while another import is active.");
+	importing = true;
+
 	Vector<String> reloads;
 	reloads.append(p_file);
 
@@ -3094,6 +3103,17 @@ void EditorFileSystem::reimport_file_with_custom_parameters(const String &p_file
 
 	// Emit the resource_reimported signal for the single file we just reimported.
 	emit_signal(SNAME("resources_reimported"), reloads);
+
+	importing = false;
+}
+
+void EditorFileSystem::queue_import_options(const String &p_file, const String &p_importer, const HashMap<StringName, Variant> &p_custom_params) {
+	ERR_FAIL_COND(p_file.is_empty());
+	PendingImportOptions pending;
+	pending.importer = p_importer;
+	pending.options = p_custom_params;
+	MutexLock lock(pending_import_options_mutex);
+	pending_import_options[p_file.replace_char('\\', '/').simplify_path()] = pending;
 }
 
 Error EditorFileSystem::_copy_file(const String &p_from, const String &p_to) {
@@ -3402,8 +3422,6 @@ void EditorFileSystem::reimport_files(const Vector<String> &p_files) {
 	OS::get_singleton()->set_low_processor_usage_mode(old_low_processor_usage_mode);
 	DisplayServer::get_singleton()->window_set_vsync_mode(old_vsync_mode);
 
-	importing = false;
-
 	ep = memnew(EditorProgress("reimport", TTR("(Re)Importing Assets"), p_files.size()));
 	ep->step(TTR("Executing post-reimport operations..."), 0, true);
 	if (!is_scanning()) {
@@ -3411,6 +3429,8 @@ void EditorFileSystem::reimport_files(const Vector<String> &p_files) {
 	}
 	emit_signal(SNAME("resources_reimported"), reloads);
 	memdelete_notnull(ep);
+
+	importing = false;
 }
 
 Error EditorFileSystem::reimport_append(const String &p_file, const HashMap<StringName, Variant> &p_custom_options, const String &p_custom_importer, Variant p_generator_parameters) {
@@ -3754,6 +3774,24 @@ bool EditorFileSystem::_can_import_file(const String &p_file) {
 		}
 	}
 
+	return false;
+}
+
+bool EditorFileSystem::requires_import_format_support(const Vector<String> &p_files) const {
+	for (const Ref<EditorFileSystemImportFormatSupportQuery> &query : import_support_queries) {
+		if (!query->is_active()) {
+			continue;
+		}
+		const Vector<String> extensions = query->get_file_extensions();
+		for (const String &file : p_files) {
+			const String extension = file.get_extension().to_lower();
+			for (const String &supported_extension : extensions) {
+				if (extension == supported_extension.to_lower()) {
+					return true;
+				}
+			}
+		}
+	}
 	return false;
 }
 
