@@ -24,6 +24,7 @@
 
 class Button;
 class Control;
+class AcceptDialog;
 class EditorFileDialog;
 class HBoxContainer;
 class Label;
@@ -38,6 +39,7 @@ class SolersAssistantCell;
 class SolersGlyphButton;
 class SolersMCPAdapter;
 class SolersPermissionManager;
+class SolersPMAIView;
 class SolersPlanCell;
 class SolersObservationService;
 class SolersRpcServer;
@@ -66,6 +68,8 @@ class SolersDock : public PanelContainer {
 	SolersGlyphButton *send_chat_button = nullptr;
 	HBoxContainer *attachment_bar = nullptr;
 	EditorFileDialog *attachment_file_dialog = nullptr;
+	AcceptDialog *provider_settings_dialog = nullptr;
+	SolersPMAIView *provider_settings_view = nullptr;
 	SolersSelectChip *model_chip = nullptr;
 	Control *model_popup_overlay = nullptr;
 	PanelContainer *model_popup = nullptr;

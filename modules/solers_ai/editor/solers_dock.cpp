@@ -28,6 +28,7 @@
 #include "core/templates/hash_set.h"
 #include "core/version.h"
 #include "editor/gui/editor_file_dialog.h"
+#include "editor/project_manager/solers_pm_ai_view.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
 #include "modules/solers_ai/core/solers_action_timeline.h"
@@ -44,6 +45,7 @@
 #include "modules/solers_ai/protocol/solers_rpc_server.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
+#include "scene/gui/dialogs.h"
 #include "scene/gui/label.h"
 #include "scene/gui/margin_container.h"
 #include "scene/gui/panel_container.h"
@@ -440,9 +442,14 @@ void SolersDock::_refresh_model_chip() {
 	const bool connected = provider_data.get("connected", false);
 	const bool available = provider_data.get("available", false);
 
-	if (!connected || !available || model.is_empty()) {
+	if (!connected || model.is_empty()) {
 		model_chip->set_texts(TTR("Model"), String());
-		model_chip->set_tooltip_text(connected && !available ? TTR("Privacy mode blocks the active remote provider.") : TTR("Connect a provider, then choose a model."));
+		model_chip->set_tooltip_text(TTR("Connect a provider, then choose a model."));
+		return;
+	}
+	if (!available) {
+		model_chip->set_texts(solers_compact_model_label(model), TTR("Local only"));
+		model_chip->set_tooltip_text(TTR("Local Models Only blocks this remote provider. Choose a local model or disable Local Models Only in Provider Settings."));
 		return;
 	}
 
@@ -650,6 +657,9 @@ void SolersDock::_on_send_chat_pressed() {
 		_on_stop_chat_pressed();
 		return;
 	}
+	if (send_chat_button && !send_chat_button->is_enabled()) {
+		return;
+	}
 
 	const String prompt = chat_input->get_text().strip_edges();
 	if (prompt.is_empty() && pending_attachments.is_empty()) {
@@ -722,9 +732,7 @@ void SolersDock::_on_model_chip_pressed() {
 	int visible_provider_count = 0;
 	for (const Variant &config_value : connected) {
 		const Dictionary config = config_value;
-		if (!config.get("available", false)) {
-			continue;
-		}
+		const bool available = config.get("available", false);
 		const Dictionary profile = config.get("profile", Dictionary());
 		const String provider = config.get("provider", String());
 		const bool selected = active_provider == provider;
@@ -750,7 +758,8 @@ void SolersDock::_on_model_chip_pressed() {
 		}
 
 		visible_provider_count++;
-		model_popup_box->add_child(solers_make_model_popup_group(profile.get("label", provider)));
+		const String provider_label = profile.get("label", provider);
+		model_popup_box->add_child(solers_make_model_popup_group(available ? provider_label : vformat(TTR("%s — blocked by Local Models Only"), provider_label)));
 		for (const Variant &model_value : models) {
 			const String model_id = model_value;
 			if (settings_service && !settings_service->is_model_allowed(provider, model_id)) {
@@ -760,13 +769,19 @@ void SolersDock::_on_model_chip_pressed() {
 			const Dictionary model_labels = profile.get("model_labels", Dictionary());
 			const String display_name = model_info.get("name", model_labels.get(model_id, model_id));
 			Button *row = solers_make_model_popup_row(display_name, model_id, selected && model_id == active_model);
-			row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_set_model_provider_from_popup).bind(provider, model_id));
+			if (available) {
+				row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_set_model_provider_from_popup).bind(provider, model_id));
+			} else {
+				row->set_disabled(true);
+				row->add_theme_color_override("font_disabled_color", SOLERS_TEXT_DIM);
+				row->set_tooltip_text(TTR("Disable Local Models Only to use this remote model."));
+			}
 			model_popup_box->add_child(row);
 		}
 	}
 
 	if (visible_provider_count == 0) {
-		Label *empty = memnew(Label(TTR("No connected model provider. Connect one in Provider Settings.")));
+		Label *empty = memnew(Label(connected.is_empty() ? TTR("No connected model provider. Connect one in Provider Settings.") : TTR("Connected providers do not expose any selectable models.")));
 		empty->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
 		empty->add_theme_color_override("font_color", SOLERS_TEXT_DIM);
 		empty->set_custom_minimum_size(Size2(0, 52 * EDSCALE));
@@ -778,7 +793,7 @@ void SolersDock::_on_model_chip_pressed() {
 	const Dictionary active_catalog = solers_find_model_catalog_provider(catalog_providers, active_catalog_id, provider_data.get("base_url", String()));
 	const Dictionary active_model_info = Dictionary(active_catalog.get("models", Dictionary())).get(active_model, Dictionary());
 	const Array efforts = SolersModelsDev::reasoning_efforts(active_model_info);
-	if (!active_model.is_empty() && !efforts.is_empty()) {
+	if (provider_data.get("available", false) && !active_model.is_empty() && !efforts.is_empty()) {
 		model_popup_box->add_child(memnew(HSeparator));
 		model_popup_box->add_child(solers_make_model_popup_title(TTR("Model Effort")));
 		Button *default_effort = solers_make_model_popup_row(TTR("Default"), String(), active_effort.is_empty());
@@ -884,7 +899,10 @@ void SolersDock::_set_reasoning_effort_from_popup(const String &p_effort) {
 
 void SolersDock::_open_model_settings_from_popup() {
 	_hide_model_popup();
-	_append_error_row(TTR("Open Provider Settings from the Solers Project Manager to connect or disconnect model providers."));
+	if (provider_settings_dialog && provider_settings_view) {
+		provider_settings_view->refresh();
+		provider_settings_dialog->popup_centered(Size2(980, 640) * EDSCALE);
+	}
 }
 
 void SolersDock::start_new_chat() {
@@ -1131,15 +1149,18 @@ void SolersDock::_update_send_enabled() {
 	if (send_chat_button && chat_input) {
 		const bool blocked = permission_manager && permission_manager->get_pending_request_count() > 0;
 		const bool running = agent_session && agent_session->is_running();
+		const Dictionary provider = settings_service ? Dictionary(settings_service->get_provider_config().get("data", Dictionary())) : Dictionary();
+		const bool provider_available = provider.get("connected", false) && provider.get("available", false);
 		chat_input->set_editable(!blocked && !running);
 		if (running) {
 			send_chat_button->configure(SNAME("stop"), SolersGlyphButton::SKIN_PRIMARY, TTR("Stop generation"), 14);
 			send_chat_button->set_pressed_callback(callable_mp(this, &SolersDock::_on_stop_chat_pressed));
 			send_chat_button->set_enabled(true);
 		} else {
-			send_chat_button->configure(SNAME("send_up"), SolersGlyphButton::SKIN_PRIMARY, TTR("Send"), 16);
+			const String tooltip = provider_available ? TTR("Send") : (provider.get("connected", false) ? TTR("Local Models Only blocks the selected remote provider.") : TTR("Connect a model provider before sending."));
+			send_chat_button->configure(SNAME("send_up"), SolersGlyphButton::SKIN_PRIMARY, tooltip, 16);
 			send_chat_button->set_pressed_callback(callable_mp(this, &SolersDock::_on_send_chat_pressed));
-			send_chat_button->set_enabled(!blocked && (!chat_input->get_text().strip_edges().is_empty() || !pending_attachments.is_empty()));
+			send_chat_button->set_enabled(!blocked && provider_available && (!chat_input->get_text().strip_edges().is_empty() || !pending_attachments.is_empty()));
 		}
 	}
 }
@@ -1589,6 +1610,18 @@ SolersDock::SolersDock() {
 	attachment_file_dialog->add_filter("*.png, *.jpg, *.jpeg", TTRC("Images"));
 	attachment_file_dialog->connect("file_selected", callable_mp(this, &SolersDock::_on_attachment_file_selected));
 	add_child(attachment_file_dialog);
+
+	provider_settings_dialog = memnew(AcceptDialog);
+	provider_settings_dialog->set_title(TTR("Provider Settings"));
+	provider_settings_dialog->set_min_size(Size2(980, 640) * EDSCALE);
+	provider_settings_dialog->get_ok_button()->hide();
+	add_child(provider_settings_dialog);
+
+	provider_settings_view = memnew(SolersPMAIView);
+	provider_settings_view->set_name("ProviderSettings");
+	provider_settings_view->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	provider_settings_view->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	provider_settings_dialog->add_child(provider_settings_view);
 
 	model_popup = memnew(PanelContainer);
 	model_popup->set_mouse_filter(Control::MOUSE_FILTER_STOP);

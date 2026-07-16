@@ -8,9 +8,9 @@
 /* Solers: AI-native game engine.                                        */
 /*                                                                        */
 /* BYOK (bring-your-own-key) AI model configuration view, hosted as a     */
-/* first-class Project Manager tab. Left rail lists provider profiles     */
+/* first-class shared settings view. Left rail lists provider profiles   */
 /* (SolersCategoryCard rows, Lucide glyphs); the right pane is a calm,    */
-/* hard-edged UE-style form: model / base URL / API key, privacy mode,    */
+/* hard-edged UE-style form: model / base URL / API key, local policy,    */
 /* and a live validation readout. Secrets are written through            */
 /* SolersSecretStore (DPAPI / machine-bound AES) and are never echoed     */
 /* back into the UI.                                                      */
@@ -49,6 +49,8 @@ class SolersPMAIView : public HBoxContainer {
 	VBoxContainer *provider_detail_view = nullptr;
 	Label *provider_list_title = nullptr;
 	Label *provider_list_notes = nullptr;
+	VBoxContainer *local_models_only_box = nullptr;
+	CheckBox *local_models_only_check = nullptr;
 	Button *detail_back_btn = nullptr;
 	Label *provider_title = nullptr;
 	Label *provider_notes = nullptr;
@@ -66,9 +68,6 @@ class SolersPMAIView : public HBoxContainer {
 	Button *oauth_connect_btn = nullptr;
 	Button *oauth_cancel_btn = nullptr;
 	Button *oauth_disconnect_btn = nullptr;
-	Label *privacy_header = nullptr;
-	CheckBox *privacy_check = nullptr;
-	Label *privacy_note = nullptr;
 	VBoxContainer *status_list = nullptr;
 	Button *save_btn = nullptr;
 	Button *disconnect_btn = nullptr;
@@ -91,7 +90,7 @@ class SolersPMAIView : public HBoxContainer {
 	void _refresh_status();
 	void _add_status_row(const String &p_text, const Color &p_dot_color);
 	void _on_field_changed(const String &p_ignored = String());
-	void _on_privacy_toggled(bool p_pressed);
+	void _on_local_models_only_toggled(bool p_pressed);
 	void _on_reveal_toggled(bool p_pressed);
 	void _on_codex_connect();
 	void _on_codex_cancel();
@@ -104,6 +103,7 @@ protected:
 	static void _bind_methods() {}
 
 public:
+	void refresh();
 	SolersPMAIView();
 	~SolersPMAIView();
 };

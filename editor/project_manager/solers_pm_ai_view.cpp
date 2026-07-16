@@ -116,6 +116,11 @@ void SolersPMAIView::_build_provider_list() {
 		provider_list->remove_child(child);
 		child->queue_free();
 	}
+	const bool llm_category = selected_category == "llm";
+	local_models_only_box->set_visible(llm_category);
+	if (llm_category) {
+		local_models_only_check->set_pressed_no_signal(settings_service->get_local_models_only());
+	}
 
 	if (selected_category == "3d") {
 		provider_list_title->set_text(TTR("3D Models"));
@@ -149,6 +154,9 @@ void SolersPMAIView::_open_provider(const String &p_id) {
 }
 
 void SolersPMAIView::_show_provider_list() {
+	if (selected_category == "llm" && settings_service) {
+		local_models_only_check->set_pressed_no_signal(settings_service->get_local_models_only());
+	}
 	provider_list_view->show();
 	provider_detail_view->hide();
 	if (saved_feedback) {
@@ -185,9 +193,6 @@ void SolersPMAIView::_refresh_form(bool p_load_stored) {
 	base_url_label->show();
 	base_url_edit->show();
 	api_key_label->show();
-	privacy_header->show();
-	privacy_check->show();
-	privacy_note->show();
 
 	if (_is_asset_provider(selected_provider)) {
 		const String kind = _asset_kind_from_provider(selected_provider);
@@ -207,9 +212,6 @@ void SolersPMAIView::_refresh_form(bool p_load_stored) {
 		const bool env_set = OS::get_singleton()->has_environment(env_name) && !OS::get_singleton()->get_environment(env_name).is_empty();
 		env_hint->set_text(vformat(env_set ? TTR("Environment fallback %s is set and will be used when no key is stored.") : TTR("Environment fallback: %s (not set)"), env_name));
 		env_hint->show();
-		privacy_header->hide();
-		privacy_check->hide();
-		privacy_note->hide();
 		return;
 	}
 
@@ -217,8 +219,6 @@ void SolersPMAIView::_refresh_form(bool p_load_stored) {
 	const Dictionary config = settings_service->get_provider_config_for(selected_provider).get("data", Dictionary());
 	provider_title->set_text(TTRGET(String(profile.get("label", selected_provider))));
 	provider_notes->set_text(TTRGET(String(profile.get("notes", String()))));
-	privacy_check->set_pressed_no_signal(config.get("privacy_mode", true));
-
 	if (_uses_codex_auth(selected_provider)) {
 		connection_grid->hide();
 		env_hint->hide();
@@ -231,7 +231,7 @@ void SolersPMAIView::_refresh_form(bool p_load_stored) {
 		if (connected && available) {
 			oauth_status->set_text(TTR("Connected with ChatGPT. Codex models are available in the Chat panel."));
 		} else if (connected) {
-			oauth_status->set_text(TTR("Connected with ChatGPT. Disable privacy mode to make Codex models available."));
+			oauth_status->set_text(TTR("Connected with ChatGPT. Disable Local Models Only to make Codex models available."));
 		} else if (auth_state == "waiting_browser") {
 			oauth_status->set_text(TTR("Waiting for authorization in your browser..."));
 		} else if (auth_state == "exchanging") {
@@ -323,7 +323,7 @@ void SolersPMAIView::_refresh_status() {
 		if (auth_status.get("available", false)) {
 			_add_status_row(TTR("ChatGPT Codex is connected."), SOLERS_AI_COL_OK);
 		} else if (auth_status.get("connected", false)) {
-			_add_status_row(TTR("Privacy mode currently blocks this remote provider."), SOLERS_AI_COL_WARNING);
+			_add_status_row(TTR("Local Models Only currently blocks this remote provider."), SOLERS_AI_COL_WARNING);
 		} else if (auth_status.get("active", false)) {
 			_add_status_row(TTR("Authorization is in progress."), SOLERS_AI_COL_WARNING);
 		} else {
@@ -336,7 +336,6 @@ void SolersPMAIView::_refresh_status() {
 
 	Dictionary config;
 	config["provider"] = selected_provider;
-	config["privacy_mode"] = privacy_check->is_pressed();
 	const String model = model_edit->get_text().strip_edges();
 	const String base_url = base_url_edit->get_text().strip_edges();
 	config["model"] = model.is_empty() ? String(profile.get("default_model", String())) : model;
@@ -356,6 +355,9 @@ void SolersPMAIView::_refresh_status() {
 	for (int i = 0; i < warnings.size(); i++) {
 		_add_status_row(String(warnings[i]), SOLERS_AI_COL_WARNING);
 	}
+	if (stored.get("connected", false) && !stored.get("available", false)) {
+		_add_status_row(TTR("Local Models Only currently blocks this remote provider."), SOLERS_AI_COL_WARNING);
+	}
 	if (blockers.is_empty() && warnings.is_empty()) {
 		_add_status_row(TTR("Configuration is valid and ready to use."), SOLERS_AI_COL_OK);
 	}
@@ -371,14 +373,10 @@ void SolersPMAIView::_on_field_changed(const String &p_ignored) {
 	}
 }
 
-void SolersPMAIView::_on_privacy_toggled(bool p_pressed) {
-	if (_uses_codex_auth(selected_provider) && settings_service) {
-		Dictionary config;
-		config["provider"] = selected_provider;
-		config["privacy_mode"] = p_pressed;
-		settings_service->set_provider_config(config);
+void SolersPMAIView::_on_local_models_only_toggled(bool p_pressed) {
+	if (settings_service) {
+		settings_service->set_local_models_only(p_pressed);
 	}
-	_on_field_changed();
 }
 
 void SolersPMAIView::_on_reveal_toggled(bool p_pressed) {
@@ -465,7 +463,6 @@ void SolersPMAIView::_save() {
 	const String model = model_edit->get_text().strip_edges();
 	config["model"] = model.is_empty() ? String(profile.get("default_model", String())) : model;
 	config["base_url"] = base_url_edit->get_text().strip_edges();
-	config["privacy_mode"] = privacy_check->is_pressed();
 	const String new_key = api_key_edit->get_text().strip_edges();
 	if (!new_key.is_empty()) {
 		config["api_key"] = new_key;
@@ -505,6 +502,16 @@ void SolersPMAIView::_notification(int p_what) {
 			_refresh_status();
 		}
 	}
+}
+
+void SolersPMAIView::refresh() {
+#ifdef MODULE_SOLERS_AI_ENABLED
+	_build_provider_list();
+	if (provider_detail_view->is_visible()) {
+		_refresh_form(true);
+		_refresh_status();
+	}
+#endif
 }
 
 SolersPMAIView::SolersPMAIView() {
@@ -578,6 +585,25 @@ SolersPMAIView::SolersPMAIView() {
 	provider_list_notes->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
 	provider_list_notes->add_theme_color_override(SceneStringName(font_color), Color(0.886f, 0.890f, 0.902f, 0.5f));
 	provider_list_view->add_child(provider_list_notes);
+
+	local_models_only_box = memnew(VBoxContainer);
+	local_models_only_box->add_theme_constant_override("separation", 4 * EDSCALE);
+	provider_list_view->add_child(local_models_only_box);
+
+	Label *local_models_only_header = memnew(Label(TTR("MODEL ACCESS")));
+	local_models_only_header->set_theme_type_variation("PMNavHeader");
+	local_models_only_box->add_child(local_models_only_header);
+
+	local_models_only_check = memnew(CheckBox(TTR("Local Models Only")));
+	local_models_only_check->set_tooltip_text(TTR("Pause remote model providers without disconnecting accounts or deleting credentials."));
+	local_models_only_check->connect(SceneStringName(toggled), callable_mp(this, &SolersPMAIView::_on_local_models_only_toggled));
+	local_models_only_box->add_child(local_models_only_check);
+
+	Label *local_models_only_note = memnew(Label(TTR("When enabled, Solers can use connected local model providers only. Remote connections remain configured.")));
+	local_models_only_note->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	local_models_only_note->add_theme_color_override(SceneStringName(font_color), Color(0.886f, 0.890f, 0.902f, 0.45f));
+	local_models_only_note->add_theme_font_size_override(SceneStringName(font_size), MAX(9, (int)(11 * EDSCALE)));
+	local_models_only_box->add_child(local_models_only_note);
 
 	provider_list = memnew(VBoxContainer);
 	provider_list->set_h_size_flags(SIZE_EXPAND_FILL);
@@ -696,26 +722,6 @@ SolersPMAIView::SolersPMAIView() {
 	env_hint->add_theme_color_override(SceneStringName(font_color), Color(0.886f, 0.890f, 0.902f, 0.45f));
 	env_hint->add_theme_font_size_override(SceneStringName(font_size), MAX(9, (int)(11 * EDSCALE)));
 	form->add_child(env_hint);
-
-	{
-		privacy_header = memnew(Label(TTR("PRIVACY")));
-		privacy_header->set_theme_type_variation("PMNavHeader");
-		form->add_child(privacy_header);
-	}
-
-	privacy_check = memnew(CheckBox);
-	privacy_check->set_text(TTR("Privacy mode (local providers only)"));
-	privacy_check->connect(SceneStringName(toggled), callable_mp(this, &SolersPMAIView::_on_privacy_toggled));
-	form->add_child(privacy_check);
-
-	{
-		privacy_note = memnew(Label);
-		privacy_note->set_text(TTR("While enabled, Solers blocks every request to remote providers at dispatch time. Only Ollama and LM Studio are allowed."));
-		privacy_note->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-		privacy_note->add_theme_color_override(SceneStringName(font_color), Color(0.886f, 0.890f, 0.902f, 0.45f));
-		privacy_note->add_theme_font_size_override(SceneStringName(font_size), MAX(9, (int)(11 * EDSCALE)));
-		form->add_child(privacy_note);
-	}
 
 	{
 		Label *section = memnew(Label(TTR("STATUS")));

@@ -57,6 +57,8 @@ protected:
 
 public:
 	void set_provider_registry(SolersProviderRegistry *p_provider_registry);
+	bool get_local_models_only() const;
+	Dictionary set_local_models_only(bool p_enabled);
 	Dictionary get_provider_config() const;
 	Dictionary get_provider_config_for(const String &p_provider) const;
 	Dictionary set_provider_config(const Dictionary &p_args);

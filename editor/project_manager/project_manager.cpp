@@ -1259,6 +1259,7 @@ void ProjectManager::_shell_ai_pressed() {
 		}
 	}
 	if (ai_settings_dialog) {
+		Object::cast_to<SolersPMAIView>(shell_ai_view)->refresh();
 		ai_settings_dialog->popup_centered(Size2(980, 640) * EDSCALE);
 	}
 }

@@ -38,10 +38,12 @@
 #include "modules/solers_ai/core/solers_provider_registry.h"
 #include "modules/solers_ai/core/solers_secret_store.h"
 
-static constexpr int SOLERS_PROVIDER_SETTINGS_VERSION = 3;
+static constexpr int SOLERS_PROVIDER_SETTINGS_VERSION = 4;
 
 void SolersSettingsService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_provider_registry", "provider_registry"), &SolersSettingsService::set_provider_registry);
+	ClassDB::bind_method(D_METHOD("get_local_models_only"), &SolersSettingsService::get_local_models_only);
+	ClassDB::bind_method(D_METHOD("set_local_models_only", "enabled"), &SolersSettingsService::set_local_models_only);
 	ClassDB::bind_method(D_METHOD("get_provider_config"), &SolersSettingsService::get_provider_config);
 	ClassDB::bind_method(D_METHOD("get_provider_config_for", "provider"), &SolersSettingsService::get_provider_config_for);
 	ClassDB::bind_method(D_METHOD("set_provider_config", "args"), &SolersSettingsService::set_provider_config);
@@ -131,6 +133,16 @@ void SolersSettingsService::_migrate_provider_settings() {
 			settings->erase(_setting_path("api_key"));
 		}
 	}
+	if (version < 4) {
+		const String old_path = _setting_path("privacy_mode");
+		const String new_path = _setting_path("local_models_only");
+		if (settings->has_setting(old_path) && !settings->has_setting(new_path)) {
+			settings->set_manually(new_path, settings->get_setting(old_path));
+		}
+		if (settings->has_setting(old_path)) {
+			settings->erase(old_path);
+		}
+	}
 	settings->set_manually(_setting_path("settings_version"), SOLERS_PROVIDER_SETTINGS_VERSION);
 	EditorSettings::save();
 }
@@ -198,7 +210,7 @@ Dictionary SolersSettingsService::_get_provider_config(const String &p_provider,
 	Dictionary data;
 	data["provider"] = p_provider;
 	data["profile"] = profile;
-	data["privacy_mode"] = settings->has_setting(_setting_path("privacy_mode")) ? (bool)settings->get_setting(_setting_path("privacy_mode")) : true;
+	data["local_models_only"] = get_local_models_only();
 	data["configured"] = settings->has_setting(_provider_setting_path(p_provider, "configured")) && (bool)settings->get_setting(_provider_setting_path(p_provider, "configured"));
 	data["model"] = settings->has_setting(_provider_setting_path(p_provider, "model")) ? String(settings->get_setting(_provider_setting_path(p_provider, "model"))) : String(profile.get("default_model", String()));
 	data["reasoning_effort"] = settings->has_setting(_provider_setting_path(p_provider, "reasoning_effort")) ? String(settings->get_setting(_provider_setting_path(p_provider, "reasoning_effort"))) : String();
@@ -213,18 +225,14 @@ Dictionary SolersSettingsService::_get_provider_config(const String &p_provider,
 	data["oauth_configured"] = oauth_configured;
 	data["api_key"] = "<redacted>";
 
-	Dictionary validation_input = data.duplicate(true);
-	const Dictionary validation = provider_registry->validate_config(validation_input).get("data", Dictionary());
+	const Dictionary validation = provider_registry->validate_config(data).get("data", Dictionary());
 	data["validation"] = validation;
 
-	Dictionary connection_input = validation_input;
-	connection_input["privacy_mode"] = false;
-	const Dictionary connection_validation = provider_registry->validate_config(connection_input).get("data", Dictionary());
 	const bool credential_ready = auth_type == "none" || api_key_configured || oauth_configured;
 	const bool connection_declared = auth_type == "none" ? (bool)data["configured"] : credential_ready;
-	const bool connected = connection_declared && connection_validation.get("valid", false);
+	const bool connected = connection_declared && validation.get("valid", false);
 	data["connected"] = connected;
-	data["available"] = connected && (!(bool)data["privacy_mode"] || (bool)profile.get("local", false));
+	data["available"] = connected && (!(bool)data["local_models_only"] || (bool)profile.get("local", false));
 	data["active"] = settings->has_setting(_setting_path("provider")) && String(settings->get_setting(_setting_path("provider"))) == p_provider;
 	if (p_include_secret) {
 		data["auth"] = auth;
@@ -235,6 +243,28 @@ Dictionary SolersSettingsService::_get_provider_config(const String &p_provider,
 void SolersSettingsService::set_provider_registry(SolersProviderRegistry *p_provider_registry) {
 	provider_registry = p_provider_registry;
 	_migrate_provider_settings();
+}
+
+bool SolersSettingsService::get_local_models_only() const {
+	EditorSettings *settings = EditorSettings::get_singleton();
+	return settings && settings->has_setting(_setting_path("local_models_only")) && (bool)settings->get_setting(_setting_path("local_models_only"));
+}
+
+Dictionary SolersSettingsService::set_local_models_only(bool p_enabled) {
+	EditorSettings *settings = EditorSettings::get_singleton();
+	ERR_FAIL_NULL_V(settings, _error("EDITOR_SETTINGS_UNAVAILABLE", "EditorSettings is not available.", false));
+	if (get_local_models_only() == p_enabled) {
+		Dictionary data;
+		data["local_models_only"] = p_enabled;
+		return _ok(data);
+	}
+	settings->set_manually(_setting_path("local_models_only"), p_enabled);
+	settings->emit_signal(SNAME("settings_changed"));
+	settings->notify_changes();
+	EditorSettings::save();
+	Dictionary data;
+	data["local_models_only"] = p_enabled;
+	return _ok(data);
 }
 
 Dictionary SolersSettingsService::get_provider_config() const {
@@ -264,10 +294,8 @@ Dictionary SolersSettingsService::set_provider_config(const Dictionary &p_args) 
 	if (p_args.has("model") && !provider_registry->is_model_allowed(provider, String(p_args["model"]))) {
 		return _error("MODEL_NOT_ALLOWED", "The selected model is not available through this provider connection.");
 	}
-
-	if (p_args.has("privacy_mode")) {
-		settings->set_manually(_setting_path("privacy_mode"), (bool)p_args["privacy_mode"]);
-	}
+	const Dictionary profile = provider_registry->get_provider_profile(provider);
+	const bool was_connected = _get_provider_config(provider, false).get("connected", false);
 	settings->set_manually(_setting_path("provider"), provider);
 	settings->set_manually(_provider_setting_path(provider, "configured"), true);
 	if (p_args.has("model")) {
@@ -294,10 +322,14 @@ Dictionary SolersSettingsService::set_provider_config(const Dictionary &p_args) 
 	if (p_args.has("api_key") && !String(p_args["api_key"]).is_empty()) {
 		settings->set_manually(_provider_setting_path(provider, "api_key"), SolersSecretStore::protect(String(p_args["api_key"])));
 	}
+	Dictionary data = _get_provider_config(provider, false);
+	if (!was_connected && data.get("connected", false) && !profile.get("local", false) && get_local_models_only()) {
+		settings->set_manually(_setting_path("local_models_only"), false);
+		data = _get_provider_config(provider, false);
+	}
 	settings->emit_signal(SNAME("settings_changed"));
 	settings->notify_changes();
 	EditorSettings::save();
-	Dictionary data = _get_provider_config(provider, false);
 	data["saved"] = true;
 	return _ok(data);
 }
@@ -418,7 +450,7 @@ void SolersSettingsService::poll_auth() {
 	config["provider"] = codex_provider;
 	config["model"] = profile.get("default_model", String());
 	config["base_url"] = profile.get("default_base_url", String());
-	config["privacy_mode"] = false; // Clicking OAuth is explicit consent to remote model access.
+	set_local_models_only(false); // Completing OAuth is explicit consent to remote model access.
 	set_provider_config(config);
 }
 

@@ -216,7 +216,6 @@ Dictionary SolersProviderRegistry::validate_config(const Dictionary &p_config) c
 		return _error("UNKNOWN_PROVIDER", vformat("Unknown Solers provider profile: %s", provider), true);
 	}
 	const Dictionary profile = profiles[provider];
-	const bool privacy_mode = p_config.get("privacy_mode", true);
 	const bool local = profile.get("local", false);
 	const bool api_key_required = profile.get("api_key_required", true);
 	String base_url = p_config.get("base_url", String());
@@ -234,9 +233,6 @@ Dictionary SolersProviderRegistry::validate_config(const Dictionary &p_config) c
 	// Manager AI tab, Solers dock) renders them in the user's locale.
 	Array warnings;
 	Array blockers;
-	if (privacy_mode && !local) {
-		blockers.push_back(TTR("privacy_mode allows only local providers. Disable privacy_mode or choose ollama/lm_studio."));
-	}
 	// Env fallback counts as configured (api_key_env, e.g. OPENAI_API_KEY).
 	bool api_key_available = api_key_configured;
 	if (!api_key_available) {

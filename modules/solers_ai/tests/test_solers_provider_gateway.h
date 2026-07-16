@@ -42,6 +42,7 @@
 #include "core/object/message_queue.h"
 #include "core/os/os.h"
 #include "editor/file_system/editor_file_system.h"
+#include "editor/settings/editor_settings.h"
 #include "tests/test_macros.h"
 
 #include "modules/solers_ai/core/solers_agent_session.h"
@@ -55,6 +56,7 @@
 #include "modules/solers_ai/core/solers_resource_service.h"
 #include "modules/solers_ai/core/solers_script_service.h"
 #include "modules/solers_ai/core/solers_secret_store.h"
+#include "modules/solers_ai/core/solers_settings_service.h"
 #include "modules/solers_ai/core/solers_builtin_skills.h"
 #include "modules/solers_ai/core/solers_tool_registry.h"
 #include "modules/solers_ai/core/solers_trace.h"
@@ -194,7 +196,6 @@ TEST_CASE("[SolersProviderRegistry] routes custom gateways through the explicit 
 	config["provider"] = "custom_openai_compatible";
 	config["model"] = "synthetic-model";
 	config["base_url"] = "https://gateway.example/v1";
-	config["privacy_mode"] = false;
 	config["api_key"] = "synthetic-key";
 
 	const Dictionary result = registry.validate_config(config);
@@ -208,6 +209,100 @@ TEST_CASE("[SolersProviderRegistry] routes custom gateways through the explicit 
 	const Dictionary rejected = registry.validate_config(unknown);
 	CHECK_FALSE(rejected.get("ok", true));
 	CHECK(Dictionary(rejected.get("error", Dictionary())).get("code", String()) == "UNKNOWN_PROVIDER");
+}
+
+TEST_CASE("[Editor][SolersSettingsService] local model policy migrates without changing provider configuration") {
+	EditorSettings *settings = EditorSettings::get_singleton();
+	REQUIRE(settings != nullptr);
+
+	const String prefix = "solers/ai/";
+	Array paths;
+	paths.push_back(prefix + "settings_version");
+	paths.push_back(prefix + "privacy_mode");
+	paths.push_back(prefix + "local_models_only");
+	paths.push_back(prefix + "provider");
+	for (const String &provider : { String("ollama"), String("custom_openai_compatible") }) {
+		for (const String &key : { String("configured"), String("model"), String("base_url"), String("api_key") }) {
+			paths.push_back(prefix + "providers/" + provider + "/" + key);
+		}
+	}
+	Dictionary original;
+	for (const Variant &path_value : paths) {
+		const String path = path_value;
+		if (settings->has_setting(path)) {
+			original[path] = settings->get_setting(path);
+		}
+		settings->erase(path);
+	}
+
+	SolersProviderRegistry registry;
+	for (const bool enabled : { false, true }) {
+		settings->set_manually(prefix + "settings_version", 3);
+		settings->set_manually(prefix + "privacy_mode", enabled);
+		settings->erase(prefix + "local_models_only");
+		SolersSettingsService migration_service;
+		migration_service.set_provider_registry(&registry);
+		CHECK(migration_service.get_local_models_only() == enabled);
+		CHECK_FALSE(settings->has_setting(prefix + "privacy_mode"));
+		CHECK((int)settings->get_setting(prefix + "settings_version") == 4);
+	}
+
+	settings->set_manually(prefix + "settings_version", 4);
+	settings->erase(prefix + "local_models_only");
+	SolersSettingsService service;
+	service.set_provider_registry(&registry);
+	CHECK_FALSE(service.get_local_models_only());
+
+	Dictionary local;
+	local["provider"] = "ollama";
+	local["model"] = "qwen3";
+	local["base_url"] = "http://127.0.0.1:11434";
+	service.set_local_models_only(true);
+	service.set_provider_config(local);
+	Dictionary local_config = service.get_provider_config_for("ollama").get("data", Dictionary());
+	CHECK(local_config.get("connected", false));
+	CHECK(local_config.get("available", false));
+	CHECK(service.get_local_models_only());
+
+	Dictionary remote;
+	remote["provider"] = "custom_openai_compatible";
+	remote["model"] = "synthetic-model";
+	remote["base_url"] = "https://gateway.example/v1";
+	remote["api_key"] = "synthetic-key";
+	service.set_local_models_only(false);
+	service.set_provider_config(remote);
+	service.set_local_models_only(true);
+	Dictionary remote_config = service.get_provider_config_for("custom_openai_compatible").get("data", Dictionary());
+	CHECK(remote_config.get("connected", false));
+	CHECK_FALSE(remote_config.get("available", true));
+	CHECK(remote_config.get("model", String()) == "synthetic-model");
+	CHECK(remote_config.get("base_url", String()) == "https://gateway.example/v1");
+	CHECK(Dictionary(service.get_provider_config().get("data", Dictionary())).get("provider", String()) == "custom_openai_compatible");
+
+	SolersToolRegistry tool_registry;
+	SolersAgentSession session;
+	session.set_tool_registry(&tool_registry);
+	session.set_settings_service(&service);
+	Dictionary turn;
+	turn["prompt"] = "This request must not reach the network.";
+	const Dictionary blocked = session.start_turn(turn);
+	CHECK_FALSE(blocked.get("ok", true));
+	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "LOCAL_MODELS_ONLY");
+
+	service.set_provider_config(remote);
+	CHECK(service.get_local_models_only());
+	service.disconnect_provider("custom_openai_compatible");
+	service.set_provider_config(remote);
+	CHECK_FALSE(service.get_local_models_only());
+
+	for (const Variant &path_value : paths) {
+		const String path = path_value;
+		settings->erase(path);
+		if (original.has(path)) {
+			settings->set_manually(path, original[path]);
+		}
+	}
+	EditorSettings::save();
 }
 
 TEST_CASE("[SolersToolRegistry] registers tools by lookup, not a hardcoded catalog") {

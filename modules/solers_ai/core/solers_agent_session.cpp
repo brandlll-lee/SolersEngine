@@ -1573,7 +1573,28 @@ Dictionary SolersAgentSession::_redacted_request_graph(const Dictionary &p_reque
 	return graph;
 }
 
+Dictionary SolersAgentSession::_provider_dispatch_error() const {
+	if (!settings_service) {
+		return _error("AGENT_UNCONFIGURED", "Solers agent session is missing its settings service.");
+	}
+	const String provider = active_provider.get("provider", String());
+	const Dictionary current = settings_service->get_provider_config_for(provider).get("data", Dictionary());
+	if (!current.get("connected", false)) {
+		return _error("PROVIDER_NOT_CONNECTED", "The selected provider is not connected. Open Provider Settings to connect it.");
+	}
+	if (!current.get("available", false)) {
+		return _error("LOCAL_MODELS_ONLY", "Local Models Only blocks the selected remote provider. Choose a local model or disable Local Models Only in Provider Settings.");
+	}
+	return Dictionary();
+}
+
 Error SolersAgentSession::_dispatch_model_request(bool p_skip_compaction) {
+	const Dictionary availability_error = _provider_dispatch_error();
+	if (!availability_error.is_empty()) {
+		const Dictionary error = availability_error.get("error", Dictionary());
+		_finish_turn("failed", error.get("message", "The selected provider is unavailable."), error);
+		return ERR_UNAVAILABLE;
+	}
 	if (model_request_budget > 0 && model_request_index >= model_request_budget) {
 		_finish_turn("paused", vformat("Turn paused after reaching its model request budget (%d). Start a new turn to continue with the persisted plan and evidence.", model_request_budget));
 		return ERR_BUSY;
@@ -1657,6 +1678,12 @@ Error SolersAgentSession::_begin_compaction(bool p_from_overflow) {
 }
 
 Error SolersAgentSession::_dispatch_compaction_request() {
+	const Dictionary availability_error = _provider_dispatch_error();
+	if (!availability_error.is_empty()) {
+		const Dictionary error = availability_error.get("error", Dictionary());
+		_finish_turn("failed", error.get("message", "The selected provider is unavailable."), error);
+		return ERR_UNAVAILABLE;
+	}
 	_refresh_active_model_limits();
 	const String provider_id = active_provider.get("provider", String());
 	const String base_url = active_provider.get("base_url", String());
@@ -1921,9 +1948,6 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 	model_request_budget = MAX(0, (int)p_args.get("max_model_requests", 0));
 
 	active_provider = settings_service->resolve_active_provider();
-	if (models_dev) {
-		models_dev->refresh();
-	}
 	const String provider_id = active_provider.get("provider", String());
 	const String model = active_provider.get("model", String());
 	const String base_url = active_provider.get("base_url", String());
@@ -1933,17 +1957,14 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 
 	_refresh_active_model_limits();
 
-	const bool privacy_mode = active_provider.get("privacy_mode", true);
-	if (privacy_mode && !local) {
-		Dictionary e = _error("PRIVACY_BLOCKED", "Privacy mode allows local providers only (Ollama / LM Studio). Disable privacy mode in the AI settings to use remote providers.");
+	const Dictionary availability_error = _provider_dispatch_error();
+	if (!availability_error.is_empty()) {
+		Dictionary e = availability_error;
 		emit_signal(SNAME("turn_failed"), e.get("error", Dictionary()));
 		return e;
 	}
-
-	if (!active_provider.get("connected", false)) {
-		Dictionary e = _error("PROVIDER_NOT_CONNECTED", "The selected provider is not connected. Open Provider Settings to connect it.");
-		emit_signal(SNAME("turn_failed"), e.get("error", Dictionary()));
-		return e;
+	if (models_dev) {
+		models_dev->refresh();
 	}
 	if (model.is_empty()) {
 		Dictionary e = _error("NO_MODEL", "No model is configured. Choose one from a connected provider in the Chat panel.");

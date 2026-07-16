@@ -208,6 +208,7 @@ class SolersAgentSession : public Object {
 	int _active_model_input_support(const String &p_modality) const;
 	Dictionary _build_request(const Array &p_messages) const;
 	Dictionary _redacted_request_graph(const Dictionary &p_request, const Dictionary &p_profile) const;
+	Dictionary _provider_dispatch_error() const;
 	Error _dispatch_model_request(bool p_skip_compaction = false);
 	Error _dispatch_compaction_request();
 	Error _begin_compaction(bool p_from_overflow);
