@@ -8,7 +8,6 @@
 
 #include "solers_model_modifier.h"
 
-#include "core/math/geometry_2d.h"
 #include "modules/solers_modeling/core/solers_model_source.h"
 
 #include <manifold/manifold.h>
@@ -343,13 +342,7 @@ static Error _editable_to_manifold(const SolersEditableMesh &p_mesh, manifold::M
 	}
 	for (int64_t face_id : p_mesh.get_face_ids()) {
 		const Vector<int64_t> face_vertices = p_mesh.get_face_vertices(face_id);
-		const Vector3 normal = _modifier_face_normal(p_mesh, face_id).abs();
-		PackedVector2Array projected;
-		for (int64_t vertex_id : face_vertices) {
-			const Vector3 point = p_mesh.get_vertex(vertex_id)->position;
-			projected.push_back(normal.x >= normal.y && normal.x >= normal.z ? Vector2(point.y, point.z) : (normal.y >= normal.z ? Vector2(point.x, point.z) : Vector2(point.x, point.y)));
-		}
-		const PackedInt32Array triangles = Geometry2D::triangulate_polygon(projected);
+		const PackedInt32Array triangles = p_mesh.triangulate_face(face_id);
 		if (triangles.size() < 3) {
 			_modifier_error(r_error, vformat("Face %d could not be triangulated for Boolean.", face_id));
 			return ERR_INVALID_DATA;

@@ -937,6 +937,15 @@ static PackedVector2Array _project_face(const SolersEditableMesh &p_mesh, const 
 	return polygon;
 }
 
+PackedInt32Array SolersEditableMesh::triangulate_face(int64_t p_face_id) const {
+	const Face *face = get_face(p_face_id);
+	if (!face) {
+		return PackedInt32Array();
+	}
+	const Vector3 normal = _face_weighted_normal(*this, *face).normalized();
+	return normal.is_zero_approx() ? PackedInt32Array() : Geometry2D::triangulate_polygon(_project_face(*this, *face, normal));
+}
+
 static PackedInt32Array _generate_lod(const Array &p_arrays, double p_ratio) {
 	PackedInt32Array result;
 	if (!SurfaceTool::simplify_with_attrib_func) {
@@ -1026,8 +1035,7 @@ Ref<ArrayMesh> SolersEditableMesh::compile(String *r_error) const {
 				}
 				return Ref<ArrayMesh>();
 			}
-			const PackedVector2Array polygon = _project_face(*this, face, normal);
-			const PackedInt32Array triangles = Geometry2D::triangulate_polygon(polygon);
+			const PackedInt32Array triangles = triangulate_face(face_id);
 			if (triangles.size() < 3) {
 				if (r_error) {
 					*r_error = vformat("Face %d could not be triangulated.", face.id);

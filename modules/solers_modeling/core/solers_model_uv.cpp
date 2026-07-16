@@ -8,7 +8,6 @@
 
 #include "solers_model_uv.h"
 
-#include "core/math/geometry_2d.h"
 #include "modules/solers_modeling/core/solers_editable_mesh.h"
 
 #include <xatlas.h>
@@ -81,23 +80,22 @@ Error SolersModelUV::unwrap(SolersEditableMesh &r_mesh, const Dictionary &p_opti
 	Vector<float> normals;
 	Vector<float> input_uvs;
 	Vector<uint32_t> indices;
-	Vector<uint8_t> face_vertex_counts;
-	Vector<uint32_t> face_groups;
+	Vector<uint32_t> triangle_groups;
 	Vector<int64_t> input_loops;
 	const HashMap<int64_t, uint32_t> groups = _uv_chart_groups(r_mesh);
 	for (int64_t face_id : r_mesh.get_face_ids()) {
 		const SolersEditableMesh::Face *face = r_mesh.get_face(face_id);
-		if (face->loops.size() > 255) {
-			_set_uv_error(r_error, vformat("Face %d has more than 255 corners and cannot be unwrapped by xatlas.", face_id));
-			return ERR_INVALID_DATA;
-		}
 		const Vector3 normal = _uv_face_normal(r_mesh, *face);
 		if (normal.is_zero_approx()) {
 			_set_uv_error(r_error, vformat("Face %d has zero area.", face_id));
 			return ERR_INVALID_DATA;
 		}
-		face_vertex_counts.push_back(face->loops.size());
-		face_groups.push_back(groups[face_id]);
+		const PackedInt32Array triangles = r_mesh.triangulate_face(face_id);
+		if (triangles.size() < 3) {
+			_set_uv_error(r_error, vformat("Face %d could not be triangulated for UV generation.", face_id));
+			return ERR_INVALID_DATA;
+		}
+		const uint32_t vertex_offset = input_loops.size();
 		for (int64_t loop_id : face->loops) {
 			const SolersEditableMesh::Loop *loop = r_mesh.get_loop(loop_id);
 			const Vector3 position = r_mesh.get_vertex(loop->vertex)->position;
@@ -109,8 +107,13 @@ Error SolersModelUV::unwrap(SolersEditableMesh &r_mesh, const Dictionary &p_opti
 			normals.push_back(normal.z);
 			input_uvs.push_back(loop->uv.x);
 			input_uvs.push_back(loop->uv.y);
-			indices.push_back(indices.size());
 			input_loops.push_back(loop_id);
+		}
+		for (int index : triangles) {
+			indices.push_back(vertex_offset + index);
+		}
+		for (int triangle = 0; triangle < triangles.size() / 3; triangle++) {
+			triangle_groups.push_back(groups[face_id]);
 		}
 	}
 
@@ -125,9 +128,7 @@ Error SolersModelUV::unwrap(SolersEditableMesh &r_mesh, const Dictionary &p_opti
 	input.indexData = indices.ptr();
 	input.indexCount = indices.size();
 	input.indexFormat = xatlas::IndexFormat::UInt32;
-	input.faceCount = face_vertex_counts.size();
-	input.faceVertexCount = face_vertex_counts.ptr();
-	input.faceMaterialData = face_groups.ptr();
+	input.faceMaterialData = triangle_groups.ptr();
 
 	xatlas::Atlas *atlas = xatlas::Create();
 	if (!atlas) {
@@ -177,4 +178,3 @@ Error SolersModelUV::unwrap(SolersEditableMesh &r_mesh, const Dictionary &p_opti
 	}
 	return OK;
 }
-

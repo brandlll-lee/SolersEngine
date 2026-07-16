@@ -205,9 +205,13 @@ TEST_CASE("[SolersModeling] grid fill closes a four-sided room opening") {
 	CHECK(mesh.get_boundary_edges().is_empty());
 }
 
-TEST_CASE("[SolersModeling] xatlas generates finite packed UV1 coordinates") {
+TEST_CASE("[SolersModeling] xatlas unwraps mixed polygon sizes into finite UV1 coordinates") {
 	SolersEditableMesh mesh;
 	REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("create_box"), Dictionary()).get("ok", false));
+	Dictionary cylinder;
+	cylinder["segments"] = 12;
+	cylinder["center"] = Vector3(2, 0, 0);
+	REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("create_cylinder"), cylinder).get("ok", false));
 	Dictionary options;
 	options["resolution"] = 256;
 	options["padding"] = 2;

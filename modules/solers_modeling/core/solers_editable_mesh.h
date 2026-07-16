@@ -132,6 +132,7 @@ public:
 	Vector<int64_t> get_loop_ids() const;
 	Vector<int64_t> get_face_ids() const;
 	Vector<int64_t> get_face_vertices(int64_t p_face_id) const;
+	PackedInt32Array triangulate_face(int64_t p_face_id) const;
 	Vector<int64_t> get_vertex_edges(int64_t p_vertex_id) const;
 	Vector<int64_t> get_vertex_faces(int64_t p_vertex_id) const;
 	Vector<int64_t> get_boundary_edges() const;
