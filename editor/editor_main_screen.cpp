@@ -125,31 +125,28 @@ int EditorMainScreen::_get_current_main_editor() const {
 }
 
 void EditorMainScreen::select_next() {
-	int editor = _get_current_main_editor();
-
-	do {
-		if (editor == editor_table.size() - 1) {
-			editor = 0;
-		} else {
-			editor++;
+	Button *current = buttons[_get_current_main_editor()];
+	for (int offset = 1; offset <= button_hb->get_child_count(); offset++) {
+		Button *candidate = Object::cast_to<Button>(button_hb->get_child((current->get_index() + offset) % button_hb->get_child_count()));
+		const int editor = buttons.find(candidate);
+		if (editor >= 0 && candidate->is_visible()) {
+			select(editor);
+			return;
 		}
-	} while (!buttons[editor]->is_visible());
-
-	select(editor);
+	}
 }
 
 void EditorMainScreen::select_prev() {
-	int editor = _get_current_main_editor();
-
-	do {
-		if (editor == 0) {
-			editor = editor_table.size() - 1;
-		} else {
-			editor--;
+	Button *current = buttons[_get_current_main_editor()];
+	for (int offset = 1; offset <= button_hb->get_child_count(); offset++) {
+		const int child = (current->get_index() - offset + button_hb->get_child_count()) % button_hb->get_child_count();
+		Button *candidate = Object::cast_to<Button>(button_hb->get_child(child));
+		const int editor = buttons.find(candidate);
+		if (editor >= 0 && candidate->is_visible()) {
+			select(editor);
+			return;
 		}
-	} while (!buttons[editor]->is_visible());
-
-	select(editor);
+	}
 }
 
 void EditorMainScreen::select_by_name(const String &p_name) {
@@ -311,6 +308,12 @@ void EditorMainScreen::remove_main_plugin(EditorPlugin *p_editor) {
 
 	editor_table.erase(p_editor);
 	main_editor_plugins.erase(p_editor->get_plugin_name());
+}
+
+void EditorMainScreen::move_main_plugin(EditorPlugin *p_editor, int p_visual_index) {
+	const int index = get_plugin_index(p_editor);
+	ERR_FAIL_INDEX(index, buttons.size());
+	button_hb->move_child(buttons[index], CLAMP(p_visual_index, 0, button_hb->get_child_count() - 1));
 }
 
 EditorMainScreen::EditorMainScreen() {

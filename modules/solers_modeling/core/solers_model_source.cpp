@@ -166,6 +166,7 @@ void SolersModelingService::_write_source_bytes(const String &p_path, const Pack
 	file.unref();
 	if (EditorFileSystem::get_singleton()) {
 		EditorFileSystem::get_singleton()->update_file(p_path);
+		EditorFileSystem::get_singleton()->reimport_files({ p_path });
 	}
 }
 
@@ -342,4 +343,3 @@ SolersModelingService::~SolersModelingService() {
 		singleton = nullptr;
 	}
 }
-

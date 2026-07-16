@@ -89,6 +89,7 @@ public:
 
 	void add_main_plugin(EditorPlugin *p_editor);
 	void remove_main_plugin(EditorPlugin *p_editor);
+	void move_main_plugin(EditorPlugin *p_editor, int p_visual_index);
 
 	EditorMainScreen();
 };
