@@ -13,34 +13,72 @@ jobs:
     name: 📊 Static checks
     uses: ./.github/workflows/static_checks.yml
 
+  solers-build-check:
+    name: 🧠 Solers strict build
+    needs: static-checks
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Setup dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install libwayland-bin
+
+      - name: Restore Godot build cache
+        uses: ./.github/actions/godot-cache-restore
+        with:
+          cache-name: linux-solers-strict
+        continue-on-error: true
+
+      - name: Setup Python and SCons
+        uses: ./.github/actions/godot-deps
+
+      - name: Compilation
+        uses: ./.github/actions/godot-build
+        with:
+          platform: linuxbsd
+          target: editor
+          scons-flags: dev_mode=yes module_text_server_fb_enabled=yes accesskit=no use_llvm=yes linker=lld
+
+      - name: Save Godot build cache
+        uses: ./.github/actions/godot-cache-save
+        with:
+          cache-name: linux-solers-strict
+        continue-on-error: true
+
   # Second stage: Run all the builds and some of the tests.
 
   android-build:
     name: 🤖 Android
-    needs: static-checks
+    needs: solers-build-check
     uses: ./.github/workflows/android_builds.yml
 
   ios-build:
     name: 🍏 iOS
-    needs: static-checks
+    needs: solers-build-check
     uses: ./.github/workflows/ios_builds.yml
 
   linux-build:
     name: 🐧 Linux
-    needs: static-checks
+    needs: solers-build-check
     uses: ./.github/workflows/linux_builds.yml
 
   macos-build:
     name: 🍎 macOS
-    needs: static-checks
+    needs: solers-build-check
     uses: ./.github/workflows/macos_builds.yml
 
   windows-build:
     name: 🏁 Windows
-    needs: static-checks
+    needs: solers-build-check
     uses: ./.github/workflows/windows_builds.yml
 
   web-build:
     name: 🌐 Web
-    needs: static-checks
+    needs: solers-build-check
     uses: ./.github/workflows/web_builds.yml
