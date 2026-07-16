@@ -762,8 +762,11 @@ bool SolersObservationService::_normalize_project_path(const String &p_path, Str
 // project view the FileSystem dock shows — in microseconds, with zero I/O,
 // and without freezing the main thread on large projects.
 bool SolersObservationService::_collect_project_files_indexed(const String &p_query, int p_max_files, Array &r_files, int &r_scanned_count, bool &r_truncated) const {
+	if (!Engine::get_singleton()->is_editor_hint()) {
+		return false;
+	}
 	EditorFileSystem *efs = EditorFileSystem::get_singleton();
-	if (!efs) {
+	if (!efs || efs->is_scanning()) {
 		return false;
 	}
 	EditorFileSystemDirectory *root = efs->get_filesystem();

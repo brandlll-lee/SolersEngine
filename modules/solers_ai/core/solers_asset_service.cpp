@@ -8,6 +8,7 @@
 
 #include "solers_asset_service.h"
 
+#include "core/config/engine.h"
 #include "core/config/project_settings.h"
 #include "core/crypto/crypto_core.h"
 #include "core/io/config_file.h"
@@ -37,6 +38,10 @@
 // every in-process reader outside the short replace window so a reader can
 // never observe the temporary absence created by DirAccess on Windows.
 static Mutex solers_asset_manifest_mutex;
+
+static EditorFileSystem *_solers_editor_filesystem() {
+	return Engine::get_singleton()->is_editor_hint() ? EditorFileSystem::get_singleton() : nullptr;
+}
 
 void SolersAssetService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("generate", "args"), &SolersAssetService::generate);
@@ -1558,7 +1563,7 @@ static Dictionary _resource_mesh_stats(const Ref<Resource> &p_resource) {
 }
 
 static Dictionary _project_import_inspection(const Array &p_files, const Array &p_entrypoints, bool p_verify_load) {
-	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
+	EditorFileSystem *filesystem = _solers_editor_filesystem();
 	ResourceFormatImporter *importer = ResourceFormatImporter::get_singleton();
 	HashSet<String> entrypoint_set;
 	for (int i = 0; i < p_entrypoints.size(); i++) {
@@ -3489,7 +3494,7 @@ Dictionary SolersAssetService::import_to_project(const Dictionary &p_args) {
 	if (!target_dir.begins_with("res://") || target_dir.contains("..")) {
 		return _error("INVALID_TARGET", "target_dir must stay inside res://.");
 	}
-	if (EditorFileSystem *filesystem = EditorFileSystem::get_singleton()) {
+	if (EditorFileSystem *filesystem = _solers_editor_filesystem()) {
 		Vector<String> selected_files;
 		selected_files.resize(files.size());
 		for (int i = 0; i < files.size(); i++) {
@@ -3556,7 +3561,7 @@ Dictionary SolersAssetService::import_to_project(const Dictionary &p_args) {
 	bool static_lightmap_reimport_required = false;
 	const Dictionary traits = _solers_asset_traits(manifest);
 	if (String(manifest.get("kind", String())).to_lower() == "3d" && String(traits.get("model_state", String())).to_lower() == "static_model") {
-		EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
+		EditorFileSystem *filesystem = _solers_editor_filesystem();
 		for (int i = 0; filesystem && i < entrypoints.size(); i++) {
 			const String path = entrypoints[i];
 			const Dictionary config = _static_lightmap_import_config(path);
@@ -3622,7 +3627,7 @@ Dictionary SolersAssetService::import_to_project(const Dictionary &p_args) {
 			return _error("IMPORT_FAILED", err);
 		}
 	}
-	if (EditorFileSystem *filesystem = EditorFileSystem::get_singleton()) {
+	if (EditorFileSystem *filesystem = _solers_editor_filesystem()) {
 		for (int i = 0; i < static_lightmap_import_requests.size(); i++) {
 			const Dictionary request = static_lightmap_import_requests[i];
 			HashMap<StringName, Variant> options;
@@ -3669,7 +3674,7 @@ void SolersAssetService::_ensure_project_import_signals() {
 	if (project_import_signals_connected) {
 		return;
 	}
-	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
+	EditorFileSystem *filesystem = _solers_editor_filesystem();
 	if (!filesystem) {
 		return;
 	}
@@ -3720,7 +3725,7 @@ void SolersAssetService::_start_project_import_wave() {
 	if (project_import_wave_active) {
 		return;
 	}
-	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
+	EditorFileSystem *filesystem = _solers_editor_filesystem();
 	if (!filesystem || filesystem->is_scanning() || filesystem->is_importing()) {
 		return;
 	}
@@ -3875,7 +3880,7 @@ void SolersAssetService::poll(bool p_allow_new_import_wave) {
 		if (String(state.get("status", String())) != "pending") {
 			continue;
 		}
-		EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
+		EditorFileSystem *filesystem = _solers_editor_filesystem();
 		if (!filesystem) {
 			state["status"] = "failed";
 			state["error"] = _error_data("EDITOR_FILESYSTEM_UNAVAILABLE", "Godot's editor filesystem became unavailable during project import.");

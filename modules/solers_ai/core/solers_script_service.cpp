@@ -30,6 +30,7 @@
 
 #include "solers_script_service.h"
 
+#include "core/config/engine.h"
 #include "core/config/project_settings.h"
 #include "core/core_bind.h"
 #include "core/io/dir_access.h"
@@ -268,8 +269,9 @@ Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
 	}
 	file.unref();
 
-	if (EditorFileSystem::get_singleton()) {
-		EditorFileSystem::get_singleton()->update_file(res_path);
+	EditorFileSystem *filesystem = Engine::get_singleton()->is_editor_hint() ? EditorFileSystem::get_singleton() : nullptr;
+	if (filesystem && !filesystem->is_scanning() && filesystem->get_filesystem()) {
+		filesystem->update_file(res_path);
 	}
 
 	Dictionary data;

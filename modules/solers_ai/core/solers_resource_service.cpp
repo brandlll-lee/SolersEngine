@@ -30,6 +30,7 @@
 
 #include "modules/solers_ai/core/solers_resource_service.h"
 
+#include "core/config/engine.h"
 #include "core/config/project_settings.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
@@ -610,8 +611,9 @@ Dictionary SolersResourceService::create_resource(const Dictionary &p_args) cons
 	if (save_err != OK) {
 		return _error("RESOURCE_SAVE_FAILED", vformat("Failed to save resource, error code %d.", save_err));
 	}
-	if (EditorFileSystem::get_singleton()) {
-		EditorFileSystem::get_singleton()->update_file(path);
+	EditorFileSystem *filesystem = Engine::get_singleton()->is_editor_hint() ? EditorFileSystem::get_singleton() : nullptr;
+	if (filesystem && !filesystem->is_scanning() && filesystem->get_filesystem()) {
+		filesystem->update_file(path);
 	}
 	Dictionary data = _solers_resource_data(resource, path);
 	data["initialized_property_count"] = property_names.size();
@@ -712,8 +714,9 @@ Dictionary SolersResourceService::set_resource_property(const Dictionary &p_args
 		}
 		return _error("RESOURCE_SAVE_FAILED", vformat("Failed to save resource, error code %d.", save_err));
 	}
-	if (EditorFileSystem::get_singleton()) {
-		EditorFileSystem::get_singleton()->update_file(path);
+	EditorFileSystem *filesystem = Engine::get_singleton()->is_editor_hint() ? EditorFileSystem::get_singleton() : nullptr;
+	if (filesystem && !filesystem->is_scanning() && filesystem->get_filesystem()) {
+		filesystem->update_file(path);
 	}
 
 	Dictionary data = _solers_resource_data(resource, path);
@@ -933,8 +936,9 @@ Dictionary SolersResourceService::native_save(const Dictionary &p_args) const {
 	if (save_error != OK) {
 		return _error("RESOURCE_SAVE_FAILED", vformat("Failed to save resource '%s' (error %d).", path, (int)save_error));
 	}
-	if (EditorFileSystem::get_singleton()) {
-		EditorFileSystem::get_singleton()->update_file(path);
+	EditorFileSystem *filesystem = Engine::get_singleton()->is_editor_hint() ? EditorFileSystem::get_singleton() : nullptr;
+	if (filesystem && !filesystem->is_scanning() && filesystem->get_filesystem()) {
+		filesystem->update_file(path);
 	}
 	Dictionary data = _native_object_handle(resource);
 	data["path"] = path;

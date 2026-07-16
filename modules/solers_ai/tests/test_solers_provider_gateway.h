@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "core/config/engine.h"
 #include "core/config/project_settings.h"
 #include "core/io/config_file.h"
 #include "core/io/dir_access.h"
@@ -1588,7 +1589,7 @@ TEST_CASE("[SolersAssetService] Meshy topology target is an integer contract for
 }
 
 TEST_CASE("[SolersAssetService][SceneTree] static models use Godot native lightmap import UV2") {
-	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
+	EditorFileSystem *filesystem = Engine::get_singleton()->is_editor_hint() ? EditorFileSystem::get_singleton() : nullptr;
 	if (!filesystem) {
 		WARN("EditorFileSystem is initialized after the command-line unit test runner; run this contract in an editor integration test.");
 		return;
@@ -1677,7 +1678,7 @@ TEST_CASE("[SolersAssetService][SceneTree] static models use Godot native lightm
 }
 
 TEST_CASE("[SolersAssetService][SceneTree] project import follows native Material dependencies") {
-	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
+	EditorFileSystem *filesystem = Engine::get_singleton()->is_editor_hint() ? EditorFileSystem::get_singleton() : nullptr;
 	if (!filesystem) {
 		WARN("EditorFileSystem is initialized after the command-line unit test runner; run this contract in an editor integration test.");
 		return;
@@ -1890,7 +1891,7 @@ TEST_CASE("[SolersAssetService][SceneTree] project import follows native Materia
 }
 
 TEST_CASE("[SolersAssetService][SceneTree] project import never opens interactive format configuration") {
-	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
+	EditorFileSystem *filesystem = Engine::get_singleton()->is_editor_hint() ? EditorFileSystem::get_singleton() : nullptr;
 	if (!filesystem) {
 		WARN("EditorFileSystem is initialized after the command-line unit test runner; run this contract in an editor integration test.");
 		return;
