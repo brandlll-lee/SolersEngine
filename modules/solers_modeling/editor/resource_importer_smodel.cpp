@@ -64,7 +64,7 @@ Error ResourceImporterSolersModel::import(ResourceUID::ID p_source_id, const Str
 	if (mesh.is_null()) {
 		mesh.instantiate();
 	}
-	mesh->set_meta("solers/source_hash", FileAccess::get_sha256(p_source_file));
-	mesh->set_meta("solers/source_revision", editable_mesh.get_revision());
+	mesh->set_meta("solers_source_hash", FileAccess::get_sha256(p_source_file));
+	mesh->set_meta("solers_source_revision", editable_mesh.get_revision());
 	return ResourceSaver::save(mesh, p_save_path + ".res");
 }

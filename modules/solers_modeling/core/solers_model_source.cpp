@@ -148,6 +148,8 @@ static bool _valid_source_path(const String &p_path) {
 	return p_path.begins_with("res://") && p_path.get_extension().to_lower() == "smodel" && !p_path.contains("..") && p_path.simplify_path() == p_path;
 }
 
+static constexpr const char *MODEL_PATH_ERROR = "Model paths must be normalized res:// paths ending in .smodel.";
+
 static PackedByteArray _read_source_bytes(const String &p_path) {
 	Ref<FileAccess> file = FileAccess::open(p_path, FileAccess::READ);
 	return file.is_valid() ? file->get_buffer(file->get_length()) : PackedByteArray();
@@ -183,7 +185,7 @@ void SolersModelingService::_delete_source(const String &p_path) {
 
 Dictionary SolersModelingService::_commit(const String &p_path, const SolersEditableMesh &p_mesh, const String &p_action, bool p_undoable) {
 	if (!_valid_source_path(p_path)) {
-		return _error("MODEL_PATH_INVALID", "Model paths must be normalized res:// paths ending in .smodel.", false);
+		return _error("MODEL_PATH_INVALID", MODEL_PATH_ERROR, false);
 	}
 	String compile_error;
 	if (p_mesh.compile(&compile_error).is_null() && !p_mesh.is_empty()) {
@@ -216,6 +218,9 @@ Dictionary SolersModelingService::_commit(const String &p_path, const SolersEdit
 }
 
 Dictionary SolersModelingService::create(const String &p_path, const StringName &p_primitive, const Dictionary &p_parameters, bool p_undoable) {
+	if (!_valid_source_path(p_path)) {
+		return _error("MODEL_PATH_INVALID", MODEL_PATH_ERROR, false);
+	}
 	if (FileAccess::exists(p_path)) {
 		return _error("MODEL_ALREADY_EXISTS", vformat("A model source already exists at %s.", p_path), true);
 	}
@@ -230,6 +235,9 @@ Dictionary SolersModelingService::create(const String &p_path, const StringName 
 }
 
 Dictionary SolersModelingService::inspect(const String &p_path) const {
+	if (!_valid_source_path(p_path)) {
+		return _error("MODEL_PATH_INVALID", MODEL_PATH_ERROR, false);
+	}
 	SolersEditableMesh mesh;
 	String error;
 	if (SolersModelSource::load(p_path, mesh, &error) != OK) {
@@ -243,6 +251,9 @@ Dictionary SolersModelingService::inspect(const String &p_path) const {
 }
 
 Dictionary SolersModelingService::validate_source(const String &p_path) const {
+	if (!_valid_source_path(p_path)) {
+		return _error("MODEL_PATH_INVALID", MODEL_PATH_ERROR, false);
+	}
 	SolersEditableMesh mesh;
 	String error;
 	if (SolersModelSource::load(p_path, mesh, &error) != OK) {
@@ -260,6 +271,9 @@ Dictionary SolersModelingService::validate_source(const String &p_path) const {
 }
 
 Dictionary SolersModelingService::apply(const String &p_path, const StringName &p_operation, const Dictionary &p_parameters, int64_t p_expected_revision, bool p_undoable) {
+	if (!_valid_source_path(p_path)) {
+		return _error("MODEL_PATH_INVALID", MODEL_PATH_ERROR, false);
+	}
 	SolersEditableMesh mesh;
 	String error;
 	if (SolersModelSource::load(p_path, mesh, &error) != OK) {
@@ -284,6 +298,9 @@ Dictionary SolersModelingService::apply(const String &p_path, const StringName &
 }
 
 Dictionary SolersModelingService::batch(const String &p_path, const Array &p_operations, int64_t p_expected_revision, bool p_undoable) {
+	if (!_valid_source_path(p_path)) {
+		return _error("MODEL_PATH_INVALID", MODEL_PATH_ERROR, false);
+	}
 	SolersEditableMesh mesh;
 	String error;
 	if (SolersModelSource::load(p_path, mesh, &error) != OK) {
@@ -322,6 +339,9 @@ Dictionary SolersModelingService::batch(const String &p_path, const Array &p_ope
 }
 
 Dictionary SolersModelingService::save_as(const String &p_source_path, const String &p_destination_path, bool p_undoable) {
+	if (!_valid_source_path(p_source_path) || !_valid_source_path(p_destination_path)) {
+		return _error("MODEL_PATH_INVALID", MODEL_PATH_ERROR, false);
+	}
 	if (FileAccess::exists(p_destination_path)) {
 		return _error("MODEL_ALREADY_EXISTS", vformat("A model source already exists at %s.", p_destination_path), true);
 	}

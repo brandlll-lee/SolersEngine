@@ -1091,10 +1091,10 @@ Ref<ArrayMesh> SolersEditableMesh::compile(String *r_error) const {
 	}
 	const String collision_mode = build_settings.get("collision", "none");
 	if (collision_mode == "trimesh" && mesh->get_surface_count() > 0) {
-		mesh->set_meta("solers/collision_shape", mesh->create_trimesh_shape());
+		mesh->set_meta("solers_collision_shape", mesh->create_trimesh_shape());
 	} else if (collision_mode == "convex" && mesh->get_surface_count() > 0) {
-		mesh->set_meta("solers/collision_shape", mesh->create_convex_shape());
+		mesh->set_meta("solers_collision_shape", mesh->create_convex_shape());
 	}
-	mesh->set_meta("solers/build_settings", build_settings.duplicate(true));
+	mesh->set_meta("solers_build_settings", build_settings.duplicate(true));
 	return mesh;
 }
