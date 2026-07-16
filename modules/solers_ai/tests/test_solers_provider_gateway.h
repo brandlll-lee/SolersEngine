@@ -84,6 +84,23 @@
 
 namespace TestSolersProviderGateway {
 
+struct ModelingTestFiles {
+	Vector<String> paths;
+	~ModelingTestFiles() {
+		for (const String &path : paths) {
+			if (FileAccess::exists(path)) {
+				DirAccess::remove_absolute(path);
+			}
+		}
+	}
+	void add(const String &p_path) {
+		paths.push_back(p_path);
+		if (FileAccess::exists(p_path)) {
+			DirAccess::remove_absolute(p_path);
+		}
+	}
+};
+
 class SolersTestImportFormatSupportQuery : public EditorFileSystemImportFormatSupportQuery {
 public:
 	Vector<String> extensions;
@@ -410,23 +427,9 @@ TEST_CASE("[SolersToolRegistry][SolersModeling][SceneTree] projects every native
 
 	const String path = "res://.godot/solers_modeling_tool_contract.smodel";
 	const String copy_path = "res://.godot/solers_modeling_tool_contract_copy.smodel";
-	struct Cleanup {
-		Vector<String> paths;
-		~Cleanup() {
-			for (const String &path : paths) {
-				if (FileAccess::exists(path)) {
-					DirAccess::remove_absolute(path);
-				}
-			}
-		}
-	} cleanup;
-	cleanup.paths.push_back(path);
-	cleanup.paths.push_back(copy_path);
-	for (const String &candidate : cleanup.paths) {
-		if (FileAccess::exists(candidate)) {
-			DirAccess::remove_absolute(candidate);
-		}
-	}
+	ModelingTestFiles cleanup;
+	cleanup.add(path);
+	cleanup.add(copy_path);
 	Dictionary create;
 	create["path"] = path;
 	create["primitive"] = "box";
@@ -452,7 +455,29 @@ TEST_CASE("[SolersToolRegistry][SolersModeling][SceneTree] projects every native
 	configure["expected_revision"] = transformed_revision;
 	configure["collision"] = "trimesh";
 	REQUIRE((bool)registry.call_tool(SNAME("model.configure_build"), configure).get("ok", false));
-	const int64_t configured_revision = Dictionary(Dictionary(registry.call_tool(SNAME("model.inspect"), inspect_args)).get("data", Dictionary())).get("revision", -1);
+	const Dictionary configured_data = Dictionary(registry.call_tool(SNAME("model.inspect"), inspect_args)).get("data", Dictionary());
+	const int64_t configured_revision = configured_data.get("revision", -1);
+	Dictionary failed_batch;
+	failed_batch["path"] = path;
+	failed_batch["expected_revision"] = configured_revision;
+	Array failed_operations;
+	Dictionary partial_transform;
+	partial_transform["translation"] = Vector3(99, 0, 0);
+	Dictionary partial_item;
+	partial_item["operation"] = "transform";
+	partial_item["parameters"] = partial_transform;
+	failed_operations.push_back(partial_item);
+	Dictionary invalid_item;
+	invalid_item["operation"] = "not_an_operation";
+	failed_operations.push_back(invalid_item);
+	failed_batch["operations"] = failed_operations;
+	CHECK_FALSE((bool)registry.call_tool(SNAME("model.batch"), failed_batch).get("ok", true));
+	const Dictionary after_failed_batch = Dictionary(registry.call_tool(SNAME("model.inspect"), inspect_args)).get("data", Dictionary());
+	const int64_t after_failed_revision = after_failed_batch.get("revision", -1);
+	const String after_failed_hash = after_failed_batch.get("source_hash", String());
+	const String configured_hash = configured_data.get("source_hash", String());
+	CHECK(after_failed_revision == configured_revision);
+	CHECK(after_failed_hash == configured_hash);
 	Dictionary batch;
 	batch["path"] = path;
 	batch["expected_revision"] = configured_revision;
@@ -484,6 +509,159 @@ TEST_CASE("[SolersToolRegistry][SolersModeling][SceneTree] projects every native
 	REQUIRE(runtime_mesh.is_valid());
 	CHECK(runtime_mesh->has_meta("solers_build_settings"));
 	CHECK(runtime_mesh->has_meta("solers_collision_shape"));
+}
+
+TEST_CASE("[SolersToolRegistry][SolersModeling][SceneTree] builds product-ready room and hard-surface prop") {
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_FILES, true);
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
+	SolersToolRegistry registry;
+	registry.set_permission_manager(&permissions);
+	registry.register_default_tools();
+	ModelingTestFiles cleanup;
+	const String room_path = "res://.godot/solers_modeling_room_acceptance.smodel";
+	const String prop_path = "res://.godot/solers_modeling_prop_acceptance.smodel";
+	cleanup.add(room_path);
+	cleanup.add(prop_path);
+
+	auto operation = [](const StringName &p_name, const Dictionary &p_parameters = Dictionary()) {
+		Dictionary item;
+		item["operation"] = p_name;
+		item["parameters"] = p_parameters;
+		return item;
+	};
+	auto box = [&](const Vector3 &p_size, const Vector3 &p_center) {
+		Dictionary parameters;
+		parameters["size"] = p_size;
+		parameters["center"] = p_center;
+		return operation(SNAME("create_box"), parameters);
+	};
+
+	Dictionary create_room;
+	create_room["path"] = room_path;
+	create_room["primitive"] = "box";
+	Dictionary floor;
+	floor["size"] = Vector3(8, 0.2, 6);
+	floor["center"] = Vector3(0, -0.1, 0);
+	create_room["parameters"] = floor;
+	REQUIRE((bool)registry.call_tool(SNAME("model.create"), create_room).get("ok", false));
+	Array room_operations;
+	room_operations.push_back(box(Vector3(8, 0.2, 6), Vector3(0, 3.1, 0)));
+	room_operations.push_back(box(Vector3(0.2, 3, 6), Vector3(-3.9, 1.5, 0)));
+	room_operations.push_back(box(Vector3(0.2, 3, 6), Vector3(3.9, 1.5, 0)));
+	room_operations.push_back(box(Vector3(2.5, 3, 0.2), Vector3(-2.75, 1.5, -2.9)));
+	room_operations.push_back(box(Vector3(2.5, 3, 0.2), Vector3(2.75, 1.5, -2.9)));
+	room_operations.push_back(box(Vector3(3, 0.8, 0.2), Vector3(0, 0.4, -2.9)));
+	room_operations.push_back(box(Vector3(3, 0.7, 0.2), Vector3(0, 2.65, -2.9)));
+	room_operations.push_back(box(Vector3(3.4, 3, 0.2), Vector3(-2.3, 1.5, 2.9)));
+	room_operations.push_back(box(Vector3(3.4, 3, 0.2), Vector3(2.3, 1.5, 2.9)));
+	room_operations.push_back(box(Vector3(1.2, 0.8, 0.2), Vector3(0, 2.6, 2.9)));
+	room_operations.push_back(box(Vector3(0.1, 2.3, 0.12), Vector3(-0.65, 1.15, 2.78)));
+	room_operations.push_back(box(Vector3(0.1, 2.3, 0.12), Vector3(0.65, 1.15, 2.78)));
+	room_operations.push_back(box(Vector3(1.4, 0.1, 0.12), Vector3(0, 2.3, 2.78)));
+	room_operations.push_back(box(Vector3(7.6, 0.12, 0.08), Vector3(0, 0.06, -2.76)));
+	room_operations.push_back(box(Vector3(7.6, 0.12, 0.08), Vector3(0, 0.06, 2.76)));
+	Dictionary trim_material;
+	trim_material["material_index"] = 1;
+	room_operations.push_back(operation(SNAME("set_material"), trim_material));
+	Dictionary room_uv;
+	room_uv["resolution"] = 512;
+	room_uv["padding"] = 2;
+	room_operations.push_back(operation(SNAME("unwrap_uv"), room_uv));
+	Dictionary room_build;
+	room_build["weighted_normals"] = true;
+	room_build["generate_uv2"] = true;
+	room_build["lightmap_texel_size"] = 0.1;
+	room_build["collision"] = "trimesh";
+	Array room_lods;
+	Dictionary room_lod;
+	room_lod["ratio"] = 0.5;
+	room_lod["distance"] = 18.0;
+	room_lods.push_back(room_lod);
+	room_build["lod_levels"] = room_lods;
+	room_operations.push_back(operation(SNAME("configure_build"), room_build));
+	Dictionary room_batch;
+	room_batch["path"] = room_path;
+	room_batch["operations"] = room_operations;
+	REQUIRE((bool)registry.call_tool(SNAME("model.batch"), room_batch).get("ok", false));
+	Dictionary room_args;
+	room_args["path"] = room_path;
+	REQUIRE((bool)registry.call_tool(SNAME("model.validate"), room_args).get("ok", false));
+	const Dictionary room_data = Dictionary(registry.call_tool(SNAME("model.inspect"), room_args)).get("data", Dictionary());
+	CHECK((int)room_data.get("face_count", 0) >= 90);
+	CHECK((int)room_data.get("boundary_edge_count", -1) == 0);
+	CHECK((int)room_data.get("non_manifold_edge_count", -1) == 0);
+
+	Dictionary create_prop;
+	create_prop["path"] = prop_path;
+	create_prop["primitive"] = "box";
+	Dictionary prop_body;
+	prop_body["size"] = Vector3(1.2, 0.45, 0.65);
+	prop_body["center"] = Vector3(0.8, 0, 0);
+	create_prop["parameters"] = prop_body;
+	REQUIRE((bool)registry.call_tool(SNAME("model.create"), create_prop).get("ok", false));
+	Array prop_operations;
+	Dictionary cylinder;
+	cylinder["segments"] = 24;
+	cylinder["radius"] = 0.14;
+	cylinder["depth"] = 0.8;
+	cylinder["center"] = Vector3(0.8, 0.35, 0);
+	prop_operations.push_back(operation(SNAME("create_cylinder"), cylinder));
+	Dictionary accent_material;
+	accent_material["material_index"] = 1;
+	prop_operations.push_back(operation(SNAME("set_material"), accent_material));
+	Dictionary mirror;
+	mirror["type"] = "mirror";
+	Dictionary mirror_parameters;
+	mirror_parameters["axis"] = "x";
+	mirror_parameters["origin"] = Vector3();
+	mirror["parameters"] = mirror_parameters;
+	prop_operations.push_back(operation(SNAME("add_modifier"), mirror));
+	Dictionary array;
+	array["type"] = "array";
+	Dictionary array_parameters;
+	array_parameters["count"] = 3;
+	array_parameters["offset"] = Vector3(0, 0, 1.0);
+	array["parameters"] = array_parameters;
+	prop_operations.push_back(operation(SNAME("add_modifier"), array));
+	Dictionary bevel;
+	bevel["type"] = "bevel";
+	Dictionary bevel_parameters;
+	bevel_parameters["width"] = 0.035;
+	bevel_parameters["segments"] = 2;
+	bevel["parameters"] = bevel_parameters;
+	prop_operations.push_back(operation(SNAME("add_modifier"), bevel));
+	prop_operations.push_back(operation(SNAME("apply_modifiers")));
+	Dictionary prop_uv;
+	prop_uv["resolution"] = 512;
+	prop_uv["padding"] = 2;
+	prop_operations.push_back(operation(SNAME("unwrap_uv"), prop_uv));
+	Dictionary prop_build;
+	prop_build["weighted_normals"] = true;
+	prop_build["generate_uv2"] = true;
+	prop_build["collision"] = "convex";
+	Array prop_lods;
+	Dictionary prop_lod_near;
+	prop_lod_near["ratio"] = 0.6;
+	prop_lod_near["distance"] = 8.0;
+	prop_lods.push_back(prop_lod_near);
+	Dictionary prop_lod_far;
+	prop_lod_far["ratio"] = 0.3;
+	prop_lod_far["distance"] = 20.0;
+	prop_lods.push_back(prop_lod_far);
+	prop_build["lod_levels"] = prop_lods;
+	prop_operations.push_back(operation(SNAME("configure_build"), prop_build));
+	Dictionary prop_batch;
+	prop_batch["path"] = prop_path;
+	prop_batch["operations"] = prop_operations;
+	REQUIRE((bool)registry.call_tool(SNAME("model.batch"), prop_batch).get("ok", false));
+	Dictionary prop_args;
+	prop_args["path"] = prop_path;
+	REQUIRE((bool)registry.call_tool(SNAME("model.validate"), prop_args).get("ok", false));
+	const Dictionary prop_data = Dictionary(registry.call_tool(SNAME("model.inspect"), prop_args)).get("data", Dictionary());
+	CHECK((int)prop_data.get("face_count", 0) > 100);
+	CHECK((int)prop_data.get("boundary_edge_count", -1) == 0);
+	CHECK((int)prop_data.get("non_manifold_edge_count", -1) == 0);
 }
 
 TEST_CASE("[SolersToolRegistry] preserves internal session context without changing the bound API") {
