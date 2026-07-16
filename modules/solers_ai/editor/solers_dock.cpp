@@ -67,13 +67,9 @@ constexpr float SOLERS_COMPOSER_VERTICAL_CHROME = 20.0f;
 static const Color SOLERS_BG = Color(0.030, 0.030, 0.023);
 static const Color SOLERS_COMPOSER_BG = Color(0.086, 0.088, 0.092);
 static const Color SOLERS_POPUP_BG = Color(0.118, 0.118, 0.122);
-// Hairline: ultra-subtle separator between sections.
-// Use a slightly warm gray instead of pure white to avoid cold "screen door" look.
-static const Color SOLERS_HAIRLINE = Color(0.95, 0.95, 0.97, 0.035);
 // Composer edge: a touch more defined than the section hairline so the input
 // reads as a discrete card, like Cursor's composer.
 static const Color SOLERS_COMPOSER_BORDER = Color(0.95, 0.95, 0.97, 0.16);
-static const Color SOLERS_ACCENT_ORANGE = Color(1.00, 0.49, 0.20);
 // Primary text: high contrast for readability on dark backgrounds.
 static const Color SOLERS_TEXT_PRIMARY = Color(0.961, 0.969, 0.984);
 // Body text: comfortable reading with slightly reduced contrast for hierarchy.

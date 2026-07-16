@@ -87,18 +87,19 @@ TEST_CASE("[PCKPacker] Pack a PCK file with some files and directories") {
 			"Starting a PCK file should return an OK error code.");
 
 	const String base_dir = OS::get_singleton()->get_executable_path().get_base_dir();
+	// Keep this test independent from distribution-specific branding assets.
 
 	CHECK_MESSAGE(
 			pck_packer.add_file("version.py", base_dir.path_join("../version.py"), "version.py") == OK,
 			"Adding a file to the PCK should return an OK error code.");
 	CHECK_MESSAGE(
-			pck_packer.add_file("some/directories with spaces/to/create/icon.png", base_dir.path_join("../icon.png")) == OK,
+			pck_packer.add_file("some/directories with spaces/to/create/icon.png", base_dir.path_join("../version.py")) == OK,
 			"Adding a file to a new subdirectory in the PCK should return an OK error code.");
 	CHECK_MESSAGE(
-			pck_packer.add_file("some/directories with spaces/to/create/icon.svg", base_dir.path_join("../icon.svg")) == OK,
+			pck_packer.add_file("some/directories with spaces/to/create/icon.svg", base_dir.path_join("../solers_branding.py")) == OK,
 			"Adding a file to an existing subdirectory in the PCK should return an OK error code.");
 	CHECK_MESSAGE(
-			pck_packer.add_file("some/directories with spaces/to/create/icon.png", base_dir.path_join("../logo.png")) == OK,
+			pck_packer.add_file("some/directories with spaces/to/create/icon.png", base_dir.path_join("../solers_branding.py")) == OK,
 			"Overriding a non-flushed file to an existing subdirectory in the PCK should return an OK error code.");
 	CHECK_MESSAGE(
 			pck_packer.flush() == OK,
@@ -110,10 +111,10 @@ TEST_CASE("[PCKPacker] Pack a PCK file with some files and directories") {
 			err == OK,
 			"The generated non-empty PCK file should be opened successfully.");
 	CHECK_MESSAGE(
-			f->get_length() >= 18000,
+			f->get_length() >= 1000,
 			"The generated non-empty PCK file should be large enough to actually hold the contents specified above.");
 	CHECK_MESSAGE(
-			f->get_length() <= 27000,
+			f->get_length() <= 5000,
 			"The generated non-empty PCK file shouldn't be too large.");
 }
 } // namespace TestPCKPacker
