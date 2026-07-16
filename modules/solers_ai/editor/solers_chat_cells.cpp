@@ -29,7 +29,6 @@
 static const Color SOLERS_CELL_TEXT_PRIMARY = Color(0.961, 0.969, 0.984);
 static const Color SOLERS_CELL_TEXT_DIM = Color(0.667, 0.690, 0.733);
 static const Color SOLERS_CELL_TEXT_FAINT = Color(0.667, 0.690, 0.733, 0.78f);
-static const Color SOLERS_CELL_OK = Color(0.478, 0.772, 0.525);
 static const Color SOLERS_CELL_ERROR = Color(0.875, 0.478, 0.420);
 // User bubble: Cursor-style accent-blue (#3b82f6) wash over the dark canvas.
 static const Color SOLERS_CELL_BUBBLE_BG = Color(0.231, 0.510, 0.965, 0.26f);

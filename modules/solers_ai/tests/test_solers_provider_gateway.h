@@ -1802,9 +1802,7 @@ TEST_CASE("[SolersAssetService][SceneTree] project import follows native Materia
 	CHECK(duplicate_data.get("reused", false));
 	CHECK(Dictionary(duplicate_data.get("poll_args", Dictionary())).get("_import_id", String()) == first_poll_args.get("_import_id", String()));
 	for (int i = 0; i < 1000 && (String(data.get("status", String())) == "pending" || String(second_data.get("status", String())) == "pending"); i++) {
-		if (EditorFileSystem *filesystem = EditorFileSystem::get_singleton()) {
-			filesystem->notification(Node::NOTIFICATION_PROCESS);
-		}
+		filesystem->notification(Node::NOTIFICATION_PROCESS);
 		MessageQueue::get_singleton()->flush();
 		asset_service.poll();
 		if (String(data.get("status", String())) == "pending") {

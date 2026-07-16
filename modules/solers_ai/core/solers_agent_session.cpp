@@ -3079,7 +3079,6 @@ void SolersAgentSession::_deliver_tool_result(const String &p_id, const String &
 	if (!(bool)result.get("ok", false)) {
 		const Dictionary error = result.get("error", Dictionary());
 		if (String(error.get("code", String())) != "SKIPPED_AFTER_FAILURE" && tool_registry) {
-			const Array accesses = tool_registry->resolve_resource_access(StringName(p_canonical_name), p_args);
 			for (int i = 0; i < accesses.size(); i++) {
 				// Only failed writes fence later tools: a failed read (for
 				// example a capture that timed out) leaves no partial state,
