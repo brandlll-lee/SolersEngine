@@ -39,11 +39,10 @@ jobs:
         uses: ./.github/actions/godot-deps
 
       - name: Compilation
-        uses: ./.github/actions/godot-build
-        with:
-          platform: linuxbsd
-          target: editor
-          scons-flags: dev_mode=yes module_text_server_fb_enabled=yes accesskit=no use_llvm=yes linker=lld
+        run: >-
+          scons platform=linuxbsd target=editor dev_mode=yes module_text_server_fb_enabled=yes
+          accesskit=no use_llvm=yes linker=lld cache_path=${{ github.workspace }}/.scons_cache/
+          redirect_build_objects=no bin/obj/modules/libmodule_solers_ai.linuxbsd.editor.x86_64.llvm.a
 
       - name: Save Godot build cache
         uses: ./.github/actions/godot-cache-save
