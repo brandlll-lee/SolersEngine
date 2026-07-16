@@ -70,6 +70,8 @@
 #include "modules/solers_ai/llm/solers_protocol_openai_responses.h"
 #include "modules/solers_ai/editor/solers_chat_cells.h"
 #include "modules/solers_ai/protocol/solers_mcp_adapter.h"
+#include "modules/solers_modeling/core/solers_model_operation.h"
+#include "modules/solers_modeling/core/solers_model_source.h"
 #include "scene/3d/path_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/node_3d.h"
@@ -372,6 +374,116 @@ TEST_CASE("[SolersToolRegistry] registers tools by lookup, not a hardcoded catal
 	CHECK_FALSE((bool)data.get("has_optional_empty", true));
 	CHECK((bool)data.get("has_required_empty", false));
 	CHECK((bool)data.get("has_unknown_empty", false));
+}
+
+TEST_CASE("[SolersToolRegistry][SolersModeling][SceneTree] projects every native operation without a second catalog") {
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_FILES, true);
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
+	SolersToolRegistry registry;
+	registry.set_permission_manager(&permissions);
+	registry.register_default_tools();
+
+	HashMap<StringName, Dictionary> tools;
+	for (const Variant &value : registry.list_tools()) {
+		const Dictionary tool = value;
+		tools[StringName(tool.get("name", String()))] = tool;
+	}
+	for (const SolersModelOperationDefinition &operation : SolersModelOperationRegistry::get_singleton()->get_operations()) {
+		const StringName tool_name = StringName("model." + String(operation.id));
+		INFO(tool_name);
+		REQUIRE(tools.has(tool_name));
+		const Dictionary tool = tools[tool_name];
+		CHECK(tool.get("exposure", String()) == "deferred");
+		CHECK(tool.get("undoable", false));
+		const Dictionary schema = tool.get("input_schema", Dictionary());
+		const Dictionary properties = schema.get("properties", Dictionary());
+		const Dictionary operation_properties = operation.parameters_schema.get("properties", Dictionary());
+		const Variant *key = nullptr;
+		while ((key = operation_properties.next(key))) {
+			CHECK(properties.get(*key, Variant()) == operation_properties[*key]);
+		}
+		CHECK(properties.has("path"));
+		CHECK(properties.has("expected_revision"));
+		CHECK(Array(schema.get("required", Array())).has("path"));
+	}
+
+	const String path = "res://.godot/solers_modeling_tool_contract.smodel";
+	const String copy_path = "res://.godot/solers_modeling_tool_contract_copy.smodel";
+	struct Cleanup {
+		Vector<String> paths;
+		~Cleanup() {
+			for (const String &path : paths) {
+				if (FileAccess::exists(path)) {
+					DirAccess::remove_absolute(path);
+				}
+			}
+		}
+	} cleanup;
+	cleanup.paths.push_back(path);
+	cleanup.paths.push_back(copy_path);
+	for (const String &candidate : cleanup.paths) {
+		if (FileAccess::exists(candidate)) {
+			DirAccess::remove_absolute(candidate);
+		}
+	}
+	Dictionary create;
+	create["path"] = path;
+	create["primitive"] = "box";
+	REQUIRE((bool)registry.call_tool(SNAME("model.create"), create).get("ok", false));
+	Dictionary inspect_args;
+	inspect_args["path"] = path;
+	const Dictionary inspected = registry.call_tool(SNAME("model.inspect"), inspect_args);
+	REQUIRE((bool)inspected.get("ok", false));
+	const int64_t revision = Dictionary(inspected.get("data", Dictionary())).get("revision", -1);
+	Dictionary transform;
+	transform["path"] = path;
+	transform["expected_revision"] = revision;
+	transform["translation"] = Vector3(1, 2, 3);
+	REQUIRE((bool)registry.call_tool(SNAME("model.transform"), transform).get("ok", false));
+	const Dictionary stale = registry.call_tool(SNAME("model.transform"), transform);
+	CHECK_FALSE((bool)stale.get("ok", true));
+	CHECK(Dictionary(stale.get("error", Dictionary())).get("code", String()) == "MODEL_REVISION_CONFLICT");
+
+	const Dictionary after_transform = registry.call_tool(SNAME("model.inspect"), inspect_args);
+	const int64_t transformed_revision = Dictionary(after_transform.get("data", Dictionary())).get("revision", -1);
+	Dictionary configure;
+	configure["path"] = path;
+	configure["expected_revision"] = transformed_revision;
+	configure["collision"] = "trimesh";
+	REQUIRE((bool)registry.call_tool(SNAME("model.configure_build"), configure).get("ok", false));
+	const int64_t configured_revision = Dictionary(Dictionary(registry.call_tool(SNAME("model.inspect"), inspect_args)).get("data", Dictionary())).get("revision", -1);
+	Dictionary batch;
+	batch["path"] = path;
+	batch["expected_revision"] = configured_revision;
+	Array operations;
+	for (const Vector3 &offset : { Vector3(0.25, 0, 0), Vector3(0, 0.5, 0) }) {
+		Dictionary item;
+		item["operation"] = "transform";
+		Dictionary parameters;
+		parameters["translation"] = offset;
+		item["parameters"] = parameters;
+		operations.push_back(item);
+	}
+	batch["operations"] = operations;
+	REQUIRE((bool)registry.call_tool(SNAME("model.batch"), batch).get("ok", false));
+	CHECK((bool)registry.call_tool(SNAME("model.validate"), inspect_args).get("ok", false));
+
+	Dictionary save;
+	save["source_path"] = path;
+	save["destination_path"] = copy_path;
+	REQUIRE((bool)registry.call_tool(SNAME("model.save"), save).get("ok", false));
+	Dictionary copy_args;
+	copy_args["path"] = copy_path;
+	const Dictionary original_data = Dictionary(registry.call_tool(SNAME("model.inspect"), inspect_args)).get("data", Dictionary());
+	const Dictionary copied_data = Dictionary(registry.call_tool(SNAME("model.inspect"), copy_args)).get("data", Dictionary());
+	CHECK(original_data.get("document", Dictionary()) == copied_data.get("document", Dictionary()));
+	SolersEditableMesh persisted;
+	REQUIRE(SolersModelSource::load(copy_path, persisted) == OK);
+	Ref<ArrayMesh> runtime_mesh = persisted.compile();
+	REQUIRE(runtime_mesh.is_valid());
+	CHECK(runtime_mesh->has_meta("solers_build_settings"));
+	CHECK(runtime_mesh->has_meta("solers_collision_shape"));
 }
 
 TEST_CASE("[SolersToolRegistry] preserves internal session context without changing the bound API") {

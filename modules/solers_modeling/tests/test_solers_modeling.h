@@ -9,6 +9,7 @@
 #pragma once
 
 #include "core/io/json.h"
+#include "core/math/random_pcg.h"
 #include "modules/solers_modeling/core/solers_model_operation.h"
 #include "modules/solers_modeling/core/solers_model_modifier.h"
 #include "modules/solers_modeling/core/solers_model_source.h"
@@ -252,6 +253,86 @@ TEST_CASE("[SolersModeling] build settings survive modifiers and source round-tr
 	SolersEditableMesh restored;
 	REQUIRE(SolersModelSource::decode(bytes, restored, &error) == OK);
 	CHECK(restored.get_build_settings() == mesh.get_build_settings());
+}
+
+TEST_CASE("[SolersModeling] deterministic mixed edits preserve topology invariants") {
+	RandomPCG random(0x534F4C455253ULL);
+	SolersEditableMesh mesh;
+	REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("create_box"), Dictionary()).get("ok", false));
+	for (int step = 0; step < 128; step++) {
+		if (mesh.get_face_ids().is_empty()) {
+			Dictionary primitive;
+			primitive["center"] = Vector3(random.random(-2.0f, 2.0f), 0, random.random(-2.0f, 2.0f));
+			REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("create_box"), primitive).get("ok", false));
+		}
+		const Vector<int64_t> faces = mesh.get_face_ids();
+		const Vector<int64_t> edges = mesh.get_edge_ids();
+		const Vector<int64_t> vertices = mesh.get_vertex_ids();
+		Dictionary parameters;
+		StringName operation;
+		switch (random.rand(8)) {
+			case 0: {
+				operation = SNAME("transform");
+				Array ids;
+				ids.push_back(vertices[random.rand(vertices.size())]);
+				parameters["vertex_ids"] = ids;
+				parameters["translation"] = Vector3(random.random(-0.1f, 0.1f), random.random(-0.1f, 0.1f), random.random(-0.1f, 0.1f));
+			} break;
+			case 1: {
+				operation = SNAME("extrude_faces");
+				Array ids;
+				ids.push_back(faces[random.rand(faces.size())]);
+				parameters["face_ids"] = ids;
+				parameters["distance"] = random.random(-0.15f, 0.15f);
+			} break;
+			case 2: {
+				operation = SNAME("inset_faces");
+				Array ids;
+				ids.push_back(faces[random.rand(faces.size())]);
+				parameters["face_ids"] = ids;
+				parameters["factor"] = random.random(0.1f, 0.4f);
+			} break;
+			case 3: {
+				operation = SNAME("flip_faces");
+				Array ids;
+				ids.push_back(faces[random.rand(faces.size())]);
+				parameters["face_ids"] = ids;
+			} break;
+			case 4: {
+				operation = SNAME("dissolve_edges");
+				Array ids;
+				ids.push_back(edges[random.rand(edges.size())]);
+				parameters["edge_ids"] = ids;
+			} break;
+			case 5: {
+				operation = SNAME("split_faces");
+				Array ids;
+				ids.push_back(faces[random.rand(faces.size())]);
+				parameters["face_ids"] = ids;
+			} break;
+			case 6: {
+				operation = SNAME("loop_cut");
+				Array ids;
+				ids.push_back(edges[random.rand(edges.size())]);
+				parameters["edge_ids"] = ids;
+				parameters["factor"] = random.random(0.2f, 0.8f);
+			} break;
+			default: {
+				operation = SNAME("delete");
+				Array ids;
+				ids.push_back(faces[random.rand(faces.size())]);
+				parameters["domain"] = "face";
+				parameters["ids"] = ids;
+			} break;
+		}
+		SolersEditableMesh working = mesh;
+		const Dictionary result = SolersModelOperationRegistry::get_singleton()->execute(working, operation, parameters);
+		if ((bool)result.get("ok", false)) {
+			mesh = working;
+		}
+		INFO(vformat("step=%d operation=%s result=%s", step, operation, JSON::stringify(result)));
+		CHECK(mesh.validate() == OK);
+	}
 }
 
 } // namespace TestSolersModeling
