@@ -37,7 +37,6 @@
 #include "core/solers_file_checkpoint.h"
 #include "core/solers_observation_service.h"
 #include "core/solers_permission_manager.h"
-#include "core/solers_provider_gateway.h"
 #include "core/solers_provider_registry.h"
 #include "core/solers_reflection_service.h"
 #include "core/solers_resource_service.h"
@@ -61,7 +60,6 @@ void initialize_solers_ai_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(SolersFileCheckpoint);
 		GDREGISTER_CLASS(SolersObservationService);
 		GDREGISTER_CLASS(SolersPermissionManager);
-		GDREGISTER_CLASS(SolersProviderGateway);
 		GDREGISTER_CLASS(SolersProviderRegistry);
 		GDREGISTER_CLASS(SolersReflectionService);
 		GDREGISTER_CLASS(SolersResourceService);
@@ -78,6 +76,7 @@ void initialize_solers_ai_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(SolersUserBubble);
 		GDREGISTER_CLASS(SolersAssistantCell);
 		GDREGISTER_CLASS(SolersThinkingCell);
+		GDREGISTER_CLASS(SolersPlanCell);
 		GDREGISTER_CLASS(SolersToolCell);
 		GDREGISTER_CLASS(SolersToolGroupCell);
 		GDREGISTER_CLASS(SolersStatusCell);

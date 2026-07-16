@@ -806,11 +806,9 @@ void SolersCodeBlock::_notification(int p_what) {
 		} break;
 		case NOTIFICATION_DRAW: {
 			const float ed = EDSCALE;
-			static Ref<StyleBoxFlat> panel;
-			if (panel.is_null()) {
-				panel.instantiate();
-				panel->set_anti_aliased(true);
-			}
+			Ref<StyleBoxFlat> panel;
+			panel.instantiate();
+			panel->set_anti_aliased(true);
 			panel->set_bg_color(SOLERS_MD_CODE_PANEL_BG);
 			panel->set_corner_radius_all(int(9 * ed));
 			panel->set_border_width_all(MAX(1, int(ed)));

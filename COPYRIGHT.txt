@@ -45,6 +45,22 @@ Copyright: 2014-present, Godot Engine contributors
  2007-2014, Juan Linietsky, Ariel Manzur
 License: Expat
 
+Files: modules/solers_ai/core/solers_agent_session.cpp
+ modules/solers_ai/core/solers_agent_session.h
+ modules/solers_ai/core/solers_context_manager.cpp
+ modules/solers_ai/core/solers_context_manager.h
+Comment: Context compaction semantics and handoff prompt derived from Kimi Code
+Copyright: 2026 Moonshot AI
+License: Expat
+
+Files: modules/solers_ai/core/solers_codex_auth.cpp
+ modules/solers_ai/core/solers_codex_auth.h
+ modules/solers_ai/llm/solers_protocol_openai_responses.cpp
+ modules/solers_ai/llm/solers_protocol_openai_responses.h
+Comment: ChatGPT Codex OAuth and OpenAI Responses behavior adapted from OpenCode
+Copyright: 2025, opencode
+License: Expat
+
 Files: icon.png
  icon.svg
  logo.png

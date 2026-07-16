@@ -16,21 +16,12 @@
 #include "core/io/json.h"
 #include "core/os/os.h"
 #include "core/os/time.h"
+#include "modules/solers_ai/core/solers_codex_auth.h"
 #include "modules/solers_ai/llm/solers_llm_message.h"
 
-// Two-phase liveness model, faithful to opencode's provider fetch wrapper
-// (_research/opencode/packages/opencode/src/provider/provider.ts):
-//   - HEADER phase: until the response status/headers arrive. A short-ish budget
-//     guards an endpoint that is unreachable or wedged before replying. Mirrors
-//     opencode's `timeoutController(headerTimeout)` that is cleared the instant
-//     the fetch resolves (`.finally(() => headerTimeoutCtl?.clear())`).
-//   - STREAM phase: after 2xx headers, we only bound the gap *between* received
-//     chunks (inter-chunk idle), never the time since the request began. A model
-//     that "thinks" for a long while before the first token is healthy, not
-//     stalled. Mirrors opencode's optional `wrapSSE(chunkTimeout)`.
-// Both failures are transient and retryable; the agent session retries them.
-static constexpr uint64_t SOLERS_LLM_HEADER_TIMEOUT_MSEC = 30000;
-static constexpr uint64_t SOLERS_LLM_CHUNK_TIMEOUT_MSEC = 120000;
+// DNS, connect, headers, and streamed chunks share one no-progress budget.
+// HTTP state transitions and body chunks reset it; the session owns retries.
+static constexpr uint64_t SOLERS_LLM_NO_PROGRESS_TIMEOUT_MSEC = 120000;
 
 Dictionary SolersLLMClient::_redacted_request_body(const String &p_body) const {
 	Dictionary out;
@@ -90,7 +81,7 @@ void SolersLLMClient::_trace(const String &p_event, const Dictionary &p_payload)
 	file->store_line(JSON::stringify(entry, "", false, true));
 }
 
-void SolersLLMClient::_fail(const String &p_code, const String &p_message, Array &r_events) {
+void SolersLLMClient::_fail(const String &p_code, const String &p_message, bool p_retryable) {
 	// Preserve any HTTP status / response headers captured before the failure so
 	// the retry layer can classify (5xx vs 4xx) and honor Retry-After headers.
 	const Variant http_status = last_error.get("http_status", Variant());
@@ -98,6 +89,8 @@ void SolersLLMClient::_fail(const String &p_code, const String &p_message, Array
 	last_error.clear();
 	last_error["code"] = p_code;
 	last_error["message"] = p_message;
+	const int status = http_status.get_type() == Variant::NIL ? 0 : (int)http_status;
+	last_error["retryable"] = p_retryable || status == 429 || status >= 500;
 	if (http_status.get_type() != Variant::NIL) {
 		last_error["http_status"] = http_status;
 	}
@@ -107,15 +100,70 @@ void SolersLLMClient::_fail(const String &p_code, const String &p_message, Array
 	Dictionary payload;
 	payload["code"] = p_code;
 	payload["message"] = p_message;
+	payload["retryable"] = last_error["retryable"];
 	_trace("fail", payload);
-	r_events.push_back(SolersLLMEvent::error(p_code, p_message));
 	state = STATE_FAILED;
 	if (http.is_valid()) {
 		http->close();
 	}
 }
 
-Error SolersLLMClient::begin(const Dictionary &p_request, const Dictionary &p_profile, const String &p_api_key) {
+bool SolersLLMClient::_prepare_auth_headers(bool p_force_oauth_refresh) {
+	const String auth_type = worker_auth.get("type", String(worker_profile.get("auth_type", "api_key")));
+	if (auth_type == "none") {
+		return true;
+	}
+	if (auth_type == "oauth") {
+		if (String(worker_profile.get("oauth_kind", String())) != "codex") {
+			_fail("OAUTH_KIND_UNSUPPORTED", "The provider requested an unsupported OAuth flow.");
+			return false;
+		}
+		if (p_force_oauth_refresh) {
+			for (int i = request_headers.size() - 1; i >= 0; i--) {
+				const String header = request_headers[i];
+				if (header.begins_with("Authorization:") || header.begins_with("ChatGPT-Account-Id:")) {
+					request_headers.remove_at(i);
+				}
+			}
+		}
+		String access = worker_auth.get("access", String());
+		const String refresh = worker_auth.get("refresh", String());
+		const int64_t expires_at = worker_auth.get("expires_at", 0);
+		const int64_t now = (int64_t)Time::get_singleton()->get_unix_time_from_system();
+		if (p_force_oauth_refresh || access.is_empty() || expires_at <= now + 60) {
+			const Dictionary result = SolersCodexAuth::refresh_tokens(refresh);
+			if (!result.get("ok", false)) {
+				const Dictionary error = result.get("error", Dictionary());
+				_fail(error.get("code", "OAUTH_REFRESH_FAILED"), error.get("message", "ChatGPT authorization could not be refreshed."));
+				return false;
+			}
+			worker_auth = result.get("tokens", Dictionary());
+			access = worker_auth.get("access", String());
+			MutexLock lock(mutex);
+			shared_auth_update = worker_auth.duplicate(true);
+		}
+		if (access.is_empty()) {
+			_fail("OAUTH_ACCESS_MISSING", "ChatGPT authorization returned no access token.");
+			return false;
+		}
+		request_headers.push_back("Authorization: Bearer " + access);
+		const String account_id = worker_auth.get("account_id", String());
+		if (!account_id.is_empty()) {
+			request_headers.push_back("ChatGPT-Account-Id: " + account_id);
+		}
+		return true;
+	}
+
+	const String key = worker_auth.get("key", String());
+	if (!key.is_empty()) {
+		const String auth_header = worker_profile.get("auth_header", "Authorization");
+		const String auth_prefix = worker_profile.get("auth_prefix", "Bearer ");
+		request_headers.push_back(auth_header + ": " + auth_prefix + key);
+	}
+	return true;
+}
+
+Error SolersLLMClient::begin(const Dictionary &p_request, const Dictionary &p_profile, const Dictionary &p_auth) {
 	// Join any prior worker before reconfiguring shared state.
 	abort_requested.set();
 	_join_worker();
@@ -125,6 +173,7 @@ Error SolersLLMClient::begin(const Dictionary &p_request, const Dictionary &p_pr
 		MutexLock lock(mutex);
 		shared_events = Array();
 		shared_error = Dictionary();
+		shared_auth_update = Dictionary();
 		shared_state = STATE_IDLE;
 	}
 	last_error.clear();
@@ -199,11 +248,11 @@ Error SolersLLMClient::begin(const Dictionary &p_request, const Dictionary &p_pr
 	request_headers.clear();
 	request_headers.push_back("Content-Type: application/json");
 	request_headers.push_back("Accept: text/event-stream");
-	const String api_key = p_api_key.strip_edges();
-	if (!api_key.is_empty()) {
-		const String auth_header = p_profile.get("auth_header", "Authorization");
-		const String auth_prefix = p_profile.get("auth_prefix", "Bearer ");
-		request_headers.push_back(auth_header + ": " + auth_prefix + api_key);
+	worker_profile = p_profile.duplicate(true);
+	worker_auth = p_auth.duplicate(true);
+	const Dictionary profile_headers = p_profile.get("headers", Dictionary());
+	for (const Variant *key = profile_headers.next(nullptr); key; key = profile_headers.next(key)) {
+		request_headers.push_back(String(*key) + ": " + String(profile_headers[*key]));
 	}
 	Dictionary extra_headers;
 	active_protocol->augment_headers(extra_headers, p_request);
@@ -216,6 +265,7 @@ Error SolersLLMClient::begin(const Dictionary &p_request, const Dictionary &p_pr
 	request_sent = false;
 	response_checked = false;
 	capturing_error = false;
+	oauth_401_retried = false;
 	sse_buffer = String();
 	error_buffer = String();
 	initial_stream_state = active_protocol->begin_stream(p_request);
@@ -251,24 +301,22 @@ void SolersLLMClient::_publish(const Array &p_events, State p_state) {
 void SolersLLMClient::_run_worker() {
 	Array batch;
 
+	if (!_prepare_auth_headers()) {
+		_publish(batch, state);
+		return;
+	}
 	http = HTTPClient::create();
 	if (http.is_null()) {
-		last_error.clear();
-		last_error["code"] = "NO_HTTP_CLIENT";
-		last_error["message"] = "Failed to create HTTPClient.";
-		batch.push_back(SolersLLMEvent::error("NO_HTTP_CLIENT", "Failed to create HTTPClient."));
-		_publish(batch, STATE_FAILED);
+		_fail("NO_HTTP_CLIENT", "Failed to create HTTPClient.");
+		_publish(batch, state);
 		return;
 	}
 	Ref<TLSOptions> tls = use_tls ? TLSOptions::client() : Ref<TLSOptions>();
 	const Error err = http->connect_to_host(host, port, tls);
 	if (err != OK) {
-		last_error.clear();
-		last_error["code"] = "CONNECT_FAILED";
 		const String connect_message = vformat("connect_to_host failed for %s:%d (error %d).", host, port, err);
-		last_error["message"] = connect_message;
-		batch.push_back(SolersLLMEvent::error("CONNECT_FAILED", connect_message));
-		_publish(batch, STATE_FAILED);
+		_fail("CONNECT_FAILED", connect_message, true);
+		_publish(batch, state);
 		http = Ref<HTTPClient>();
 		return;
 	}
@@ -283,22 +331,6 @@ void SolersLLMClient::_run_worker() {
 	while (!abort_requested.is_set()) {
 		batch.clear();
 
-		// Phase-aware liveness: a generous inter-chunk budget once streaming,
-		// a short header budget before. (opencode headerTimeout / wrapSSE.)
-		{
-			const bool streaming = (state == STATE_STREAMING);
-			const uint64_t budget = streaming ? SOLERS_LLM_CHUNK_TIMEOUT_MSEC : SOLERS_LLM_HEADER_TIMEOUT_MSEC;
-			if (budget > 0 && OS::get_singleton()->get_ticks_msec() - last_progress_msec > budget) {
-				if (streaming) {
-					_fail("STREAM_STALL", vformat("The model stream stalled: no data for %d seconds after streaming began. Reconnecting.", (int)(SOLERS_LLM_CHUNK_TIMEOUT_MSEC / 1000)), batch);
-				} else {
-					_fail("HEADER_TIMEOUT", vformat("The model provider did not send response headers within %d seconds. The endpoint may be unreachable or overloaded. Reconnecting.", (int)(SOLERS_LLM_HEADER_TIMEOUT_MSEC / 1000)), batch);
-				}
-				_publish(batch, state);
-				break;
-			}
-		}
-
 		http->poll();
 		const HTTPClient::Status st = http->get_status();
 		switch (st) {
@@ -307,16 +339,16 @@ void SolersLLMClient::_run_worker() {
 				state = STATE_CONNECTING;
 			} break;
 			case HTTPClient::STATUS_CANT_RESOLVE: {
-				_fail("CANT_RESOLVE", vformat("Could not resolve host '%s'.", host), batch);
+				_fail("CANT_RESOLVE", vformat("Could not resolve host '%s'.", host), true);
 			} break;
 			case HTTPClient::STATUS_CANT_CONNECT: {
-				_fail("CANT_CONNECT", vformat("Could not connect to '%s:%d'.", host, port), batch);
+				_fail("CANT_CONNECT", vformat("Could not connect to '%s:%d'.", host, port), true);
 			} break;
 			case HTTPClient::STATUS_CONNECTION_ERROR: {
-				_fail("CONNECTION_ERROR", "HTTP connection error.", batch);
+				_fail("CONNECTION_ERROR", "HTTP connection error.", true);
 			} break;
 			case HTTPClient::STATUS_TLS_HANDSHAKE_ERROR: {
-				_fail("TLS_ERROR", "TLS handshake failed.", batch);
+				_fail("TLS_ERROR", "TLS handshake failed.", true);
 			} break;
 			case HTTPClient::STATUS_CONNECTED: {
 				if (!request_sent) {
@@ -324,13 +356,13 @@ void SolersLLMClient::_run_worker() {
 					const Error request_err = http->request(HTTPClient::METHOD_POST, request_path, request_headers, (const uint8_t *)body_utf8.get_data(), body_utf8.length());
 					request_sent = true;
 					if (request_err != OK) {
-						_fail("REQUEST_FAILED", vformat("HTTP request failed (error %d).", request_err), batch);
+						_fail("REQUEST_FAILED", vformat("HTTP request failed (error %d).", request_err), true);
 					} else {
 						state = STATE_REQUESTING;
 					}
 				} else if (response_checked) {
 					if (capturing_error) {
-						_fail("HTTP_ERROR", error_buffer.is_empty() ? "Provider returned an error." : error_buffer, batch);
+						_fail("HTTP_ERROR", error_buffer.is_empty() ? "Provider returned an error." : error_buffer);
 					} else {
 						_drain_records(batch);
 						state = STATE_DONE;
@@ -342,8 +374,33 @@ void SolersLLMClient::_run_worker() {
 			} break;
 			case HTTPClient::STATUS_BODY: {
 				if (!response_checked) {
-					response_checked = true;
 					const int code = http->get_response_code();
+					const bool codex_oauth = String(worker_auth.get("type", String())) == "oauth" && String(worker_profile.get("oauth_kind", String())) == "codex";
+					if (code == 401 && codex_oauth && !oauth_401_retried) {
+						oauth_401_retried = true;
+						http->close();
+						if (!_prepare_auth_headers(true)) {
+							break;
+						}
+						http = HTTPClient::create();
+						const Ref<TLSOptions> retry_tls = use_tls ? TLSOptions::client() : Ref<TLSOptions>();
+						const Error retry_error = http.is_valid() ? http->connect_to_host(host, port, retry_tls) : ERR_CANT_CREATE;
+						if (retry_error != OK) {
+							_fail("OAUTH_RETRY_CONNECT_FAILED", "Could not reconnect after refreshing ChatGPT authorization.", true);
+						} else {
+							request_sent = false;
+							response_checked = false;
+							capturing_error = false;
+							error_buffer = String();
+							sse_buffer = String();
+							stream_state = initial_stream_state;
+							last_error.clear();
+							state = STATE_CONNECTING;
+							_trace("oauth_401_retry");
+						}
+						break;
+					}
+					response_checked = true;
 					if (code < 200 || code >= 300) {
 						capturing_error = true;
 						last_error["http_status"] = code;
@@ -381,7 +438,7 @@ void SolersLLMClient::_run_worker() {
 			} break;
 			case HTTPClient::STATUS_DISCONNECTED: {
 				if (capturing_error) {
-					_fail("HTTP_ERROR", error_buffer.is_empty() ? "Provider returned an error." : error_buffer, batch);
+					_fail("HTTP_ERROR", error_buffer.is_empty() ? "Provider returned an error." : error_buffer);
 				} else {
 					_drain_records(batch);
 					state = STATE_DONE;
@@ -394,6 +451,9 @@ void SolersLLMClient::_run_worker() {
 		if (state != prev_state) {
 			last_progress_msec = OS::get_singleton()->get_ticks_msec();
 			prev_state = state;
+		}
+		if (state != STATE_DONE && state != STATE_FAILED && OS::get_singleton()->get_ticks_msec() - last_progress_msec > SOLERS_LLM_NO_PROGRESS_TIMEOUT_MSEC) {
+			_fail("NO_PROGRESS_TIMEOUT", vformat("The model provider made no progress for %d seconds. Reconnecting.", (int)(SOLERS_LLM_NO_PROGRESS_TIMEOUT_MSEC / 1000)), true);
 		}
 
 		_publish(batch, state);
@@ -489,6 +549,13 @@ bool SolersLLMClient::is_failed() const {
 Dictionary SolersLLMClient::get_error() const {
 	MutexLock lock(mutex);
 	return shared_error;
+}
+
+Dictionary SolersLLMClient::take_auth_update() {
+	MutexLock lock(mutex);
+	Dictionary out = shared_auth_update;
+	shared_auth_update = Dictionary();
+	return out;
 }
 
 void SolersLLMClient::_join_worker() {

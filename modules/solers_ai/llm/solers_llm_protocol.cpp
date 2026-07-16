@@ -32,6 +32,7 @@
 
 #include "solers_protocol_anthropic_messages.h"
 #include "solers_protocol_openai_chat.h"
+#include "solers_protocol_openai_responses.h"
 
 void SolersLLMProtocolRegistry::register_protocol(SolersLLMProtocol *p_protocol) {
 	ERR_FAIL_NULL(p_protocol);
@@ -61,6 +62,7 @@ LocalVector<StringName> SolersLLMProtocolRegistry::list_ids() const {
 
 void SolersLLMProtocolRegistry::register_builtin_protocols() {
 	register_protocol(memnew(SolersOpenAIChatProtocol));
+	register_protocol(memnew(SolersOpenAIResponsesProtocol));
 	register_protocol(memnew(SolersAnthropicMessagesProtocol));
 }
 

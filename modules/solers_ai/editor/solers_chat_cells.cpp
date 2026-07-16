@@ -10,12 +10,15 @@
 
 #include "solers_chat_cells.h"
 
+#include "core/io/file_access.h"
+#include "core/io/image.h"
 #include "core/io/json.h"
 #include "core/os/os.h"
 #include "editor/themes/editor_scale.h"
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
 #include "modules/solers_ai/editor/solers_markdown_view.h"
 #include "scene/gui/box_container.h"
+#include "scene/resources/image_texture.h"
 #include "scene/resources/style_box_flat.h"
 #include "scene/theme/theme_db.h"
 
@@ -37,12 +40,25 @@ static constexpr float SOLERS_SHIMMER_PERIOD = 1.6f;
 // Reasoning tail: wrapped lines kept visible while the model is thinking.
 static constexpr int SOLERS_THINKING_TAIL_LINES = 4;
 
-static void solers_cell_fill(Control *p_control, const Rect2 &p_rect, const Color &p_color, float p_radius, const Color &p_border = Color(0, 0, 0, 0)) {
-	static Ref<StyleBoxFlat> sb;
-	if (sb.is_null()) {
-		sb.instantiate();
-		sb->set_anti_aliased(true);
+static Ref<Texture2D> solers_attachment_texture(const Dictionary &p_attachment) {
+	const String path = String(p_attachment.get("local_path", String())).strip_edges();
+	if (path.is_empty()) {
+		return Ref<Texture2D>();
 	}
+	if (!FileAccess::exists(path)) {
+		return Ref<Texture2D>();
+	}
+	Ref<Image> image = Image::load_from_file(path);
+	if (image.is_null() || image->is_empty()) {
+		return Ref<Texture2D>();
+	}
+	return ImageTexture::create_from_image(image);
+}
+
+static void solers_cell_fill(Control *p_control, const Rect2 &p_rect, const Color &p_color, float p_radius, const Color &p_border = Color(0, 0, 0, 0)) {
+	Ref<StyleBoxFlat> sb;
+	sb.instantiate();
+	sb->set_anti_aliased(true);
 	const bool bordered = p_border.a > 0.003f;
 	sb->set_bg_color(p_color);
 	sb->set_corner_radius_all(int(p_radius));
@@ -175,6 +191,22 @@ void SolersUserBubble::set_message(const String &p_text) {
 	queue_redraw();
 }
 
+void SolersUserBubble::set_attachments(const Array &p_attachments) {
+	attachments = p_attachments.duplicate(true);
+	attachment_textures.clear();
+	for (int i = 0; i < attachments.size(); i++) {
+		const Variant item = attachments[i];
+		if (item.get_type() != Variant::DICTIONARY) {
+			attachment_textures.push_back(Ref<Texture2D>());
+			continue;
+		}
+		attachment_textures.push_back(solers_attachment_texture(item));
+	}
+	shaped_for_width = -1.0f;
+	_shape(get_size().x);
+	queue_redraw();
+}
+
 void SolersUserBubble::_shape(float p_cell_width) {
 	const float ed = EDSCALE;
 	const float cell_width = MAX(p_cell_width, 60.0f * ed);
@@ -201,8 +233,12 @@ void SolersUserBubble::_shape(float p_cell_width) {
 	}
 
 	const float pad_v = 8.0f * ed;
+	const float thumb = 56.0f * ed;
+	const float gap = 8.0f * ed;
+	const int attachment_count = attachment_textures.size();
+	const float attachments_height = attachment_count > 0 ? thumb + (text_size.y > 0.0f ? gap : 0.0f) : 0.0f;
 	const float old_height = cell_height;
-	cell_height = text_size.y + pad_v * 2.0f;
+	cell_height = attachments_height + text_size.y + pad_v * 2.0f;
 	if (!Math::is_equal_approx(old_height, cell_height)) {
 		update_minimum_size();
 		if (content_changed.is_valid()) {
@@ -226,17 +262,41 @@ void SolersUserBubble::_notification(int p_what) {
 			queue_redraw();
 		} break;
 		case NOTIFICATION_DRAW: {
-			if (text.is_empty()) {
+			if (text.is_empty() && attachment_textures.is_empty()) {
 				break;
 			}
 			_shape(get_size().x);
 			const float ed = EDSCALE;
 			const float pad_h = 12.0f * ed;
 			const float pad_v = 8.0f * ed;
-			const Size2 bubble_size(text_size.x + pad_h * 2.0f, text_size.y + pad_v * 2.0f);
+			const float thumb = 56.0f * ed;
+			const float gap = 8.0f * ed;
+			const int attachment_count = attachment_textures.size();
+			const float attachments_width = attachment_count > 0 ? attachment_count * thumb + MAX(0, attachment_count - 1) * gap : 0.0f;
+			const float attachments_height = attachment_count > 0 ? thumb + (text_size.y > 0.0f ? gap : 0.0f) : 0.0f;
+			const Size2 bubble_size(MAX(text_size.x, attachments_width) + pad_h * 2.0f, attachments_height + text_size.y + pad_v * 2.0f);
 			const Rect2 bubble(Point2(get_size().x - bubble_size.x, 0), bubble_size);
 			solers_cell_fill(this, bubble, SOLERS_CELL_BUBBLE_BG, 14.0f * ed);
-			paragraph->draw(get_canvas_item(), bubble.position + Point2(pad_h, pad_v), SOLERS_CELL_TEXT_PRIMARY);
+			float y = bubble.position.y + pad_v;
+			if (attachment_count > 0) {
+				float x = bubble.position.x + pad_h;
+				for (int i = 0; i < attachment_count; i++) {
+					const Rect2 rect(Point2(x, y), Size2(thumb, thumb));
+					solers_cell_fill(this, rect, Color(0, 0, 0, 0.18f), 8.0f * ed, Color(1, 1, 1, 0.11f));
+					const Ref<Texture2D> texture = attachment_textures[i];
+					if (texture.is_valid()) {
+						const Size2 source = texture->get_size();
+						const float crop = MIN(source.x, source.y);
+						const Rect2 source_rect(Point2((source.x - crop) * 0.5f, (source.y - crop) * 0.5f), Size2(crop, crop));
+						draw_texture_rect_region(texture, rect, source_rect);
+					}
+					x += thumb + gap;
+				}
+				y += attachments_height;
+			}
+			if (!text.is_empty()) {
+				paragraph->draw(get_canvas_item(), Point2(bubble.position.x + pad_h, y), SOLERS_CELL_TEXT_PRIMARY);
+			}
 		} break;
 	}
 }
@@ -549,6 +609,110 @@ void SolersThinkingCell::_notification(int p_what) {
 					body->draw_line(get_canvas_item(), Point2(indent, y), i, Color(SOLERS_CELL_TEXT_DIM, alpha));
 					y += body->get_line_ascent(i) + body->get_line_descent(i) + body->get_line_spacing();
 				}
+			}
+		} break;
+	}
+}
+
+/* ------------------------------------------------------------------ */
+/* SolersPlanCell                                                      */
+/* ------------------------------------------------------------------ */
+
+SolersPlanCell::SolersPlanCell() {
+	set_mouse_filter(MOUSE_FILTER_IGNORE);
+	set_h_size_flags(SIZE_EXPAND_FILL);
+	body.instantiate();
+	body->set_break_flags(TextServer::BREAK_MANDATORY | TextServer::BREAK_WORD_BOUND | TextServer::BREAK_ADAPTIVE);
+}
+
+String SolersPlanCell::_body_text() const {
+	return format_plan_text(explanation, plan);
+}
+
+String SolersPlanCell::format_plan_text(const String &p_explanation, const Array &p_plan) {
+	String text = p_explanation.strip_edges();
+	for (int i = 0; i < p_plan.size(); i++) {
+		const Dictionary item = p_plan[i];
+		const String status = item.get("status", "pending");
+		const String marker = status == "completed" ? String::utf8("✓ ") :
+				status == "in_progress" ? String::utf8("→ ") :
+										  String::utf8("○ ");
+		if (!text.is_empty()) {
+			text += "\n";
+		}
+		text += marker + String(item.get("step", String()));
+	}
+	return text;
+}
+
+void SolersPlanCell::set_plan(const String &p_explanation, const Array &p_plan) {
+	explanation = p_explanation.strip_edges();
+	plan = p_plan.duplicate(true);
+	shaped_for_width = -1.0f;
+	_shape(get_size().x);
+	queue_redraw();
+}
+
+void SolersPlanCell::_shape(float p_cell_width) {
+	const float ed = EDSCALE;
+	const float width = MAX(p_cell_width, 60.0f * ed);
+	if (Math::is_equal_approx(shaped_for_width, width)) {
+		return;
+	}
+	shaped_for_width = width;
+
+	body->clear();
+	const String text = _body_text();
+	const Ref<Font> font = solers_cell_font(this);
+	float body_height = 0.0f;
+	if (font.is_valid() && !text.is_empty()) {
+		body->set_line_spacing(3.0f * ed);
+		body->set_width(MAX(20.0f * ed, width - 24.0f * ed));
+		body->add_string(text, font, int(12 * ed));
+		body_height = body->get_size().y;
+	} else if (!text.is_empty()) {
+		body_height = (plan.size() + (explanation.is_empty() ? 0 : 1)) * 18.0f * ed;
+	}
+
+	const float old_height = cell_height;
+	cell_height = 36.0f * ed + body_height + 10.0f * ed;
+	if (!Math::is_equal_approx(old_height, cell_height)) {
+		update_minimum_size();
+		if (content_changed.is_valid()) {
+			content_changed.call();
+		}
+	}
+}
+
+Size2 SolersPlanCell::get_minimum_size() const {
+	return Size2(0, cell_height);
+}
+
+void SolersPlanCell::_notification(int p_what) {
+	switch (p_what) {
+		case NOTIFICATION_RESIZED: {
+			shaped_for_width = -1.0f;
+			_shape(get_size().x);
+		} break;
+		case NOTIFICATION_THEME_CHANGED: {
+			shaped_for_width = -1.0f;
+			_shape(get_size().x);
+			queue_redraw();
+		} break;
+		case NOTIFICATION_DRAW: {
+			_shape(get_size().x);
+			const float ed = EDSCALE;
+			const Rect2 card(Point2(), get_size());
+			solers_cell_fill(this, card, Color(0.12f, 0.14f, 0.18f, 0.72f), 10.0f * ed, Color(1, 1, 1, 0.08f));
+			const Ref<Font> font = solers_cell_font(this);
+			if (font.is_null()) {
+				break;
+			}
+			const int header_size = int(12 * ed);
+			const float baseline = 12.0f * ed + font->get_ascent(header_size);
+			draw_string(font, Point2(12.0f * ed, baseline).floor(), TTR("Plan"), HORIZONTAL_ALIGNMENT_LEFT, -1, header_size, SOLERS_CELL_TEXT_PRIMARY);
+			if (body->get_line_count() > 0) {
+				body->draw(get_canvas_item(), Point2(12.0f * ed, 34.0f * ed), SOLERS_CELL_TEXT_DIM);
 			}
 		} break;
 	}

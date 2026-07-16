@@ -26,19 +26,8 @@
 #ifdef MODULE_SOLERS_AI_ENABLED
 #include "modules/solers_ai/core/solers_provider_registry.h"
 #include "modules/solers_ai/core/solers_secret_store.h"
+#include "modules/solers_ai/core/solers_settings_service.h"
 #endif
-
-// Curated rail order — remote vendors first, local runtimes, then custom.
-static const char *SOLERS_AI_PROVIDER_ORDER[] = {
-	"openai",
-	"anthropic",
-	"gemini",
-	"deepseek",
-	"qwen",
-	"ollama",
-	"lm_studio",
-	"custom_openai_compatible",
-};
 
 // Lucide glyph bodies (24x24 viewBox; ISC license, see solers_ai/UI_ICON_LICENSE.txt).
 static const char *SOLERS_AI_LUCIDE_CLOUD = "<path d=\"M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z\"/>";
@@ -53,20 +42,8 @@ static const Color SOLERS_AI_COL_BLOCKER = Color(0.83f, 0.32f, 0.34f);
 static const Color SOLERS_AI_COL_WARNING = Color(0.88f, 0.66f, 0.26f);
 static const Color SOLERS_AI_COL_OK = Color(0.33f, 0.65f, 0.38f);
 
-String SolersPMAIView::_setting_path(const String &p_key) const {
-	return "solers/ai/" + p_key;
-}
-
 String SolersPMAIView::_asset_setting_path(const String &p_kind, const String &p_key) const {
 	return "solers/ai_assets/" + p_kind + "/" + p_key;
-}
-
-String SolersPMAIView::_stored_string(const String &p_key, const String &p_default) const {
-	EditorSettings *settings = EditorSettings::get_singleton();
-	if (settings && settings->has_setting(_setting_path(p_key))) {
-		return settings->get_setting(_setting_path(p_key));
-	}
-	return p_default;
 }
 
 String SolersPMAIView::_stored_asset_string(const String &p_kind, const String &p_key, const String &p_default) const {
@@ -77,16 +54,12 @@ String SolersPMAIView::_stored_asset_string(const String &p_kind, const String &
 	return p_default;
 }
 
-bool SolersPMAIView::_stored_bool(const String &p_key, bool p_default) const {
-	EditorSettings *settings = EditorSettings::get_singleton();
-	if (settings && settings->has_setting(_setting_path(p_key))) {
-		return (bool)settings->get_setting(_setting_path(p_key));
-	}
-	return p_default;
-}
-
 bool SolersPMAIView::_is_asset_provider(const String &p_id) const {
 	return p_id == "asset_3d" || p_id == "asset_audio";
+}
+
+bool SolersPMAIView::_uses_codex_auth(const String &p_id) const {
+	return registry && String(registry->get_provider_profile(p_id).get("oauth_kind", String())) == "codex";
 }
 
 String SolersPMAIView::_asset_kind_from_provider(const String &p_id) const {
@@ -159,17 +132,13 @@ void SolersPMAIView::_build_provider_list() {
 
 	provider_list_title->set_text(TTR("LLM Provider"));
 	provider_list_notes->set_text(TTR("Connect the model provider Solers uses for chat and agent work."));
-	for (const char *id_cstr : SOLERS_AI_PROVIDER_ORDER) {
-		const String id = id_cstr;
-		const Dictionary profile = registry->get_provider_profile(id);
-		if (profile.is_empty()) {
-			continue;
-		}
+	const Array profiles = registry->list_provider_profiles();
+	for (const Variant &profile_value : profiles) {
+		const Dictionary profile = profile_value;
+		const String id = profile.get("id", String());
 		const bool local = profile.get("local", false);
-		const char *glyph = local ? SOLERS_AI_LUCIDE_MONITOR : SOLERS_AI_LUCIDE_CLOUD;
-		if (id == "custom_openai_compatible") {
-			glyph = SOLERS_AI_LUCIDE_SLIDERS;
-		}
+		const Array features = profile.get("features", Array());
+		const char *glyph = features.has("user_defined") ? SOLERS_AI_LUCIDE_SLIDERS : (local ? SOLERS_AI_LUCIDE_MONITOR : SOLERS_AI_LUCIDE_CLOUD);
 		_add_provider_row(id, TTRGET(String(profile.get("label", id))), SolersPMTheme::lucide_icon(glyph, 16));
 	}
 #endif
@@ -207,87 +176,104 @@ void SolersPMAIView::_select_provider(const String &p_id, bool p_load_stored) {
 
 void SolersPMAIView::_refresh_form(bool p_load_stored) {
 #ifdef MODULE_SOLERS_AI_ENABLED
+	connection_grid->show();
+	oauth_box->hide();
+	save_btn->show();
+	disconnect_btn->hide();
+	model_label->show();
+	model_edit->show();
+	base_url_label->show();
+	base_url_edit->show();
+	api_key_label->show();
+	privacy_header->show();
+	privacy_check->show();
+	privacy_note->show();
+
 	if (_is_asset_provider(selected_provider)) {
 		const String kind = _asset_kind_from_provider(selected_provider);
 		const String provider = selected_provider == "asset_3d" ? "Meshy" : "ElevenLabs";
 		const String default_base_url = selected_provider == "asset_3d" ? "https://api.meshy.ai" : "https://api.elevenlabs.io";
 		const String env_name = selected_provider == "asset_3d" ? "MESHY_API_KEY" : "ELEVENLABS_API_KEY";
-
 		provider_title->set_text(vformat(TTR("Connect %s"), provider));
 		provider_notes->set_text(selected_provider == "asset_3d" ? TTR("Generates reusable local 3D assets for the Solers Library.") : TTR("Generates reusable local music and sound effects for the Solers Library."));
 		model_label->hide();
 		model_edit->hide();
-		if (base_url_label) {
-			base_url_label->hide();
-		}
+		base_url_label->hide();
 		base_url_edit->hide();
 		base_url_edit->set_text(default_base_url);
 		api_key_edit->set_text(String());
 		const bool key_stored = !_stored_asset_string(kind, "api_key").is_empty();
 		api_key_edit->set_placeholder(key_stored ? TTR("Configured - leave blank to keep the current key") : TTR("Paste your API key"));
-		api_key_edit->set_editable(true);
 		const bool env_set = OS::get_singleton()->has_environment(env_name) && !OS::get_singleton()->get_environment(env_name).is_empty();
 		env_hint->set_text(vformat(env_set ? TTR("Environment fallback %s is set and will be used when no key is stored.") : TTR("Environment fallback: %s (not set)"), env_name));
 		env_hint->show();
-		privacy_check->set_pressed_no_signal(false);
 		privacy_header->hide();
 		privacy_check->hide();
 		privacy_note->hide();
 		return;
 	}
-	model_label->show();
-	model_edit->show();
-	if (base_url_label) {
-		base_url_label->show();
-	}
-	base_url_edit->show();
-	privacy_header->show();
-	privacy_check->show();
-	privacy_note->show();
 
 	const Dictionary profile = registry->get_provider_profile(selected_provider);
+	const Dictionary config = settings_service->get_provider_config_for(selected_provider).get("data", Dictionary());
+	provider_title->set_text(TTRGET(String(profile.get("label", selected_provider))));
+	provider_notes->set_text(TTRGET(String(profile.get("notes", String()))));
+	privacy_check->set_pressed_no_signal(config.get("privacy_mode", true));
+
+	if (_uses_codex_auth(selected_provider)) {
+		connection_grid->hide();
+		env_hint->hide();
+		oauth_box->show();
+		save_btn->hide();
+		const Dictionary auth_status = settings_service->get_codex_auth_status(selected_provider);
+		const String auth_state = auth_status.get("state", "idle");
+		const bool connected = auth_status.get("connected", false);
+		const bool available = auth_status.get("available", false);
+		if (connected && available) {
+			oauth_status->set_text(TTR("Connected with ChatGPT. Codex models are available in the Chat panel."));
+		} else if (connected) {
+			oauth_status->set_text(TTR("Connected with ChatGPT. Disable privacy mode to make Codex models available."));
+		} else if (auth_state == "waiting_browser") {
+			oauth_status->set_text(TTR("Waiting for authorization in your browser..."));
+		} else if (auth_state == "exchanging") {
+			oauth_status->set_text(TTR("Finishing secure authorization..."));
+		} else if (auth_state == "failed") {
+			oauth_status->set_text(auth_status.get("error", TTR("Authorization failed. Try again.")));
+		} else {
+			oauth_status->set_text(TTR("Use your ChatGPT Plus, Pro, Business, Edu, or Enterprise plan."));
+		}
+		const bool active = auth_status.get("active", false);
+		oauth_connect_btn->set_visible(!connected && !active);
+		oauth_cancel_btn->set_visible(active);
+		oauth_disconnect_btn->set_visible(connected && !active);
+		set_process_internal(active);
+		return;
+	}
+
 	const String default_model = profile.get("default_model", String());
 	const String default_base_url = profile.get("default_base_url", String());
 	const String env_name = profile.get("api_key_env", String());
 	const bool local = profile.get("local", false);
-
-	// Labels/notes are catalog *data*; TTRGET runs them through the runtime
-	// translation table so localized entries render in the user's language
-	// while brand names without a translation pass through untouched.
-	provider_title->set_text(TTRGET(String(profile.get("label", selected_provider))));
-	provider_notes->set_text(TTRGET(String(profile.get("notes", String()))));
-
-	// The stored model/base_url belong to the *stored* provider; for any other
-	// rail selection we surface the profile defaults instead.
-	const bool is_stored_provider = p_load_stored && _stored_string("provider") == selected_provider;
-	model_edit->set_text(is_stored_provider ? _stored_string("model") : String());
+	const bool configured = config.get("configured", false);
+	disconnect_btn->set_visible(configured || (bool)config.get("connected", false));
+	model_edit->set_text(configured && p_load_stored ? String(config.get("model", String())) : String());
 	model_edit->set_placeholder(default_model.is_empty() ? TTR("Model id (e.g. gpt-5)") : default_model);
-	base_url_edit->set_text(is_stored_provider ? _stored_string("base_url") : String());
+	base_url_edit->set_text(configured && p_load_stored ? String(config.get("base_url", String())) : String());
 	base_url_edit->set_placeholder(default_base_url.is_empty() ? TTR("https://your-gateway.example/v1") : default_base_url);
-
-	// Secrets are write-only in this UI: a configured key shows as a placeholder
-	// promise, never as text.
 	api_key_edit->set_text(String());
-	const bool key_stored = !_stored_string("api_key").is_empty() && is_stored_provider;
 	if (local) {
 		api_key_edit->set_placeholder(TTR("Not required for local runtimes"));
-		api_key_edit->set_editable(true);
-	} else if (key_stored) {
+	} else if (config.get("api_key_configured", false)) {
 		api_key_edit->set_placeholder(TTR("Configured - leave blank to keep the current key"));
 	} else {
 		api_key_edit->set_placeholder(TTR("Paste your API key"));
 	}
-
 	if (env_name.is_empty()) {
-		env_hint->set_text(String());
 		env_hint->hide();
 	} else {
 		const bool env_set = OS::get_singleton()->has_environment(env_name) && !OS::get_singleton()->get_environment(env_name).is_empty();
 		env_hint->set_text(vformat(env_set ? TTR("Environment fallback %s is set and will be used when no key is stored.") : TTR("Environment fallback: %s (not set)"), env_name));
 		env_hint->show();
 	}
-
-	privacy_check->set_pressed_no_signal(_stored_bool("privacy_mode", true));
 #endif
 }
 
@@ -332,6 +318,20 @@ void SolersPMAIView::_refresh_status() {
 		return;
 	}
 
+	if (_uses_codex_auth(selected_provider)) {
+		const Dictionary auth_status = settings_service->get_codex_auth_status(selected_provider);
+		if (auth_status.get("available", false)) {
+			_add_status_row(TTR("ChatGPT Codex is connected."), SOLERS_AI_COL_OK);
+		} else if (auth_status.get("connected", false)) {
+			_add_status_row(TTR("Privacy mode currently blocks this remote provider."), SOLERS_AI_COL_WARNING);
+		} else if (auth_status.get("active", false)) {
+			_add_status_row(TTR("Authorization is in progress."), SOLERS_AI_COL_WARNING);
+		} else {
+			_add_status_row(String(auth_status.get("error", TTR("Sign in with ChatGPT to connect Codex."))), auth_status.has("error") ? SOLERS_AI_COL_BLOCKER : SOLERS_AI_COL_WARNING);
+		}
+		return;
+	}
+
 	const Dictionary profile = registry->get_provider_profile(selected_provider);
 
 	Dictionary config;
@@ -341,10 +341,9 @@ void SolersPMAIView::_refresh_status() {
 	const String base_url = base_url_edit->get_text().strip_edges();
 	config["model"] = model.is_empty() ? String(profile.get("default_model", String())) : model;
 	config["base_url"] = base_url.is_empty() ? String(profile.get("default_base_url", String())) : base_url;
-	const bool is_stored_provider = _stored_string("provider") == selected_provider;
+	const Dictionary stored = settings_service->get_provider_config_for(selected_provider).get("data", Dictionary());
 	const bool key_pending = !api_key_edit->get_text().strip_edges().is_empty();
-	const bool key_stored = is_stored_provider && !_stored_string("api_key").is_empty();
-	config["api_key_configured"] = key_pending || key_stored;
+	config["api_key_configured"] = key_pending || (bool)stored.get("api_key_configured", false);
 
 	const Dictionary result = registry->validate_config(config);
 	const Dictionary validation = result.get("data", Dictionary());
@@ -373,11 +372,46 @@ void SolersPMAIView::_on_field_changed(const String &p_ignored) {
 }
 
 void SolersPMAIView::_on_privacy_toggled(bool p_pressed) {
+	if (_uses_codex_auth(selected_provider) && settings_service) {
+		Dictionary config;
+		config["provider"] = selected_provider;
+		config["privacy_mode"] = p_pressed;
+		settings_service->set_provider_config(config);
+	}
 	_on_field_changed();
 }
 
 void SolersPMAIView::_on_reveal_toggled(bool p_pressed) {
 	api_key_edit->set_secret(!p_pressed);
+}
+
+void SolersPMAIView::_on_codex_connect() {
+	if (!settings_service) {
+		return;
+	}
+	const Dictionary result = settings_service->start_codex_login(selected_provider);
+	if (!result.get("ok", false)) {
+		oauth_status->set_text(Dictionary(result.get("error", Dictionary())).get("message", TTR("Could not start authorization.")));
+	}
+	_refresh_form(false);
+	_refresh_status();
+}
+
+void SolersPMAIView::_on_codex_cancel() {
+	if (settings_service) {
+		settings_service->cancel_codex_login();
+	}
+	set_process_internal(false);
+	_refresh_form(false);
+	_refresh_status();
+}
+
+void SolersPMAIView::_on_codex_disconnect() {
+	if (settings_service) {
+		settings_service->disconnect_codex(selected_provider);
+	}
+	_refresh_form(false);
+	_refresh_status();
 }
 
 void SolersPMAIView::_save() {
@@ -422,29 +456,21 @@ void SolersPMAIView::_save() {
 		}
 		return;
 	}
+	if (_uses_codex_auth(selected_provider) || !settings_service) {
+		return;
+	}
 	const Dictionary profile = registry->get_provider_profile(selected_provider);
-
-	settings->set_manually(_setting_path("provider"), selected_provider);
+	Dictionary config;
+	config["provider"] = selected_provider;
 	const String model = model_edit->get_text().strip_edges();
-	settings->set_manually(_setting_path("model"), model.is_empty() ? String(profile.get("default_model", String())) : model);
-	settings->set_manually(_setting_path("base_url"), base_url_edit->get_text().strip_edges());
-	settings->set_manually(_setting_path("privacy_mode"), privacy_check->is_pressed());
-
+	config["model"] = model.is_empty() ? String(profile.get("default_model", String())) : model;
+	config["base_url"] = base_url_edit->get_text().strip_edges();
+	config["privacy_mode"] = privacy_check->is_pressed();
 	const String new_key = api_key_edit->get_text().strip_edges();
 	if (!new_key.is_empty()) {
-		settings->set_manually(_setting_path("api_key"), SolersSecretStore::protect(new_key));
-	} else if (_stored_string("provider") != selected_provider) {
-		// Switching providers invalidates the previous provider's key.
-		settings->set_manually(_setting_path("api_key"), String());
+		config["api_key"] = new_key;
 	}
-	settings->mark_setting_changed("solers/ai/provider");
-	settings->mark_setting_changed("solers/ai/model");
-	settings->mark_setting_changed("solers/ai/base_url");
-	settings->mark_setting_changed("solers/ai/privacy_mode");
-	settings->emit_signal(SNAME("settings_changed"));
-	settings->notify_changes();
-	EditorSettings::save();
-
+	settings_service->set_provider_config(config);
 	api_key_edit->set_text(String());
 	_refresh_form(true);
 	_refresh_status();
@@ -454,10 +480,29 @@ void SolersPMAIView::_save() {
 #endif
 }
 
+void SolersPMAIView::_disconnect_selected_provider() {
+	if (!settings_service || _is_asset_provider(selected_provider) || _uses_codex_auth(selected_provider)) {
+		return;
+	}
+	settings_service->disconnect_provider(selected_provider);
+	_refresh_form(false);
+	_refresh_status();
+	if (saved_feedback) {
+		saved_feedback->set_text(TTR("Disconnected"));
+	}
+}
+
 void SolersPMAIView::_notification(int p_what) {
 	if (p_what == NOTIFICATION_THEME_CHANGED) {
 		if (api_key_reveal) {
 			api_key_reveal->set_button_icon(SolersPMTheme::lucide_icon(SOLERS_AI_LUCIDE_EYE, 15));
+		}
+	} else if (p_what == NOTIFICATION_INTERNAL_PROCESS && settings_service) {
+		settings_service->poll_auth();
+		set_process_internal(settings_service->is_auth_active());
+		if (_uses_codex_auth(selected_provider)) {
+			_refresh_form(false);
+			_refresh_status();
 		}
 	}
 }
@@ -469,6 +514,8 @@ SolersPMAIView::SolersPMAIView() {
 
 #ifdef MODULE_SOLERS_AI_ENABLED
 	registry = memnew(SolersProviderRegistry);
+	settings_service = memnew(SolersSettingsService);
+	settings_service->set_provider_registry(registry);
 
 	// Left rail — provider catalog.
 	VBoxContainer *rail = memnew(VBoxContainer);
@@ -571,44 +618,41 @@ SolersPMAIView::SolersPMAIView() {
 		form->add_child(section);
 	}
 
-	GridContainer *grid = memnew(GridContainer);
-	grid->set_columns(2);
-	grid->add_theme_constant_override("h_separation", 16 * EDSCALE);
-	grid->add_theme_constant_override("v_separation", 10 * EDSCALE);
-	grid->set_h_size_flags(SIZE_EXPAND_FILL);
-	form->add_child(grid);
+	connection_grid = memnew(GridContainer);
+	connection_grid->set_columns(2);
+	connection_grid->add_theme_constant_override("h_separation", 16 * EDSCALE);
+	connection_grid->add_theme_constant_override("v_separation", 10 * EDSCALE);
+	connection_grid->set_h_size_flags(SIZE_EXPAND_FILL);
+	form->add_child(connection_grid);
 
 	auto add_form_label = [&](const String &p_text) -> Label * {
-		Label *l = memnew(Label(p_text));
-		l->set_v_size_flags(SIZE_SHRINK_CENTER);
-		l->add_theme_color_override(SceneStringName(font_color), Color(0.886f, 0.890f, 0.902f, 0.72f));
-		grid->add_child(l);
-		return l;
+		Label *label = memnew(Label(p_text));
+		label->set_v_size_flags(SIZE_SHRINK_CENTER);
+		label->add_theme_color_override(SceneStringName(font_color), Color(0.886f, 0.890f, 0.902f, 0.72f));
+		connection_grid->add_child(label);
+		return label;
 	};
 
-	model_label = memnew(Label(TTR("Model")));
-	model_label->set_v_size_flags(SIZE_SHRINK_CENTER);
-	model_label->add_theme_color_override(SceneStringName(font_color), Color(0.886f, 0.890f, 0.902f, 0.72f));
-	grid->add_child(model_label);
+	model_label = add_form_label(TTR("Model"));
 	model_edit = memnew(LineEdit);
 	model_edit->set_h_size_flags(SIZE_EXPAND_FILL);
 	model_edit->set_accessibility_name(TTR("Model"));
 	model_edit->connect(SceneStringName(text_changed), callable_mp(this, &SolersPMAIView::_on_field_changed));
-	grid->add_child(model_edit);
+	connection_grid->add_child(model_edit);
 
 	base_url_label = add_form_label(TTR("Base URL"));
 	base_url_edit = memnew(LineEdit);
 	base_url_edit->set_h_size_flags(SIZE_EXPAND_FILL);
 	base_url_edit->set_accessibility_name(TTR("Base URL"));
 	base_url_edit->connect(SceneStringName(text_changed), callable_mp(this, &SolersPMAIView::_on_field_changed));
-	grid->add_child(base_url_edit);
+	connection_grid->add_child(base_url_edit);
 
-	add_form_label(TTR("API Key"));
+	api_key_label = add_form_label(TTR("API Key"));
 	{
 		HBoxContainer *key_row = memnew(HBoxContainer);
 		key_row->set_h_size_flags(SIZE_EXPAND_FILL);
 		key_row->add_theme_constant_override("separation", 6 * EDSCALE);
-		grid->add_child(key_row);
+		connection_grid->add_child(key_row);
 
 		api_key_edit = memnew(LineEdit);
 		api_key_edit->set_secret(true);
@@ -624,6 +668,28 @@ SolersPMAIView::SolersPMAIView() {
 		api_key_reveal->connect(SceneStringName(toggled), callable_mp(this, &SolersPMAIView::_on_reveal_toggled));
 		key_row->add_child(api_key_reveal);
 	}
+
+	oauth_box = memnew(VBoxContainer);
+	oauth_box->add_theme_constant_override("separation", 10 * EDSCALE);
+	oauth_box->hide();
+	form->add_child(oauth_box);
+	oauth_status = memnew(Label);
+	oauth_status->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	oauth_status->add_theme_color_override(SceneStringName(font_color), Color(0.886f, 0.890f, 0.902f, 0.72f));
+	oauth_box->add_child(oauth_status);
+	HBoxContainer *oauth_actions = memnew(HBoxContainer);
+	oauth_actions->add_theme_constant_override("separation", 8 * EDSCALE);
+	oauth_box->add_child(oauth_actions);
+	oauth_connect_btn = memnew(Button(TTR("Sign in with ChatGPT")));
+	oauth_connect_btn->set_theme_type_variation("PMPrimaryButton");
+	oauth_connect_btn->connect(SceneStringName(pressed), callable_mp(this, &SolersPMAIView::_on_codex_connect));
+	oauth_actions->add_child(oauth_connect_btn);
+	oauth_cancel_btn = memnew(Button(TTR("Cancel")));
+	oauth_cancel_btn->connect(SceneStringName(pressed), callable_mp(this, &SolersPMAIView::_on_codex_cancel));
+	oauth_actions->add_child(oauth_cancel_btn);
+	oauth_disconnect_btn = memnew(Button(TTR("Disconnect")));
+	oauth_disconnect_btn->connect(SceneStringName(pressed), callable_mp(this, &SolersPMAIView::_on_codex_disconnect));
+	oauth_actions->add_child(oauth_disconnect_btn);
 
 	env_hint = memnew(Label);
 	env_hint->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
@@ -677,6 +743,10 @@ SolersPMAIView::SolersPMAIView() {
 	save_btn->connect(SceneStringName(pressed), callable_mp(this, &SolersPMAIView::_save));
 	actions->add_child(save_btn);
 
+	disconnect_btn = memnew(Button(TTR("Disconnect")));
+	disconnect_btn->connect(SceneStringName(pressed), callable_mp(this, &SolersPMAIView::_disconnect_selected_provider));
+	actions->add_child(disconnect_btn);
+
 	saved_feedback = memnew(Label);
 	saved_feedback->set_v_size_flags(SIZE_SHRINK_CENTER);
 	saved_feedback->add_theme_color_override(SceneStringName(font_color), Color(SOLERS_AI_COL_OK.r, SOLERS_AI_COL_OK.g, SOLERS_AI_COL_OK.b, 0.9f));
@@ -696,6 +766,10 @@ SolersPMAIView::SolersPMAIView() {
 
 SolersPMAIView::~SolersPMAIView() {
 #ifdef MODULE_SOLERS_AI_ENABLED
+	if (settings_service) {
+		memdelete(settings_service);
+		settings_service = nullptr;
+	}
 	if (registry) {
 		memdelete(registry);
 		registry = nullptr;

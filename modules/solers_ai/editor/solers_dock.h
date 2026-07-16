@@ -24,6 +24,7 @@
 
 class Button;
 class Control;
+class EditorFileDialog;
 class HBoxContainer;
 class Label;
 class MarginContainer;
@@ -37,6 +38,7 @@ class SolersAssistantCell;
 class SolersGlyphButton;
 class SolersMCPAdapter;
 class SolersPermissionManager;
+class SolersPlanCell;
 class SolersObservationService;
 class SolersRpcServer;
 class SolersSelectChip;
@@ -62,6 +64,8 @@ class SolersDock : public PanelContainer {
 	SolersGlyphButton *session_button = nullptr;
 	SolersGlyphButton *add_context_button = nullptr;
 	SolersGlyphButton *send_chat_button = nullptr;
+	HBoxContainer *attachment_bar = nullptr;
+	EditorFileDialog *attachment_file_dialog = nullptr;
 	SolersSelectChip *model_chip = nullptr;
 	Control *model_popup_overlay = nullptr;
 	PanelContainer *model_popup = nullptr;
@@ -83,6 +87,7 @@ class SolersDock : public PanelContainer {
 	SolersAssistantCell *active_text_cell = nullptr;
 	SolersStatusCell *status_cell = nullptr;
 	SolersToolGroupCell *active_tool_group = nullptr;
+	SolersPlanCell *active_plan_cell = nullptr;
 	HashMap<String, SolersToolCell *> tool_cells_by_id;
 	SolersToolCell *last_started_tool_cell = nullptr;
 	String approval_choice = "once";
@@ -92,6 +97,7 @@ class SolersDock : public PanelContainer {
 	bool scroll_to_bottom_deferred = false;
 
 	String chat_log;
+	Array pending_attachments;
 
 	SolersObservationService *observation_service = nullptr;
 	SolersToolRegistry *tool_registry = nullptr;
@@ -116,8 +122,9 @@ class SolersDock : public PanelContainer {
 	void _hide_model_popup();
 	void _on_model_popup_overlay_gui_input(const Ref<InputEvent> &p_event);
 	void _set_model_provider_from_popup(const String &p_provider, const String &p_model);
+	void _set_reasoning_effort_from_popup(const String &p_effort);
 	void _open_model_settings_from_popup();
-	void _submit_chat_prompt(const String &p_prompt);
+	void _submit_chat_prompt(const String &p_prompt, const Array &p_attachments = Array());
 	void _on_agent_model_request_started();
 	void _on_agent_assistant_delta(const String &p_text);
 	void _on_agent_reasoning_delta(const String &p_text);
@@ -129,6 +136,7 @@ class SolersDock : public PanelContainer {
 	void _on_agent_turn_completed(const Dictionary &p_result);
 	void _on_agent_turn_failed(const Dictionary &p_error);
 	void _on_agent_turn_retrying(int p_attempt, const String &p_message);
+	void _on_agent_plan_updated(const String &p_explanation, const Array &p_plan);
 	void _sync_approval_panel();
 	void _set_approval_choice(const String &p_choice);
 	void _submit_current_approval();
@@ -136,6 +144,13 @@ class SolersDock : public PanelContainer {
 	void _on_auto_approve_chip_pressed();
 	void _on_chat_input_gui_input(const Ref<InputEvent> &p_event);
 	void _on_chat_input_text_changed();
+	void _on_add_context_pressed();
+	void _on_attachment_file_selected(const String &p_file);
+	bool _add_image_attachment_from_path(const String &p_path);
+	bool _add_image_attachment_from_clipboard();
+	void _refresh_attachment_bar();
+	void _remove_attachment(int p_index);
+	void _clear_attachments();
 	void _update_chat_input_height();
 	void _update_send_enabled();
 	bool _is_scroll_pinned() const;
@@ -143,7 +158,7 @@ class SolersDock : public PanelContainer {
 	void _scroll_chat_to_bottom();
 	void _clear_empty_state();
 	void _show_empty_state();
-	void _append_user_message(const String &p_message);
+	void _append_user_message(const String &p_message, const Array &p_attachments = Array());
 	void _append_error_row(const String &p_text);
 	void _ensure_status_cell(const String &p_status);
 	void _remove_status_cell();

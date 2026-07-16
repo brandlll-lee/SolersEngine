@@ -54,6 +54,7 @@ private:
 	Array shared_events; // produced by worker, drained by main (mutex-guarded)
 	State shared_state = STATE_IDLE; // mutex-guarded snapshot for main-thread queries
 	Dictionary shared_error; // mutex-guarded
+	Dictionary shared_auth_update; // rotated OAuth credentials, consumed on main
 
 	// --- Worker-owned request inputs (set by begin() before the thread runs). -
 	String host;
@@ -64,6 +65,8 @@ private:
 	String request_body;
 	String trace_path;
 	Dictionary initial_stream_state;
+	Dictionary worker_profile;
+	Dictionary worker_auth;
 
 	// --- Worker-owned transient state (touched only on the worker thread). ---
 	Ref<HTTPClient> http;
@@ -72,6 +75,7 @@ private:
 	bool request_sent = false;
 	bool response_checked = false;
 	bool capturing_error = false;
+	bool oauth_401_retried = false;
 	String sse_buffer;
 	String error_buffer;
 	Dictionary stream_state;
@@ -86,11 +90,12 @@ private:
 	Dictionary _redacted_request_body(const String &p_body) const;
 	void _trace(const String &p_event, const Dictionary &p_payload = Dictionary()) const;
 	void _drain_records(Array &r_events);
-	void _fail(const String &p_code, const String &p_message, Array &r_events);
+	void _fail(const String &p_code, const String &p_message, bool p_retryable = false);
 
 	static void _thread_func(void *p_userdata);
 	void _run_worker();
 	void _publish(const Array &p_events, State p_state);
+	bool _prepare_auth_headers(bool p_force_oauth_refresh = false);
 	void _join_worker();
 
 public:
@@ -99,7 +104,7 @@ public:
 	// Prepares and validates the request on the calling (main) thread, then
 	// hands the network loop to a worker thread. Returns OK or an error code;
 	// on synchronous failure `get_error()` carries the canonical error payload.
-	Error begin(const Dictionary &p_request, const Dictionary &p_profile, const String &p_api_key);
+	Error begin(const Dictionary &p_request, const Dictionary &p_profile, const Dictionary &p_auth);
 
 	// Drains canonical events produced by the worker since the last call. Does
 	// no network I/O on the main thread.
@@ -110,6 +115,7 @@ public:
 	bool is_done() const;
 	bool is_failed() const;
 	Dictionary get_error() const;
+	Dictionary take_auth_update();
 
 	void abort();
 

@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include "core/os/mutex.h"
 #include "core/os/thread.h"
 #include "core/string/ustring.h"
 #include "core/templates/hash_map.h"
@@ -28,8 +29,10 @@
 class SolersModelsDev {
 	// providerID -> { id, name, npm, api, env(Array), local(bool),
 	//                 models: { modelID -> { id, name, context, output,
-	//                 reasoning, tool_call, attachment } } }
+	//                 reasoning, reasoning_options, tool_call, attachment } } }
 	HashMap<StringName, Dictionary> providers;
+	mutable Mutex providers_mutex;
+	String cache_path;
 
 	Thread refresh_thread;
 	SafeFlag refresh_started;
@@ -38,7 +41,7 @@ class SolersModelsDev {
 	void _load_cache();
 	// Parse a models.dev `api.json` document and overlay it onto `providers`.
 	void _ingest(const Dictionary &p_root);
-	static String _cache_path();
+	static String _resolve_cache_path();
 
 	static void _refresh_func(void *p_userdata);
 	void _run_refresh();
@@ -53,6 +56,11 @@ public:
 	Dictionary get_provider(const StringName &p_id) const;
 	// Per-model metadata, or an empty dictionary when unknown.
 	Dictionary get_model(const StringName &p_provider, const String &p_model) const;
+	// Returns 1 when declared, 0 when explicitly absent, and -1 when unknown.
+	static int input_modality_support(const Dictionary &p_model, const String &p_modality);
+	// Effort values declared by models.dev. Unknown/custom reasoning models keep
+	// the generic High/Extra High controls instead of losing the capability.
+	static Array reasoning_efforts(const Dictionary &p_model);
 	Array list_providers() const;
 
 	SolersModelsDev();

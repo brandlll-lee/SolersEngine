@@ -28,6 +28,7 @@ class LineEdit;
 class ScrollContainer;
 class SolersCategoryCard;
 class SolersProviderRegistry;
+class SolersSettingsService;
 class Texture2D;
 class VBoxContainer;
 
@@ -35,6 +36,7 @@ class SolersPMAIView : public HBoxContainer {
 	GDCLASS(SolersPMAIView, HBoxContainer);
 
 	SolersProviderRegistry *registry = nullptr; // Owned.
+	SolersSettingsService *settings_service = nullptr; // Owned.
 
 	// Left rail.
 	VBoxContainer *nav_list = nullptr;
@@ -50,26 +52,32 @@ class SolersPMAIView : public HBoxContainer {
 	Button *detail_back_btn = nullptr;
 	Label *provider_title = nullptr;
 	Label *provider_notes = nullptr;
+	GridContainer *connection_grid = nullptr;
 	Label *model_label = nullptr;
 	LineEdit *model_edit = nullptr;
 	Label *base_url_label = nullptr;
 	LineEdit *base_url_edit = nullptr;
+	Label *api_key_label = nullptr;
 	LineEdit *api_key_edit = nullptr;
 	Button *api_key_reveal = nullptr;
 	Label *env_hint = nullptr;
+	VBoxContainer *oauth_box = nullptr;
+	Label *oauth_status = nullptr;
+	Button *oauth_connect_btn = nullptr;
+	Button *oauth_cancel_btn = nullptr;
+	Button *oauth_disconnect_btn = nullptr;
 	Label *privacy_header = nullptr;
 	CheckBox *privacy_check = nullptr;
 	Label *privacy_note = nullptr;
 	VBoxContainer *status_list = nullptr;
 	Button *save_btn = nullptr;
+	Button *disconnect_btn = nullptr;
 	Label *saved_feedback = nullptr;
 
-	String _setting_path(const String &p_key) const;
 	String _asset_setting_path(const String &p_kind, const String &p_key) const;
-	String _stored_string(const String &p_key, const String &p_default = String()) const;
 	String _stored_asset_string(const String &p_kind, const String &p_key, const String &p_default = String()) const;
-	bool _stored_bool(const String &p_key, bool p_default) const;
 	bool _is_asset_provider(const String &p_id) const;
+	bool _uses_codex_auth(const String &p_id) const;
 	String _asset_kind_from_provider(const String &p_id) const;
 
 	void _build_nav();
@@ -85,7 +93,11 @@ class SolersPMAIView : public HBoxContainer {
 	void _on_field_changed(const String &p_ignored = String());
 	void _on_privacy_toggled(bool p_pressed);
 	void _on_reveal_toggled(bool p_pressed);
+	void _on_codex_connect();
+	void _on_codex_cancel();
+	void _on_codex_disconnect();
 	void _save();
+	void _disconnect_selected_provider();
 
 protected:
 	void _notification(int p_what);

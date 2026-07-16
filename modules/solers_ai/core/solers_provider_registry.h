@@ -38,10 +38,12 @@ class SolersProviderRegistry : public Object {
 	GDCLASS(SolersProviderRegistry, Object);
 
 	Dictionary profiles;
+	Array profile_order;
 
 	Dictionary _ok(const Variant &p_data) const;
 	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
-	Dictionary _make_profile(const String &p_id, const String &p_label, const String &p_kind, const String &p_default_base_url, const String &p_default_model, bool p_local, bool p_api_key_required, const Array &p_features, const String &p_notes, const String &p_api_key_env = String()) const;
+	Dictionary _make_profile(const String &p_id, const String &p_label, const String &p_kind, const String &p_default_base_url, const String &p_default_model, bool p_local, bool p_api_key_required, const Array &p_features, const String &p_notes, const String &p_api_key_env = String(), const String &p_catalog_provider = String(), const String &p_protocol = "openai-chat") const;
+	void _register_profile(const Dictionary &p_profile);
 	void _register_default_profiles();
 
 protected:
@@ -49,8 +51,10 @@ protected:
 
 public:
 	Dictionary get_provider_profile(const String &p_provider) const;
+	Dictionary resolve_provider_profile(const String &p_provider, const String &p_base_url_override = String()) const;
 	Array list_provider_profiles() const;
 	Dictionary validate_config(const Dictionary &p_config) const;
+	bool is_model_allowed(const String &p_provider, const String &p_model) const;
 
 	SolersProviderRegistry();
 };

@@ -33,6 +33,30 @@
 #include "core/io/json.h"
 #include "modules/solers_ai/llm/solers_llm_message.h"
 
+static Dictionary _anthropic_image_block(const Dictionary &p_attachment) {
+	const Dictionary encoded = SolersLLMMessage::encode_image_attachment(p_attachment);
+	if (encoded.is_empty()) {
+		return Dictionary();
+	}
+	Dictionary source;
+	source["type"] = "base64";
+	source["media_type"] = encoded["mime_type"];
+	source["data"] = encoded["base64"];
+	Dictionary image_block;
+	image_block["type"] = "image";
+	image_block["source"] = source;
+	return image_block;
+}
+
+// The model must know when referenced evidence could not be loaded, instead of
+// silently believing it has seen an image that was never sent.
+static Dictionary _anthropic_missing_image_block(const Dictionary &p_attachment) {
+	Dictionary text_block;
+	text_block["type"] = "text";
+	text_block["text"] = vformat("[Solers: image attachment '%s' could not be loaded from disk and was omitted. Capture fresh evidence before relying on it.]", String(p_attachment.get("id", String())));
+	return text_block;
+}
+
 String SolersAnthropicMessagesProtocol::_map_stop_reason(const String &p_native) {
 	if (p_native == "tool_use") {
 		return SolersLLMStopReason::TOOL_USE;
@@ -72,7 +96,21 @@ Array SolersAnthropicMessagesProtocol::_lower_messages(const Dictionary &p_reque
 			Dictionary block;
 			block["type"] = "tool_result";
 			block["tool_use_id"] = m.get("tool_call_id", String());
-			block["content"] = m.get("content", String());
+			const Array attachments = m.get("attachments", Array());
+			if (attachments.is_empty()) {
+				block["content"] = m.get("content", String());
+			} else {
+				Array content;
+				Dictionary text_block;
+				text_block["type"] = "text";
+				text_block["text"] = m.get("content", String());
+				content.push_back(text_block);
+				for (int a = 0; a < attachments.size(); a++) {
+					const Dictionary image_block = _anthropic_image_block(attachments[a]);
+					content.push_back(image_block.is_empty() ? _anthropic_missing_image_block(attachments[a]) : image_block);
+				}
+				block["content"] = content;
+			}
 			pending_tool_results.push_back(block);
 			continue;
 		}
@@ -106,7 +144,21 @@ Array SolersAnthropicMessagesProtocol::_lower_messages(const Dictionary &p_reque
 		} else {
 			Dictionary x;
 			x["role"] = role;
-			x["content"] = m.get("content", String());
+			const Array attachments = m.get("attachments", Array());
+			if (role == SolersLLMRole::USER && !attachments.is_empty()) {
+				Array content;
+				Dictionary text_block;
+				text_block["type"] = "text";
+				text_block["text"] = m.get("content", String());
+				content.push_back(text_block);
+				for (int a = 0; a < attachments.size(); a++) {
+					const Dictionary image_block = _anthropic_image_block(attachments[a]);
+					content.push_back(image_block.is_empty() ? _anthropic_missing_image_block(attachments[a]) : image_block);
+				}
+				x["content"] = content;
+			} else {
+				x["content"] = m.get("content", String());
+			}
 			out.push_back(x);
 		}
 	}
@@ -145,6 +197,11 @@ Dictionary SolersAnthropicMessagesProtocol::build_request_body(const Dictionary 
 	}
 	if (p_request.has("temperature")) {
 		body["temperature"] = p_request["temperature"];
+	}
+	if (p_request.has("reasoning_effort")) {
+		Dictionary output_config;
+		output_config["effort"] = p_request["reasoning_effort"];
+		body["output_config"] = output_config;
 	}
 	return body;
 }

@@ -20,9 +20,14 @@
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
 #include "core/input/input_event.h"
+#include "core/io/dir_access.h"
+#include "core/io/file_access.h"
+#include "core/io/image.h"
 #include "core/io/json.h"
+#include "core/os/time.h"
 #include "core/templates/hash_set.h"
 #include "core/version.h"
+#include "editor/gui/editor_file_dialog.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
 #include "modules/solers_ai/core/solers_action_timeline.h"
@@ -34,6 +39,7 @@
 #include "modules/solers_ai/editor/solers_chat_cells.h"
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
 #include "modules/solers_ai/llm/solers_llm_message.h"
+#include "modules/solers_ai/llm/solers_models_dev.h"
 #include "modules/solers_ai/protocol/solers_mcp_adapter.h"
 #include "modules/solers_ai/protocol/solers_rpc_server.h"
 #include "scene/gui/box_container.h"
@@ -45,8 +51,11 @@
 #include "scene/gui/scroll_container.h"
 #include "scene/gui/separator.h"
 #include "scene/gui/text_edit.h"
+#include "scene/gui/texture_rect.h"
+#include "scene/resources/image_texture.h"
 #include "scene/resources/style_box.h"
 #include "scene/resources/style_box_flat.h"
+#include "servers/display/display_server.h"
 
 constexpr float SOLERS_COMPOSER_TEXT_MIN_HEIGHT = 48.0f;
 constexpr float SOLERS_COMPOSER_TEXT_MAX_HEIGHT = 220.0f;
@@ -116,6 +125,15 @@ static void solers_style_model_popup_row(Button *p_row, bool p_selected = false)
 	p_row->add_theme_style_override("focus", solers_make_stylebox_margins(Color(0, 0, 0, 0), 5, 8, 3, 8, 3));
 }
 
+static Label *solers_make_model_popup_title(const String &p_title) {
+	Label *label = memnew(Label(p_title.to_upper()));
+	label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	label->set_custom_minimum_size(Size2(0, 22 * EDSCALE));
+	label->add_theme_font_size_override("font_size", int(10 * EDSCALE));
+	label->add_theme_color_override("font_color", Color(0.50, 0.53, 0.58));
+	return label;
+}
+
 static Button *solers_make_model_popup_group(const String &p_title) {
 	Button *label = memnew(Button);
 	label->set_disabled(true);
@@ -132,10 +150,15 @@ static Button *solers_make_model_popup_group(const String &p_title) {
 	return label;
 }
 
-static Button *solers_make_model_popup_row(const String &p_model, bool p_selected) {
+static Button *solers_make_model_popup_row(const String &p_label, const String &p_model_id, bool p_selected) {
 	Button *row = memnew(Button);
 	solers_style_model_popup_row(row, p_selected);
-	row->set_text(p_model);
+	row->set_text(p_label.is_empty() ? p_model_id : p_label);
+	row->set_tooltip_text(p_label == p_model_id || p_model_id.is_empty() ? String() : p_model_id);
+	if (p_selected) {
+		row->set_button_icon(SolersChatGlyphs::get(SNAME("check"), int(Math::round(12.0f * EDSCALE)), 2.0f));
+		row->set_icon_alignment(HORIZONTAL_ALIGNMENT_RIGHT);
+	}
 	return row;
 }
 
@@ -180,6 +203,121 @@ static String solers_compact_model_label(const String &p_model) {
 	}
 	return model.substr(0, 25) + "...";
 }
+
+static String solers_reasoning_effort_label(const String &p_effort) {
+	if (p_effort.is_empty()) {
+		return TTR("Default");
+	}
+	if (p_effort == "xhigh") {
+		return TTR("Extra High");
+	}
+	return p_effort.replace("_", " ").capitalize();
+}
+
+static bool solers_is_supported_image_path(const String &p_path) {
+	const String ext = p_path.get_extension().to_lower();
+	return ext == "png" || ext == "jpg" || ext == "jpeg";
+}
+
+static String solers_attachment_dir() {
+	return "user://solers_attachments";
+}
+
+static String solers_attachment_display_name(const Dictionary &p_attachment) {
+	const String filename = String(p_attachment.get("filename", String())).strip_edges();
+	return filename.is_empty() ? String(p_attachment.get("id", "image")) : filename;
+}
+
+static Ref<Texture2D> solers_load_attachment_texture(const Dictionary &p_attachment) {
+	const String path = String(p_attachment.get("local_path", String())).strip_edges();
+	if (path.is_empty()) {
+		return Ref<Texture2D>();
+	}
+	if (!FileAccess::exists(path)) {
+		return Ref<Texture2D>();
+	}
+	Ref<Image> image = Image::load_from_file(path);
+	if (image.is_null() || image->is_empty()) {
+		return Ref<Texture2D>();
+	}
+	return ImageTexture::create_from_image(image);
+}
+
+class SolersAttachmentThumb : public Control {
+	GDCLASS(SolersAttachmentThumb, Control);
+
+	TextureRect *image_rect = nullptr;
+	SolersGlyphButton *remove_button = nullptr;
+
+	bool _mouse_inside_tree() const {
+		const Vector2 mouse = get_local_mouse_position();
+		if (Rect2(Vector2(), get_size()).has_point(mouse)) {
+			return true;
+		}
+		return remove_button && remove_button->is_visible() && Rect2(remove_button->get_position(), remove_button->get_size()).has_point(mouse);
+	}
+
+protected:
+	void _notification(int p_what) {
+		switch (p_what) {
+			case NOTIFICATION_RESIZED: {
+				if (image_rect) {
+					image_rect->set_position(Point2(EDSCALE, EDSCALE));
+					image_rect->set_size(get_size() - Size2(2 * EDSCALE, 2 * EDSCALE));
+				}
+				if (remove_button) {
+					const Size2 close_size = remove_button->get_size();
+					remove_button->set_position(Point2(get_size().x - close_size.x - 4 * EDSCALE, 4 * EDSCALE));
+				}
+			} break;
+			case NOTIFICATION_MOUSE_ENTER: {
+				if (remove_button) {
+					remove_button->show();
+				}
+			} break;
+			case NOTIFICATION_MOUSE_EXIT: {
+				callable_mp(this, &SolersAttachmentThumb::_sync_hover).call_deferred();
+			} break;
+			case NOTIFICATION_DRAW: {
+				draw_rect(Rect2(Point2(), get_size()), Color(0, 0, 0, 0.18f));
+				draw_rect(Rect2(Point2(0.5f, 0.5f), get_size() - Size2(1, 1)), Color(1, 1, 1, 0.105f), false, MAX(1.0f, EDSCALE));
+			} break;
+		}
+	}
+	static void _bind_methods() {}
+
+public:
+	void _sync_hover() {
+		if (remove_button && !_mouse_inside_tree()) {
+			remove_button->hide();
+		}
+	}
+
+	void setup(const Dictionary &p_attachment, const Callable &p_remove) {
+		const float ed = EDSCALE;
+		set_mouse_filter(MOUSE_FILTER_STOP);
+		set_clip_contents(true);
+		set_custom_minimum_size(Size2(58 * ed, 58 * ed));
+		set_tooltip_text(solers_attachment_display_name(p_attachment));
+
+		image_rect = memnew(TextureRect);
+		image_rect->set_mouse_filter(MOUSE_FILTER_IGNORE);
+		image_rect->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
+		image_rect->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_COVERED);
+		image_rect->set_texture(solers_load_attachment_texture(p_attachment));
+		add_child(image_rect);
+
+		remove_button = memnew(SolersGlyphButton);
+		remove_button->configure(SNAME("cross"), SolersGlyphButton::SKIN_GHOST, TTR("Remove image"), 11);
+		const Size2 close_size(20 * ed, 20 * ed);
+		remove_button->set_custom_minimum_size(close_size);
+		remove_button->set_size(close_size);
+		remove_button->set_mouse_filter(MOUSE_FILTER_STOP);
+		remove_button->set_pressed_callback(p_remove);
+		remove_button->hide();
+		add_child(remove_button);
+	}
+};
 
 static StringName solers_tool_glyph_for_metadata(const Dictionary &p_tool) {
 	const String exposure = String(p_tool.get("exposure", String())).strip_edges();
@@ -299,23 +437,26 @@ void SolersDock::_refresh_model_chip() {
 	const Dictionary provider_data = provider_result.get("data", Dictionary());
 	const String provider = String(provider_data.get("provider", String())).strip_edges();
 	const String model = String(provider_data.get("model", String())).strip_edges();
+	const String reasoning_effort = String(provider_data.get("reasoning_effort", String())).strip_edges();
 	const String base_url = String(provider_data.get("base_url", String())).strip_edges();
 	const Dictionary validation = provider_data.get("validation", Dictionary());
 	const bool valid = validation.get("valid", false);
+	const bool connected = provider_data.get("connected", false);
+	const bool available = provider_data.get("available", false);
 
-	if (model.is_empty()) {
+	if (!connected || !available || model.is_empty()) {
 		model_chip->set_texts(TTR("Model"), String());
-		model_chip->set_tooltip_text(TTR("Choose a provider and model in AI Models."));
+		model_chip->set_tooltip_text(connected && !available ? TTR("Privacy mode blocks the active remote provider.") : TTR("Connect a provider, then choose a model."));
 		return;
 	}
 
-	model_chip->set_texts(solers_compact_model_label(model), String());
+	model_chip->set_texts(solers_compact_model_label(model), solers_reasoning_effort_label(reasoning_effort));
 
-	String tooltip = vformat(TTR("Model: %s\nProvider: %s"), model, provider.is_empty() ? TTR("unknown") : provider);
+	String tooltip = vformat(TTR("Model: %s\nEffort: %s\nProvider: %s"), model, solers_reasoning_effort_label(reasoning_effort), provider.is_empty() ? TTR("unknown") : provider);
 	if (!base_url.is_empty()) {
 		tooltip += "\n" + vformat(TTR("Base URL: %s"), base_url);
 	}
-	tooltip += "\n" + String(valid ? TTR("Configuration is valid.") : TTR("Configuration needs attention in AI Models."));
+	tooltip += "\n" + String(valid ? TTR("Configuration is valid.") : TTR("Configuration needs attention in Provider Settings."));
 	model_chip->set_tooltip_text(tooltip);
 }
 
@@ -384,7 +525,7 @@ void SolersDock::_on_cell_content_changed() {
 	}
 }
 
-void SolersDock::_append_user_message(const String &p_message) {
+void SolersDock::_append_user_message(const String &p_message, const Array &p_attachments) {
 	chat_log += vformat("%sYou\n%s\n", chat_log.is_empty() ? "" : "\n", p_message);
 	if (!message_list) {
 		return;
@@ -394,6 +535,7 @@ void SolersDock::_append_user_message(const String &p_message) {
 	SolersUserBubble *bubble = memnew(SolersUserBubble);
 	bubble->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
 	message_list->add_child(bubble);
+	bubble->set_attachments(p_attachments);
 	bubble->set_message(p_message);
 
 	callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
@@ -487,6 +629,7 @@ void SolersDock::_clear_chat_view(bool p_show_empty) {
 	active_text_cell = nullptr;
 	status_cell = nullptr;
 	active_tool_group = nullptr;
+	active_plan_cell = nullptr;
 	tool_cells_by_id.clear();
 	last_started_tool_cell = nullptr;
 	if (message_list) {
@@ -513,14 +656,16 @@ void SolersDock::_on_send_chat_pressed() {
 	}
 
 	const String prompt = chat_input->get_text().strip_edges();
-	if (prompt.is_empty()) {
+	if (prompt.is_empty() && pending_attachments.is_empty()) {
 		return;
 	}
+	const Array attachments = pending_attachments.duplicate(true);
 	chat_input->set_text("");
+	_clear_attachments();
 	_update_chat_input_height();
 	_update_send_enabled();
 	_refresh_model_chip();
-	_submit_chat_prompt(prompt);
+	_submit_chat_prompt(prompt, attachments);
 }
 
 void SolersDock::_on_stop_chat_pressed() {
@@ -569,60 +714,89 @@ void SolersDock::_on_model_chip_pressed() {
 		child->queue_free();
 	}
 
-	Dictionary provider_data;
-	if (settings_service) {
-		provider_data = settings_service->get_provider_config().get("data", Dictionary());
-	}
+	const Dictionary provider_data = settings_service ? Dictionary(settings_service->get_provider_config().get("data", Dictionary())) : Dictionary();
 	const String active_provider = String(provider_data.get("provider", String())).strip_edges();
 	const String active_model = String(provider_data.get("model", String())).strip_edges();
-	const String active_base_url = String(provider_data.get("base_url", String())).strip_edges();
-
-	Array profiles;
-	if (settings_service) {
-		Dictionary profiles_data = settings_service->list_provider_profiles().get("data", Dictionary());
-		profiles = profiles_data.get("profiles", Array());
-	}
+	const String active_effort = String(provider_data.get("reasoning_effort", String())).strip_edges();
+	const Dictionary connected_data = settings_service ? Dictionary(settings_service->list_connected_provider_configs().get("data", Dictionary())) : Dictionary();
+	const Array connected = connected_data.get("providers", Array());
 	const Array catalog_providers = agent_session ? agent_session->list_model_providers() : Array();
 
-	HashSet<String> seen_profiles;
-	for (const Variant &profile_v : profiles) {
-		const Dictionary profile = profile_v;
-		const String provider = String(profile.get("id", String())).strip_edges();
-		if (provider.is_empty()) {
+	model_popup_box->add_child(solers_make_model_popup_title(TTR("Model")));
+	int visible_provider_count = 0;
+	for (const Variant &config_value : connected) {
+		const Dictionary config = config_value;
+		if (!config.get("available", false)) {
 			continue;
 		}
+		const Dictionary profile = config.get("profile", Dictionary());
+		const String provider = config.get("provider", String());
 		const bool selected = active_provider == provider;
-		const String label = String(profile.get("label", provider));
-		if (seen_profiles.has(provider)) {
-			continue;
-		}
-		seen_profiles.insert(provider);
+		const String catalog_id = profile.get("catalog_provider", provider);
+		const Dictionary catalog_provider = solers_find_model_catalog_provider(catalog_providers, catalog_id, config.get("base_url", String()));
+		const Dictionary catalog_models = catalog_provider.get("models", Dictionary());
 
 		Array models;
 		HashSet<String> seen_models;
-		if (selected) {
-			solers_add_unique_model(models, seen_models, active_model);
+		solers_add_unique_model(models, seen_models, config.get("model", String()));
+		for (const Variant &profile_model : Array(profile.get("allowed_models", Array()))) {
+			solers_add_unique_model(models, seen_models, profile_model);
 		}
-		const Dictionary catalog_provider = solers_find_model_catalog_provider(catalog_providers, provider, selected ? active_base_url : String(profile.get("default_base_url", String())));
-		const Dictionary catalog_models = catalog_provider.get("models", Dictionary());
-		const Array catalog_model_ids = catalog_models.keys();
-		for (const Variant &model_id_v : catalog_model_ids) {
-			solers_add_unique_model(models, seen_models, String(model_id_v));
+		for (const Variant &model_id_value : catalog_models.keys()) {
+			const String model_id = model_id_value;
+			if (!settings_service || settings_service->is_model_allowed(provider, model_id)) {
+				solers_add_unique_model(models, seen_models, model_id);
+			}
 		}
-		solers_add_unique_model(models, seen_models, String(profile.get("default_model", String())));
+		solers_add_unique_model(models, seen_models, profile.get("default_model", String()));
 		if (models.is_empty()) {
 			continue;
 		}
-		model_popup_box->add_child(solers_make_model_popup_group(label));
-		for (const Variant &model_v : models) {
-			const String model = String(model_v);
-			Button *row = solers_make_model_popup_row(model, selected && model == active_model);
-			row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_set_model_provider_from_popup).bind(provider, model));
+
+		visible_provider_count++;
+		model_popup_box->add_child(solers_make_model_popup_group(profile.get("label", provider)));
+		for (const Variant &model_value : models) {
+			const String model_id = model_value;
+			if (settings_service && !settings_service->is_model_allowed(provider, model_id)) {
+				continue;
+			}
+			const Dictionary model_info = catalog_models.get(model_id, Dictionary());
+			const Dictionary model_labels = profile.get("model_labels", Dictionary());
+			const String display_name = model_info.get("name", model_labels.get(model_id, model_id));
+			Button *row = solers_make_model_popup_row(display_name, model_id, selected && model_id == active_model);
+			row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_set_model_provider_from_popup).bind(provider, model_id));
 			model_popup_box->add_child(row);
 		}
 	}
 
-	Button *settings = solers_make_model_popup_row(TTR("AI Models"), false);
+	if (visible_provider_count == 0) {
+		Label *empty = memnew(Label(TTR("No connected model provider. Connect one in Provider Settings.")));
+		empty->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+		empty->add_theme_color_override("font_color", SOLERS_TEXT_DIM);
+		empty->set_custom_minimum_size(Size2(0, 52 * EDSCALE));
+		model_popup_box->add_child(empty);
+	}
+
+	const Dictionary active_profile = provider_data.get("profile", Dictionary());
+	const String active_catalog_id = active_profile.get("catalog_provider", active_provider);
+	const Dictionary active_catalog = solers_find_model_catalog_provider(catalog_providers, active_catalog_id, provider_data.get("base_url", String()));
+	const Dictionary active_model_info = Dictionary(active_catalog.get("models", Dictionary())).get(active_model, Dictionary());
+	const Array efforts = SolersModelsDev::reasoning_efforts(active_model_info);
+	if (!active_model.is_empty() && !efforts.is_empty()) {
+		model_popup_box->add_child(memnew(HSeparator));
+		model_popup_box->add_child(solers_make_model_popup_title(TTR("Model Effort")));
+		Button *default_effort = solers_make_model_popup_row(TTR("Default"), String(), active_effort.is_empty());
+		default_effort->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_set_reasoning_effort_from_popup).bind(String()));
+		model_popup_box->add_child(default_effort);
+		for (const Variant &effort_value : efforts) {
+			const String effort = effort_value;
+			Button *row = solers_make_model_popup_row(solers_reasoning_effort_label(effort), effort, effort == active_effort);
+			row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_set_reasoning_effort_from_popup).bind(effort));
+			model_popup_box->add_child(row);
+		}
+	}
+	model_popup_box->add_child(memnew(HSeparator));
+	Button *settings = solers_make_model_popup_row(TTR("Manage providers..."), String(), false);
 	settings->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_open_model_settings_from_popup));
 	model_popup_box->add_child(settings);
 
@@ -701,9 +875,20 @@ void SolersDock::_set_model_provider_from_popup(const String &p_provider, const 
 	_refresh_model_chip();
 }
 
+void SolersDock::_set_reasoning_effort_from_popup(const String &p_effort) {
+	_hide_model_popup();
+	if (!settings_service) {
+		return;
+	}
+	Dictionary args;
+	args["reasoning_effort"] = p_effort;
+	settings_service->set_provider_config(args);
+	_refresh_model_chip();
+}
+
 void SolersDock::_open_model_settings_from_popup() {
 	_hide_model_popup();
-	_append_error_row(TTR("Open AI Models from the project manager."));
+	_append_error_row(TTR("Open Provider Settings from the Solers Project Manager to connect or disconnect model providers."));
 }
 
 void SolersDock::start_new_chat() {
@@ -730,6 +915,9 @@ void SolersDock::load_chat_history(const Array &p_messages) {
 		const Dictionary message = item;
 		const String role = message.get("role", String());
 		const String content = message.get("content", String());
+		if (String(message.get("origin", String())) == "compaction_summary") {
+			continue;
+		}
 		if (content.is_empty()) {
 			continue;
 		}
@@ -739,18 +927,24 @@ void SolersDock::load_chat_history(const Array &p_messages) {
 			_on_agent_assistant_message(content);
 		}
 	}
+	if (agent_session) {
+		const Dictionary plan = agent_session->get_plan();
+		if (!plan.is_empty()) {
+			_on_agent_plan_updated(plan.get("explanation", String()), plan.get("plan", Array()));
+		}
+	}
 	_finish_turn_cells();
 	_refresh_status();
 	callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
 }
 
-void SolersDock::_submit_chat_prompt(const String &p_prompt) {
+void SolersDock::_submit_chat_prompt(const String &p_prompt, const Array &p_attachments) {
 	const String prompt = p_prompt.strip_edges();
-	if (prompt.is_empty()) {
+	if (prompt.is_empty() && p_attachments.is_empty()) {
 		return;
 	}
 
-	_append_user_message(prompt);
+	_append_user_message(prompt, p_attachments);
 
 	if (!agent_session) {
 		_append_error_row(TTR("Agent session is unavailable."));
@@ -762,6 +956,9 @@ void SolersDock::_submit_chat_prompt(const String &p_prompt) {
 	// signals wired in set_agent_session(); no mock, no hardcoded provider.
 	Dictionary args;
 	args["prompt"] = prompt;
+	if (!p_attachments.is_empty()) {
+		args["attachments"] = p_attachments.duplicate(true);
+	}
 	const Dictionary result = agent_session->start_turn(args);
 	if (!(bool)result.get("ok", false)) {
 		_remove_status_cell();
@@ -778,6 +975,11 @@ void SolersDock::_on_chat_input_gui_input(const Ref<InputEvent> &p_event) {
 	}
 
 	const Key keycode = key->get_keycode();
+	if ((key->is_command_or_control_pressed() || key->is_meta_pressed()) && keycode == Key::V && _add_image_attachment_from_clipboard()) {
+		chat_input->accept_event();
+		return;
+	}
+
 	if (keycode != Key::ENTER && keycode != Key::KP_ENTER) {
 		return;
 	}
@@ -803,6 +1005,132 @@ void SolersDock::_on_chat_input_text_changed() {
 	_update_send_enabled();
 }
 
+void SolersDock::_on_add_context_pressed() {
+	if (attachment_file_dialog) {
+		attachment_file_dialog->popup_file_dialog();
+	}
+}
+
+void SolersDock::_on_attachment_file_selected(const String &p_file) {
+	if (!_add_image_attachment_from_path(p_file)) {
+		_append_error_row(TTR("Attach up to 4 PNG or JPG images."));
+	}
+}
+
+bool SolersDock::_add_image_attachment_from_path(const String &p_path) {
+	if (pending_attachments.size() >= 4 || !solers_is_supported_image_path(p_path)) {
+		return false;
+	}
+	Error read_error = OK;
+	const PackedByteArray bytes = FileAccess::get_file_as_bytes(p_path, &read_error);
+	if (read_error != OK || bytes.is_empty()) {
+		return false;
+	}
+	Ref<Image> image;
+	image.instantiate();
+	Error err = image->load_png_from_buffer(bytes);
+	if (err != OK) {
+		err = image->load_jpg_from_buffer(bytes);
+	}
+	if (err != OK || image->is_empty()) {
+		return false;
+	}
+
+	Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_USERDATA);
+	if (dir.is_null() || dir->make_dir_recursive("solers_attachments") != OK) {
+		return false;
+	}
+	const String id = vformat("img_%s_%d", itos((int64_t)Time::get_singleton()->get_ticks_usec()), pending_attachments.size() + 1);
+	const String ext = p_path.get_extension().to_lower() == "png" ? "png" : "jpg";
+	const String stored_path = solers_attachment_dir().path_join(id + "." + ext);
+	Ref<FileAccess> file = FileAccess::open(stored_path, FileAccess::WRITE);
+	if (file.is_null()) {
+		return false;
+	}
+	file->store_buffer(bytes);
+	file->flush();
+	file->close();
+
+	Dictionary attachment;
+	attachment["id"] = id;
+	attachment["type"] = "image";
+	attachment["mime_type"] = ext == "png" ? "image/png" : "image/jpeg";
+	attachment["filename"] = p_path.get_file();
+	attachment["local_path"] = stored_path;
+	pending_attachments.push_back(attachment);
+	_refresh_attachment_bar();
+	_update_send_enabled();
+	return true;
+}
+
+bool SolersDock::_add_image_attachment_from_clipboard() {
+	DisplayServer *ds = DisplayServer::get_singleton();
+	if (!ds || !ds->clipboard_has_image() || pending_attachments.size() >= 4) {
+		return false;
+	}
+	Ref<Image> image = ds->clipboard_get_image();
+	if (image.is_null() || image->is_empty()) {
+		return false;
+	}
+	Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_USERDATA);
+	if (dir.is_null() || dir->make_dir_recursive("solers_attachments") != OK) {
+		return false;
+	}
+	const String id = vformat("img_%s_%d", itos((int64_t)Time::get_singleton()->get_ticks_usec()), pending_attachments.size() + 1);
+	const String stored_path = solers_attachment_dir().path_join(id + ".png");
+	const PackedByteArray bytes = image->save_png_to_buffer();
+	Ref<FileAccess> file = FileAccess::open(stored_path, FileAccess::WRITE);
+	if (file.is_null() || bytes.is_empty()) {
+		return false;
+	}
+	file->store_buffer(bytes);
+	file->flush();
+	file->close();
+
+	Dictionary attachment;
+	attachment["id"] = id;
+	attachment["type"] = "image";
+	attachment["mime_type"] = "image/png";
+	attachment["filename"] = id + ".png";
+	attachment["local_path"] = stored_path;
+	pending_attachments.push_back(attachment);
+	_refresh_attachment_bar();
+	_update_send_enabled();
+	return true;
+}
+
+void SolersDock::_refresh_attachment_bar() {
+	if (!attachment_bar) {
+		return;
+	}
+	while (attachment_bar->get_child_count() > 0) {
+		Node *child = attachment_bar->get_child(0);
+		attachment_bar->remove_child(child);
+		child->queue_free();
+	}
+	attachment_bar->set_visible(!pending_attachments.is_empty());
+	for (int i = 0; i < pending_attachments.size(); i++) {
+		const Dictionary attachment = pending_attachments[i];
+		SolersAttachmentThumb *thumb = memnew(SolersAttachmentThumb);
+		thumb->setup(attachment, callable_mp(this, &SolersDock::_remove_attachment).bind(i));
+		attachment_bar->add_child(thumb);
+	}
+}
+
+void SolersDock::_remove_attachment(int p_index) {
+	if (p_index >= 0 && p_index < pending_attachments.size()) {
+		pending_attachments.remove_at(p_index);
+	}
+	_refresh_attachment_bar();
+	_update_send_enabled();
+}
+
+void SolersDock::_clear_attachments() {
+	pending_attachments.clear();
+	_refresh_attachment_bar();
+	_update_send_enabled();
+}
+
 void SolersDock::_update_send_enabled() {
 	if (send_chat_button && chat_input) {
 		const bool blocked = permission_manager && permission_manager->get_pending_request_count() > 0;
@@ -815,7 +1143,7 @@ void SolersDock::_update_send_enabled() {
 		} else {
 			send_chat_button->configure(SNAME("send_up"), SolersGlyphButton::SKIN_PRIMARY, TTR("Send"), 16);
 			send_chat_button->set_pressed_callback(callable_mp(this, &SolersDock::_on_send_chat_pressed));
-			send_chat_button->set_enabled(!blocked && !chat_input->get_text().strip_edges().is_empty());
+			send_chat_button->set_enabled(!blocked && (!chat_input->get_text().strip_edges().is_empty() || !pending_attachments.is_empty()));
 		}
 	}
 }
@@ -1211,6 +1539,12 @@ SolersDock::SolersDock() {
 	chat_input->connect(SceneStringName(text_changed), callable_mp(this, &SolersDock::_on_chat_input_text_changed));
 	composer->add_child(chat_input);
 
+	attachment_bar = memnew(HBoxContainer);
+	attachment_bar->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	attachment_bar->add_theme_constant_override("separation", 6 * EDSCALE);
+	attachment_bar->hide();
+	composer->add_child(attachment_bar);
+
 	HBoxContainer *composer_toolbar = memnew(HBoxContainer);
 	composer_toolbar->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	composer_toolbar->set_custom_minimum_size(Size2(0, SOLERS_COMPOSER_TOOLBAR_HEIGHT * EDSCALE));
@@ -1219,8 +1553,9 @@ SolersDock::SolersDock() {
 	composer->add_child(composer_toolbar);
 
 	add_context_button = memnew(SolersGlyphButton);
-	add_context_button->configure(SNAME("plus"), SolersGlyphButton::SKIN_GHOST, TTR("Attach context"), 15);
+	add_context_button->configure(SNAME("plus"), SolersGlyphButton::SKIN_GHOST, TTR("Attach image"), 15);
 	add_context_button->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
+	add_context_button->set_pressed_callback(callable_mp(this, &SolersDock::_on_add_context_pressed));
 	composer_toolbar->add_child(add_context_button);
 
 	approval_mode_chip = memnew(SolersSelectChip);
@@ -1251,6 +1586,13 @@ SolersDock::SolersDock() {
 	model_popup_overlay->connect(SceneStringName(resized), callable_mp(this, &SolersDock::_hide_model_popup));
 	model_popup_overlay->hide();
 	add_child(model_popup_overlay);
+
+	attachment_file_dialog = memnew(EditorFileDialog);
+	attachment_file_dialog->set_access(EditorFileDialog::ACCESS_FILESYSTEM);
+	attachment_file_dialog->set_file_mode(EditorFileDialog::FILE_MODE_OPEN_FILE);
+	attachment_file_dialog->add_filter("*.png, *.jpg, *.jpeg", TTRC("Images"));
+	attachment_file_dialog->connect("file_selected", callable_mp(this, &SolersDock::_on_attachment_file_selected));
+	add_child(attachment_file_dialog);
 
 	model_popup = memnew(PanelContainer);
 	model_popup->set_mouse_filter(Control::MOUSE_FILTER_STOP);
@@ -1302,6 +1644,7 @@ void SolersDock::set_agent_session(SolersAgentSession *p_agent_session) {
 	agent_session->connect(SNAME("turn_completed"), callable_mp(this, &SolersDock::_on_agent_turn_completed));
 	agent_session->connect(SNAME("turn_failed"), callable_mp(this, &SolersDock::_on_agent_turn_failed));
 	agent_session->connect(SNAME("turn_retrying"), callable_mp(this, &SolersDock::_on_agent_turn_retrying));
+	agent_session->connect(SNAME("plan_updated"), callable_mp(this, &SolersDock::_on_agent_plan_updated));
 }
 
 void SolersDock::_on_agent_model_request_started() {
@@ -1469,4 +1812,21 @@ void SolersDock::_on_agent_turn_retrying(int p_attempt, const String &p_message)
 	_settle_thinking_cell();
 	_ensure_status_cell(vformat(TTR("Reconnecting (attempt %d)..."), p_attempt));
 	_update_send_enabled();
+}
+
+void SolersDock::_on_agent_plan_updated(const String &p_explanation, const Array &p_plan) {
+	if (!message_list) {
+		return;
+	}
+	_clear_empty_state();
+	if (!active_plan_cell) {
+		active_plan_cell = memnew(SolersPlanCell);
+		active_plan_cell->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
+		message_list->add_child(active_plan_cell);
+	}
+	active_plan_cell->set_plan(p_explanation, p_plan);
+	if (status_cell) {
+		message_list->move_child(status_cell, message_list->get_child_count() - 1);
+	}
+	_on_cell_content_changed();
 }

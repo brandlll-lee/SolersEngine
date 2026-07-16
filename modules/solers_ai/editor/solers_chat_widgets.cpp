@@ -172,13 +172,9 @@ static void solers_draw_wash(Control *p_control, const Rect2 &p_rect, float p_al
 	if (p_alpha <= 0.001f) {
 		return;
 	}
-	// One shared scratch stylebox: rounded rects via StyleBoxFlat without
-	// allocating per widget or per frame.
-	static Ref<StyleBoxFlat> wash;
-	if (wash.is_null()) {
-		wash.instantiate();
-		wash->set_border_width_all(0);
-	}
+	Ref<StyleBoxFlat> wash;
+	wash.instantiate();
+	wash->set_border_width_all(0);
 	wash->set_corner_radius_all(int(p_radius));
 	wash->set_bg_color(Color(1, 1, 1, p_alpha));
 	p_control->draw_style_box(wash, p_rect);
@@ -586,14 +582,10 @@ void SolersSurface::_notification(int p_what) {
 			const float rad = radius * ed;
 			const float bw = MAX(1.0f, border_w * ed);
 
-			// One shared scratch box: every pass below draws a pure FILL (zero
-			// border width), so the rounded corners are smooth with no AA bloom.
-			static Ref<StyleBoxFlat> sb;
-			if (sb.is_null()) {
-				sb.instantiate();
-				sb->set_border_width_all(0);
-				sb->set_anti_aliased(true);
-			}
+			Ref<StyleBoxFlat> sb;
+			sb.instantiate();
+			sb->set_border_width_all(0);
+			sb->set_anti_aliased(true);
 
 			// Very light separation; the composer should feel embedded, not card-heavy.
 			if (shadow) {

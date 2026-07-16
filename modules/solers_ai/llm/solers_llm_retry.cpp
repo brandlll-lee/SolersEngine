@@ -38,53 +38,12 @@ static String solers_find_header(const Dictionary &p_headers, const String &p_lo
 }
 
 bool SolersLLMRetry::is_retryable(const Dictionary &p_error) {
-	const String code = String(p_error.get("code", String()));
+	const Variant retryable = p_error.get("retryable", Variant());
+	if (retryable.get_type() == Variant::BOOL) {
+		return (bool)retryable;
+	}
 	const int http_status = (int)p_error.get("http_status", 0);
-	const String message = String(p_error.get("message", String())).to_lower();
-
-	// Never retry: the input itself is rejected, so re-sending it cannot help.
-	// Mirrors opencode retry.ts (ContextOverflowError not retried) and error.ts
-	// (insufficient_quota / invalid_prompt are isRetryable: false).
-	if (message.find("context_length_exceeded") >= 0 || message.find("context window") >= 0 ||
-			message.find("insufficient_quota") >= 0 || message.find("invalid_api_key") >= 0 ||
-			message.find("invalid_prompt") >= 0) {
-		return false;
-	}
-	// 4xx caller errors (auth, bad request, payload too large, unprocessable)
-	// are not transient. 429 is handled as retryable below.
-	if (http_status == 400 || http_status == 401 || http_status == 403 ||
-			http_status == 404 || http_status == 413 || http_status == 422) {
-		return false;
-	}
-
-	// 5xx are transient server failures — always retry (opencode retry.ts:
-	// "5xx errors ... should always be retried").
-	if (http_status >= 500) {
-		return true;
-	}
-	if (http_status == 429) {
-		return true;
-	}
-
-	// Transport-level failures from SolersLLMClient: the connection, not the
-	// request, is at fault, so the identical request is worth re-sending.
-	if (code == "HEADER_TIMEOUT" || code == "STREAM_STALL" || code == "PROVIDER_TIMEOUT" ||
-			code == "CONNECT_FAILED" || code == "CONNECTION_ERROR" || code == "CANT_CONNECT" ||
-			code == "TLS_ERROR") {
-		return true;
-	}
-
-	// Plain-text rate-limit / overload patterns (opencode retry.ts text match).
-	if (message.find("rate limit") >= 0 || message.find("rate_limit") >= 0 ||
-			message.find("too many requests") >= 0 || message.find("overloaded") >= 0 ||
-			message.find("exhausted") >= 0 || message.find("unavailable") >= 0 ||
-			message.find("rate increased too quickly") >= 0) {
-		return true;
-	}
-
-	// Config errors (CANT_RESOLVE, NO_*), 4xx not listed above, and anything
-	// unrecognized are treated as terminal.
-	return false;
+	return http_status == 429 || http_status >= 500;
 }
 
 uint64_t SolersLLMRetry::delay_msec(int p_attempt, const Dictionary &p_error) {

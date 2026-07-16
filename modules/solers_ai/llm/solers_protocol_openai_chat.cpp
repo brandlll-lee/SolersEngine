@@ -33,44 +33,57 @@
 #include "core/io/json.h"
 #include "modules/solers_ai/llm/solers_llm_message.h"
 
+static Dictionary _openai_image_part(const Dictionary &p_attachment) {
+	const Dictionary encoded = SolersLLMMessage::encode_image_attachment(p_attachment);
+	if (encoded.is_empty()) {
+		return Dictionary();
+	}
+	Dictionary image_url;
+	image_url["url"] = encoded["data_uri"];
+	Dictionary image_part;
+	image_part["type"] = "image_url";
+	image_part["image_url"] = image_url;
+	return image_part;
+}
+
+// The model must know when referenced evidence could not be loaded, instead of
+// silently believing it has seen an image that was never sent.
+static Dictionary _openai_missing_image_part(const Dictionary &p_attachment) {
+	Dictionary text_part;
+	text_part["type"] = "text";
+	text_part["text"] = vformat("[Solers: image attachment '%s' could not be loaded from disk and was omitted. Capture fresh evidence before relying on it.]", String(p_attachment.get("id", String())));
+	return text_part;
+}
+
 static bool _is_responses_function_item_id(const String &p_id) {
 	return p_id.begins_with("fc_");
 }
 
-static String _usable_chat_tool_call_id(const Variant &p_value, bool &r_saw_responses_item_id) {
+static String _canonical_chat_tool_call_id_value(const Variant &p_value) {
 	const String id = String(p_value).strip_edges();
 	if (id.is_empty()) {
 		return String();
 	}
 	if (_is_responses_function_item_id(id)) {
-		r_saw_responses_item_id = true;
-		return String();
+		// A Responses item id is not a Chat tool-call id. Normalize it once at
+		// the wire boundary using its provider-unique value, never its array
+		// index, so the operation keeps one stable identity across the runtime.
+		return "call_solers_" + id.md5_text().substr(0, 24);
 	}
 	return id;
 }
 
-static String _canonical_chat_tool_call_id(const Dictionary &p_tool_delta, int p_index) {
-	bool saw_responses_item_id = false;
-	String call_id = _usable_chat_tool_call_id(p_tool_delta.get("call_id", String()), saw_responses_item_id);
+static String _canonical_chat_tool_call_id(const Dictionary &p_tool_delta) {
+	String call_id = _canonical_chat_tool_call_id_value(p_tool_delta.get("call_id", String()));
 	if (!call_id.is_empty()) {
 		return call_id;
 	}
 	const Dictionary fn = p_tool_delta.get("function", Dictionary());
-	call_id = _usable_chat_tool_call_id(fn.get("call_id", String()), saw_responses_item_id);
+	call_id = _canonical_chat_tool_call_id_value(fn.get("call_id", String()));
 	if (!call_id.is_empty()) {
 		return call_id;
 	}
-	call_id = _usable_chat_tool_call_id(p_tool_delta.get("id", String()), saw_responses_item_id);
-	if (!call_id.is_empty()) {
-		return call_id;
-	}
-	if (saw_responses_item_id) {
-		// Some Responses-backed OpenAI-compatible gateways leak Responses
-		// function-call item ids through Chat streams. They are not valid Chat
-		// tool call ids for the follow-up tool result pair.
-		return vformat("call_solers_%d", p_index);
-	}
-	return String();
+	return _canonical_chat_tool_call_id_value(p_tool_delta.get("id", String()));
 }
 
 String SolersOpenAIChatProtocol::_map_finish_reason(const String &p_native) {
@@ -88,6 +101,28 @@ String SolersOpenAIChatProtocol::_map_finish_reason(const String &p_native) {
 
 Array SolersOpenAIChatProtocol::_lower_messages(const Dictionary &p_request) const {
 	Array out;
+	Array pending_tool_images;
+	auto flush_tool_images = [&]() {
+		if (pending_tool_images.is_empty()) {
+			return;
+		}
+		Array content;
+		Dictionary text_part;
+		text_part["type"] = "text";
+		text_part["text"] = "Visual result returned by the tool call.";
+		content.push_back(text_part);
+		for (int i = 0; i < pending_tool_images.size(); i++) {
+			const Dictionary image_part = _openai_image_part(pending_tool_images[i]);
+			content.push_back(image_part.is_empty() ? _openai_missing_image_part(pending_tool_images[i]) : image_part);
+		}
+		if (content.size() > 1) {
+			Dictionary image_message;
+			image_message["role"] = "user";
+			image_message["content"] = content;
+			out.push_back(image_message);
+		}
+		pending_tool_images.clear();
+	};
 
 	const String system = p_request.get("system", String());
 	if (!system.is_empty()) {
@@ -101,6 +136,9 @@ Array SolersOpenAIChatProtocol::_lower_messages(const Dictionary &p_request) con
 	for (int i = 0; i < messages.size(); i++) {
 		const Dictionary m = messages[i];
 		const String role = m.get("role", "user");
+		if (role != SolersLLMRole::TOOL) {
+			flush_tool_images();
+		}
 
 		if (role == SolersLLMRole::ASSISTANT && m.has("tool_calls")) {
 			Dictionary a;
@@ -129,13 +167,32 @@ Array SolersOpenAIChatProtocol::_lower_messages(const Dictionary &p_request) con
 			t["tool_call_id"] = m.get("tool_call_id", String());
 			t["content"] = m.get("content", String());
 			out.push_back(t);
+			const Array attachments = m.get("attachments", Array());
+			for (int a = 0; a < attachments.size(); a++) {
+				pending_tool_images.push_back(attachments[a]);
+			}
 		} else {
 			Dictionary x;
 			x["role"] = role;
-			x["content"] = m.get("content", String());
+			const Array attachments = m.get("attachments", Array());
+			if (role == SolersLLMRole::USER && !attachments.is_empty()) {
+				Array content;
+				Dictionary text_part;
+				text_part["type"] = "text";
+				text_part["text"] = m.get("content", String());
+				content.push_back(text_part);
+				for (int a = 0; a < attachments.size(); a++) {
+					const Dictionary image_part = _openai_image_part(attachments[a]);
+					content.push_back(image_part.is_empty() ? _openai_missing_image_part(attachments[a]) : image_part);
+				}
+				x["content"] = content;
+			} else {
+				x["content"] = m.get("content", String());
+			}
 			out.push_back(x);
 		}
 	}
+	flush_tool_images();
 	return out;
 }
 
@@ -255,7 +312,7 @@ Array SolersOpenAIChatProtocol::parse_event(Dictionary &r_state, const String &p
 			const bool was_started = (bool)cur.get("started", false);
 			bool changed = false;
 			String arguments_delta;
-			const String canonical_id = _canonical_chat_tool_call_id(tc, idx);
+			const String canonical_id = _canonical_chat_tool_call_id(tc);
 			if (!canonical_id.is_empty()) {
 				cur["id"] = canonical_id;
 				changed = true;
@@ -286,11 +343,10 @@ Array SolersOpenAIChatProtocol::parse_event(Dictionary &r_state, const String &p
 		const Array calls = r_state.get("calls", Array());
 		for (int i = 0; i < calls.size(); i++) {
 			const Dictionary c = calls[i];
-			String id = c.get("id", String());
-			if (id.strip_edges().is_empty()) {
-				// A missing id breaks call/result pairing on replay; synthesize
-				// a stable one so both sides of the pair stay consistent.
-				id = vformat("call_solers_%d", i);
+			const String id = String(c.get("id", String())).strip_edges();
+			if (id.is_empty()) {
+				events.push_back(SolersLLMEvent::error("MISSING_TOOL_CALL_ID", "The provider returned a tool call without a stable operation id."));
+				continue;
 			}
 			events.push_back(SolersLLMEvent::tool_call(id, c.get("name", String()), c.get("arguments", String())));
 		}

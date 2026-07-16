@@ -28,6 +28,10 @@ public:
 	// no protection backend is available (never fails the save path).
 	static String protect(const String &p_plain);
 
+	// Wrap credentials that must never fall back to plaintext. Returns empty
+	// when no secure backend can produce a protected envelope.
+	static String protect_strict(const String &p_plain);
+
 	// Unwrap a stored value. Plaintext (legacy/unwrapped) passes through.
 	static String unprotect(const String &p_stored);
 

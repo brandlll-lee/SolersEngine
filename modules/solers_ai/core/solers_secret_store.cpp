@@ -194,6 +194,11 @@ String SolersSecretStore::protect(const String &p_plain) {
 	return p_plain;
 }
 
+String SolersSecretStore::protect_strict(const String &p_plain) {
+	const String protected_value = protect(p_plain);
+	return is_protected(protected_value) ? protected_value : String();
+}
+
 String SolersSecretStore::unprotect(const String &p_stored) {
 	if (p_stored.begins_with(SOLERS_SECRET_DPAPI_PREFIX)) {
 #ifdef WINDOWS_ENABLED

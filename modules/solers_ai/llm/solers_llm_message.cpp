@@ -2,6 +2,44 @@
 /*  solers_llm_message.cpp                                                */
 /**************************************************************************/
 /*                         This file is part of:                          */
+/*                              SOLERS ENGINE                             */
+/*                        (a fork of Godot Engine)                        */
+/**************************************************************************/
+/* Solers: AI-native game engine.                                        */
+/**************************************************************************/
+
+#include "solers_llm_message.h"
+
+#include "core/crypto/crypto_core.h"
+#include "core/io/file_access.h"
+
+Dictionary SolersLLMMessage::encode_image_attachment(const Dictionary &p_attachment) {
+	const String path = String(p_attachment.get("local_path", String())).strip_edges();
+	const String mime_type = String(p_attachment.get("mime_type", String())).strip_edges();
+	if (path.is_empty() || !mime_type.begins_with("image/")) {
+		return Dictionary();
+	}
+
+	Error error = OK;
+	const PackedByteArray bytes = FileAccess::get_file_as_bytes(path, &error);
+	if (error != OK || bytes.is_empty()) {
+		// Evidence must never vanish silently: captures are immutable, so a
+		// missing file indicates a real bug worth surfacing.
+		ERR_PRINT(vformat("Solers: image attachment '%s' is missing on disk: %s", String(p_attachment.get("id", String())), path));
+		return Dictionary();
+	}
+
+	const String data = CryptoCore::b64_encode_str(bytes.ptr(), bytes.size());
+	Dictionary encoded;
+	encoded["mime_type"] = mime_type;
+	encoded["base64"] = data;
+	encoded["data_uri"] = vformat("data:%s;base64,%s", mime_type, data);
+	return encoded;
+}
+/**************************************************************************/
+/*  solers_llm_message.cpp                                                */
+/**************************************************************************/
+/*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
 /*                        https://godotengine.org                         */
 /**************************************************************************/

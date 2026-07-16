@@ -16,10 +16,13 @@
 #include "core/io/http_client.h"
 #include "core/io/json.h"
 #include "core/os/os.h"
+#ifdef TOOLS_ENABLED
+#include "editor/file_system/editor_paths.h"
+#endif
 
 static constexpr uint64_t SOLERS_MODELS_DEV_FETCH_BUDGET_MSEC = 30000;
 
-static Dictionary _seed_model(const String &p_id, const String &p_name, int p_context, int p_output, bool p_reasoning, bool p_tool_call) {
+static Dictionary _seed_model(const String &p_id, const String &p_name, int p_context, int p_output, bool p_reasoning, bool p_tool_call, bool p_image_input) {
 	Dictionary m;
 	m["id"] = p_id;
 	m["name"] = p_name;
@@ -28,14 +31,26 @@ static Dictionary _seed_model(const String &p_id, const String &p_name, int p_co
 	m["reasoning"] = p_reasoning;
 	m["tool_call"] = p_tool_call;
 	m["attachment"] = false;
+	Array input_modalities;
+	input_modalities.push_back("text");
+	if (p_image_input) {
+		input_modalities.push_back("image");
+	}
+	m["input_modalities"] = input_modalities;
 	return m;
 }
 
-String SolersModelsDev::_cache_path() {
+String SolersModelsDev::_resolve_cache_path() {
+#ifdef TOOLS_ENABLED
+	if (EditorPaths::get_singleton() && EditorPaths::get_singleton()->are_paths_valid()) {
+		return EditorPaths::get_singleton()->get_cache_dir().path_join("solers_ai/models_dev.json");
+	}
+#endif
 	return "user://solers_ai/models_dev.json";
 }
 
 void SolersModelsDev::_load_seed() {
+	MutexLock lock(providers_mutex);
 	// Minimal authored offline fallback (our data, not a models.dev copy). The
 	// background fetch enriches this with the full models.dev dataset. Limits
 	// here are conservative fallbacks; fetched data is authoritative.
@@ -73,18 +88,18 @@ void SolersModelsDev::_load_seed() {
 	}
 
 	// A few representative models so context limits resolve offline. Fetched
-	// models.dev data supersedes these on the next launch.
+	// models.dev data supersedes these as soon as the refresh completes.
 	{
 		Dictionary openai_models;
-		openai_models["gpt-4o"] = _seed_model("gpt-4o", "GPT-4o", 128000, 16384, false, true);
-		openai_models["gpt-4o-mini"] = _seed_model("gpt-4o-mini", "GPT-4o mini", 128000, 16384, false, true);
+		openai_models["gpt-4o"] = _seed_model("gpt-4o", "GPT-4o", 128000, 16384, false, true, true);
+		openai_models["gpt-4o-mini"] = _seed_model("gpt-4o-mini", "GPT-4o mini", 128000, 16384, false, true, true);
 		Dictionary p = providers[StringName("openai")];
 		p["models"] = openai_models;
 		providers[StringName("openai")] = p;
 	}
 	{
 		Dictionary anthropic_models;
-		anthropic_models["claude-3-5-sonnet-latest"] = _seed_model("claude-3-5-sonnet-latest", "Claude 3.5 Sonnet", 200000, 8192, false, true);
+		anthropic_models["claude-3-5-sonnet-latest"] = _seed_model("claude-3-5-sonnet-latest", "Claude 3.5 Sonnet", 200000, 8192, false, true, true);
 		Dictionary p = providers[StringName("anthropic")];
 		p["models"] = anthropic_models;
 		providers[StringName("anthropic")] = p;
@@ -92,6 +107,7 @@ void SolersModelsDev::_load_seed() {
 }
 
 void SolersModelsDev::_ingest(const Dictionary &p_root) {
+	MutexLock lock(providers_mutex);
 	const Array provider_ids = p_root.keys();
 	for (int i = 0; i < provider_ids.size(); i++) {
 		const String provider_id = provider_ids[i];
@@ -131,8 +147,11 @@ void SolersModelsDev::_ingest(const Dictionary &p_root) {
 				model["context"] = (int)limit.get("context", 0);
 				model["output"] = (int)limit.get("output", 0);
 				model["reasoning"] = mo.get("reasoning", false);
+				model["reasoning_options"] = mo.get("reasoning_options", Array());
 				model["tool_call"] = mo.get("tool_call", true);
 				model["attachment"] = mo.get("attachment", false);
+				const Dictionary modalities = mo.get("modalities", Dictionary());
+				model["input_modalities"] = modalities.get("input", Array());
 				models_out[model_id] = model;
 			}
 		}
@@ -142,7 +161,11 @@ void SolersModelsDev::_ingest(const Dictionary &p_root) {
 }
 
 void SolersModelsDev::_load_cache() {
-	const String path = _cache_path();
+	String path = cache_path;
+	const String legacy_path = "user://solers_ai/models_dev.json";
+	if (!FileAccess::exists(path) && path != legacy_path && FileAccess::exists(legacy_path)) {
+		path = legacy_path;
+	}
 	if (!FileAccess::exists(path)) {
 		return;
 	}
@@ -158,6 +181,7 @@ void SolersModelsDev::_load_cache() {
 }
 
 void SolersModelsDev::initialize() {
+	cache_path = _resolve_cache_path();
 	_load_seed();
 	_load_cache();
 }
@@ -174,8 +198,8 @@ void SolersModelsDev::_refresh_func(void *p_userdata) {
 }
 
 void SolersModelsDev::_run_refresh() {
-	// Best-effort background refresh of the cache for the next launch. Any
-	// failure leaves the seed/cache untouched.
+	// Best-effort background refresh. Any failure leaves the seed/cache
+	// untouched; valid data becomes visible to the current session immediately.
 	Ref<HTTPClient> http = HTTPClient::create();
 	if (http.is_null()) {
 		return;
@@ -240,11 +264,13 @@ void SolersModelsDev::_run_refresh() {
 		return;
 	}
 	const String json = String::utf8((const char *)body.ptr(), body.size());
-	if (JSON::parse_string(json).get_type() != Variant::DICTIONARY) {
+	const Variant parsed = JSON::parse_string(json);
+	if (parsed.get_type() != Variant::DICTIONARY) {
 		return;
 	}
+	_ingest(parsed);
 
-	const String path = _cache_path();
+	const String path = cache_path;
 	DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(path.get_base_dir()));
 	Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
 	if (file.is_valid()) {
@@ -253,28 +279,67 @@ void SolersModelsDev::_run_refresh() {
 }
 
 bool SolersModelsDev::has_provider(const StringName &p_id) const {
+	MutexLock lock(providers_mutex);
 	return providers.has(p_id);
 }
 
 Dictionary SolersModelsDev::get_provider(const StringName &p_id) const {
+	MutexLock lock(providers_mutex);
 	const Dictionary *found = providers.getptr(p_id);
-	return found ? *found : Dictionary();
+	return found ? found->duplicate(true) : Dictionary();
 }
 
 Dictionary SolersModelsDev::get_model(const StringName &p_provider, const String &p_model) const {
+	MutexLock lock(providers_mutex);
 	const Dictionary *found = providers.getptr(p_provider);
 	if (!found) {
 		return Dictionary();
 	}
 	const Dictionary models = found->get("models", Dictionary());
 	const Variant model = models.get(p_model, Variant());
-	return model.get_type() == Variant::DICTIONARY ? (Dictionary)model : Dictionary();
+	return model.get_type() == Variant::DICTIONARY ? Dictionary(model).duplicate(true) : Dictionary();
+}
+
+int SolersModelsDev::input_modality_support(const Dictionary &p_model, const String &p_modality) {
+	const Variant declared = p_model.get("input_modalities", Variant());
+	if (declared.get_type() != Variant::ARRAY || Array(declared).is_empty()) {
+		return -1;
+	}
+	return Array(declared).has(p_modality) ? 1 : 0;
+}
+
+Array SolersModelsDev::reasoning_efforts(const Dictionary &p_model) {
+	Array efforts;
+	for (const Variant &option_value : Array(p_model.get("reasoning_options", Array()))) {
+		if (option_value.get_type() != Variant::DICTIONARY) {
+			continue;
+		}
+		const Dictionary option = option_value;
+		if (option.get("type", String()) != "effort") {
+			continue;
+		}
+		for (const Variant &effort_value : Array(option.get("values", Array()))) {
+			const String effort = String(effort_value).strip_edges();
+			if (!effort.is_empty() && !efforts.has(effort)) {
+				efforts.push_back(effort);
+			}
+		}
+	}
+	if (!efforts.is_empty() || (!p_model.is_empty() && p_model.has("reasoning") && !(bool)p_model["reasoning"])) {
+		return efforts;
+	}
+	// A custom or older catalog entry may support effort without declaring its
+	// levels. Keep the useful generic controls; the remote API remains the judge.
+	efforts.push_back("high");
+	efforts.push_back("xhigh");
+	return efforts;
 }
 
 Array SolersModelsDev::list_providers() const {
+	MutexLock lock(providers_mutex);
 	Array out;
 	for (const KeyValue<StringName, Dictionary> &kv : providers) {
-		out.push_back(kv.value);
+		out.push_back(kv.value.duplicate(true));
 	}
 	return out;
 }

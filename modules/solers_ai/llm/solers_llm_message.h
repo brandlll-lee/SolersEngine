@@ -163,6 +163,8 @@ public:
 // Constructors for canonical request messages, mirroring the role vocabulary.
 class SolersLLMMessage {
 public:
+	static Dictionary encode_image_attachment(const Dictionary &p_attachment);
+
 	static Dictionary system(const String &p_text) {
 		Dictionary m;
 		m["role"] = SolersLLMRole::SYSTEM;
@@ -179,23 +181,29 @@ public:
 
 	// Assistant turn that requested tools. `p_tool_calls` is an Array of
 	// { id, name, arguments(JSON string) }. `p_text` may be empty.
-	static Dictionary assistant(const String &p_text, const Array &p_tool_calls) {
+	static Dictionary assistant(const String &p_text, const Array &p_tool_calls, const Dictionary &p_provider_metadata = Dictionary()) {
 		Dictionary m;
 		m["role"] = SolersLLMRole::ASSISTANT;
 		m["content"] = p_text;
 		if (!p_tool_calls.is_empty()) {
 			m["tool_calls"] = p_tool_calls.duplicate(true);
 		}
+		if (!p_provider_metadata.is_empty()) {
+			m["provider_metadata"] = p_provider_metadata.duplicate(true);
+		}
 		return m;
 	}
 
 	// Result of executing a tool call, fed back to the model next turn.
-	static Dictionary tool_result(const String &p_tool_call_id, const String &p_name, const String &p_content) {
+	static Dictionary tool_result(const String &p_tool_call_id, const String &p_name, const String &p_content, const Array &p_attachments = Array()) {
 		Dictionary m;
 		m["role"] = SolersLLMRole::TOOL;
 		m["tool_call_id"] = p_tool_call_id;
 		m["name"] = p_name;
 		m["content"] = p_content;
+		if (!p_attachments.is_empty()) {
+			m["attachments"] = p_attachments.duplicate(true);
+		}
 		return m;
 	}
 };
