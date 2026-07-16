@@ -85,23 +85,21 @@ jobs:
         continue-on-error: true
 
       - name: Download pre-built ANGLE static libraries
-        uses: dsaltares/fetch-gh-release-asset@1.1.2
-        with:
-          repo: godotengine/godot-angle-static
-          version: tags/chromium/6601.2
-          file: godot-angle-static-x86_64-${{ matrix.compiler == 'gcc' && 'gcc' || 'msvc' }}-release.zip
-          target: angle/angle.zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force angle | Out-Null
+          gh release download chromium/6601.2 --repo godotengine/godot-angle-static --pattern "godot-angle-static-x86_64-${{ matrix.compiler == 'gcc' && 'gcc' || 'msvc' }}-release.zip" --output angle/angle.zip
 
       - name: Extract pre-built ANGLE static libraries
         run: Expand-Archive -Force angle/angle.zip ${{ github.workspace }}/
 
       - name: Download pre-built AccessKit
-        uses: dsaltares/fetch-gh-release-asset@1.1.2
-        with:
-          repo: godotengine/godot-accesskit-c-static
-          version: tags/0.21.2
-          file: accesskit-c-0.21.2.zip
-          target: accesskit-c-0.21.2/accesskit_c.zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force accesskit-c-0.21.2 | Out-Null
+          gh release download 0.21.2 --repo godotengine/godot-accesskit-c-static --pattern accesskit-c-0.21.2.zip --output accesskit-c-0.21.2/accesskit_c.zip
 
       - name: Extract pre-built AccessKit
         run: unzip -o accesskit-c-0.21.2/accesskit_c.zip

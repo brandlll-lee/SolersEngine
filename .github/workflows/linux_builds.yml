@@ -159,12 +159,11 @@ jobs:
           dotnet-version: 8.0.100
 
       - name: Download pre-built AccessKit
-        uses: dsaltares/fetch-gh-release-asset@1.1.2
-        with:
-          repo: godotengine/godot-accesskit-c-static
-          version: tags/0.21.2
-          file: accesskit-c-0.21.2.zip
-          target: accesskit-c-0.21.2/accesskit_c.zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p accesskit-c-0.21.2
+          gh release download 0.21.2 --repo godotengine/godot-accesskit-c-static --pattern accesskit-c-0.21.2.zip --output accesskit-c-0.21.2/accesskit_c.zip
 
       - name: Extract pre-built AccessKit
         run: unzip -o accesskit-c-0.21.2/accesskit_c.zip
