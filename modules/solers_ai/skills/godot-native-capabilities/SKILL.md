@@ -1,14 +1,6 @@
 ---
 name: godot-native-capabilities
 description: On-demand map of Godot's native editor, rendering, scene, scripting, UI, audio, physics, navigation, XR, networking, and asset APIs. Use it to choose a native class or service before inventing code.
-requires_tools:
-  - class.search
-  - class.introspect
-  - tool.search
-  - skill.read
-  - project.search_files
-  - resource.get_info
-  - editor.get_snapshot
 ---
 
 # Godot Native Capabilities

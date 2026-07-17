@@ -333,6 +333,9 @@ static StringName solers_tool_glyph_for_metadata(const Dictionary &p_tool) {
 	if (permission == "edit_files") {
 		return SNAME("tool_file");
 	}
+	if (permission == "install_plugin") {
+		return SNAME("shield");
+	}
 	if (permission == "run_project") {
 		return SNAME("tool_run");
 	}

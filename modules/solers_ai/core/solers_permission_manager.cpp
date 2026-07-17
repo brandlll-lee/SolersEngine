@@ -53,6 +53,7 @@ void SolersPermissionManager::_bind_methods() {
 	BIND_ENUM_CONSTANT(PERMISSION_RUN_PROJECT);
 	BIND_ENUM_CONSTANT(PERMISSION_EXPORT_BUILD);
 	BIND_ENUM_CONSTANT(PERMISSION_NETWORK);
+	BIND_ENUM_CONSTANT(PERMISSION_INSTALL_PLUGIN);
 	BIND_ENUM_CONSTANT(PERMISSION_SHELL);
 
 	BIND_ENUM_CONSTANT(DECISION_UNKNOWN);
@@ -85,6 +86,8 @@ String SolersPermissionManager::get_permission_name(Permission p_permission) con
 			return "export_build";
 		case PERMISSION_NETWORK:
 			return "network";
+		case PERMISSION_INSTALL_PLUGIN:
+			return "install_plugin";
 		case PERMISSION_SHELL:
 			return "shell";
 	}
@@ -93,6 +96,9 @@ String SolersPermissionManager::get_permission_name(Permission p_permission) con
 }
 
 bool SolersPermissionManager::is_auto_approved(Permission p_permission) const {
+	if (p_permission == PERMISSION_INSTALL_PLUGIN) {
+		return false;
+	}
 	return auto_approve_all || auto_approved_permissions.has(p_permission);
 }
 
@@ -105,6 +111,9 @@ void SolersPermissionManager::set_auto_approve_all(bool p_enabled) {
 }
 
 void SolersPermissionManager::set_auto_approve_permission(Permission p_permission, bool p_enabled) {
+	if (p_permission == PERMISSION_INSTALL_PLUGIN) {
+		return;
+	}
 	if (p_enabled) {
 		auto_approved_permissions.insert(p_permission);
 	} else if (p_permission != PERMISSION_OBSERVE) {
@@ -113,6 +122,9 @@ void SolersPermissionManager::set_auto_approve_permission(Permission p_permissio
 }
 
 bool SolersPermissionManager::get_auto_approve_permission(Permission p_permission) const {
+	if (p_permission == PERMISSION_INSTALL_PLUGIN) {
+		return false;
+	}
 	return auto_approved_permissions.has(p_permission);
 }
 
@@ -123,7 +135,7 @@ Dictionary SolersPermissionManager::request_user_approval(const StringName &p_to
 	request["args"] = p_args;
 	request["permission_id"] = (int)p_permission;
 	request["permission"] = get_permission_name(p_permission);
-	if (auto_approve_all) {
+	if (auto_approve_all && p_permission != PERMISSION_INSTALL_PLUGIN) {
 		approved_once_requests[request["id"]] = p_tool_name;
 		return request;
 	}

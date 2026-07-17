@@ -94,8 +94,7 @@ class SolersAgentSession : public Object {
 	Array tool_queue; // calls queued for paced execution this step
 	Array failed_resource_accesses;
 	HashMap<String, Dictionary> readonly_cache;
-	HashMap<String, Dictionary> capture_evidence_cache;
-	HashSet<StringName> activated_tools;
+	HashSet<StringName> task_deferred_tools;
 	Array turn_attachments;
 	int tool_queue_index = 0; // next provider-ordered call to start
 	int tool_delivery_index = 0; // next provider-ordered terminal result to deliver
@@ -145,9 +144,6 @@ class SolersAgentSession : public Object {
 	int compaction_request_attempt = 0;
 	int overflow_compaction_attempts = 0;
 	bool compaction_triggered_by_overflow = false;
-	bool done_requested = false;
-	String done_message;
-	Dictionary done_verification;
 	bool turn_runtime_owned = false;
 	SolersToolRegistry *session_tools_registry = nullptr;
 	String project_path;
@@ -161,12 +157,10 @@ class SolersAgentSession : public Object {
 	mutable Mutex godot_log_mutex;
 	int godot_log_error_count = 0;
 	int godot_log_warning_count = 0;
-	Dictionary unresolved_tool_errors; // stable root failure_id -> failure record
 	HashMap<uint64_t, Dictionary> worker_tool_audits;
 	Dictionary main_thread_tool_audit; // active only while a native handler is on-stack
 	Dictionary attributable_tool_errors; // call_id -> scoped Godot error evidence
 	uint64_t authored_revision = 0;
-	uint64_t turn_started_authored_revision = 0;
 	uint64_t runtime_epoch = 0;
 	uint64_t scene_revision = 0;
 	uint64_t geometry_revision = 0;
@@ -175,7 +169,6 @@ class SolersAgentSession : public Object {
 	uint64_t camera_capture_revision = 0;
 	uint64_t runtime_capture_revision = 0;
 	uint64_t scene_validation_revision = 0;
-	Dictionary scene_validation_evidence;
 	Dictionary render_artifacts; // artifact kind -> versioned native-tool result
 	Array pending_godot_diagnostics;
 	bool background_resume_suppressed = false;
@@ -194,14 +187,7 @@ class SolersAgentSession : public Object {
 	Dictionary _consume_attributable_tool_error(const String &p_call_id);
 	Dictionary _take_godot_diagnostics();
 	void _flush_godot_diagnostics();
-	String _record_tool_failure(const String &p_call_id, const String &p_tool, const Dictionary &p_error, const Array &p_resource_accesses, const String &p_retry_of);
-	void _resolve_tool_failure(const String &p_retry_of, const String &p_tool, const Array &p_resource_accesses);
-	int _unresolved_error_count() const;
-	Dictionary _completion_state() const;
-	Dictionary _completion_state_for_done(const Dictionary &p_args) const;
-	Dictionary _find_user_attachment(const String &p_id) const;
 	bool _poll_state_observation();
-	void _append_state_observation();
 	String _readonly_cache_key(const StringName &p_name, const Dictionary &p_args) const;
 	Array _collect_tools() const;
 	bool _refresh_active_model_limits();
@@ -239,11 +225,6 @@ class SolersAgentSession : public Object {
 	bool _is_awaiting_approval_result(const Dictionary &p_result) const;
 	void _register_session_tools();
 	Dictionary _handle_update_plan(const Dictionary &p_args);
-	Dictionary _handle_done(const Dictionary &p_args);
-	Dictionary _poll_done_verification();
-	bool _is_done_verification_ready() const;
-	Dictionary _done_pending() const;
-	void _stop_done_runtime();
 	Dictionary _commit_dirty_scene_if_needed();
 	bool _append_background_asset_deltas(bool p_waited_only);
 	void _resume_next_background_asset();
@@ -266,7 +247,6 @@ public:
 	void set_permission_manager(SolersPermissionManager *p_permission_manager) { permission_manager = p_permission_manager; }
 
 	static Dictionary validate_plan(const Dictionary &p_args);
-	static Dictionary validate_done(const Dictionary &p_args, const Dictionary &p_state);
 	Dictionary start_turn(const Dictionary &p_args); // { prompt: String }
 	void poll();
 	void shutdown();

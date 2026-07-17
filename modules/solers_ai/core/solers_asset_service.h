@@ -53,6 +53,7 @@ class SolersAssetService : public Object {
 	Dictionary ambientcg_assets_cache;
 	Dictionary polyhaven_assets_cache;
 	Dictionary catalog_inspections;
+	Dictionary plugin_inspections;
 
 	static String _asset_root();
 	static String _asset_dir(const String &p_asset_id);
@@ -109,11 +110,16 @@ public:
 	static Array normalize_polyhaven_variants(const Dictionary &p_files, const String &p_kind);
 	static String match_catalog_variant_id(const Array &p_variants, const String &p_id);
 	static Array rank_catalog_assets(const Array &p_assets, const String &p_query);
+	static bool is_trusted_plugin(const Dictionary &p_args);
 	Dictionary generate(const Dictionary &p_args);
 	Dictionary generate_for_session(const Dictionary &p_args, const String &p_session_id);
 	Dictionary catalog_search(const Dictionary &p_args, const SafeFlag *p_cancel_requested = nullptr);
 	Dictionary catalog_inspect(const Dictionary &p_args, const SafeFlag *p_cancel_requested = nullptr);
 	Dictionary catalog_acquire(const Dictionary &p_args, const String &p_session_id);
+	Dictionary plugin_search(const Dictionary &p_args, const SafeFlag *p_cancel_requested = nullptr);
+	Dictionary plugin_inspect(const Dictionary &p_args, const SafeFlag *p_cancel_requested = nullptr);
+	Dictionary plugin_list(const Dictionary &p_args) const;
+	Dictionary plugin_ensure(const Dictionary &p_args);
 	Dictionary wait_jobs(const Dictionary &p_args, const String &p_session_id) const;
 	Dictionary capabilities(const Dictionary &p_args) const;
 	Dictionary run_operation(const Dictionary &p_args);

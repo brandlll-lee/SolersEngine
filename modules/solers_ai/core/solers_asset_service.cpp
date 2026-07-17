@@ -11,6 +11,7 @@
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
 #include "core/crypto/crypto_core.h"
+#include "core/extension/gdextension_manager.h"
 #include "core/io/config_file.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
@@ -24,7 +25,11 @@
 #include "core/object/worker_thread_pool.h"
 #include "core/os/os.h"
 #include "core/os/time.h"
+#include "core/version.h"
+#include "editor/asset_library/editor_asset_installer.h"
+#include "editor/editor_interface.h"
 #include "editor/file_system/editor_file_system.h"
+#include "editor/file_system/editor_paths.h"
 #include "editor/settings/editor_settings.h"
 #include "modules/solers_ai/core/solers_geometry_facts.h"
 #include "modules/solers_ai/core/solers_secret_store.h"
@@ -38,6 +43,171 @@
 // every in-process reader outside the short replace window so a reader can
 // never observe the temporary absence created by DirAccess on Windows.
 static Mutex solers_asset_manifest_mutex;
+
+static constexpr const char *SOLERS_PLUGIN_LOCK_PATH = "res://.solers/plugins.lock.json";
+static constexpr const char *SOLERS_TERRAIN3D_ID = "terrain3d";
+static constexpr const char *SOLERS_TERRAIN3D_VERSION = "1.0.2-stable";
+static constexpr const char *SOLERS_TERRAIN3D_SHA256 = "a071850250ec5e596aa54da61c01d75768774eb379ee997584d426a45f4884a2";
+static constexpr const char *SOLERS_TERRAIN3D_ARCHIVE = "Terrain3D_v1.0.2-stable.zip";
+
+static Dictionary _solers_terrain3d_package() {
+	Dictionary package;
+	package["source"] = "bundled";
+	package["plugin_id"] = SOLERS_TERRAIN3D_ID;
+	package["asset_id"] = "3892";
+	package["title"] = "Terrain3D";
+	package["author"] = "TokisanGames";
+	package["version"] = SOLERS_TERRAIN3D_VERSION;
+	package["sha256"] = SOLERS_TERRAIN3D_SHA256;
+	package["license"] = "MIT";
+	package["godot_version"] = "4.4+";
+	package["browse_url"] = "https://github.com/TokisanGames/Terrain3D";
+	package["documentation_url"] = "https://terrain3d.readthedocs.io/en/stable/";
+	package["description"] = "Verified first-party Terrain3D package for large editable terrain, LOD, material painting, holes, foliage, collisions, and heightmap import.";
+	package["trusted"] = true;
+	return package;
+}
+
+static String _solers_plugin_key(const String &p_source, const String &p_plugin_id) {
+	return p_source.to_lower() + ":" + p_plugin_id.to_lower();
+}
+
+static String _solers_plugin_inspection_key(const String &p_source, const String &p_plugin_id, const String &p_version, const String &p_sha256) {
+	return _solers_plugin_key(p_source, p_plugin_id) + ":" + p_version.to_lower() + ":" + p_sha256.to_lower();
+}
+
+static String _solers_plugin_cache_root() {
+	return EditorPaths::get_singleton()->get_cache_dir().path_join("solers/plugins");
+}
+
+static String _solers_terrain3d_archive_path() {
+	const String override_path = OS::get_singleton()->get_environment("SOLERS_TERRAIN3D_ARCHIVE").strip_edges();
+	if (!override_path.is_empty() && FileAccess::exists(override_path)) {
+		return override_path;
+	}
+	const String bundled = OS::get_singleton()->get_executable_path().get_base_dir().path_join("solers_bundles").path_join(SOLERS_TERRAIN3D_ARCHIVE);
+	if (FileAccess::exists(bundled)) {
+		return bundled;
+	}
+	return String();
+}
+
+static Dictionary _solers_inspect_plugin_archive(const String &p_archive_path, bool p_allow_strip_toplevel) {
+	Dictionary inspected = EditorAssetPackageInstaller::inspect_package(p_archive_path, "res://", false);
+	if (!(bool)inspected.get("ok", false)) {
+		return inspected;
+	}
+	auto has_plugin_config = [](const Dictionary &p_result) {
+		const Dictionary data = p_result.get("data", Dictionary());
+		const Array files = data.get("files", Array());
+		for (const Variant &value : files) {
+			const Dictionary file = value;
+			const String target = file.get("target_path", String());
+			if (target.begins_with("res://addons/") && target.ends_with("/plugin.cfg")) {
+				return true;
+			}
+		}
+		return false;
+	};
+	if (!has_plugin_config(inspected) && p_allow_strip_toplevel) {
+		const Dictionary stripped = EditorAssetPackageInstaller::inspect_package(p_archive_path, "res://", true);
+		if ((bool)stripped.get("ok", false) && has_plugin_config(stripped)) {
+			inspected = stripped;
+		}
+	}
+	if (!has_plugin_config(inspected)) {
+		Dictionary error;
+		error["code"] = "PLUGIN_PACKAGE_INVALID";
+		error["message"] = "The package does not contain an addons/<plugin>/plugin.cfg entry.";
+		error["recoverable"] = false;
+		Dictionary result;
+		result["ok"] = false;
+		result["error"] = error;
+		return result;
+	}
+
+	const Dictionary package_data = inspected.get("data", Dictionary());
+	const Array files = package_data.get("files", Array());
+	HashSet<String> roots;
+	Array plugin_names;
+	Array plugin_configs;
+	for (const Variant &value : files) {
+		const Dictionary file = value;
+		const String target = file.get("target_path", String());
+		if (target.begins_with("res://addons/") && target.ends_with("/plugin.cfg")) {
+			const String root = target.get_base_dir();
+			roots.insert(root);
+			plugin_names.push_back(root.get_file());
+			plugin_configs.push_back(target);
+		}
+	}
+
+	Dictionary mappings;
+	PackedStringArray selected;
+	Array selected_files;
+	Array target_files;
+	Array gdextensions;
+	Array documentation;
+	Array conflicts;
+	for (const Variant &value : files) {
+		const Dictionary file = value;
+		if ((bool)file.get("directory", false)) {
+			continue;
+		}
+		const String target = file.get("target_path", String());
+		bool owned = false;
+		for (const String &root : roots) {
+			if (target.begins_with(root + "/")) {
+				owned = true;
+				break;
+			}
+		}
+		if (!owned) {
+			continue;
+		}
+		const String source = file.get("source_path", String());
+		mappings[source] = file.get("relative_path", String());
+		selected.push_back(source);
+		selected_files.push_back(file);
+		target_files.push_back(target);
+		if ((bool)file.get("conflict", false)) {
+			conflicts.push_back(target);
+		}
+		if (target.ends_with(".gdextension")) {
+			gdextensions.push_back(target);
+		}
+		const String lower_file = target.get_file().to_lower();
+		if (lower_file.begins_with("readme") || lower_file.begins_with("license") || lower_file.ends_with(".md")) {
+			documentation.push_back(target);
+		}
+	}
+
+	Dictionary data;
+	data["files"] = selected_files;
+	data["target_files"] = target_files;
+	data["plugin_names"] = plugin_names;
+	data["plugin_configs"] = plugin_configs;
+	data["gdextensions"] = gdextensions;
+	data["documentation"] = documentation;
+	data["conflicts"] = conflicts;
+	data["contains_executable_code"] = true;
+	data["total_uncompressed_size"] = package_data.get("total_uncompressed_size", 0);
+	data["_archive_path"] = p_archive_path;
+	data["_mappings"] = mappings;
+	data["_selected_files"] = selected;
+	Dictionary result;
+	result["ok"] = true;
+	result["data"] = data;
+	return result;
+}
+
+static Dictionary _solers_public_plugin_inspection(const Dictionary &p_inspection) {
+	Dictionary out = p_inspection.duplicate(true);
+	out.erase("_archive_path");
+	out.erase("_mappings");
+	out.erase("_selected_files");
+	return out;
+}
 
 static EditorFileSystem *_solers_editor_filesystem() {
 	return Engine::get_singleton()->is_editor_hint() ? EditorFileSystem::get_singleton() : nullptr;
@@ -2701,6 +2871,363 @@ Array SolersAssetService::rank_catalog_assets(const Array &p_assets, const Strin
 		ranked.push_back(item);
 	}
 	return ranked;
+}
+
+bool SolersAssetService::is_trusted_plugin(const Dictionary &p_args) {
+	if (String(p_args.get("source", String())).to_lower() != "bundled" || String(p_args.get("plugin_id", String())).to_lower() != SOLERS_TERRAIN3D_ID) {
+		return false;
+	}
+	const String version = String(p_args.get("version", String()));
+	const String sha256 = String(p_args.get("sha256", String())).to_lower();
+	return (version.is_empty() || version == String(SOLERS_TERRAIN3D_VERSION)) && (sha256.is_empty() || sha256 == String(SOLERS_TERRAIN3D_SHA256));
+}
+
+Dictionary SolersAssetService::plugin_search(const Dictionary &p_args, const SafeFlag *p_cancel_requested) {
+	const String query = String(p_args.get("query", String())).strip_edges();
+	if (query.is_empty()) {
+		return _error("INVALID_ARGUMENT", "Plugin search requires a non-empty query.");
+	}
+	const int limit = CLAMP((int)p_args.get("limit", 20), 1, 50);
+	Array plugins;
+	const Dictionary trusted = _solers_terrain3d_package();
+	if (String(trusted.get("title", String())).to_lower().contains(query.to_lower()) || String(trusted.get("description", String())).to_lower().contains(query.to_lower())) {
+		plugins.push_back(trusted);
+	}
+
+	const String url = vformat("https://godotengine.org/asset-library/api/asset?godot_version=%d.%d&filter=%s&page=0&max_results=%d", GODOT_VERSION_MAJOR, GODOT_VERSION_MINOR, query.uri_encode(), limit);
+	const Dictionary response = _http_request("GET", url, Vector<String>(), PackedByteArray(), 60000, 4 * 1024 * 1024, p_cancel_requested);
+	if (!(bool)response.get("ok", false)) {
+		const Dictionary error = response.get("error", Dictionary());
+		return _error(String(error.get("code", String())) == "HTTP_CANCELLED" ? "TOOL_CANCELLED" : "PLUGIN_SEARCH_FAILED", String(error.get("message", "Godot Asset Library search failed.")));
+	}
+	const Dictionary root = _parse_json_body(response);
+	const Array results = root.get("result", Array());
+	for (const Variant &value : results) {
+		if (plugins.size() >= limit) {
+			break;
+		}
+		const Dictionary asset = value;
+		if (String(asset.get("asset_id", String())) == "3892") {
+			continue;
+		}
+		Dictionary plugin;
+		plugin["source"] = "assetlib";
+		plugin["plugin_id"] = asset.get("asset_id", String());
+		plugin["asset_id"] = asset.get("asset_id", String());
+		plugin["title"] = asset.get("title", String());
+		plugin["author"] = asset.get("author", String());
+		plugin["version"] = asset.get("version_string", String());
+		plugin["license"] = asset.get("cost", String());
+		plugin["godot_version"] = asset.get("godot_version", String());
+		plugin["category"] = asset.get("category", String());
+		plugin["support_level"] = asset.get("support_level", String());
+		plugin["trusted"] = false;
+		plugins.push_back(plugin);
+	}
+	Dictionary data;
+	data["plugins"] = plugins;
+	data["count"] = plugins.size();
+	data["total_items"] = root.get("total_items", results.size());
+	return _ok(data);
+}
+
+Dictionary SolersAssetService::plugin_inspect(const Dictionary &p_args, const SafeFlag *p_cancel_requested) {
+	const String source = String(p_args.get("source", String())).strip_edges().to_lower();
+	const String plugin_id = String(p_args.get("plugin_id", String())).strip_edges().to_lower();
+	if ((source != "bundled" && source != "assetlib") || plugin_id.is_empty()) {
+		return _error("INVALID_ARGUMENT", "Plugin inspection requires source bundled or assetlib and an exact plugin_id.");
+	}
+
+	Dictionary plugin_metadata;
+	String archive_path;
+	String expected_sha256;
+	const bool trusted = source == "bundled";
+	if (trusted) {
+		if (plugin_id != SOLERS_TERRAIN3D_ID) {
+			return _error("PLUGIN_NOT_FOUND", vformat("Unknown bundled plugin: %s", plugin_id));
+		}
+		plugin_metadata = _solers_terrain3d_package();
+		archive_path = _solers_terrain3d_archive_path();
+		expected_sha256 = plugin_metadata.get("sha256", String());
+		if (archive_path.is_empty()) {
+			return _error("PLUGIN_BUNDLE_MISSING", "The verified Terrain3D bundle is missing. Rebuild Solers or set SOLERS_TERRAIN3D_ARCHIVE to the official archive.", false);
+		}
+	} else {
+		const Dictionary response = _http_request("GET", "https://godotengine.org/asset-library/api/asset/" + plugin_id.uri_encode(), Vector<String>(), PackedByteArray(), 60000, 4 * 1024 * 1024, p_cancel_requested);
+		if (!(bool)response.get("ok", false)) {
+			const Dictionary error = response.get("error", Dictionary());
+			return _error(String(error.get("code", String())) == "HTTP_CANCELLED" ? "TOOL_CANCELLED" : "PLUGIN_INSPECTION_FAILED", String(error.get("message", "Godot Asset Library inspection failed.")));
+		}
+		const Dictionary detail = _parse_json_body(response);
+		if (detail.is_empty() || String(detail.get("type", String())) != "addon" || String(detail.get("download_url", String())).is_empty()) {
+			return _error("PLUGIN_NOT_FOUND", "The requested Asset Library entry is not an installable addon.");
+		}
+		const PackedStringArray required_version = String(detail.get("godot_version", String())).split(".", false);
+		if (required_version.size() >= 2 && (required_version[0].to_int() != GODOT_VERSION_MAJOR || required_version[1].to_int() > GODOT_VERSION_MINOR)) {
+			return _error("PLUGIN_INCOMPATIBLE", vformat("Plugin requires Godot %s, but this editor is %d.%d.", detail.get("godot_version", String()), GODOT_VERSION_MAJOR, GODOT_VERSION_MINOR), false);
+		}
+		plugin_metadata["source"] = source;
+		plugin_metadata["plugin_id"] = plugin_id;
+		plugin_metadata["asset_id"] = plugin_id;
+		plugin_metadata["title"] = detail.get("title", String());
+		plugin_metadata["author"] = detail.get("author", String());
+		plugin_metadata["version"] = detail.get("version_string", String());
+		plugin_metadata["source_version"] = detail.get("version", String());
+		plugin_metadata["license"] = detail.get("cost", String());
+		plugin_metadata["godot_version"] = detail.get("godot_version", String());
+		plugin_metadata["browse_url"] = detail.get("browse_url", String());
+		plugin_metadata["issues_url"] = detail.get("issues_url", String());
+		plugin_metadata["description"] = detail.get("description", String());
+		plugin_metadata["support_level"] = detail.get("support_level", String());
+		plugin_metadata["trusted"] = false;
+		expected_sha256 = String(detail.get("download_hash", String())).to_lower();
+		const String cache_dir = _solers_plugin_cache_root().path_join("assetlib").path_join(_safe_slug(plugin_id)).path_join(_safe_slug(plugin_metadata.get("version", String())));
+		archive_path = cache_dir.path_join("package.zip");
+		if ((bool)p_args.get("refresh", false) || !FileAccess::exists(archive_path)) {
+			const Dictionary download = _http_request("GET", detail.get("download_url", String()), Vector<String>(), PackedByteArray(), 180000, 512LL * 1024LL * 1024LL, p_cancel_requested);
+			if (!(bool)download.get("ok", false)) {
+				const Dictionary error = download.get("error", Dictionary());
+				return _error(String(error.get("code", String())) == "HTTP_CANCELLED" ? "TOOL_CANCELLED" : "PLUGIN_DOWNLOAD_FAILED", String(error.get("message", "Plugin download failed.")));
+			}
+			String write_error;
+			if (!_write_bytes_atomic(archive_path, download.get("body", PackedByteArray()), write_error)) {
+				return _error("PLUGIN_CACHE_WRITE_FAILED", write_error, false);
+			}
+		}
+	}
+
+	const String actual_sha256 = FileAccess::get_sha256(archive_path).to_lower();
+	if (actual_sha256.is_empty() || (!expected_sha256.is_empty() && actual_sha256 != expected_sha256)) {
+		if (!trusted) {
+			DirAccess::remove_absolute(archive_path);
+		}
+		return _error("PLUGIN_HASH_MISMATCH", vformat("Plugin archive SHA-256 mismatch. Expected %s, got %s.", expected_sha256, actual_sha256), false);
+	}
+	Dictionary package = _solers_inspect_plugin_archive(archive_path, !trusted);
+	if (!(bool)package.get("ok", false)) {
+		return package;
+	}
+	Dictionary inspection = package.get("data", Dictionary());
+	for (const Variant *key = plugin_metadata.next(nullptr); key; key = plugin_metadata.next(key)) {
+		inspection[*key] = plugin_metadata[*key];
+	}
+	inspection["sha256"] = actual_sha256;
+	inspection["inspection_id"] = _solers_plugin_inspection_key(source, plugin_id, inspection.get("version", String()), actual_sha256);
+	const String inspection_key = inspection.get("inspection_id", String());
+	{
+		MutexLock lock(catalog_cache_mutex);
+		plugin_inspections[inspection_key] = inspection.duplicate(true);
+	}
+	return _ok(_solers_public_plugin_inspection(inspection));
+}
+
+Dictionary SolersAssetService::plugin_list(const Dictionary &p_args) const {
+	const Dictionary lock_file = _read_json_file(SOLERS_PLUGIN_LOCK_PATH);
+	const Dictionary installed_plugins = lock_file.get("plugins", Dictionary());
+	Array plugins;
+	for (const Variant *key = installed_plugins.next(nullptr); key; key = installed_plugins.next(key)) {
+		const Dictionary entry = installed_plugins[*key];
+		const Array files = entry.get("files", Array());
+		bool installed = !files.is_empty();
+		Array load_errors = entry.get("load_errors", Array());
+		for (const Variant &file : files) {
+			if (!FileAccess::exists(String(file))) {
+				installed = false;
+				load_errors.push_back(vformat("Missing installed file: %s", file));
+			}
+		}
+		bool enabled = installed;
+		const Array names = entry.get("plugin_names", Array());
+		EditorInterface *editor = EditorInterface::get_singleton();
+		for (const Variant &name : names) {
+			enabled = enabled && editor && editor->is_plugin_enabled(String(name));
+		}
+		Dictionary item = entry.duplicate(true);
+		item["key"] = *key;
+		item["installed"] = installed;
+		item["enabled"] = enabled;
+		item["load_errors"] = load_errors;
+		plugins.push_back(item);
+	}
+	Dictionary data;
+	data["plugins"] = plugins;
+	data["count"] = plugins.size();
+	data["lock_path"] = SOLERS_PLUGIN_LOCK_PATH;
+	return _ok(data);
+}
+
+Dictionary SolersAssetService::plugin_ensure(const Dictionary &p_args) {
+	const String source = String(p_args.get("source", String())).strip_edges().to_lower();
+	const String plugin_id = String(p_args.get("plugin_id", String())).strip_edges().to_lower();
+	const String version = String(p_args.get("version", String())).strip_edges();
+	const String sha256 = String(p_args.get("sha256", String())).strip_edges().to_lower();
+	if ((source != "bundled" && source != "assetlib") || plugin_id.is_empty() || version.is_empty() || sha256.length() != 64) {
+		return _error("INVALID_ARGUMENT", "Plugin ensure requires the exact source, plugin_id, version, and SHA-256 returned by plugin.inspect.");
+	}
+	const String inspection_key = _solers_plugin_inspection_key(source, plugin_id, version, sha256);
+	Dictionary inspection;
+	{
+		MutexLock lock(catalog_cache_mutex);
+		inspection = plugin_inspections.get(inspection_key, Dictionary()).duplicate(true);
+	}
+	if (inspection.is_empty()) {
+		return _error("PLUGIN_INSPECTION_REQUIRED", "Inspect this exact plugin version before installing it. Installation never guesses or downloads executable code implicitly.");
+	}
+
+	Dictionary lock_file = _read_json_file(SOLERS_PLUGIN_LOCK_PATH);
+	if (lock_file.is_empty()) {
+		lock_file["version"] = 1;
+		lock_file["plugins"] = Dictionary();
+	}
+	Dictionary installed_plugins = lock_file.get("plugins", Dictionary());
+	const String plugin_key = _solers_plugin_key(source, plugin_id);
+	const Dictionary previous = installed_plugins.get(plugin_key, Dictionary());
+	const Array target_files = inspection.get("target_files", Array());
+	bool files_present = !target_files.is_empty();
+	for (const Variant &file : target_files) {
+		files_present = files_present && FileAccess::exists(String(file));
+	}
+	const bool unchanged = files_present && String(previous.get("version", String())) == version && String(previous.get("sha256", String())).to_lower() == sha256;
+
+	Dictionary entry;
+	entry["source"] = source;
+	entry["plugin_id"] = plugin_id;
+	entry["asset_id"] = inspection.get("asset_id", plugin_id);
+	entry["title"] = inspection.get("title", plugin_id);
+	entry["author"] = inspection.get("author", String());
+	entry["version"] = version;
+	entry["sha256"] = sha256;
+	entry["license"] = inspection.get("license", String());
+	entry["browse_url"] = inspection.get("browse_url", String());
+	entry["files"] = target_files;
+	entry["plugin_names"] = inspection.get("plugin_names", Array());
+	entry["plugin_configs"] = inspection.get("plugin_configs", Array());
+	entry["gdextensions"] = inspection.get("gdextensions", Array());
+	entry["desired_enabled"] = (bool)p_args.get("enable", true);
+	entry["installed_at_unix"] = (int64_t)Time::get_singleton()->get_unix_time_from_system();
+	installed_plugins[plugin_key] = entry;
+	lock_file["plugins"] = installed_plugins;
+
+	Dictionary install_result;
+	if (!unchanged) {
+		HashSet<String> new_files;
+		for (const Variant &file : target_files) {
+			new_files.insert(String(file));
+		}
+		PackedStringArray overwrites;
+		PackedStringArray removals;
+		const Array previous_files = previous.get("files", Array());
+		for (const Variant &file : previous_files) {
+			const String path = file;
+			if (new_files.has(path)) {
+				overwrites.push_back(path);
+			} else {
+				removals.push_back(path);
+			}
+		}
+		install_result = EditorAssetPackageInstaller::install_package(inspection.get("_archive_path", String()), "res://", inspection.get("_mappings", Dictionary()), inspection.get("_selected_files", PackedStringArray()), overwrites, removals, SOLERS_PLUGIN_LOCK_PATH, lock_file);
+		if (!(bool)install_result.get("ok", false)) {
+			return install_result;
+		}
+	}
+
+	EditorFileSystem *filesystem = _solers_editor_filesystem();
+	if (filesystem) {
+		filesystem->scan_changes();
+	}
+	Array load_errors;
+	Vector<String> registered_classes;
+	bool restart_required = false;
+	GDExtensionManager *extension_manager = GDExtensionManager::get_singleton();
+	const Array gdextensions = inspection.get("gdextensions", Array());
+	for (const Variant &value : gdextensions) {
+		const String extension_path = value;
+		const GDExtensionManager::LoadStatus status = extension_manager ? extension_manager->load_extension(extension_path) : GDExtensionManager::LOAD_STATUS_FAILED;
+		if (status == GDExtensionManager::LOAD_STATUS_NEEDS_RESTART) {
+			restart_required = true;
+			load_errors.push_back(vformat("%s requires an editor restart before it can load.", extension_path));
+		} else if (status != GDExtensionManager::LOAD_STATUS_OK && status != GDExtensionManager::LOAD_STATUS_ALREADY_LOADED) {
+			restart_required = true;
+			load_errors.push_back(vformat("Could not load GDExtension %s (status %d).", extension_path, status));
+		}
+		if (extension_manager) {
+			const Ref<GDExtension> extension = extension_manager->get_extension(extension_path);
+			if (extension.is_valid()) {
+				List<StringName> classes;
+				ClassDB::get_extension_class_list(extension, &classes);
+				for (const StringName &class_name : classes) {
+					registered_classes.push_back(String(class_name));
+				}
+			}
+		}
+	}
+	registered_classes.sort();
+	Array class_list;
+	for (const String &class_name : registered_classes) {
+		class_list.push_back(class_name);
+	}
+
+	const bool should_enable = (bool)p_args.get("enable", true);
+	EditorInterface *editor = EditorInterface::get_singleton();
+	const Array plugin_names = inspection.get("plugin_names", Array());
+	bool enabled = plugin_names.is_empty();
+	if (should_enable) {
+		for (const Variant &value : plugin_names) {
+			const String plugin_name = value;
+			if (editor && !editor->is_plugin_enabled(plugin_name) && !restart_required) {
+				editor->set_plugin_enabled(plugin_name, true);
+			}
+		}
+	}
+	if (!plugin_names.is_empty()) {
+		enabled = editor != nullptr;
+		for (const Variant &value : plugin_names) {
+			enabled = enabled && editor->is_plugin_enabled(String(value));
+		}
+	}
+	if (should_enable && !enabled) {
+		restart_required = true;
+		PackedStringArray enabled_plugins;
+		const Variant enabled_setting = ProjectSettings::get_singleton()->get("editor_plugins/enabled");
+		if (enabled_setting.get_type() == Variant::PACKED_STRING_ARRAY) {
+			enabled_plugins = enabled_setting;
+		} else if (enabled_setting.get_type() == Variant::ARRAY) {
+			const Array enabled_array = enabled_setting;
+			for (const Variant &value : enabled_array) {
+				enabled_plugins.push_back(String(value));
+			}
+		}
+		const Array plugin_configs = inspection.get("plugin_configs", Array());
+		for (const Variant &config : plugin_configs) {
+			const String path = config;
+			if (!enabled_plugins.has(path)) {
+				enabled_plugins.push_back(path);
+			}
+		}
+		ProjectSettings::get_singleton()->set("editor_plugins/enabled", enabled_plugins);
+		ProjectSettings::get_singleton()->save();
+	}
+
+	entry["registered_classes"] = class_list;
+	entry["enabled"] = enabled;
+	entry["restart_required"] = restart_required;
+	entry["load_errors"] = load_errors;
+	installed_plugins[plugin_key] = entry;
+	lock_file["plugins"] = installed_plugins;
+	String lock_error;
+	const bool lock_updated = _write_json_atomic(SOLERS_PLUGIN_LOCK_PATH, lock_file, lock_error);
+	Dictionary data;
+	data["plugin"] = entry;
+	data["installed"] = !unchanged;
+	data["idempotent"] = unchanged;
+	data["enabled"] = enabled;
+	data["restart_required"] = restart_required;
+	data["registered_classes"] = class_list;
+	data["load_errors"] = load_errors;
+	if (!lock_updated) {
+		data["lock_update_error"] = lock_error;
+	}
+	return _ok(data);
 }
 
 Dictionary SolersAssetService::catalog_search(const Dictionary &p_args, const SafeFlag *p_cancel_requested) {

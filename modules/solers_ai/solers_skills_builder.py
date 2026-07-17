@@ -18,70 +18,29 @@ def _unquote(value: str) -> str:
     return value
 
 
-def _parse_scalar_list(value: str) -> list[str]:
-    value = value.strip()
-    if not value:
-        return []
-    if value.startswith("[") and value.endswith("]"):
-        inner = value[1:-1].strip()
-        if not inner:
-            return []
-        return [_unquote(part.strip()) for part in inner.split(",") if part.strip()]
-    return [_unquote(part.strip()) for part in value.split(",") if part.strip()]
-
-
 def _parse_frontmatter(content: str) -> dict[str, object]:
     match = _FRONTMATTER_RE.match(content.replace("\r\n", "\n"))
     if not match:
         raise ValueError("missing YAML frontmatter delimited by ---")
 
     fields: dict[str, object] = {}
-    required_tools: list[str] = []
-    in_requires_tools = False
-
     for raw_line in match.group(1).split("\n"):
         line = raw_line.strip()
         if not line:
             continue
-
-        if line.startswith("- "):
-            if not in_requires_tools:
-                raise ValueError("list item outside requires_tools")
-            tool = _unquote(line[2:].strip())
-            if not tool:
-                raise ValueError("empty requires_tools entry")
-            required_tools.append(tool)
-            continue
-
-        in_requires_tools = False
         if ":" not in line:
             raise ValueError(f"invalid frontmatter line: {raw_line}")
         key, value = line.split(":", 1)
         key = key.strip()
         value = value.strip()
-
-        if key == "requires_tools":
-            if not value:
-                in_requires_tools = True
-                continue
-            required_tools.extend(_parse_scalar_list(value))
-            continue
-
         fields[key] = _unquote(value)
-
-    if required_tools:
-        fields["requires_tools"] = required_tools
 
     return fields
 
 
 def _escape_c_string(value: str) -> str:
     return (
-        value.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("\r", "\\r")
-        .replace("\n", "\\n")
-        .replace("\t", "\\t")
+        value.replace("\\", "\\\\").replace('"', '\\"').replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t")
     )
 
 
@@ -98,16 +57,10 @@ def _load_skill(skill_path: Path) -> dict[str, object]:
     if len(content.strip()) <= len(_FRONTMATTER_RE.match(content.replace("\r\n", "\n")).group(0)):
         raise ValueError(f"{skill_path}: skill body is empty")
 
-    required_tools = fields.get("requires_tools", [])
-    if not isinstance(required_tools, list):
-        raise ValueError(f"{skill_path}: requires_tools must be a list")
-
     return {
         "name": name,
         "description": description,
         "content": content,
-        "required_tools": [str(tool).strip() for tool in required_tools if str(tool).strip()],
-        "source": str(skill_path).replace("\\", "/"),
     }
 
 
@@ -130,24 +83,20 @@ def make_builtin_skills_header(target, source, env):
             "\tconst char *name;\n"
             "\tconst char *description;\n"
             "\tconst char *content;\n"
-            "\tconst char *required_tools_csv;\n"
             "};\n\n"
         )
 
         for skill in skills:
-            file.write(f'static const char SOLERS_BUILTIN_SKILL_CONTENT_{_slug(skill["name"])}[] =\n')
+            file.write(f"static const char SOLERS_BUILTIN_SKILL_CONTENT_{_slug(skill['name'])}[] =\n")
             file.write(f'\t\t"{_escape_c_string(str(skill["content"]))}";\n\n')
 
         file.write("static const SolersBuiltinSkillRecord SOLERS_BUILTIN_SKILLS[] = {\n")
         for skill in skills:
-            tools = skill["required_tools"]
-            tools_csv = ";".join(str(tool) for tool in tools)
             slug = _slug(skill["name"])
             file.write("\t{\n")
             file.write(f'\t\t"{_escape_c_string(str(skill["name"]))}",\n')
             file.write(f'\t\t"{_escape_c_string(str(skill["description"]))}",\n')
             file.write(f"\t\tSOLERS_BUILTIN_SKILL_CONTENT_{slug},\n")
-            file.write(f'\t\t"{_escape_c_string(tools_csv)}",\n')
             file.write("\t},\n")
         file.write("};\n\n")
         file.write(f"static const int SOLERS_BUILTIN_SKILL_COUNT = {len(skills)};\n")

@@ -1,16 +1,6 @@
 ---
 name: godot-gameplay-physics-navigation
 description: Build and verify Godot gameplay movement, collision, interaction volumes, and 3D navigation using native physics and navigation semantics.
-requires_tools:
-  - editor.get_snapshot
-  - project.search_files
-  - project.read_file
-  - class.search
-  - class.introspect
-  - objects.batch
-  - script.validate
-  - runtime.control
-  - viewport.capture
 ---
 
 # Godot Gameplay, Physics, and Navigation
@@ -91,7 +81,7 @@ Use runtime state, collision/path results, and errors as primary evidence. Scree
 
 ## Acceptance gate
 
-Before calling `done`, verify:
+Before ending the task, verify:
 
 - Every actor uses the intended native motion owner and physics phase.
 - Required contacts occur; forbidden contacts do not.

@@ -85,7 +85,7 @@ struct SolersAgentSession::PendingToolExecution {
 };
 
 static bool _is_session_tool(const String &p_name) {
-	return p_name == "update_plan" || p_name == "done";
+	return p_name == "update_plan";
 }
 
 static Dictionary _update_plan_schema() {
@@ -102,28 +102,6 @@ static Dictionary _update_plan_schema() {
 	step_text["type"] = "string";
 	step_properties["step"] = step_text;
 	step_properties["status"] = status;
-	Dictionary evidence_required;
-	evidence_required["type"] = "boolean";
-	evidence_required["description"] = "Set true when completing this step must be backed by successful tool calls.";
-	step_properties["evidence_required"] = evidence_required;
-	Dictionary evidence_properties;
-	Dictionary evidence_string;
-	evidence_string["type"] = "string";
-	evidence_properties["call_id"] = evidence_string;
-	evidence_properties["tool"] = evidence_string;
-	Dictionary evidence_item;
-	evidence_item["type"] = "object";
-	evidence_item["properties"] = evidence_properties;
-	Array evidence_item_required;
-	evidence_item_required.push_back("call_id");
-	evidence_item_required.push_back("tool");
-	evidence_item["required"] = evidence_item_required;
-	evidence_item["additionalProperties"] = false;
-	Dictionary evidence;
-	evidence["type"] = "array";
-	evidence["items"] = evidence_item;
-	evidence["description"] = "Successful canonical tool calls that prove this step, in execution order.";
-	step_properties["evidence"] = evidence;
 	Dictionary step;
 	step["type"] = "object";
 	step["properties"] = step_properties;
@@ -137,14 +115,6 @@ static Dictionary _update_plan_schema() {
 	Dictionary explanation;
 	explanation["type"] = "string";
 	properties["explanation"] = explanation;
-	Dictionary reference_attachment_id;
-	reference_attachment_id["type"] = "string";
-	reference_attachment_id["description"] = "Exact user attachment id when an image is the visual reference for this scene.";
-	properties["reference_attachment_id"] = reference_attachment_id;
-	Dictionary reference_camera_path;
-	reference_camera_path["type"] = "string";
-	reference_camera_path["description"] = "Exact scene-relative Camera3D path used for reference-matching captures.";
-	properties["reference_camera_path"] = reference_camera_path;
 	Dictionary plan;
 	plan["type"] = "array";
 	plan["items"] = step;
@@ -155,40 +125,6 @@ static Dictionary _update_plan_schema() {
 	schema["properties"] = properties;
 	Array required;
 	required.push_back("plan");
-	schema["required"] = required;
-	schema["additionalProperties"] = false;
-	return schema;
-}
-
-static Dictionary _done_schema() {
-	Dictionary message;
-	message["type"] = "string";
-	Dictionary capture_id;
-	capture_id["type"] = "string";
-	Dictionary evidence_properties;
-	evidence_properties["camera_capture_id"] = capture_id;
-	evidence_properties["runtime_capture_id"] = capture_id;
-	Dictionary layout_capture_ids;
-	layout_capture_ids["type"] = "array";
-	layout_capture_ids["items"] = capture_id;
-	evidence_properties["layout_capture_ids"] = layout_capture_ids;
-	Dictionary visual_evidence;
-	visual_evidence["type"] = "object";
-	visual_evidence["properties"] = evidence_properties;
-	Array evidence_required;
-	evidence_required.push_back("camera_capture_id");
-	evidence_required.push_back("runtime_capture_id");
-	evidence_required.push_back("layout_capture_ids");
-	visual_evidence["required"] = evidence_required;
-	visual_evidence["additionalProperties"] = false;
-	Dictionary properties;
-	properties["message"] = message;
-	properties["visual_evidence"] = visual_evidence;
-	Dictionary schema;
-	schema["type"] = "object";
-	schema["properties"] = properties;
-	Array required;
-	required.push_back("message");
 	schema["required"] = required;
 	schema["additionalProperties"] = false;
 	return schema;
@@ -245,7 +181,7 @@ Dictionary SolersAgentSession::validate_plan(const Dictionary &p_args) {
 	Dictionary error;
 	for (const Variant *key = p_args.next(nullptr); key; key = p_args.next(key)) {
 		const String name = String(*key);
-		if (name != "explanation" && name != "plan" && name != "reference_attachment_id" && name != "reference_camera_path") {
+		if (name != "explanation" && name != "plan") {
 			error["code"] = "INVALID_PLAN";
 			error["message"] = vformat("Unknown update_plan field: %s.", name);
 			result["ok"] = false;
@@ -274,7 +210,7 @@ Dictionary SolersAgentSession::validate_plan(const Dictionary &p_args) {
 		const Dictionary item = plan[i];
 		for (const Variant *key = item.next(nullptr); key; key = item.next(key)) {
 			const String name = String(*key);
-			if (name != "step" && name != "status" && name != "evidence_required" && name != "evidence") {
+			if (name != "step" && name != "status") {
 				error["code"] = "INVALID_PLAN";
 				error["message"] = vformat("Unknown plan item field: %s.", name);
 				result["ok"] = false;
@@ -294,47 +230,6 @@ Dictionary SolersAgentSession::validate_plan(const Dictionary &p_args) {
 		if (status == "in_progress") {
 			in_progress_count++;
 		}
-		const Variant evidence_required_value = item.get("evidence_required", Variant());
-		if (evidence_required_value.get_type() != Variant::NIL && evidence_required_value.get_type() != Variant::BOOL) {
-			error["code"] = "INVALID_PLAN";
-			error["message"] = "Plan item evidence_required must be a boolean.";
-			result["ok"] = false;
-			result["error"] = error;
-			return result;
-		}
-		const Variant evidence_value = item.get("evidence", Variant());
-		if (evidence_value.get_type() != Variant::NIL && evidence_value.get_type() != Variant::ARRAY) {
-			error["code"] = "INVALID_PLAN";
-			error["message"] = "Plan item evidence must be an array.";
-			result["ok"] = false;
-			result["error"] = error;
-			return result;
-		}
-		const Array evidence = evidence_value.get_type() == Variant::ARRAY ? Array(evidence_value) : Array();
-		for (int evidence_index = 0; evidence_index < evidence.size(); evidence_index++) {
-			if (evidence[evidence_index].get_type() != Variant::DICTIONARY) {
-				error["code"] = "INVALID_PLAN";
-				error["message"] = "Each plan evidence item must contain call_id and tool.";
-				result["ok"] = false;
-				result["error"] = error;
-				return result;
-			}
-			const Dictionary proof = evidence[evidence_index];
-			if (proof.size() != 2 || String(proof.get("call_id", String())).strip_edges().is_empty() || String(proof.get("tool", String())).strip_edges().is_empty()) {
-				error["code"] = "INVALID_PLAN";
-				error["message"] = "Each plan evidence item must contain only non-empty call_id and tool fields.";
-				result["ok"] = false;
-				result["error"] = error;
-				return result;
-			}
-		}
-		if ((bool)item.get("evidence_required", false) && status == "completed" && evidence.is_empty()) {
-			error["code"] = "INVALID_PLAN";
-			error["message"] = "A completed evidence_required plan item needs at least one successful tool call reference.";
-			result["ok"] = false;
-			result["error"] = error;
-			return result;
-		}
 	}
 	if (in_progress_count > 1) {
 		error["code"] = "INVALID_PLAN";
@@ -343,106 +238,8 @@ Dictionary SolersAgentSession::validate_plan(const Dictionary &p_args) {
 		result["error"] = error;
 		return result;
 	}
-	const bool has_reference_attachment = !String(p_args.get("reference_attachment_id", String())).strip_edges().is_empty();
-	const bool has_reference_camera = !String(p_args.get("reference_camera_path", String())).strip_edges().is_empty();
-	if (has_reference_attachment != has_reference_camera) {
-		error["code"] = "INVALID_PLAN";
-		error["message"] = "reference_attachment_id and reference_camera_path must be declared together.";
-		result["ok"] = false;
-		result["error"] = error;
-		return result;
-	}
-
 	result["ok"] = true;
 	result["data"] = p_args.duplicate(true);
-	return result;
-}
-
-Dictionary SolersAgentSession::validate_done(const Dictionary &p_args, const Dictionary &p_state) {
-	Dictionary result;
-	const String message = String(p_args.get("message", String())).strip_edges();
-	if (message.is_empty()) {
-		Dictionary error;
-		error["code"] = "INVALID_DONE";
-		error["message"] = "done requires a non-empty message.";
-		result["ok"] = false;
-		result["error"] = error;
-		return result;
-	}
-	auto fail = [&result](const String &p_code, const String &p_message) {
-		Dictionary error;
-		error["code"] = p_code;
-		error["message"] = p_message;
-		error["recoverable"] = true;
-		result["ok"] = false;
-		result["error"] = error;
-	};
-	const int unresolved_errors = p_state.get("unresolved_errors", 0);
-	if (unresolved_errors > 0) {
-		const Dictionary failures = p_state.get("unresolved_tool_errors", Dictionary());
-		fail("UNRESOLVED_TOOL_ERRORS", vformat("The turn still has %d unresolved error(s). Retry the exact failure_id reported in failures with retry_of before completing.", unresolved_errors));
-		Dictionary error = result.get("error", Dictionary());
-		error["failures"] = failures.values();
-		result["error"] = error;
-		return result;
-	}
-	if ((bool)p_state.get("pending_jobs", false)) {
-		fail("PENDING_BACKGROUND_JOBS", "Background asset jobs are still running. Continue independent work or call job.wait with the required job ids.");
-		return result;
-	}
-	if ((bool)p_state.get("dirty", false)) {
-		fail("UNSAVED_SCENE", "The edited scene is still dirty after the harness save attempt.");
-		return result;
-	}
-	const uint64_t authored_revision = (uint64_t)(int64_t)p_state.get("authored_revision", 0);
-	const uint64_t observed_revision = (uint64_t)(int64_t)p_state.get("observed_revision", 0);
-	if (observed_revision < authored_revision) {
-		fail("STALE_COMPLETION_EVIDENCE", "The latest scene observation predates the last authored change.");
-		return result;
-	}
-	if ((bool)p_state.get("scene_validation_required", false) &&
-			(uint64_t)(int64_t)p_state.get("scene_validation_revision", 0) < (uint64_t)(int64_t)p_state.get("geometry_revision", 0)) {
-		fail("STALE_SCENE_VALIDATION", "Spatial relations have not been validated after the latest scene geometry change.");
-		return result;
-	}
-	if ((bool)p_state.get("editor_capture_required", false) &&
-			(uint64_t)(int64_t)p_state.get("editor_capture_revision", 0) < authored_revision) {
-		fail("STALE_EDITOR_EVIDENCE", "A valid editor 3D capture is required after the last scene change.");
-		return result;
-	}
-	if ((bool)p_state.get("runtime_required", false) && (uint64_t)(int64_t)p_state.get("runtime_capture_revision", 0) < authored_revision) {
-		fail("STALE_RUNTIME_EVIDENCE", "The latest runtime capture predates the last authored change.");
-		return result;
-	}
-	if ((bool)p_state.get("visual_reference_required", false)) {
-		if (!(bool)p_state.get("visual_reference_attachment_valid", false)) {
-			fail("INVALID_REFERENCE_ATTACHMENT", "The plan's reference_attachment_id does not identify a user image attachment in this task.");
-			return result;
-		}
-		if (!(bool)p_state.get("reference_layout_valid", false)) {
-			fail("INVALID_REFERENCE_LAYOUT_EVIDENCE", String(p_state.get("reference_layout_error", "The current geometry revision has no validated layout contract bound to the reference attachment.")));
-			return result;
-		}
-		if (!(bool)p_state.get("visual_evidence_declared", false)) {
-			fail("MISSING_VISUAL_EVIDENCE", "done.visual_evidence must identify the final camera and runtime captures declared by this task.");
-			return result;
-		}
-		if (!(bool)p_state.get("visual_evidence_valid", false)) {
-			fail("INVALID_VISUAL_EVIDENCE", String(p_state.get("visual_evidence_error", "The declared captures do not match the current scene revision, target camera, or content hash.")));
-			return result;
-		}
-	}
-	if ((bool)p_state.get("render_pipeline_required", false) && !(bool)p_state.get("render_pipeline_valid", false)) {
-		fail("INVALID_RENDER_PIPELINE", "The current render pipeline has an invalid Environment dependency, missing UV2, missing bake data, stale bake inputs, or baked users that no longer resolve in the current scene.");
-		Dictionary error = result.get("error", Dictionary());
-		error["render_pipeline"] = p_state.get("render_pipeline", Dictionary());
-		result["error"] = error;
-		return result;
-	}
-	Dictionary data;
-	data["message"] = message;
-	result["ok"] = true;
-	result["data"] = data;
 	return result;
 }
 
@@ -461,20 +258,11 @@ void SolersAgentSession::_register_session_tools() {
 	capability.mutation_kind = "none";
 	tool_registry->register_tool(memnew(SolersFunctionTool(
 			"update_plan",
-			"Replace the current execution plan. Keep steps concise and maintain at most one in_progress item. Set evidence_required on externally verifiable steps and attach successful canonical tool/call ids before marking them completed. When a user image is the scene reference, declare its exact attachment id and the exact scene-relative Camera3D path together.",
+			"Optionally replace the concise UI progress plan. This does not control tool access or task completion.",
 			_update_plan_schema(),
-			SolersToolExposure::DIRECT_MODEL_ONLY,
+			SolersToolExposure::DIRECT,
 			capability,
 			[this](const SolersToolContext &, const Dictionary &p_args) { return _handle_update_plan(p_args); })));
-	tool_registry->register_tool(memnew(SolersFunctionTool(
-			"done",
-			"Declare the user's task complete. Solers atomically saves and acquires missing general editor/runtime evidence; structural, render-pipeline, plan, job, and error gates must already pass. A plan with a visual reference must supply the final camera and runtime capture ids in visual_evidence. Ordinary final text pauses the turn instead.",
-			_done_schema(),
-			SolersToolExposure::DIRECT_MODEL_ONLY,
-			capability,
-			[this](const SolersToolContext &, const Dictionary &p_args) { return _handle_done(p_args); },
-			[this](const SolersToolContext &, const Dictionary &) { return _poll_done_verification(); },
-			[this](const SolersToolContext &, const Dictionary &) { return _is_done_verification_ready(); })));
 	session_tools_registry = tool_registry;
 }
 
@@ -482,10 +270,6 @@ Dictionary SolersAgentSession::_handle_update_plan(const Dictionary &p_args) {
 	const Dictionary validation = validate_plan(p_args);
 	if (!(bool)validation.get("ok", false)) {
 		return validation;
-	}
-	const String reference_attachment_id = String(p_args.get("reference_attachment_id", String())).strip_edges();
-	if (!reference_attachment_id.is_empty() && _find_user_attachment(reference_attachment_id).is_empty()) {
-		return _tool_denied_result("INVALID_REFERENCE_ATTACHMENT", "reference_attachment_id must identify an image attached by the user in this task.");
 	}
 	current_plan = p_args.duplicate(true);
 	_write_transcript_plan();
@@ -495,203 +279,14 @@ Dictionary SolersAgentSession::_handle_update_plan(const Dictionary &p_args) {
 	return _ok(data);
 }
 
-Dictionary SolersAgentSession::_handle_done(const Dictionary &p_args) {
-	_commit_dirty_scene_if_needed();
-	Dictionary state = _completion_state_for_done(p_args);
-	Dictionary preflight = state.duplicate(true);
-	preflight["observed_revision"] = (int64_t)authored_revision;
-	preflight["editor_capture_revision"] = (int64_t)authored_revision;
-	preflight["runtime_capture_revision"] = (int64_t)authored_revision;
-	const Dictionary preflight_validation = validate_done(p_args, preflight);
-	if (!(bool)preflight_validation.get("ok", false)) {
-		return preflight_validation;
-	}
-
-	const Dictionary validation = validate_done(p_args, state);
-	if ((bool)validation.get("ok", false)) {
-		done_requested = true;
-		done_message = String(p_args.get("message", String())).strip_edges();
-		return validation;
-	}
-
-	done_verification.clear();
-	done_verification["args"] = p_args.duplicate(true);
-	done_verification["attachments"] = Array();
-	if ((uint64_t)(int64_t)state.get("observed_revision", 0) < authored_revision && !(bool)state.get("editor_capture_required", false)) {
-		observed_revision = authored_revision;
-	}
-	const bool editor_stale = (bool)state.get("editor_capture_required", false) && (uint64_t)(int64_t)state.get("editor_capture_revision", 0) < authored_revision;
-	const bool runtime_stale = (bool)state.get("runtime_required", false) && (uint64_t)(int64_t)state.get("runtime_capture_revision", 0) < authored_revision;
-	done_verification["stage"] = editor_stale ? String("editor_start") : (runtime_stale ? String("runtime_start") : String("final"));
-	return _poll_done_verification();
-}
-
-Dictionary SolersAgentSession::_done_pending() const {
-	Dictionary poll_args;
-	poll_args["_done_verification"] = true;
-	Dictionary data;
-	data["status"] = "pending";
-	data["stage"] = done_verification.get("stage", String());
-	data["poll_args"] = poll_args;
-	return _ok(data);
-}
-
-bool SolersAgentSession::_is_done_verification_ready() const {
-	if (done_verification.is_empty()) {
-		return true;
-	}
-	const String stage = done_verification.get("stage", String());
-	if ((stage == "editor_wait" || stage == "runtime_wait") && tool_registry && tool_registry->observation_service) {
-		return tool_registry->observation_service->is_viewport_capture_ready(done_verification.get("capture_poll_args", Dictionary()));
-	}
-	return true;
-}
-
-void SolersAgentSession::_stop_done_runtime() {
-	if (!(bool)done_verification.get("runtime_owned", false)) {
-		return;
-	}
-	EditorInterface *editor_interface = EditorInterface::get_singleton();
-	if (editor_interface && editor_interface->is_playing_scene()) {
-		editor_interface->stop_playing_scene();
-		runtime_epoch++;
-	}
-	turn_runtime_owned = false;
-	done_verification["runtime_owned"] = false;
-}
-
-Dictionary SolersAgentSession::_poll_done_verification() {
-	if (done_verification.is_empty() || !tool_registry || !tool_registry->observation_service) {
-		done_verification.clear();
-		return _tool_denied_result("VERIFICATION_UNAVAILABLE", "Viewport verification is unavailable.");
-	}
-	SolersObservationService *observation = tool_registry->observation_service;
-	for (int step = 0; step < 4; step++) {
-		const String stage = done_verification.get("stage", String());
-		if (stage == "editor_start" || stage == "runtime_start") {
-			if (stage == "runtime_start") {
-				EditorInterface *editor_interface = EditorInterface::get_singleton();
-				if (!editor_interface) {
-					done_verification.clear();
-					return _tool_denied_result("EDITOR_INTERFACE_UNAVAILABLE", "The editor runtime is unavailable for final verification.");
-				}
-				if (!editor_interface->is_playing_scene()) {
-					editor_interface->play_current_scene();
-					if (!editor_interface->is_playing_scene()) {
-						done_verification.clear();
-						return _tool_denied_result("RUNTIME_START_FAILED", "Godot did not start the current scene for final verification.");
-					}
-					done_verification["runtime_owned"] = true;
-					turn_runtime_owned = true;
-					runtime_epoch++;
-				}
-			}
-			Dictionary capture_args;
-			capture_args["target"] = stage == "editor_start" ? String("editor") : String("runtime");
-			Dictionary capture = observation->capture_viewport(capture_args);
-			const Dictionary capture_data = capture.get("data", Dictionary());
-			if (!(bool)capture.get("ok", false)) {
-				_stop_done_runtime();
-				done_verification.clear();
-				return capture;
-			}
-			if (String(capture_data.get("status", String())) == "pending") {
-				done_verification["stage"] = stage == "editor_start" ? String("editor_wait") : String("runtime_wait");
-				done_verification["capture_poll_args"] = capture_data.get("poll_args", Dictionary());
-				return _done_pending();
-			}
-			done_verification["capture_result"] = capture;
-			done_verification["stage"] = stage == "editor_start" ? String("editor_apply") : String("runtime_apply");
-			continue;
-		}
-		if (stage == "editor_wait" || stage == "runtime_wait") {
-			Dictionary capture = observation->poll_viewport_capture(done_verification.get("capture_poll_args", Dictionary()));
-			const Dictionary capture_data = capture.get("data", Dictionary());
-			if ((bool)capture.get("ok", false) && String(capture_data.get("status", String())) == "pending") {
-				return _done_pending();
-			}
-			if (!(bool)capture.get("ok", false)) {
-				_stop_done_runtime();
-				done_verification.clear();
-				return capture;
-			}
-			done_verification["capture_result"] = capture;
-			done_verification["stage"] = stage == "editor_wait" ? String("editor_apply") : String("runtime_apply");
-			continue;
-		}
-		if (stage == "editor_apply" || stage == "runtime_apply") {
-			const Dictionary capture = done_verification.get("capture_result", Dictionary());
-			Dictionary capture_data = capture.get("data", Dictionary());
-			if (!(bool)capture_data.get("frame_valid", true)) {
-				_stop_done_runtime();
-				done_verification.clear();
-				return _tool_denied_result("INVALID_VERIFICATION_FRAME", "Godot produced a frame that is not valid completion evidence.");
-			}
-			Array attachments = done_verification.get("attachments", Array());
-			attachments.append_array(capture.get("attachments", Array()));
-			done_verification["attachments"] = attachments;
-			if (stage == "editor_apply") {
-				observed_revision = authored_revision;
-				editor_capture_revision = authored_revision;
-				const Dictionary state = _completion_state();
-				const bool runtime_stale = (bool)state.get("runtime_required", false) && (uint64_t)(int64_t)state.get("runtime_capture_revision", 0) < authored_revision;
-				done_verification["stage"] = runtime_stale ? String("runtime_start") : String("final");
-			} else {
-				runtime_capture_revision = authored_revision;
-				_stop_done_runtime();
-				done_verification["stage"] = "final";
-			}
-			continue;
-		}
-		if (stage == "final") {
-			const Dictionary args = done_verification.get("args", Dictionary());
-			Dictionary result = validate_done(args, _completion_state_for_done(args));
-			if ((bool)result.get("ok", false)) {
-				done_requested = true;
-				done_message = String(args.get("message", String())).strip_edges();
-				const Array attachments = done_verification.get("attachments", Array());
-				if (!attachments.is_empty()) {
-					result["attachments"] = attachments;
-				}
-			}
-			done_verification.clear();
-			return result;
-		}
-		done_verification.clear();
-		return _tool_denied_result("INVALID_VERIFICATION_STATE", "The final verification transaction entered an invalid state.");
-	}
-	return _done_pending();
-}
-
 String SolersAgentSession::_make_session_id() const {
 	return OS::get_singleton()->get_unique_id() + "-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
-}
-
-static bool _solers_accesses_equal(const Array &p_left, const Array &p_right) {
-	if (p_left.size() != p_right.size()) {
-		return false;
-	}
-	Array left;
-	Array right;
-	for (int i = 0; i < p_left.size(); i++) {
-		const Dictionary access = p_left[i];
-		left.push_back(String(access.get("mode", String())) + "\n" + String(access.get("key", String())));
-	}
-	for (int i = 0; i < p_right.size(); i++) {
-		const Dictionary access = p_right[i];
-		right.push_back(String(access.get("mode", String())) + "\n" + String(access.get("key", String())));
-	}
-	left.sort();
-	right.sort();
-	return left == right;
 }
 
 Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_path, const String &p_session_id) const {
 	Array restored;
 	Array restored_background_assets;
 	Dictionary restored_plan;
-	Dictionary restored_tool_errors;
-	HashSet<StringName> restored_activated_tools;
 	String restored_outcome;
 	int restored_turn_id = 0;
 	if (p_project_path.is_empty() || p_session_id.is_empty()) {
@@ -723,39 +318,6 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 
 		const String event_type = event.get("event_type", String());
 		if (event_type == "tool_result") {
-			const Array event_activated_tools = event.get("activated_tools", Array());
-			for (int i = 0; i < event_activated_tools.size(); i++) {
-				restored_activated_tools.insert(StringName(event_activated_tools[i]));
-			}
-			const String call_id = event.get("call_id", String());
-			const String tool = event.get("tool", String());
-			if (!(bool)event.get("ok", false) && !call_id.is_empty() && !_is_session_tool(tool)) {
-				const Dictionary event_error = event.get("error", Dictionary());
-				const String failure_id = String(event_error.get("failure_id", call_id));
-				Dictionary failure = restored_tool_errors.get(failure_id, Dictionary());
-				if (failure.is_empty()) {
-					failure["call_id"] = call_id;
-					failure["failure_id"] = failure_id;
-					failure["tool"] = tool;
-					failure["resource_accesses"] = event.get("resource_accesses", Array());
-				} else {
-					Array attempts = failure.get("attempts", Array());
-					Dictionary attempt;
-					attempt["call_id"] = call_id;
-					attempt["error"] = event_error;
-					attempts.push_back(attempt);
-					failure["attempts"] = attempts;
-				}
-				failure["error"] = event_error;
-				failure["last_call_id"] = call_id;
-				restored_tool_errors[failure_id] = failure;
-			} else if ((bool)event.get("ok", false)) {
-				const String retry_of = Dictionary(event.get("args", Dictionary())).get("retry_of", String());
-				const Dictionary prior = restored_tool_errors.get(retry_of, Dictionary());
-				if (!retry_of.is_empty() && String(prior.get("tool", String())) == tool && _solers_accesses_equal(prior.get("resource_accesses", Array()), event.get("resource_accesses", Array()))) {
-					restored_tool_errors.erase(retry_of);
-				}
-			}
 			continue;
 		}
 		if (event_type == "plan_updated") {
@@ -810,13 +372,6 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 	state["outcome"] = restored_outcome;
 	state["turn_id"] = restored_turn_id;
 	state["background_assets"] = restored_background_assets;
-	state["unresolved_tool_errors"] = restored_tool_errors;
-	Array activated;
-	for (const StringName &tool : restored_activated_tools) {
-		activated.push_back(String(tool));
-	}
-	activated.sort();
-	state["activated_tools"] = activated;
 	return state;
 }
 
@@ -877,11 +432,7 @@ void SolersAgentSession::_write_transcript_tool(const String &p_call_id, const S
 		event["args"] = p_args;
 	}
 	if (!(bool)p_result.get("ok", false)) {
-		Dictionary error = p_result.get("error", Dictionary());
-		if (!error.has("failure_id")) {
-			error["failure_id"] = p_call_id;
-		}
-		event["error"] = error;
+		event["error"] = p_result.get("error", Dictionary());
 	}
 	const Dictionary result_data = p_result.get("data", Dictionary());
 	if (result_data.has("artifact")) {
@@ -891,12 +442,6 @@ void SolersAgentSession::_write_transcript_tool(const String &p_call_id, const S
 	if (SolersSecretStore::is_protected(replay_result)) {
 		event["result_replay"] = replay_result;
 	}
-	Array activated;
-	for (const StringName &tool : activated_tools) {
-		activated.push_back(String(tool));
-	}
-	activated.sort();
-	event["activated_tools"] = activated;
 	_write_transcript_event("tool_result", event);
 }
 
@@ -1110,254 +655,20 @@ void SolersAgentSession::_flush_godot_diagnostics() {
 	messages.push_back(message);
 }
 
-int SolersAgentSession::_unresolved_error_count() const {
-	MutexLock lock(godot_log_mutex);
-	return unresolved_tool_errors.size();
-}
-
-String SolersAgentSession::_record_tool_failure(const String &p_call_id, const String &p_tool, const Dictionary &p_error, const Array &p_resource_accesses, const String &p_retry_of) {
-	if (p_call_id.is_empty() || _is_session_tool(p_tool)) {
-		return p_call_id;
-	}
-	MutexLock lock(godot_log_mutex);
-	if (!p_retry_of.is_empty()) {
-		const Variant *existing_value = unresolved_tool_errors.getptr(p_retry_of);
-		if (existing_value && existing_value->get_type() == Variant::DICTIONARY) {
-			Dictionary existing = *existing_value;
-			if (String(existing.get("tool", String())) == p_tool && _solers_accesses_equal(existing.get("resource_accesses", Array()), p_resource_accesses)) {
-				Array attempts = existing.get("attempts", Array());
-				Dictionary attempt;
-				attempt["call_id"] = p_call_id;
-				attempt["error"] = p_error;
-				attempts.push_back(attempt);
-				existing["attempts"] = attempts;
-				existing["error"] = p_error;
-				existing["last_call_id"] = p_call_id;
-				unresolved_tool_errors[p_retry_of] = existing;
-				if (p_call_id != p_retry_of) {
-					unresolved_tool_errors.erase(p_call_id);
-				}
-				return p_retry_of;
-			}
-		}
-	}
-	Dictionary failure;
-	failure["call_id"] = p_call_id;
-	failure["failure_id"] = p_call_id;
-	failure["tool"] = p_tool;
-	failure["error"] = p_error;
-	failure["resource_accesses"] = p_resource_accesses;
-	unresolved_tool_errors[p_call_id] = failure;
-	return p_call_id;
-}
-
-void SolersAgentSession::_resolve_tool_failure(const String &p_retry_of, const String &p_tool, const Array &p_resource_accesses) {
-	if (p_retry_of.is_empty()) {
-		return;
-	}
-	MutexLock lock(godot_log_mutex);
-	const Variant *failure_value = unresolved_tool_errors.getptr(p_retry_of);
-	if (!failure_value || failure_value->get_type() != Variant::DICTIONARY) {
-		return;
-	}
-	const Dictionary failure = *failure_value;
-	if (String(failure.get("tool", String())) != p_tool) {
-		return;
-	}
-	if (!_solers_accesses_equal(failure.get("resource_accesses", Array()), p_resource_accesses)) {
-		return;
-	}
-	unresolved_tool_errors.erase(p_retry_of);
-}
-
-Dictionary SolersAgentSession::_completion_state() const {
-	Dictionary state;
-	{
-		MutexLock lock(godot_log_mutex);
-		state["unresolved_errors"] = unresolved_tool_errors.size();
-		state["unresolved_tool_errors"] = unresolved_tool_errors.duplicate(true);
-	}
-	state["authored_revision"] = (int64_t)authored_revision;
-	state["runtime_epoch"] = (int64_t)runtime_epoch;
-	state["scene_revision"] = (int64_t)scene_revision;
-	state["geometry_revision"] = (int64_t)geometry_revision;
-	state["observed_revision"] = (int64_t)observed_revision;
-	state["editor_capture_revision"] = (int64_t)editor_capture_revision;
-	state["editor_capture_required"] = scene_revision > 0;
-	state["camera_capture_revision"] = (int64_t)camera_capture_revision;
-	state["runtime_capture_revision"] = (int64_t)runtime_capture_revision;
-	state["runtime_required"] = scene_revision > 0;
-	state["scene_validation_revision"] = (int64_t)scene_validation_revision;
-	state["scene_validation_required"] = geometry_revision > 0;
-	const String reference_attachment_id = String(current_plan.get("reference_attachment_id", String())).strip_edges();
-	const bool visual_reference_required = !reference_attachment_id.is_empty();
-	state["visual_reference_required"] = visual_reference_required;
-	if (visual_reference_required) {
-		state["reference_attachment_id"] = reference_attachment_id;
-		state["reference_camera_path"] = String(current_plan.get("reference_camera_path", String())).strip_edges();
-		state["visual_reference_attachment_valid"] = !_find_user_attachment(reference_attachment_id).is_empty();
-		const Dictionary layout = scene_validation_evidence.get("reference_layout", Dictionary());
-		const bool current_layout = scene_validation_revision == geometry_revision && geometry_revision > 0;
-		const bool matching_attachment = String(layout.get("attachment_id", String())) == reference_attachment_id;
-		const bool valid_contract = !String(layout.get("contract_hash", String())).is_empty() && !Array(layout.get("required_views", Array())).is_empty();
-		state["reference_layout_valid"] = current_layout && matching_attachment && valid_contract;
-		state["reference_layout"] = layout;
-		if (!current_layout) {
-			state["reference_layout_error"] = "The reference layout validation predates the current geometry revision.";
-		} else if (!matching_attachment) {
-			state["reference_layout_error"] = "The validated layout contract is not bound to the plan's reference attachment.";
-		} else if (!valid_contract) {
-			state["reference_layout_error"] = "The structure validation did not include a non-empty measurable reference_layout contract.";
-		}
-	}
-	if (tool_registry && tool_registry->reflection_service) {
-		const Dictionary render_pipeline = tool_registry->reflection_service->get_render_pipeline_state();
-		state["render_pipeline"] = render_pipeline;
-		state["render_pipeline_required"] = !Array(render_pipeline.get("lightmaps", Array())).is_empty() || !Array(render_pipeline.get("environments", Array())).is_empty();
-		state["render_pipeline_valid"] = render_pipeline.get("valid", true);
-	}
-	state["render_artifacts"] = render_artifacts.duplicate(true);
-	state["pending_jobs"] = tool_registry && tool_registry->asset_service && tool_registry->asset_service->has_active_tasks(session_id);
-	int history_id = EditorNode::get_singleton() ? EditorNode::get_editor_data().get_current_edited_scene_history_id() : -1;
-	state["dirty"] = history_id >= 0 && EditorUndoRedoManager::get_singleton() && EditorUndoRedoManager::get_singleton()->is_history_unsaved(history_id);
-	return state;
-}
-
-Dictionary SolersAgentSession::_find_user_attachment(const String &p_id) const {
-	if (p_id.is_empty()) {
-		return Dictionary();
-	}
-	for (int i = messages.size() - 1; i >= 0; i--) {
-		const Dictionary message = messages[i];
-		if (String(message.get("role", String())) != "user" || !String(message.get("origin", String())).is_empty()) {
-			continue;
-		}
-		const Array attachments = message.get("attachments", Array());
-		for (int attachment_index = 0; attachment_index < attachments.size(); attachment_index++) {
-			const Dictionary attachment = attachments[attachment_index];
-			if (String(attachment.get("id", String())) == p_id && String(attachment.get("mime_type", String())).begins_with("image/")) {
-				return attachment;
-			}
-		}
-	}
-	return Dictionary();
-}
-
-Dictionary SolersAgentSession::_completion_state_for_done(const Dictionary &p_args) const {
-	Dictionary state = _completion_state();
-	if (!(bool)state.get("visual_reference_required", false)) {
-		return state;
-	}
-	const Variant visual_value = p_args.get("visual_evidence", Variant());
-	if (visual_value.get_type() != Variant::DICTIONARY) {
-		state["visual_evidence_declared"] = false;
-		return state;
-	}
-	const Dictionary visual_evidence = visual_value;
-	const String camera_capture_id = String(visual_evidence.get("camera_capture_id", String())).strip_edges();
-	const String runtime_capture_id = String(visual_evidence.get("runtime_capture_id", String())).strip_edges();
-	const Array layout_capture_ids = visual_evidence.get("layout_capture_ids", Array());
-	state["visual_evidence_declared"] = !camera_capture_id.is_empty() && !runtime_capture_id.is_empty() && !layout_capture_ids.is_empty();
-	if (!(bool)state["visual_evidence_declared"]) {
-		return state;
-	}
-
-	const Dictionary *camera = capture_evidence_cache.getptr("capture:" + camera_capture_id);
-	const Dictionary *runtime = capture_evidence_cache.getptr("capture:" + runtime_capture_id);
-	String error;
-	if (!camera || !runtime) {
-		error = "The declared capture id is not present in this task's authoritative capture ledger.";
-	} else if (String(camera->get("target", String())) != "camera" || String(runtime->get("target", String())) != "runtime") {
-		error = "The declared captures do not have camera and runtime targets respectively.";
-	} else if ((uint64_t)(int64_t)camera->get("authored_revision", -1) != authored_revision || (uint64_t)(int64_t)runtime->get("authored_revision", -1) != authored_revision) {
-		error = "The declared captures predate the current authored revision.";
-	} else if (!(bool)camera->get("frame_valid", false) || !(bool)runtime->get("frame_valid", false)) {
-		error = "The declared capture ledger contains an invalid renderer frame.";
-	} else if (String(camera->get("camera_path", String())) != String(current_plan.get("reference_camera_path", String())).strip_edges()) {
-		error = "The camera capture does not use the reference_camera_path declared in update_plan.";
-	} else if (String(camera->get("content_sha256", String())).is_empty() || String(runtime->get("content_sha256", String())).is_empty()) {
-		error = "The declared capture ledger is missing an image content hash.";
-	}
-	Array layout_evidence;
-	const Array required_views = Dictionary(state.get("reference_layout", Dictionary())).get("required_views", Array());
-	if (error.is_empty()) {
-		for (int required_index = 0; required_index < required_views.size() && error.is_empty(); required_index++) {
-			const Dictionary required_view = required_views[required_index];
-			bool matched = false;
-			for (int capture_index = 0; capture_index < layout_capture_ids.size(); capture_index++) {
-				const Dictionary *capture = capture_evidence_cache.getptr("capture:" + String(layout_capture_ids[capture_index]));
-				if (!capture || (uint64_t)(int64_t)capture->get("authored_revision", -1) != authored_revision || !(bool)capture->get("frame_valid", false) || String(capture->get("content_sha256", String())).is_empty()) {
-					continue;
-				}
-				if (String(capture->get("target", String())) != String(required_view.get("target", String()))) {
-					continue;
-				}
-				if (String(required_view.get("target", String())) == "orthographic" &&
-						(String(capture->get("axis", String())) != String(required_view.get("axis", String())) || String(capture->get("direction", String())) != String(required_view.get("direction", String())))) {
-					continue;
-				}
-				layout_evidence.push_back(*capture);
-				matched = true;
-				break;
-			}
-			if (!matched) {
-				error = vformat("No current authoritative capture matches required layout view %s.", JSON::stringify(required_view));
-			}
-		}
-	}
-	state["visual_evidence_valid"] = error.is_empty();
-	if (error.is_empty()) {
-		state["camera_visual_evidence"] = *camera;
-		state["runtime_visual_evidence"] = *runtime;
-		state["layout_visual_evidence"] = layout_evidence;
-	} else {
-		state["visual_evidence_error"] = error;
-	}
-	return state;
-}
-
 String SolersAgentSession::_readonly_cache_key(const StringName &p_name, const Dictionary &p_args) const {
 	const Dictionary normalized = tool_registry ? tool_registry->normalize_tool_args(p_name, p_args) : p_args;
 	const uint64_t revision = tool_registry && tool_registry->caches_across_revisions(p_name) ? 0 : authored_revision;
 	return String(p_name) + ":" + String::num_uint64(revision) + ":" + String::num_uint64(normalized.hash());
 }
 
-// Post-write state is a compact authoritative delta. Visual evidence is
-// explicit and frame-gated through viewport.capture, never an implicit cost of
-// every authored mutation.
 bool SolersAgentSession::_poll_state_observation() {
 	if (authored_revision <= observed_revision) {
 		return false;
 	}
-	_append_state_observation();
-	return false;
-}
-
-void SolersAgentSession::_append_state_observation() {
-	Dictionary capsule = _completion_state();
-	capsule["background_jobs_pending"] = tool_registry->asset_service && tool_registry->asset_service->has_active_tasks(session_id);
-	Node *edited_root = EditorInterface::get_singleton() ? EditorInterface::get_singleton()->get_edited_scene_root() : nullptr;
-	if (edited_root) {
-		capsule["edited_scene_path"] = edited_root->get_scene_file_path();
-	}
-
-	const Dictionary diagnostics = _take_godot_diagnostics();
-	if (!diagnostics.is_empty()) {
-		capsule["diagnostics"] = diagnostics;
-	}
+	// Revisions are internal cache and scheduling state. A write must not inject
+	// another synthetic user turn; the model can request a snapshot explicitly.
 	observed_revision = authored_revision;
-	capsule["observed_revision"] = (int64_t)observed_revision;
-	capsule["editor_capture_revision"] = (int64_t)editor_capture_revision;
-
-	Dictionary message = SolersLLMMessage::user("Solers authored-state delta. Request explicit snapshots or viewport evidence only when needed:\n" + JSON::stringify(capsule, "", false, true));
-	message["origin"] = "solers_state";
-	messages.push_back(message);
-	Dictionary audit;
-	audit["authored_revision"] = (int64_t)authored_revision;
-	audit["editor_capture_revision"] = (int64_t)editor_capture_revision;
-	audit["has_capture"] = false;
-	audit["unresolved_errors"] = _unresolved_error_count();
-	_write_transcript_event("state_observed", audit);
+	return false;
 }
 
 Dictionary SolersAgentSession::_commit_dirty_scene_if_needed() {
@@ -1398,16 +709,12 @@ String SolersAgentSession::_default_system_prompt() const {
 	String prompt =
 			"You are Solers, an AI agent living natively inside the Solers game engine editor (a Godot 4 fork).\n\n"
 			"Operating contract:\n"
-			"- Prefer Godot native capabilities and the smallest coherent change. Inspect live state before editing; do not guess APIs or scene contents.\n"
-			"- Use the directly exposed primitives. Discover uncommon escape tools with tool.search and read a Skill only when its catalog entry matches the task.\n"
+			"- Prefer the smallest coherent native change. Inspect live state before editing; do not guess APIs or scene contents.\n"
+			"- Built-in tools are already available. If tool.search is present, it discovers only external plugin, connector, or MCP tools. Skills provide knowledge and never activate capabilities.\n"
 			"- Keep scene edits undoable and authored in scene/resources. Write or patch code only when native composition cannot express the requested behavior.\n"
 			"- Background tools return stable job ids immediately. Continue independent work; when nothing else is runnable, call job.wait once with the required ids. Solers resumes this same task when any requested job reaches a terminal state.\n"
-			"- Treat Tool failures and Godot errors as authoritative: stop dependent writes, diagnose the cause, fix it, and verify again.\n"
-			"- When retrying a failed operation, copy error.failure_id exactly into retry_of. Never invent that value; a later success does not erase unrelated failures.\n"
-			"- When a plan step promises externally verifiable work such as asset searches, set evidence_required=true and attach its successful canonical tool and call_id records before marking it completed.\n"
-			"- Reuse evidence when a capture reports unchanged or the same content_sha256 at the same authored revision; do not repeat play/capture/stop loops.\n"
-			"- The Harness supplies compact authored-state and diagnostic deltas after writes; request snapshots and viewport captures explicitly when their evidence is needed. For visual-reference work, bind measurable layout validation and final captures to the exact reference attachment and current revision. Image statistics are measurements for your review, not an automatic aesthetic score.\n"
-			"- Maintain update_plan as a concise progress display for substantial scene-authoring tasks. Completion is decided by current engine artifacts, revisions, evidence, jobs, and failures rather than Plan text.";
+			"- Tool argument errors are stable and occur before execution. Correct the named argument or change resource state before retrying; unchanged failures are deduplicated automatically. Godot diagnostics are evidence, not a replacement for the tool's result.\n"
+			"- Use update_plan only as a concise optional progress display. A final assistant message ends the task directly.";
 	if (tool_registry) {
 		const String skill_catalog = tool_registry->get_skill_catalog_prompt();
 		if (!skill_catalog.is_empty()) {
@@ -1427,7 +734,7 @@ Array SolersAgentSession::_collect_tools() const {
 		const Dictionary def = defs[i];
 		const String exposure = def.get("exposure", "direct");
 		const StringName canonical_name = StringName(def.get("name", String()));
-		if (exposure == "hidden" || (exposure == "deferred" && !activated_tools.has(canonical_name))) {
+		if (exposure == "hidden" || (exposure == "deferred" && !task_deferred_tools.has(canonical_name))) {
 			continue;
 		}
 		Dictionary tool;
@@ -1749,10 +1056,17 @@ bool SolersAgentSession::_schedule_llm_retry(const Dictionary &p_error) {
 	payload["attempt"] = retry_attempt;
 	payload["delay_msec"] = (int)wait;
 	payload["code"] = p_error.get("code", String());
+	payload["http_status"] = p_error.get("http_status", 0);
 	payload["phase"] = phase == PHASE_COMPACTING ? "compaction" : "model";
 	_record("agent_turn_retrying", payload);
 	_write_transcript_event("model_retry", payload);
-	emit_signal(SNAME("turn_retrying"), retry_attempt, String(p_error.get("message", String())));
+	String message = String(p_error.get("message", String())).strip_edges();
+	const int http_status = p_error.get("http_status", 0);
+	if (http_status > 0) {
+		message = vformat("HTTP %d%s", http_status, message.is_empty() ? String() : ": " + message);
+	}
+	message += vformat(" (retrying in %s s)", String::num(double(wait) / 1000.0, 1));
+	emit_signal(SNAME("turn_retrying"), retry_attempt, message);
 	return true;
 }
 
@@ -1944,7 +1258,6 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 	}
 	background_resume_suppressed = false;
 	waiting_background_asset_ids.clear();
-	turn_started_authored_revision = authored_revision;
 	model_request_budget = MAX(0, (int)p_args.get("max_model_requests", 0));
 
 	active_provider = settings_service->resolve_active_provider();
@@ -2019,8 +1332,6 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 	readonly_cache.clear();
 	failed_resource_accesses.clear();
 	last_usage.clear();
-	done_requested = false;
-	done_message = String();
 	overflow_compaction_attempts = 0;
 	compaction_request_attempt = 0;
 	retry_attempt = 0;
@@ -2205,6 +1516,7 @@ void SolersAgentSession::_on_model_turn_complete() {
 		_write_transcript_message("assistant", current_text);
 	}
 	if (pending_tool_calls.is_empty()) {
+		const String final_text = current_text;
 		if (!current_text.is_empty()) {
 			emit_signal(SNAME("assistant_message"), current_text);
 		}
@@ -2213,29 +1525,7 @@ void SolersAgentSession::_on_model_turn_complete() {
 		current_reasoning = String();
 		pending_tool_calls.clear();
 		streamed_tool_calls.clear();
-		if (!waiting_background_asset_ids.is_empty()) {
-			phase = PHASE_WAITING;
-			_resume_next_background_asset();
-			return;
-		}
-		bool plan_has_pending = false;
-		const Array plan = current_plan.get("plan", Array());
-		for (int i = 0; i < plan.size(); i++) {
-			if (String(Dictionary(plan[i]).get("status", String())) != "completed") {
-				plan_has_pending = true;
-				break;
-			}
-		}
-		const bool background_active = tool_registry && tool_registry->asset_service && tool_registry->asset_service->has_active_tasks(session_id);
-		const bool task_active = authored_revision > turn_started_authored_revision || _unresolved_error_count() > 0 || plan_has_pending || background_active;
-		if (task_active) {
-			Dictionary continuation = SolersLLMMessage::user("Continue the original task. Use available non-conflicting tools now; if only background jobs remain, call job.wait with their stable ids. Call done only when current engine artifacts and evidence satisfy completion.");
-			continuation["origin"] = "solers_continuation";
-			messages.push_back(continuation);
-			_dispatch_model_request();
-			return;
-		}
-		_finish_turn("completed", String());
+		_finish_turn("completed", final_text);
 		return;
 	}
 	if (!current_text.is_empty()) {
@@ -2248,6 +1538,38 @@ void SolersAgentSession::_on_model_turn_complete() {
 	for (int i = 0; i < tool_queue.size(); i++) {
 		Dictionary call = tool_queue[i];
 		call["queued_msec"] = (int64_t)queued_msec;
+		const String model_name = call.get("name", String());
+		const String canonical_name = call.get("canonical_name", model_name);
+		const String requested_name = call.get("requested_name", model_name);
+		const String arguments = call.get("arguments", "{}");
+		Dictionary preflight_result;
+		Dictionary parsed_args;
+		if (canonical_name.is_empty()) {
+			preflight_result = _tool_denied_result("TOOL_NOT_FOUND", vformat("Model requested an unknown Solers tool: %s.", requested_name));
+		} else {
+			Ref<JSON> json;
+			json.instantiate();
+			const Error parse_error = json->parse(arguments.is_empty() ? "{}" : arguments);
+			const Variant parsed = parse_error == OK ? json->get_data() : Variant();
+			if (parse_error != OK || parsed.get_type() != Variant::DICTIONARY) {
+				preflight_result = _tool_denied_result("TOOL_ARGUMENT_INVALID", "Tool arguments must be a complete JSON object.");
+			} else if (!tool_registry) {
+				preflight_result = _tool_denied_result("AGENT_UNCONFIGURED", "Tool registry unavailable.");
+			} else {
+				parsed_args = parsed;
+				SolersToolContext context;
+				context.call_id = call.get("id", String());
+				context.session_id = session_id;
+				context.authored_revision = authored_revision;
+				String failure_cache_key;
+				Dictionary normalized_args;
+				preflight_result = tool_registry->_preflight_tool_call(StringName(canonical_name), parsed_args, context, normalized_args, failure_cache_key);
+			}
+		}
+		call["parsed_args"] = parsed_args;
+		if (!preflight_result.is_empty()) {
+			call["preflight_result"] = preflight_result;
+		}
 		tool_queue[i] = call;
 	}
 	tool_queue_index = 0;
@@ -2300,7 +1622,6 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 		transcript["godot_log_errors"] = godot_log_error_count;
 		transcript["godot_log_warnings"] = godot_log_warning_count;
 	}
-	transcript["unresolved_errors"] = _unresolved_error_count();
 	if (!scene_commit.is_empty()) {
 		transcript["scene_commit"] = scene_commit;
 	}
@@ -2322,7 +1643,10 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	completed_tool_results.clear();
 	failed_resource_accesses.clear();
 	readonly_cache.clear();
-	capture_evidence_cache.clear();
+	if (tool_registry) {
+		tool_registry->clear_task_state(session_id);
+	}
+	task_deferred_tools.clear();
 	tool_queue_index = 0;
 	tool_delivery_index = 0;
 	tool_started_announced = false;
@@ -2354,9 +1678,6 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	deferred_canonical_name = String();
 	current_text = String();
 	current_reasoning = String();
-	done_requested = false;
-	done_message = String();
-	done_verification.clear();
 	turn_attachments.clear();
 	waiting_background_asset_ids.clear();
 	turn_runtime_owned = false;
@@ -2419,10 +1740,6 @@ void SolersAgentSession::_poll_tool_queue() {
 		}
 	}
 
-	Ref<JSON> json;
-	json.instantiate();
-	const Error parse_err = json->parse(arguments.is_empty() ? "{}" : arguments);
-	const Variant parsed = parse_err == OK ? json->get_data() : Variant();
 	auto write_rejected_start = [&](const String &p_tool) {
 		tool_started_msec = OS::get_singleton()->get_ticks_msec();
 		Dictionary audit;
@@ -2432,38 +1749,21 @@ void SolersAgentSession::_poll_tool_queue() {
 		audit["arguments_bytes"] = arguments.utf8().length();
 		_write_transcript_event("tool_started", audit);
 	};
-	if (canonical_name.is_empty()) {
-		write_rejected_start(requested_name);
-		Dictionary error;
-		error["code"] = "UNKNOWN_TOOL";
-		error["message"] = vformat("Model requested an unknown Solers tool: %s.", requested_name);
-		error["recoverable"] = true;
-		Dictionary result;
-		result["ok"] = false;
-		result["error"] = error;
-		_queue_tool_result(queue_index, id, name, requested_name, Dictionary(), result, tool_started_msec);
+	const Dictionary preflight_result = call.get("preflight_result", Dictionary());
+	if (!preflight_result.is_empty()) {
+		const String rejected_name = canonical_name.is_empty() ? requested_name : canonical_name;
+		write_rejected_start(rejected_name);
+		Dictionary args = call.get("parsed_args", Dictionary());
+		if (args.is_empty() && !arguments.is_empty() && arguments != "{}") {
+			args["arguments_sha256"] = arguments.sha256_text();
+			args["arguments_bytes"] = arguments.utf8().length();
+		}
+		_queue_tool_result(queue_index, id, name, rejected_name, args, preflight_result, tool_started_msec);
 		tool_queue_index++;
 		tool_started_announced = false;
 		return;
 	}
-	if (parse_err != OK || parsed.get_type() != Variant::DICTIONARY) {
-		write_rejected_start(canonical_name);
-		Dictionary error;
-		error["code"] = "INVALID_TOOL_ARGUMENTS";
-		error["message"] = "Tool arguments must be a complete JSON object.";
-		error["recoverable"] = true;
-		Dictionary result;
-		result["ok"] = false;
-		result["error"] = error;
-		Dictionary args;
-		args["arguments_sha256"] = arguments.sha256_text();
-		args["arguments_bytes"] = arguments.utf8().length();
-		_queue_tool_result(queue_index, id, name, canonical_name, args, result, tool_started_msec);
-		tool_queue_index++;
-		tool_started_announced = false;
-		return;
-	}
-	const Dictionary parsed_args = parsed;
+	const Dictionary parsed_args = call.get("parsed_args", Dictionary());
 	const Array accesses = tool_registry ? tool_registry->resolve_resource_access(StringName(canonical_name), parsed_args) : Array();
 	if (_conflicts_with_pending(accesses)) {
 		if (_resume_ready_pending_tool()) {
@@ -2478,13 +1778,6 @@ void SolersAgentSession::_poll_tool_queue() {
 	audit["resume"] = false;
 	audit["args"] = tool_registry ? tool_registry->protect_tool_args_for_replay(StringName(canonical_name), parsed_args) : parsed_args;
 	_write_transcript_event("tool_started", audit);
-	if (canonical_name == "done" && tool_queue.size() != 1) {
-		const Dictionary blocked = _tool_denied_result("INVALID_DONE_BATCH", "done must be the only call in its model response so final evidence cannot race another mutation.");
-		_queue_tool_result(queue_index, id, name, canonical_name, parsed_args, blocked, tool_started_msec);
-		tool_queue_index++;
-		tool_started_announced = false;
-		return;
-	}
 	if (tool_registry && SolersToolRegistry::has_write_conflict(failed_resource_accesses, accesses)) {
 		const Dictionary skipped = _tool_denied_result("SKIPPED_AFTER_FAILURE", "Skipped because a failed prerequisite touched the same resource. Re-evaluate that resource before retrying.");
 		_queue_tool_result(queue_index, id, name, canonical_name, parsed_args, skipped, tool_started_msec);
@@ -2505,26 +1798,6 @@ void SolersAgentSession::_poll_tool_queue() {
 			tool_queue_index++;
 			tool_started_announced = false;
 			return;
-		}
-	}
-	if (canonical_name == "viewport.capture") {
-		const String target = String(parsed_args.get("target", String())).to_lower();
-		if (target == "camera" || target == "top_down" || target == "orthographic") {
-			const String evidence_key = target + ":" + String::num_uint64(authored_revision) + ":" + String::num_uint64(parsed_args.hash());
-			const Dictionary *evidence = capture_evidence_cache.getptr(evidence_key);
-			if (evidence && !String(evidence->get("content_sha256", String())).is_empty()) {
-				Dictionary data = evidence->duplicate(true);
-				data["unchanged"] = true;
-				data["reused"] = true;
-				data["same_as_capture_id"] = data.get("capture_id", String());
-				Dictionary reused;
-				reused["ok"] = true;
-				reused["data"] = data;
-				_queue_tool_result(queue_index, id, name, canonical_name, parsed_args, reused, tool_started_msec);
-				tool_queue_index++;
-				tool_started_announced = false;
-				return;
-			}
 		}
 	}
 	_schedule_tool_execution(queue_index, id, name, canonical_name, parsed_args, false);
@@ -2642,15 +1915,6 @@ bool SolersAgentSession::_flush_tool_results() {
 		const Dictionary result = entry.get("result", Dictionary());
 		_deliver_tool_result(entry.get("id", String()), entry.get("model_name", String()), canonical_name, entry.get("args", Dictionary()), result);
 		tool_delivery_index++;
-		if (canonical_name == "done" && done_requested && (bool)result.get("ok", false) && tool_delivery_index >= tool_queue.size() && pending_tool_executions.is_empty()) {
-			const String final_message = done_message;
-			messages.push_back(SolersLLMMessage::assistant(final_message, Array()));
-			_write_transcript_message("assistant", final_message);
-			emit_signal(SNAME("assistant_message"), final_message);
-			last_assistant_msec = OS::get_singleton()->get_ticks_msec();
-			_finish_turn("completed", final_message);
-			return false;
-		}
 	}
 	return false;
 }
@@ -2733,6 +1997,7 @@ void SolersAgentSession::_execute_deferred_tool(uint64_t p_token) {
 	SolersToolContext context;
 	context.call_id = deferred_call_id;
 	context.session_id = session_id;
+	context.authored_revision = authored_revision;
 	context.cancel_requested = &tool_cancel_requested;
 	if (!deferred_prepared_call) {
 		SolersPreparedToolCall prepared;
@@ -2828,12 +2093,7 @@ void SolersAgentSession::_poll_tool_executing() {
 
 	deferred_done = false;
 	deferred_result = Dictionary();
-	const Dictionary attributable_error = _consume_attributable_tool_error(id);
-	if ((bool)result.get("ok", false) && !attributable_error.is_empty()) {
-		result.clear();
-		result["ok"] = false;
-		result["error"] = attributable_error;
-	}
+	_consume_attributable_tool_error(id);
 
 	if (!is_resume && permission_manager && _is_awaiting_approval_result(result)) {
 		const Dictionary error = result.get("error", Dictionary());
@@ -2877,25 +2137,6 @@ void SolersAgentSession::_poll_tool_executing() {
 	}
 	const bool tool_succeeded = (bool)result.get("ok", false);
 	Dictionary data = result.get("data", Dictionary());
-	if (tool_succeeded && canonical_name == "viewport.capture") {
-		const String content_sha256 = data.get("content_sha256", String());
-		if (!content_sha256.is_empty()) {
-			const String evidence_key = String(data.get("target", String())) + ":" + String::num_uint64(authored_revision) + ":" + String::num_uint64(args.hash());
-			const Dictionary *previous = capture_evidence_cache.getptr(evidence_key);
-			if (previous && String(previous->get("content_sha256", String())) == content_sha256) {
-				data["unchanged"] = true;
-				data["same_as_capture_id"] = previous->get("capture_id", String());
-				result.erase("attachments");
-				data.erase("attachment");
-			}
-			Dictionary evidence = data.duplicate(true);
-			evidence.erase("attachment");
-			evidence["authored_revision"] = (int64_t)authored_revision;
-			capture_evidence_cache[evidence_key] = evidence;
-			capture_evidence_cache["capture:" + String(data.get("capture_id", String()))] = evidence;
-			result["data"] = data;
-		}
-	}
 	bool scene_state_changed = false;
 	bool spatial_geometry_changed = false;
 	if (tool_registry && tool_registry->reflection_service && tool_registry->affects_scene_state(StringName(canonical_name))) {
@@ -2919,8 +2160,6 @@ void SolersAgentSession::_poll_tool_executing() {
 					render_artifacts.clear();
 					if ((bool)data.get("preserves_structure_validation", false) && scene_validation_revision > 0) {
 						scene_validation_revision = geometry_revision;
-					} else {
-						scene_validation_evidence.clear();
 					}
 				} else if ((bool)data.get("mesh_data_changed", false)) {
 					render_artifacts.erase("lightmap");
@@ -2936,7 +2175,6 @@ void SolersAgentSession::_poll_tool_executing() {
 		}
 		if (tool_registry && tool_registry->produces_scene_validation(StringName(canonical_name))) {
 			scene_validation_revision = geometry_revision;
-			scene_validation_evidence = data.duplicate(true);
 		}
 		if (canonical_name == "editor.get_snapshot") {
 			observed_revision = authored_revision;
@@ -3005,40 +2243,21 @@ Dictionary SolersAgentSession::_tool_denied_result(const String &p_code, const S
 void SolersAgentSession::_deliver_tool_result(const String &p_id, const String &p_model_name, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result) {
 	Dictionary result = p_result.duplicate(true);
 	result["call_id"] = p_id;
-	if ((bool)result.get("ok", false) && (p_canonical_name == "skill.read" || p_canonical_name == "tool.search")) {
+	if ((bool)result.get("ok", false) && p_canonical_name == "tool.search") {
 		Dictionary data = result.get("data", Dictionary());
-		Array activated;
-		if (p_canonical_name == "skill.read") {
-			const Array required_tools = data.get("required_tools", Array());
-			for (int i = 0; i < required_tools.size(); i++) {
-				const StringName name = StringName(required_tools[i]);
-				if (tool_registry && !tool_registry->get_model_tool_name(name).is_empty()) {
-					activated_tools.insert(name);
-					activated.push_back(String(name));
-				}
-			}
-		} else {
-			const Array tools = data.get("tools", Array());
-			for (int i = 0; i < tools.size(); i++) {
-				const StringName name = StringName(Dictionary(tools[i]).get("name", String()));
-				if (name != StringName()) {
-					activated_tools.insert(name);
-					activated.push_back(String(name));
-				}
+		Array task_tools;
+		const Array tools = data.get("tools", Array());
+		for (int i = 0; i < tools.size(); i++) {
+			const StringName name = StringName(Dictionary(tools[i]).get("name", String()));
+			if (name != StringName()) {
+				task_deferred_tools.insert(name);
+				task_tools.push_back(String(name));
 			}
 		}
-		data["activated_tools"] = activated;
+		data["task_tools"] = task_tools;
 		result["data"] = data;
 	}
 	const Array accesses = tool_registry && !p_canonical_name.is_empty() ? tool_registry->resolve_resource_access(StringName(p_canonical_name), p_args) : Array();
-	if ((bool)result.get("ok", false)) {
-		_resolve_tool_failure(String(p_args.get("retry_of", String())).strip_edges(), p_canonical_name, accesses);
-	} else {
-		Dictionary error = result.get("error", Dictionary());
-		const String failure_id = _record_tool_failure(p_id, p_canonical_name, error, accesses, String(p_args.get("retry_of", String())).strip_edges());
-		error["failure_id"] = failure_id;
-		result["error"] = error;
-	}
 	const Dictionary diagnostics = _take_godot_diagnostics();
 	if (!diagnostics.is_empty()) {
 		result["diagnostics"] = diagnostics;
@@ -3196,16 +2415,11 @@ void SolersAgentSession::reset_conversation() {
 	last_stop_reason = String();
 	last_usage.clear();
 	last_assistant_msec = 0;
-	activated_tools.clear();
-	{
-		MutexLock lock(godot_log_mutex);
-		unresolved_tool_errors.clear();
-	}
+	task_deferred_tools.clear();
 	pending_background_assets.clear();
 	delivered_background_assets.clear();
 	waiting_background_asset_ids.clear();
 	render_artifacts.clear();
-	scene_validation_evidence.clear();
 	background_resume_suppressed = false;
 	if (context_manager) {
 		context_manager->reset();
@@ -3226,30 +2440,17 @@ void SolersAgentSession::set_project_path(const String &p_project_path) {
 void SolersAgentSession::set_session(const String &p_project_path, const String &p_session_id) {
 	abort();
 	_release_godot_log_audit();
-	{
-		MutexLock lock(godot_log_mutex);
-		unresolved_tool_errors.clear();
-	}
 	project_path = p_project_path;
 	render_artifacts.clear();
-	scene_validation_evidence.clear();
-	activated_tools.clear();
+	task_deferred_tools.clear();
 	if (!p_session_id.is_empty()) {
 		session_id = p_session_id;
 	}
 	const Dictionary state = _read_transcript_state(project_path, session_id);
 	messages = state.get("messages", Array());
-	{
-		MutexLock lock(godot_log_mutex);
-		unresolved_tool_errors = Dictionary(state.get("unresolved_tool_errors", Dictionary())).duplicate(true);
-	}
 	current_plan = state.get("plan", Dictionary());
 	last_outcome = state.get("outcome", String());
 	turn_id = state.get("turn_id", 0);
-	const Array restored_activated_tools = state.get("activated_tools", Array());
-	for (int i = 0; i < restored_activated_tools.size(); i++) {
-		activated_tools.insert(StringName(restored_activated_tools[i]));
-	}
 	pending_background_assets = state.get("background_assets", Array());
 	background_resume_suppressed = false;
 	delivered_background_assets.clear();
@@ -3361,7 +2562,6 @@ Dictionary SolersAgentSession::get_status() const {
 		status["godot_log_errors"] = godot_log_error_count;
 		status["godot_log_warnings"] = godot_log_warning_count;
 	}
-	status["unresolved_errors"] = _unresolved_error_count();
 	status["authored_revision"] = (int64_t)authored_revision;
 	status["runtime_epoch"] = (int64_t)runtime_epoch;
 	status["observed_revision"] = (int64_t)observed_revision;
