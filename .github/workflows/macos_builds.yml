@@ -108,3 +108,7 @@ jobs:
           ${{ matrix.bin }} --version
           ${{ matrix.bin }} --help
           ${{ matrix.bin }} --test --force-colors
+
+      - name: Terrain3D extension smoke test
+        if: matrix.cache-name == 'macos-editor'
+        run: python modules/solers_ai/tests/terrain3d_smoke.py ${{ matrix.bin }}

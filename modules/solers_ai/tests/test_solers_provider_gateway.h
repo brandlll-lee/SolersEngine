@@ -41,8 +41,11 @@
 #include "core/io/tcp_server.h"
 #include "core/object/message_queue.h"
 #include "core/os/os.h"
+#include "core/templates/pair.h"
 #include "editor/file_system/editor_file_system.h"
+#include "editor/asset_library/editor_asset_installer.h"
 #include "editor/settings/editor_settings.h"
+#include "modules/zip/zip_packer.h"
 #include "tests/test_macros.h"
 
 #include "modules/solers_ai/core/solers_agent_session.h"
@@ -166,6 +169,18 @@ bool search_result_has_tool(const Dictionary &p_result, const String &p_name) {
 	const Dictionary data = p_result.get("data", Dictionary());
 	const Array tools = data.get("tools", Array());
 	return !find_tool_def(tools, p_name).is_empty();
+}
+
+void write_test_zip(const String &p_path, const Vector<Pair<String, String>> &p_files) {
+	Ref<ZIPPacker> packer;
+	packer.instantiate();
+	REQUIRE(packer->open(p_path, ZIPPacker::APPEND_CREATE) == OK);
+	for (const Pair<String, String> &file : p_files) {
+		REQUIRE(packer->start_file(file.first) == OK);
+		REQUIRE(packer->write_file(file.second.to_utf8_buffer()) == OK);
+		REQUIRE(packer->close_file() == OK);
+	}
+	REQUIRE(packer->close() == OK);
 }
 
 TEST_CASE("[SolersSecretStore] strict credentials are protected and recoverable") {
@@ -351,8 +366,7 @@ TEST_CASE("[SolersToolRegistry] registers tools by lookup, not a hardcoded catal
 	CHECK(tool.get("model_name", String()) == "synthetic_echo");
 	CHECK_FALSE((bool)tool.get("requires_approval", true));
 	CHECK(tool.get("execution", String()) == "worker");
-	const Dictionary retry_of = Dictionary(Dictionary(tool.get("input_schema", Dictionary())).get("properties", Dictionary())).get("retry_of", Dictionary());
-	CHECK(String(retry_of.get("description", String())).contains("error.failure_id"));
+	CHECK_FALSE(Dictionary(Dictionary(tool.get("input_schema", Dictionary())).get("properties", Dictionary())).has("retry_of"));
 	CHECK(registry.get_model_tool_name("synthetic.echo") == "synthetic_echo");
 	CHECK(registry.resolve_model_tool_name("synthetic_echo") == StringName("synthetic.echo"));
 
@@ -372,6 +386,267 @@ TEST_CASE("[SolersToolRegistry] registers tools by lookup, not a hardcoded catal
 	CHECK_FALSE((bool)data.get("has_optional_empty", true));
 	CHECK((bool)data.get("has_required_empty", false));
 	CHECK((bool)data.get("has_unknown_empty", false));
+}
+
+TEST_CASE("[SolersPermissionManager] third-party plugin code always requires explicit approval") {
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_all(true);
+	CHECK_FALSE(permissions.is_auto_approved(SolersPermissionManager::PERMISSION_INSTALL_PLUGIN));
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_INSTALL_PLUGIN, true);
+	CHECK_FALSE(permissions.get_auto_approve_permission(SolersPermissionManager::PERMISSION_INSTALL_PLUGIN));
+
+	SolersAssetService assets;
+	SolersToolRegistry registry;
+	registry.set_asset_service(&assets);
+	registry.set_permission_manager(&permissions);
+	registry.register_default_tools();
+	Dictionary third_party;
+	third_party["source"] = "assetlib";
+	third_party["plugin_id"] = "123";
+	third_party["version"] = "1.0.0";
+	third_party["sha256"] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+	const Dictionary blocked = registry.call_tool("plugin.ensure", third_party);
+	CHECK_FALSE((bool)blocked.get("ok", true));
+	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "USER_APPROVAL_REQUIRED");
+	CHECK(permissions.get_pending_request_count() == 1);
+
+	Dictionary bundled = third_party.duplicate(true);
+	bundled["source"] = "bundled";
+	bundled["plugin_id"] = "terrain3d";
+	bundled["version"] = "1.0.2-stable";
+	bundled["sha256"] = "a071850250ec5e596aa54da61c01d75768774eb379ee997584d426a45f4884a2";
+	Dictionary untrusted_bundle = bundled.duplicate(true);
+	untrusted_bundle["sha256"] = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+	CHECK(SolersAssetService::is_trusted_plugin(bundled));
+	CHECK_FALSE(SolersAssetService::is_trusted_plugin(untrusted_bundle));
+	const Dictionary untrusted = registry.call_tool("plugin.ensure", untrusted_bundle);
+	CHECK_FALSE((bool)untrusted.get("ok", true));
+	CHECK(Dictionary(untrusted.get("error", Dictionary())).get("code", String()) == "USER_APPROVAL_REQUIRED");
+	CHECK(permissions.get_pending_request_count() == 2);
+
+	const Dictionary reached_handler = registry.call_tool("plugin.ensure", bundled);
+	CHECK_FALSE((bool)reached_handler.get("ok", true));
+	CHECK(Dictionary(reached_handler.get("error", Dictionary())).get("code", String()) == "PLUGIN_INSPECTION_REQUIRED");
+}
+
+TEST_CASE("[Editor][SolersPlugin] package paths are validated and project writes roll back") {
+	const String unsafe_zip = "user://.solers_unsafe_plugin_contract.zip";
+	const String package_zip = "user://.solers_plugin_transaction_contract.zip";
+	const String target_dir = "res://.solers_plugin_transaction_contract";
+	const String target_absolute = ProjectSettings::get_singleton()->globalize_path(target_dir);
+	if (Ref<DirAccess> old = DirAccess::open(target_absolute); old.is_valid()) {
+		old->erase_contents_recursive();
+		DirAccess::remove_absolute(target_absolute);
+	}
+	DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(unsafe_zip));
+	DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(package_zip));
+
+	Vector<Pair<String, String>> unsafe_files;
+	unsafe_files.push_back(Pair<String, String>("../escape.txt", "escape"));
+	write_test_zip(unsafe_zip, unsafe_files);
+	const Dictionary unsafe = EditorAssetPackageInstaller::inspect_package(unsafe_zip, target_dir);
+	CHECK_FALSE((bool)unsafe.get("ok", true));
+	CHECK(Dictionary(unsafe.get("error", Dictionary())).get("code", String()) == "PACKAGE_PATH_INVALID");
+
+	Vector<Pair<String, String>> package_files;
+	package_files.push_back(Pair<String, String>("good.txt", "after"));
+	package_files.push_back(Pair<String, String>("bad.txt", "child"));
+	write_test_zip(package_zip, package_files);
+	REQUIRE(DirAccess::make_dir_recursive_absolute(target_absolute) == OK);
+	Ref<FileAccess> existing = FileAccess::open(target_dir.path_join("good.txt"), FileAccess::WRITE);
+	REQUIRE(existing.is_valid());
+	existing->store_string("before");
+	existing.unref();
+	Ref<FileAccess> blocker = FileAccess::open(target_dir.path_join("blocker"), FileAccess::WRITE);
+	REQUIRE(blocker.is_valid());
+	blocker->store_string("not a directory");
+	blocker.unref();
+
+	Dictionary mappings;
+	mappings["good.txt"] = "good.txt";
+	mappings["bad.txt"] = "blocker/child.txt";
+	PackedStringArray selected;
+	selected.push_back("good.txt");
+	selected.push_back("bad.txt");
+	PackedStringArray overwrites;
+	overwrites.push_back(target_dir.path_join("good.txt"));
+	Dictionary manifest;
+	manifest["version"] = 1;
+	const String manifest_path = target_dir.path_join("lock.json");
+	const Dictionary failed = EditorAssetPackageInstaller::install_package(package_zip, target_dir, mappings, selected, overwrites, PackedStringArray(), manifest_path, manifest);
+	CHECK_FALSE((bool)failed.get("ok", true));
+	CHECK(FileAccess::get_file_as_string(target_dir.path_join("good.txt")) == "before");
+	CHECK_FALSE(FileAccess::exists(manifest_path));
+
+	DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(target_dir.path_join("blocker")));
+	Dictionary good_mapping;
+	good_mapping["good.txt"] = "good.txt";
+	PackedStringArray good_selection;
+	good_selection.push_back("good.txt");
+	const Dictionary conflict = EditorAssetPackageInstaller::install_package(package_zip, target_dir, good_mapping, good_selection);
+	CHECK_FALSE((bool)conflict.get("ok", true));
+	CHECK(FileAccess::get_file_as_string(target_dir.path_join("good.txt")) == "before");
+
+	const Dictionary installed = EditorAssetPackageInstaller::install_package(package_zip, target_dir, mappings, selected, overwrites, PackedStringArray(), manifest_path, manifest);
+	REQUIRE(installed.get("ok", false));
+	CHECK(FileAccess::get_file_as_string(target_dir.path_join("good.txt")) == "after");
+	CHECK(FileAccess::get_file_as_string(target_dir.path_join("blocker/child.txt")) == "child");
+	CHECK(FileAccess::exists(manifest_path));
+
+	Dictionary upgraded_manifest;
+	upgraded_manifest["version"] = 2;
+	PackedStringArray removals;
+	removals.push_back(target_dir.path_join("blocker/child.txt"));
+	const Dictionary upgraded = EditorAssetPackageInstaller::install_package(package_zip, target_dir, good_mapping, good_selection, overwrites, removals, manifest_path, upgraded_manifest);
+	REQUIRE(upgraded.get("ok", false));
+	CHECK(FileAccess::get_file_as_string(target_dir.path_join("good.txt")) == "after");
+	CHECK_FALSE(FileAccess::exists(target_dir.path_join("blocker/child.txt")));
+	CHECK(FileAccess::get_file_as_string(manifest_path).contains("\"version\": 2"));
+
+	if (Ref<DirAccess> cleanup = DirAccess::open(target_absolute); cleanup.is_valid()) {
+		cleanup->erase_contents_recursive();
+		DirAccess::remove_absolute(target_absolute);
+	}
+	DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(unsafe_zip));
+	DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(package_zip));
+}
+
+TEST_CASE("[Editor][SolersPlugin] bundled Terrain3D archive is pinned and self-describing") {
+	const String invalid_archive = "user://.solers_invalid_terrain_bundle.zip";
+	Vector<Pair<String, String>> invalid_files;
+	invalid_files.push_back(Pair<String, String>("addons/terrain_3d/plugin.cfg", "[plugin]"));
+	write_test_zip(invalid_archive, invalid_files);
+	const String previous_override = OS::get_singleton()->get_environment("SOLERS_TERRAIN3D_ARCHIVE");
+	OS::get_singleton()->set_environment("SOLERS_TERRAIN3D_ARCHIVE", ProjectSettings::get_singleton()->globalize_path(invalid_archive));
+	SolersAssetService invalid_assets;
+	Dictionary args;
+	args["source"] = "bundled";
+	args["plugin_id"] = "terrain3d";
+	const Dictionary mismatch = invalid_assets.plugin_inspect(args);
+	if (previous_override.is_empty()) {
+		OS::get_singleton()->unset_environment("SOLERS_TERRAIN3D_ARCHIVE");
+	} else {
+		OS::get_singleton()->set_environment("SOLERS_TERRAIN3D_ARCHIVE", previous_override);
+	}
+	DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(invalid_archive));
+	CHECK_FALSE((bool)mismatch.get("ok", true));
+	CHECK(Dictionary(mismatch.get("error", Dictionary())).get("code", String()) == "PLUGIN_HASH_MISMATCH");
+
+	SolersAssetService assets;
+	const Dictionary result = assets.plugin_inspect(args);
+	REQUIRE(result.get("ok", false));
+	const Dictionary data = result.get("data", Dictionary());
+	CHECK(data.get("version", String()) == "1.0.2-stable");
+	CHECK(data.get("sha256", String()) == "a071850250ec5e596aa54da61c01d75768774eb379ee997584d426a45f4884a2");
+	CHECK(data.get("license", String()) == "MIT");
+	CHECK((bool)data.get("contains_executable_code", false));
+	CHECK(Array(data.get("plugin_names", Array())).has("terrain_3d"));
+	CHECK_FALSE(Array(data.get("gdextensions", Array())).is_empty());
+}
+
+TEST_CASE("[SolersToolRegistry] schema preflight runs before approval or handler side effects") {
+	SolersPermissionManager permissions;
+	SolersToolRegistry registry;
+	registry.set_permission_manager(&permissions);
+	int calls = 0;
+	SolersToolCapability cap;
+	cap.permission = SolersPermissionManager::PERMISSION_EDIT_FILES;
+	cap.mutation_kind = "file_write";
+	cap.requires_approval = true;
+	Dictionary amount;
+	amount["type"] = "number";
+	amount["exclusiveMinimum"] = 0;
+	Dictionary properties;
+	properties["amount"] = amount;
+	Dictionary schema;
+	schema["type"] = "object";
+	schema["properties"] = properties;
+	Array required;
+	required.push_back("amount");
+	schema["required"] = required;
+	schema["additionalProperties"] = false;
+	registry.register_tool(memnew(SolersFunctionTool(
+			SNAME("synthetic.write"), "Synthetic write fixture.", schema, SolersToolExposure::DIRECT, cap,
+			[&calls](const SolersToolContext &, const Dictionary &) {
+				calls++;
+				Dictionary result;
+				result["ok"] = true;
+				result["data"] = Dictionary();
+				return result;
+			})));
+
+	Dictionary invalid_args;
+	invalid_args["amount"] = -1.0;
+	const Dictionary invalid = registry.call_tool(SNAME("synthetic.write"), invalid_args);
+	CHECK_FALSE((bool)invalid.get("ok", true));
+	CHECK(Dictionary(invalid.get("error", Dictionary())).get("code", String()) == "TOOL_ARGUMENT_INVALID");
+	CHECK(calls == 0);
+	CHECK(permissions.get_pending_request_count() == 0);
+
+	Dictionary valid_args;
+	valid_args["amount"] = 1.0;
+	const Dictionary awaiting = registry.call_tool(SNAME("synthetic.write"), valid_args);
+	CHECK_FALSE((bool)awaiting.get("ok", true));
+	CHECK(Dictionary(awaiting.get("error", Dictionary())).get("code", String()) == "USER_APPROVAL_REQUIRED");
+	CHECK(calls == 0);
+	CHECK(permissions.get_pending_request_count() == 1);
+}
+
+TEST_CASE("[SolersToolRegistry] unchanged failures are deduplicated by task and revision") {
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
+	SolersToolRegistry registry;
+	registry.set_permission_manager(&permissions);
+	int calls = 0;
+	SolersToolCapability cap;
+	cap.permission = SolersPermissionManager::PERMISSION_OBSERVE;
+	cap.mutation_kind = "none";
+	Dictionary value;
+	value["type"] = "integer";
+	Dictionary properties;
+	properties["value"] = value;
+	Dictionary schema;
+	schema["type"] = "object";
+	schema["properties"] = properties;
+	schema["additionalProperties"] = false;
+	registry.register_tool(memnew(SolersFunctionTool(
+			SNAME("synthetic.failure"), "Synthetic failure fixture.", schema, SolersToolExposure::DIRECT, cap,
+			[&calls](const SolersToolContext &, const Dictionary &) {
+				calls++;
+				Dictionary error;
+				error["code"] = "SYNTHETIC_FAILURE";
+				error["message"] = "Stable failure.";
+				error["recoverable"] = true;
+				Dictionary result;
+				result["ok"] = false;
+				result["error"] = error;
+				return result;
+			})));
+	SolersToolContext context;
+	context.session_id = "dedup-task";
+	context.authored_revision = 7;
+	Dictionary args;
+	args["value"] = "invalid";
+	CHECK_FALSE((bool)registry.call_tool_with_context(SNAME("synthetic.failure"), args, context).get("ok", true));
+	const Dictionary rejected_duplicate = registry.call_tool_with_context(SNAME("synthetic.failure"), args, context);
+	CHECK(rejected_duplicate.get("deduplicated", false));
+	CHECK(calls == 0);
+	args["value"] = 1.0;
+	CHECK_FALSE((bool)registry.call_tool_with_context(SNAME("synthetic.failure"), args, context).get("ok", true));
+	const Dictionary duplicate = registry.call_tool_with_context(SNAME("synthetic.failure"), args, context);
+	CHECK_FALSE((bool)duplicate.get("ok", true));
+	CHECK(duplicate.get("deduplicated", false));
+	CHECK(calls == 1);
+	args["value"] = 2;
+	registry.call_tool_with_context(SNAME("synthetic.failure"), args, context);
+	CHECK(calls == 2);
+	args["value"] = 1;
+	context.authored_revision++;
+	registry.call_tool_with_context(SNAME("synthetic.failure"), args, context);
+	CHECK(calls == 3);
+	registry.clear_task_state(context.session_id);
+	registry.call_tool_with_context(SNAME("synthetic.failure"), args, context);
+	CHECK(calls == 4);
 }
 
 TEST_CASE("[SolersToolRegistry] preserves internal session context without changing the bound API") {
@@ -469,11 +744,7 @@ TEST_CASE("[SolersToolRegistry] skill.read serves compiled builtin skills") {
 	CHECK(data.get("name", String()) == "godot-3d-scene-building");
 	CHECK(!String(data.get("content", String())).is_empty());
 	CHECK(String(data.get("content", String())).contains("Prove one unfamiliar operation before repeating it"));
-	const Array required_tools = data.get("required_tools", Array());
-	CHECK(required_tools.has("resource.get_info"));
-	CHECK(required_tools.has("resource.create"));
-	CHECK(required_tools.has("resource.set_property"));
-	CHECK(required_tools.has("editor.invoke"));
+	CHECK_FALSE(data.has("required_tools"));
 }
 
 TEST_CASE("[SolersToolRegistry] skill.read rejects unknown builtin skills") {
@@ -489,32 +760,6 @@ TEST_CASE("[SolersToolRegistry] skill.read rejects unknown builtin skills") {
 	CHECK_FALSE((bool)result.get("ok", true));
 	const Dictionary error = result.get("error", Dictionary());
 	CHECK(error.get("code", String()) == "UNKNOWN_SKILL");
-}
-
-TEST_CASE("[SolersToolRegistry] validate_builtin_skills passes when required tools are registered") {
-	SolersAssetService asset_service;
-	SolersObservationService observation_service;
-	SolersPermissionManager permissions;
-	SolersReflectionService reflection_service;
-	SolersResourceService resource_service;
-	SolersScriptService script_service;
-	SolersToolRegistry registry;
-	registry.set_asset_service(&asset_service);
-	registry.set_observation_service(&observation_service);
-	registry.set_permission_manager(&permissions);
-	registry.set_reflection_service(&reflection_service);
-	registry.set_resource_service(&resource_service);
-	registry.set_script_service(&script_service);
-	registry.register_default_tools();
-	registry.validate_builtin_skills();
-
-	HashSet<StringName> registered_tools;
-	const Array definitions = registry.list_tools();
-	for (int i = 0; i < definitions.size(); i++) {
-		const Dictionary definition = definitions[i];
-		registered_tools.insert(StringName(definition.get("name", String())));
-	}
-	CHECK(SolersBuiltinSkills::validate_required_tools(registered_tools).is_empty());
 }
 
 TEST_CASE("[SolersToolRegistry] default model surface is primitive-first") {
@@ -564,15 +809,7 @@ TEST_CASE("[SolersToolRegistry] default model surface is primitive-first") {
 		"object.call_method",
 		"editor.invoke",
 		"runtime.control",
-		"tool.search",
 		"skill.read",
-	};
-	for (const char *name : required_direct) {
-		Dictionary tool = find_tool_def(tools, name);
-		REQUIRE_FALSE(tool.is_empty());
-		CHECK(tool.get("exposure", String()) == "direct");
-	}
-	const char *required_deferred[] = {
 		"scene.validate_spatial",
 		"scene.validate_structure",
 		"scene.bake_csg",
@@ -588,11 +825,12 @@ TEST_CASE("[SolersToolRegistry] default model surface is primitive-first") {
 		"asset.generate",
 		"asset.status",
 	};
-	for (const char *name : required_deferred) {
+	for (const char *name : required_direct) {
 		Dictionary tool = find_tool_def(tools, name);
 		REQUIRE_FALSE(tool.is_empty());
-		CHECK(tool.get("exposure", String()) == "deferred");
+		CHECK(tool.get("exposure", String()) == "direct");
 	}
+	CHECK(find_tool_def(tools, "tool.search").is_empty());
 	CHECK(find_tool_def(tools, "asset.refine_to_ready").is_empty());
 	CHECK(find_tool_def(tools, "asset.optimize_geometry").is_empty());
 	CHECK(find_tool_def(tools, "asset.restyle_material").is_empty());
@@ -703,7 +941,7 @@ TEST_CASE("[SolersToolRegistry] default model surface is primitive-first") {
 	CHECK(editor_invoke.get("exposure", String()) == "direct");
 	Dictionary export_run = find_tool_def(tools, "export.run_preset");
 	REQUIRE_FALSE(export_run.is_empty());
-	CHECK(export_run.get("exposure", String()) == "deferred");
+	CHECK(export_run.get("exposure", String()) == "direct");
 	CHECK(find_tool_def(tools, "runtime.get_logs").is_empty());
 	CHECK(find_tool_def(tools, "script.open_in_editor").is_empty());
 	CHECK(find_tool_def(tools, "validation.assert_no_errors").is_empty());
@@ -908,61 +1146,57 @@ TEST_CASE("[SolersToolRegistry] batch failure summaries expose failed operation"
 	CHECK(summary.contains("error=NODE_NOT_FOUND"));
 }
 
-TEST_CASE("[SolersToolRegistry] tool.search token match finds deferred tools") {
-	SolersObservationService observation_service;
+TEST_CASE("[SolersToolRegistry] tool.search is absent without external deferred tools") {
 	SolersPermissionManager permissions;
-	SolersReflectionService reflection_service;
-	SolersResourceService resource_service;
-	SolersScriptService script_service;
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
-
 	SolersToolRegistry registry;
-	registry.set_observation_service(&observation_service);
 	registry.set_permission_manager(&permissions);
-	registry.set_reflection_service(&reflection_service);
-	registry.set_resource_service(&resource_service);
-	registry.set_script_service(&script_service);
 	registry.register_default_tools();
-
-	Dictionary export_query = search_deferred_tools(registry, "export preset", 10);
-	REQUIRE((bool)export_query.get("ok", false));
-	const bool found_export_tool = search_result_has_tool(export_query, "export.list_presets") ||
-			search_result_has_tool(export_query, "export.run_preset") ||
-			search_result_has_tool(export_query, "export.validate_presets");
-	CHECK(found_export_tool);
+	CHECK(find_tool_def(registry.list_tools(), "tool.search").is_empty());
+	const Dictionary result = search_deferred_tools(registry, "anything", 10);
+	CHECK_FALSE((bool)result.get("ok", true));
+	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "TOOL_NOT_FOUND");
 }
 
-TEST_CASE("[SolersToolRegistry] tool.search never returns direct tools") {
-	SolersObservationService observation_service;
+TEST_CASE("[SolersToolRegistry] external search prioritizes exact ids and never returns direct tools") {
 	SolersPermissionManager permissions;
-	SolersReflectionService reflection_service;
-	SolersResourceService resource_service;
-	SolersScriptService script_service;
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
-
 	SolersToolRegistry registry;
-	registry.set_observation_service(&observation_service);
 	registry.set_permission_manager(&permissions);
-	registry.set_reflection_service(&reflection_service);
-	registry.set_resource_service(&resource_service);
-	registry.set_script_service(&script_service);
 	registry.register_default_tools();
+	SolersToolCapability cap;
+	cap.permission = SolersPermissionManager::PERMISSION_OBSERVE;
+	cap.mutation_kind = "none";
+	auto add_external = [&](const StringName &p_name, const String &p_description) {
+		registry.register_tool(memnew(SolersFunctionTool(
+				p_name, p_description, Dictionary(), SolersToolExposure::DEFERRED, cap,
+				[](const SolersToolContext &, const Dictionary &) {
+					Dictionary result;
+					result["ok"] = true;
+					return result;
+				})));
+	};
+	add_external(SNAME("plugin.mesh.inspect"), "Inspect an external plugin mesh.");
+	add_external(SNAME("plugin.mesh.repair"), "Repair an external plugin mesh.");
 
-	Dictionary result = search_deferred_tools(registry, "property", 20);
+	Dictionary result = search_deferred_tools(registry, "plugin.mesh.inspect", 1);
 	REQUIRE((bool)result.get("ok", false));
 	Dictionary data = result.get("data", Dictionary());
 	Array matches = data.get("tools", Array());
+	REQUIRE(matches.size() == 1);
+	CHECK(Dictionary(matches[0]).get("name", String()) == "plugin.mesh.inspect");
+
+	result = search_deferred_tools(registry, "property", 20);
+	REQUIRE((bool)result.get("ok", false));
+	matches = Dictionary(result.get("data", Dictionary())).get("tools", Array());
 	for (int i = 0; i < matches.size(); i++) {
 		const Dictionary tool = matches[i];
 		CHECK(tool.get("exposure", String()) == "deferred");
 	}
-
-	Dictionary editor_result = search_deferred_tools(registry, "editor invoke", 20);
-	REQUIRE((bool)editor_result.get("ok", false));
-	CHECK_FALSE(search_result_has_tool(editor_result, "editor.invoke"));
+	CHECK_FALSE(search_result_has_tool(result, "editor.invoke"));
 }
 
-TEST_CASE("[SolersToolRegistry] tool.search uses broad OR matching and prioritizes names") {
+TEST_CASE("[SolersToolRegistry] tool.search uses Godot fuzzy fallback for external metadata") {
 	SolersObservationService observation_service;
 	SolersPermissionManager permissions;
 	SolersReflectionService reflection_service;
@@ -1009,12 +1243,13 @@ TEST_CASE("[SolersToolRegistry] tool.search uses broad OR matching and prioritiz
 				return result;
 			})));
 
-	Dictionary result = search_deferred_tools(registry, "needle metadataquartz", 5);
+	Dictionary result = search_deferred_tools(registry, "metadataquartz", 5);
 	REQUIRE((bool)result.get("ok", false));
 	CHECK(search_result_has_tool(result, "synthetic.opaque"));
-	CHECK(search_result_has_tool(result, "synthetic.needle"));
+	result = search_deferred_tools(registry, "synthetic.needle", 1);
+	REQUIRE((bool)result.get("ok", false));
 	const Array matches = Dictionary(result.get("data", Dictionary())).get("tools", Array());
-	REQUIRE(matches.size() >= 2);
+	REQUIRE(matches.size() == 1);
 	CHECK(Dictionary(matches[0]).get("name", String()) == "synthetic.needle");
 }
 
@@ -2388,7 +2623,7 @@ TEST_CASE("[SolersAgentSession] leaves model request limits to the caller") {
 
 	const Array tools = registry.list_tools();
 	CHECK_FALSE(find_tool_def(tools, "update_plan").is_empty());
-	CHECK_FALSE(find_tool_def(tools, "done").is_empty());
+	CHECK(find_tool_def(tools, "done").is_empty());
 	const Dictionary status = session.get_status();
 	CHECK_FALSE(status.has("tool_iterations"));
 	CHECK_FALSE(status.has("max_tool_iterations"));
@@ -2432,126 +2667,7 @@ TEST_CASE("[SolersAgentSession] validates the Codex update_plan contract") {
 	first["status"] = "completed";
 	valid_steps[0] = first;
 	args["plan"] = valid_steps;
-	args["reference_attachment_id"] = "synthetic_reference";
-	Dictionary missing_camera = SolersAgentSession::validate_plan(args);
-	CHECK_FALSE((bool)missing_camera.get("ok", true));
-	CHECK(Dictionary(missing_camera.get("error", Dictionary())).get("code", String()) == "INVALID_PLAN");
-	args["reference_camera_path"] = "ReferenceCamera";
 	CHECK(SolersAgentSession::validate_plan(args).get("ok", false));
-
-	first["evidence_required"] = true;
-	valid_steps[0] = first;
-	args["plan"] = valid_steps;
-	Dictionary missing_evidence = SolersAgentSession::validate_plan(args);
-	CHECK_FALSE((bool)missing_evidence.get("ok", true));
-	CHECK(Dictionary(missing_evidence.get("error", Dictionary())).get("code", String()) == "INVALID_PLAN");
-	Dictionary proof;
-	proof["call_id"] = "synthetic_call";
-	proof["tool"] = "asset.catalog.search";
-	Array evidence;
-	evidence.push_back(proof);
-	first["evidence"] = evidence;
-	valid_steps[0] = first;
-	args["plan"] = valid_steps;
-	CHECK(SolersAgentSession::validate_plan(args).get("ok", false));
-}
-
-TEST_CASE("[SolersAgentSession] completion requires verification after Godot errors") {
-	Dictionary args;
-	args["message"] = "Finished.";
-	Dictionary state;
-	state["authored_revision"] = 2;
-	state["runtime_epoch"] = 7;
-	state["observed_revision"] = 2;
-	state["runtime_capture_revision"] = 2;
-	state["scene_validation_revision"] = 2;
-	state["geometry_revision"] = 2;
-	CHECK(SolersAgentSession::validate_done(args, state).get("ok", false));
-
-	state["plan_incomplete"] = true;
-	CHECK(SolersAgentSession::validate_done(args, state).get("ok", false));
-	state["plan_incomplete"] = false;
-
-	state["unresolved_errors"] = 1;
-	Dictionary failure_error;
-	failure_error["code"] = "SPATIAL_VALIDATION_FAILED";
-	failure_error["message"] = "Synthetic failure";
-	Dictionary failure;
-	failure["failure_id"] = "synthetic_failure";
-	failure["tool"] = "scene.validate_structure";
-	failure["error"] = failure_error;
-	Dictionary failures;
-	failures["synthetic_failure"] = failure;
-	state["unresolved_tool_errors"] = failures;
-	Dictionary blocked = SolersAgentSession::validate_done(args, state);
-	CHECK_FALSE((bool)blocked.get("ok", true));
-	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "UNRESOLVED_TOOL_ERRORS");
-	CHECK(Array(Dictionary(blocked.get("error", Dictionary())).get("failures", Array())).size() == 1);
-
-	state["unresolved_errors"] = 0;
-	state["plan_evidence_invalid"] = true;
-	state["plan_evidence_error"] = "Synthetic evidence failure";
-	CHECK(SolersAgentSession::validate_done(args, state).get("ok", false));
-	state["plan_evidence_invalid"] = false;
-	state["observed_revision"] = 1;
-	blocked = SolersAgentSession::validate_done(args, state);
-	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "STALE_COMPLETION_EVIDENCE");
-
-	state["observed_revision"] = 2;
-	state["dirty"] = true;
-	blocked = SolersAgentSession::validate_done(args, state);
-	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "UNSAVED_SCENE");
-
-	state["dirty"] = false;
-	state["pending_jobs"] = true;
-	blocked = SolersAgentSession::validate_done(args, state);
-	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "PENDING_BACKGROUND_JOBS");
-
-	state["pending_jobs"] = false;
-	state["scene_validation_required"] = true;
-	state["scene_validation_revision"] = 1;
-	blocked = SolersAgentSession::validate_done(args, state);
-	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "STALE_SCENE_VALIDATION");
-
-	state["scene_validation_revision"] = 2;
-	state["scene_revision"] = 3;
-	state["geometry_revision"] = 2;
-	CHECK(SolersAgentSession::validate_done(args, state).get("ok", false));
-	state["geometry_revision"] = 3;
-	blocked = SolersAgentSession::validate_done(args, state);
-	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "STALE_SCENE_VALIDATION");
-	state["scene_validation_revision"] = 3;
-	state["render_pipeline_required"] = true;
-	state["render_pipeline_valid"] = false;
-	blocked = SolersAgentSession::validate_done(args, state);
-	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "INVALID_RENDER_PIPELINE");
-	state["render_pipeline_valid"] = true;
-	state["editor_capture_required"] = true;
-	state["editor_capture_revision"] = 1;
-	blocked = SolersAgentSession::validate_done(args, state);
-	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "STALE_EDITOR_EVIDENCE");
-
-	state["editor_capture_revision"] = 2;
-	state["runtime_required"] = true;
-	state["runtime_capture_revision"] = 1;
-	blocked = SolersAgentSession::validate_done(args, state);
-	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "STALE_RUNTIME_EVIDENCE");
-
-	state["runtime_capture_revision"] = 2;
-	state["visual_reference_required"] = true;
-	state["visual_reference_attachment_valid"] = true;
-	blocked = SolersAgentSession::validate_done(args, state);
-	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "INVALID_REFERENCE_LAYOUT_EVIDENCE");
-	state["reference_layout_valid"] = true;
-	blocked = SolersAgentSession::validate_done(args, state);
-	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "MISSING_VISUAL_EVIDENCE");
-	state["visual_evidence_declared"] = true;
-	state["visual_evidence_valid"] = false;
-	state["visual_evidence_error"] = "Synthetic stale capture.";
-	blocked = SolersAgentSession::validate_done(args, state);
-	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "INVALID_VISUAL_EVIDENCE");
-	state["visual_evidence_valid"] = true;
-	CHECK(SolersAgentSession::validate_done(args, state).get("ok", false));
 }
 
 TEST_CASE("[SolersToolRegistry] runtime lifecycle does not mutate authored project state") {

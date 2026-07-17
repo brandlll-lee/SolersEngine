@@ -222,6 +222,10 @@ jobs:
           ${{ matrix.bin }} --help
           ${{ matrix.bin }} --headless --test --force-colors
 
+      - name: Terrain3D extension smoke test
+        if: matrix.cache-name == 'linux-editor-mono'
+        run: python modules/solers_ai/tests/terrain3d_smoke.py ${{ matrix.bin }}
+
       - name: .NET source generators tests
         if: matrix.build-mono
         run: |
