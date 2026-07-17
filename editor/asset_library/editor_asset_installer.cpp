@@ -30,15 +30,18 @@
 
 #include "editor_asset_installer.h"
 
+#include "core/config/project_settings.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
+#include "core/io/json.h"
 #include "core/io/zip_io.h"
+#include "core/os/os.h"
 #include "editor/editor_node.h"
 #include "editor/editor_string_names.h"
 #include "editor/file_system/editor_file_system.h"
+#include "editor/file_system/editor_paths.h"
 #include "editor/gui/editor_file_dialog.h"
 #include "editor/gui/editor_toaster.h"
-#include "editor/gui/progress_dialog.h"
 #include "editor/themes/editor_scale.h"
 #include "scene/gui/check_box.h"
 #include "scene/gui/label.h"
@@ -46,6 +49,439 @@
 #include "scene/gui/margin_container.h"
 #include "scene/gui/separator.h"
 #include "scene/gui/split_container.h"
+
+static Dictionary _package_error(const String &p_code, const String &p_message) {
+	Dictionary error;
+	error["code"] = p_code;
+	error["message"] = p_message;
+	error["recoverable"] = true;
+	Dictionary result;
+	result["ok"] = false;
+	result["error"] = error;
+	return result;
+}
+
+static Dictionary _package_ok(const Variant &p_data) {
+	Dictionary result;
+	result["ok"] = true;
+	result["data"] = p_data;
+	return result;
+}
+
+static bool _package_safe_relative_path(const String &p_path, String &r_path) {
+	String path = p_path.replace_char('\\', '/').strip_edges();
+	while (path.begins_with("./")) {
+		path = path.substr(2);
+	}
+	if (path.is_empty() || path.begins_with("/") || path.contains(":")) {
+		return false;
+	}
+	const bool directory = path.ends_with("/");
+	if (directory) {
+		path = path.trim_suffix("/");
+	}
+	path = path.simplify_path();
+	if (path.is_empty() || path == "." || path == ".." || path.begins_with("../") || path.contains("/../")) {
+		return false;
+	}
+	r_path = directory ? path + "/" : path;
+	return true;
+}
+
+static bool _package_safe_project_path(const String &p_target_dir, const String &p_relative, String &r_res_path, String &r_absolute_path) {
+	String target_dir = p_target_dir.replace_char('\\', '/').simplify_path();
+	if (!target_dir.begins_with("res://")) {
+		return false;
+	}
+	String relative;
+	if (!_package_safe_relative_path(p_relative, relative)) {
+		return false;
+	}
+	relative = relative.trim_suffix("/");
+	const String joined = target_dir.path_join(relative).simplify_path();
+	const String base = target_dir.trim_suffix("/");
+	if (joined != base && !joined.begins_with(base + "/")) {
+		return false;
+	}
+	r_res_path = joined;
+	r_absolute_path = ProjectSettings::get_singleton()->globalize_path(joined).simplify_path();
+	return true;
+}
+
+static bool _package_path_uses_link(const String &p_absolute_path) {
+	Ref<DirAccess> fs = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+	if (fs.is_null()) {
+		return true;
+	}
+	String current = p_absolute_path.get_base_dir();
+	while (!current.is_empty()) {
+		if (DirAccess::exists(current) && fs->is_link(current)) {
+			return true;
+		}
+		const String parent = current.get_base_dir();
+		if (parent == current) {
+			break;
+		}
+		current = parent;
+	}
+	return false;
+}
+
+static void _package_remove_tree(const String &p_path) {
+	Ref<DirAccess> dir = DirAccess::open(p_path);
+	if (dir.is_valid()) {
+		dir->erase_contents_recursive();
+	}
+	DirAccess::remove_absolute(p_path);
+}
+
+static bool _package_is_executable(const String &p_path) {
+	const String extension = p_path.get_extension().to_lower();
+	return extension == "gd" || extension == "cs" || extension == "gdextension" || extension == "gdnlib" || extension == "dll" || extension == "so" || extension == "dylib" || extension == "wasm" || extension == "exe" || p_path.get_file() == "plugin.cfg";
+}
+
+Dictionary EditorAssetPackageInstaller::inspect_package(const String &p_package_path, const String &p_target_dir, bool p_skip_toplevel) {
+	Ref<FileAccess> io_fa;
+	zlib_filefunc_def io = zipio_create_io(&io_fa);
+	unzFile package = unzOpen2(p_package_path.utf8().get_data(), &io);
+	if (!package) {
+		return _package_error("PACKAGE_INVALID", "The asset package is not a readable ZIP archive.");
+	}
+
+	struct Entry {
+		String source;
+		uint64_t size = 0;
+		bool directory = false;
+	};
+	Vector<Entry> entries;
+	HashSet<String> normalized_paths;
+	uint64_t total_size = 0;
+	String common_root;
+	bool common_root_valid = true;
+	int ret = unzGoToFirstFile(package);
+	while (ret == UNZ_OK) {
+		unz_file_info info;
+		char filename[16384];
+		ret = unzGetCurrentFileInfo(package, &info, filename, sizeof(filename), nullptr, 0, nullptr, 0);
+		if (ret != UNZ_OK) {
+			unzClose(package);
+			return _package_error("PACKAGE_INVALID", "The asset package directory could not be read.");
+		}
+		String source;
+		if (!_package_safe_relative_path(String::utf8(filename), source)) {
+			unzClose(package);
+			return _package_error("PACKAGE_PATH_INVALID", vformat("Unsafe archive path: %s", String::utf8(filename)));
+		}
+		const String duplicate_key = source.to_lower();
+		if (normalized_paths.has(duplicate_key)) {
+			unzClose(package);
+			return _package_error("PACKAGE_PATH_DUPLICATE", vformat("Duplicate archive path: %s", source));
+		}
+		normalized_paths.insert(duplicate_key);
+		Entry entry;
+		entry.source = source;
+		entry.directory = source.ends_with("/");
+		entry.size = entry.directory ? 0 : info.uncompressed_size;
+		// ponytail: plugin packages are capped to bound ZIP-bomb memory; raise only
+		// when a verified real plugin exceeds these limits.
+		if (entry.size > 256ULL * 1024ULL * 1024ULL || total_size + entry.size > 1024ULL * 1024ULL * 1024ULL) {
+			unzClose(package);
+			return _package_error("PACKAGE_TOO_LARGE", "The asset package exceeds the safe extraction limit.");
+		}
+		total_size += entry.size;
+		entries.push_back(entry);
+		const String root = source.get_slice("/", 0);
+		if (common_root.is_empty()) {
+			common_root = root;
+		} else if (root != common_root) {
+			common_root_valid = false;
+		}
+		ret = unzGoToNextFile(package);
+	}
+	unzClose(package);
+
+	if (entries.is_empty()) {
+		return _package_error("PACKAGE_EMPTY", "The asset package contains no files.");
+	}
+	const String prefix = p_skip_toplevel && common_root_valid ? common_root + "/" : String();
+	Array files;
+	Array conflicts;
+	bool contains_executable_code = false;
+	HashSet<String> mapped_paths;
+	for (const Entry &entry : entries) {
+		String relative = entry.source;
+		if (!prefix.is_empty()) {
+			if (relative == common_root + "/") {
+				continue;
+			}
+			relative = relative.trim_prefix(prefix);
+		}
+		String target_res;
+		String target_absolute;
+		if (!_package_safe_project_path(p_target_dir, relative, target_res, target_absolute)) {
+			return _package_error("PACKAGE_PATH_INVALID", vformat("Unsafe install target for %s", entry.source));
+		}
+		const String mapped_key = target_res.to_lower();
+		if (mapped_paths.has(mapped_key)) {
+			return _package_error("PACKAGE_PATH_DUPLICATE", vformat("Multiple archive entries map to %s", target_res));
+		}
+		mapped_paths.insert(mapped_key);
+		const bool executable = !entry.directory && _package_is_executable(relative);
+		contains_executable_code |= executable;
+		Dictionary file;
+		file["source_path"] = entry.source;
+		file["relative_path"] = relative;
+		file["target_path"] = target_res;
+		file["size"] = (int64_t)entry.size;
+		file["directory"] = entry.directory;
+		file["executable"] = executable;
+		file["conflict"] = FileAccess::exists(target_res) || DirAccess::exists(target_res);
+		if ((bool)file["conflict"] && !entry.directory) {
+			conflicts.push_back(target_res);
+		}
+		files.push_back(file);
+	}
+	Dictionary data;
+	data["files"] = files;
+	data["conflicts"] = conflicts;
+	data["total_uncompressed_size"] = (int64_t)total_size;
+	data["toplevel_prefix"] = prefix;
+	data["contains_executable_code"] = contains_executable_code;
+	return _package_ok(data);
+}
+
+Dictionary EditorAssetPackageInstaller::install_package(const String &p_package_path, const String &p_target_dir, const Dictionary &p_mapped_files, const PackedStringArray &p_selected_files, const PackedStringArray &p_overwrite_files, const PackedStringArray &p_remove_files, const String &p_manifest_path, const Dictionary &p_manifest) {
+	if (p_selected_files.is_empty()) {
+		return _package_error("PACKAGE_SELECTION_EMPTY", "No package files were selected for installation.");
+	}
+	HashSet<String> selected;
+	for (const String &source : p_selected_files) {
+		selected.insert(source);
+	}
+	HashSet<String> allowed_overwrites;
+	for (const String &path : p_overwrite_files) {
+		allowed_overwrites.insert(path.replace_char('\\', '/').simplify_path().to_lower());
+	}
+
+	struct InstallFile {
+		String source;
+		String target_res;
+		String target_absolute;
+		String staged_absolute;
+		String backup_absolute;
+		uint64_t size = 0;
+		bool had_backup = false;
+		bool committed = false;
+		bool removal_only = false;
+	};
+	Vector<InstallFile> files;
+	const String transaction_root = EditorPaths::get_singleton()->get_project_settings_dir().path_join("solers_package_install_" + itos(OS::get_singleton()->get_ticks_usec()));
+	const String stage_root = transaction_root.path_join("stage");
+	const String backup_root = transaction_root.path_join("backup");
+	if (DirAccess::make_dir_recursive_absolute(stage_root) != OK || DirAccess::make_dir_recursive_absolute(backup_root) != OK) {
+		_package_remove_tree(transaction_root);
+		return _package_error("PACKAGE_STAGE_FAILED", "Could not create the package transaction directory.");
+	}
+
+	Ref<FileAccess> io_fa;
+	zlib_filefunc_def io = zipio_create_io(&io_fa);
+	unzFile package = unzOpen2(p_package_path.utf8().get_data(), &io);
+	if (!package) {
+		_package_remove_tree(transaction_root);
+		return _package_error("PACKAGE_INVALID", "The asset package is not a readable ZIP archive.");
+	}
+	String failure;
+	uint64_t total_size = 0;
+	HashSet<String> install_targets;
+	int ret = unzGoToFirstFile(package);
+	while (ret == UNZ_OK && failure.is_empty()) {
+		unz_file_info info;
+		char filename[16384];
+		ret = unzGetCurrentFileInfo(package, &info, filename, sizeof(filename), nullptr, 0, nullptr, 0);
+		if (ret != UNZ_OK) {
+			failure = "The asset package directory could not be read.";
+			break;
+		}
+		String source;
+		if (!_package_safe_relative_path(String::utf8(filename), source)) {
+			failure = vformat("Unsafe archive path: %s", String::utf8(filename));
+			break;
+		}
+		if (!selected.has(source) || source.ends_with("/")) {
+			ret = unzGoToNextFile(package);
+			continue;
+		}
+		if (!p_mapped_files.has(source)) {
+			failure = vformat("No install mapping exists for %s", source);
+			break;
+		}
+		String target_res;
+		String target_absolute;
+		if (!_package_safe_project_path(p_target_dir, p_mapped_files[source], target_res, target_absolute) || _package_path_uses_link(target_absolute)) {
+			failure = vformat("Unsafe install target for %s", source);
+			break;
+		}
+		if (FileAccess::exists(target_absolute) && !allowed_overwrites.has(target_res.to_lower())) {
+			failure = vformat("Install target already exists: %s", target_res);
+			break;
+		}
+		if (info.uncompressed_size > 256ULL * 1024ULL * 1024ULL) {
+			failure = vformat("Package file exceeds the safe extraction limit: %s", source);
+			break;
+		}
+		total_size += info.uncompressed_size;
+		if (total_size > 1024ULL * 1024ULL * 1024ULL) {
+			failure = "The selected package files exceed the safe extraction limit.";
+			break;
+		}
+		const String target_key = target_res.to_lower();
+		if (install_targets.has(target_key)) {
+			failure = vformat("Multiple package files map to %s", target_res);
+			break;
+		}
+		install_targets.insert(target_key);
+		InstallFile install_file;
+		install_file.source = source;
+		install_file.target_res = target_res;
+		install_file.target_absolute = target_absolute;
+		install_file.staged_absolute = stage_root.path_join(target_res.trim_prefix("res://"));
+		install_file.backup_absolute = backup_root.path_join(target_res.trim_prefix("res://"));
+		install_file.size = info.uncompressed_size;
+		if (DirAccess::make_dir_recursive_absolute(install_file.staged_absolute.get_base_dir()) != OK) {
+			failure = vformat("Could not create staging directory for %s", source);
+			break;
+		}
+		if (unzOpenCurrentFile(package) != UNZ_OK) {
+			failure = vformat("Could not open %s in the package", source);
+			break;
+		}
+		Ref<FileAccess> output = FileAccess::open(install_file.staged_absolute, FileAccess::WRITE);
+		if (output.is_null()) {
+			unzCloseCurrentFile(package);
+			failure = vformat("Could not stage %s", source);
+			break;
+		}
+		PackedByteArray buffer;
+		buffer.resize(64 * 1024);
+		uint64_t extracted = 0;
+		while (extracted < info.uncompressed_size) {
+			const int requested = (int)MIN((uint64_t)buffer.size(), (uint64_t)info.uncompressed_size - extracted);
+			const int read = unzReadCurrentFile(package, buffer.ptrw(), requested);
+			if (read <= 0) {
+				failure = vformat("Could not extract %s from the package", source);
+				break;
+			}
+			output->store_buffer(buffer.ptr(), read);
+			extracted += read;
+		}
+		if (unzCloseCurrentFile(package) != UNZ_OK || extracted != info.uncompressed_size) {
+			failure = vformat("Could not extract %s from the package", source);
+			break;
+		}
+		files.push_back(install_file);
+		ret = unzGoToNextFile(package);
+	}
+	unzClose(package);
+	if (failure.is_empty() && files.size() != selected.size()) {
+		failure = "One or more selected package files were not found in the archive.";
+	}
+	if (failure.is_empty()) {
+		for (const String &remove_path : p_remove_files) {
+			String target_res;
+			String target_absolute;
+			if (!_package_safe_project_path("res://", remove_path.trim_prefix("res://"), target_res, target_absolute) || _package_path_uses_link(target_absolute) || install_targets.has(target_res.to_lower())) {
+				failure = vformat("Unsafe package removal target: %s", remove_path);
+				break;
+			}
+			InstallFile remove_file;
+			remove_file.source = "<removed>";
+			remove_file.target_res = target_res;
+			remove_file.target_absolute = target_absolute;
+			remove_file.backup_absolute = backup_root.path_join(target_res.trim_prefix("res://"));
+			remove_file.removal_only = true;
+			files.push_back(remove_file);
+		}
+	}
+
+	if (failure.is_empty() && !p_manifest_path.is_empty()) {
+		String manifest_res;
+		String manifest_absolute;
+		if (!_package_safe_project_path("res://", p_manifest_path.trim_prefix("res://"), manifest_res, manifest_absolute) || _package_path_uses_link(manifest_absolute)) {
+			failure = "The package manifest path is unsafe.";
+		} else {
+			InstallFile manifest_file;
+			manifest_file.source = "<generated-manifest>";
+			manifest_file.target_res = manifest_res;
+			manifest_file.target_absolute = manifest_absolute;
+			manifest_file.staged_absolute = stage_root.path_join(manifest_res.trim_prefix("res://"));
+			manifest_file.backup_absolute = backup_root.path_join(manifest_res.trim_prefix("res://"));
+			DirAccess::make_dir_recursive_absolute(manifest_file.staged_absolute.get_base_dir());
+			Ref<FileAccess> output = FileAccess::open(manifest_file.staged_absolute, FileAccess::WRITE);
+			if (output.is_null()) {
+				failure = "Could not stage the package manifest.";
+			} else {
+				output->store_string(JSON::stringify(p_manifest, "  "));
+				files.push_back(manifest_file);
+			}
+		}
+	}
+
+	if (failure.is_empty()) {
+		for (InstallFile &file : files) {
+			if (FileAccess::exists(file.target_absolute)) {
+				file.had_backup = true;
+				if (DirAccess::make_dir_recursive_absolute(file.backup_absolute.get_base_dir()) != OK || DirAccess::rename_absolute(file.target_absolute, file.backup_absolute) != OK) {
+					failure = vformat("Could not back up %s", file.target_res);
+					break;
+				}
+			}
+			if (file.removal_only) {
+				file.committed = true;
+				continue;
+			}
+			if (DirAccess::make_dir_recursive_absolute(file.target_absolute.get_base_dir()) != OK || DirAccess::rename_absolute(file.staged_absolute, file.target_absolute) != OK) {
+				failure = vformat("Could not install %s", file.target_res);
+				if (file.had_backup) {
+					DirAccess::rename_absolute(file.backup_absolute, file.target_absolute);
+					file.had_backup = false;
+				}
+				break;
+			}
+			file.committed = true;
+		}
+	}
+
+	if (!failure.is_empty()) {
+		for (int i = files.size() - 1; i >= 0; i--) {
+			InstallFile &file = files.write[i];
+			if (file.committed) {
+				DirAccess::remove_absolute(file.target_absolute);
+			}
+			if (file.had_backup) {
+				DirAccess::make_dir_recursive_absolute(file.target_absolute.get_base_dir());
+				DirAccess::rename_absolute(file.backup_absolute, file.target_absolute);
+			}
+		}
+		_package_remove_tree(transaction_root);
+		return _package_error("PACKAGE_INSTALL_FAILED", failure);
+	}
+
+	Array installed;
+	Array removed;
+	for (const InstallFile &file : files) {
+		if (file.removal_only) {
+			removed.push_back(file.target_res);
+		} else {
+			installed.push_back(file.target_res);
+		}
+	}
+	_package_remove_tree(transaction_root);
+	Dictionary data;
+	data["installed_files"] = installed;
+	data["removed_files"] = removed;
+	data["count"] = installed.size() + removed.size();
+	return _package_ok(data);
+}
 
 void EditorAssetInstaller::_item_checked_cbk() {
 	if (updating_source || !source_tree->get_edited()) {
@@ -503,91 +939,27 @@ void EditorAssetInstaller::ok_pressed() {
 }
 
 void EditorAssetInstaller::_install_asset() {
-	Ref<FileAccess> io_fa;
-	zlib_filefunc_def io = zipio_create_io(&io_fa);
-
-	unzFile pkg = unzOpen2(package_path.utf8().get_data(), &io);
-	if (!pkg) {
-		EditorToaster::get_singleton()->popup_str(vformat(TTR("Error opening asset file for \"%s\" (not in ZIP format)."), asset_name), EditorToaster::SEVERITY_ERROR);
-		return;
-	}
-
-	Vector<String> failed_files;
-	int ret = unzGoToFirstFile(pkg);
-
-	ProgressDialog::get_singleton()->add_task("uncompress", TTR("Uncompressing Assets"), file_item_map.size());
-
-	Ref<DirAccess> da = DirAccess::create(DirAccess::ACCESS_RESOURCES);
-	for (int idx = 0; ret == UNZ_OK; ret = unzGoToNextFile(pkg), idx++) {
-		unz_file_info info;
-		char fname[16384];
-		ret = unzGetCurrentFileInfo(pkg, &info, fname, 16384, nullptr, 0, nullptr, 0);
-		if (ret != UNZ_OK) {
-			break;
-		}
-
-		String source_name = String::utf8(fname);
-		if (!_is_item_checked(source_name)) {
+	Dictionary mappings;
+	PackedStringArray selected;
+	PackedStringArray overwrites;
+	for (const String &source : asset_files) {
+		if (source.ends_with("/") || !_is_item_checked(source) || !mapped_files.has(source)) {
 			continue;
 		}
-
-		HashMap<String, String>::Iterator E = mapped_files.find(source_name);
-		if (!E) {
-			continue; // No remapped path means we don't want it; most likely the root.
-		}
-
-		String target_path = target_dir_path.path_join(E->value);
-
-		Dictionary asset_meta = file_item_map[source_name]->get_metadata(0);
-		bool is_dir = asset_meta.get("is_dir", false);
-		if (is_dir) {
-			if (target_path.ends_with("/")) {
-				target_path = target_path.substr(0, target_path.length() - 1);
-			}
-
-			da->make_dir_recursive(target_path);
-		} else {
-			Vector<uint8_t> uncomp_data;
-			uncomp_data.resize(info.uncompressed_size);
-
-			unzOpenCurrentFile(pkg);
-			unzReadCurrentFile(pkg, uncomp_data.ptrw(), uncomp_data.size());
-			unzCloseCurrentFile(pkg);
-
-			// Ensure that the target folder exists.
-			da->make_dir_recursive(target_path.get_base_dir());
-
-			Ref<FileAccess> f = FileAccess::open(target_path, FileAccess::WRITE);
-			if (f.is_valid()) {
-				f->store_buffer(uncomp_data.ptr(), uncomp_data.size());
-			} else {
-				failed_files.push_back(target_path);
-			}
-
-			ProgressDialog::get_singleton()->task_step("uncompress", target_path, idx);
+		mappings[source] = mapped_files[source];
+		selected.push_back(source);
+		const String target = target_dir_path.path_join(mapped_files[source]).simplify_path();
+		if (FileAccess::exists(target)) {
+			overwrites.push_back(target);
 		}
 	}
-
-	ProgressDialog::get_singleton()->end_task("uncompress");
-	unzClose(pkg);
-
-	if (failed_files.size()) {
-		String msg = vformat(TTR("The following files failed extraction from asset \"%s\":"), asset_name) + "\n\n";
-		for (int i = 0; i < failed_files.size(); i++) {
-			if (i > 10) {
-				msg += "\n" + vformat(TTR("(and %s more files)"), itos(failed_files.size() - i));
-				break;
-			}
-			msg += "\n" + failed_files[i];
-		}
-		if (EditorNode::get_singleton() != nullptr) {
-			EditorNode::get_singleton()->show_warning(msg);
-		}
-	} else {
-		if (EditorNode::get_singleton() != nullptr) {
-			EditorNode::get_singleton()->show_warning(vformat(TTR("Asset \"%s\" installed successfully!"), asset_name), TTRC("Success!"));
-		}
+	const Dictionary result = EditorAssetPackageInstaller::install_package(package_path, target_dir_path, mappings, selected, overwrites);
+	if (!(bool)result.get("ok", false)) {
+		const Dictionary error = result.get("error", Dictionary());
+		EditorNode::get_singleton()->show_warning(vformat(TTR("Asset \"%s\" could not be installed:\n\n%s"), asset_name, error.get("message", TTR("Unknown package error."))));
+		return;
 	}
+	EditorNode::get_singleton()->show_warning(vformat(TTR("Asset \"%s\" installed successfully!"), asset_name), TTRC("Success!"));
 
 	EditorFileSystem::get_singleton()->scan_changes();
 }
