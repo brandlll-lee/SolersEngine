@@ -5,6 +5,7 @@ Import("env")
 Import("env_modules")
 
 import solers_skills_builder
+import terrain3d_bundle_builder
 
 env_solers_ai = env_modules.Clone()
 
@@ -25,6 +26,13 @@ env_solers_ai.add_source_files(module_obj, "protocol/*.cpp")
 env_solers_ai.Depends(module_obj, generated_skills_header)
 
 if env.editor_build:
+    terrain3d_bundle = env_solers_ai.CommandNoCache(
+        "#bin/solers_bundles/" + terrain3d_bundle_builder.ARCHIVE_NAME,
+        env.Value(terrain3d_bundle_builder.SHA256),
+        env_solers_ai.Run(terrain3d_bundle_builder.bundle_terrain3d),
+    )
+    env_solers_ai.Depends(module_obj, terrain3d_bundle)
+
     env_solers_ai.add_source_files(module_obj, "editor/*.cpp")
 
     # Thirdparty: md4c (MIT) - CommonMark parser behind the chat markdown view.
