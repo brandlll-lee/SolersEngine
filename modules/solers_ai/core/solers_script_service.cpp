@@ -38,10 +38,12 @@
 #include "core/io/resource_format_binary.h"
 #include "core/io/resource_loader.h"
 #include "core/io/logger.h"
+#include "core/object/callable_method_pointer.h"
 #include "core/object/class_db.h"
 #include "core/object/script_language.h"
 #include "core/os/os.h"
 #include "editor/editor_node.h"
+#include "scene/main/node.h"
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/file_system/editor_file_system.h"
 #include "modules/solers_ai/core/solers_action_timeline.h"
@@ -718,30 +720,132 @@ Dictionary SolersScriptService::run_script(const Dictionary &p_args) {
 		return _error("RUN_ENTRY_MISSING", "Define func run() (or EditorScript-style _run()) as the entry point.");
 	}
 
+	// The host is a temporary Node already inside the editor scene tree, so
+	// scripts have a legitimate place for nodes that only initialize in-tree
+	// (GDExtension terrain, physics helpers). Its lifetime is bound to this
+	// tool call: whatever the script parents under it is freed with it, so a
+	// failed script can never leak nodes into the editor UI tree.
+	Node *host = nullptr;
+	if (EditorNode::get_singleton()) {
+		host = memnew(Node);
+		host->set_name("SolersScriptRunHost");
+		EditorNode::get_singleton()->add_child(host);
+	}
+	const ObjectID host_id = host ? host->get_instance_id() : ObjectID();
+	const int64_t source_bytes = source.utf8().length();
+
 	if (!solers_run_capture_logger) {
 		solers_run_capture_logger = memnew(SolersRunCaptureLogger);
 		OS::get_singleton()->add_logger(solers_run_capture_logger);
 	}
 	solers_run_capture_logger->begin();
 	Callable::CallError call_error;
-	const Variant return_value = instance->callp(entry, nullptr, 0, call_error);
-	solers_run_capture_logger->end();
+	Variant return_value;
+	bool argument_count_valid = false;
+	const int argument_count = instance->get_method_argument_count(entry, &argument_count_valid);
+	if (host && argument_count_valid && argument_count >= 1) {
+		Variant host_variant = host;
+		const Variant *argptrs[1] = { &host_variant };
+		return_value = instance->callp(entry, argptrs, 1, call_error);
+	} else {
+		return_value = instance->callp(entry, nullptr, 0, call_error);
+	}
 
-	Dictionary data;
-	data["entry"] = String(entry);
-	data["output"] = solers_run_capture_logger->output;
-	data["error_output"] = solers_run_capture_logger->errors;
 	if (call_error.error != Callable::CallError::CALL_OK) {
+		solers_run_capture_logger->end();
+		Dictionary data;
+		data["entry"] = String(entry);
+		data["output"] = solers_run_capture_logger->output;
+		data["error_output"] = solers_run_capture_logger->errors;
+		if (host) {
+			host->queue_free();
+		}
 		Dictionary result = _error("SCRIPT_RUN_FAILED", vformat("Calling %s() failed: %s", String(entry), Variant::get_call_error_text(instance.ptr(), entry, nullptr, 0, call_error)));
 		result["data"] = data;
 		return result;
 	}
-	data["result"] = _solers_run_jsonable(return_value);
 
+	// An awaiting run() hands back a suspended coroutine instead of a result.
+	// Keep the coroutine (and the script instance) alive and complete through
+	// the registry's ready/poll continuation once its "completed" signal
+	// fires, so awaited work is a first-class citizen rather than a leak.
+	Object *state_object = return_value.get_type() == Variant::OBJECT ? (Object *)return_value : nullptr;
+	if (state_object && state_object->get_class() == SNAME("GDScriptFunctionState")) {
+		const int64_t run_id = next_run_id++;
+		PendingRun pending;
+		pending.instance = instance;
+		pending.state = Ref<RefCounted>(Object::cast_to<RefCounted>(state_object));
+		pending.host_id = host_id;
+		pending.entry = String(entry);
+		pending.source_bytes = source_bytes;
+		pending_runs.insert(run_id, pending);
+		state_object->connect(SNAME("completed"), callable_mp(this, &SolersScriptService::_on_run_completed).bind(run_id), Object::CONNECT_ONE_SHOT);
+		Dictionary poll_args;
+		poll_args["run_id"] = run_id;
+		poll_args["deadline_msec"] = (int64_t)(OS::get_singleton()->get_ticks_msec() + 30000);
+		Dictionary data;
+		data["status"] = "pending";
+		data["poll_args"] = poll_args;
+		return _ok(data); // The capture logger stays active until finalize.
+	}
+
+	solers_run_capture_logger->end();
+	return _finish_run(String(entry), source_bytes, return_value, host_id);
+}
+
+void SolersScriptService::_on_run_completed(const Variant &p_result, int64_t p_run_id) {
+	PendingRun *pending = pending_runs.getptr(p_run_id);
+	if (pending) {
+		pending->completed = true;
+		pending->result = p_result;
+	}
+}
+
+bool SolersScriptService::run_script_ready(const Dictionary &p_args) const {
+	const int64_t run_id = p_args.get("run_id", 0);
+	const PendingRun *pending = pending_runs.getptr(run_id);
+	if (!pending || pending->completed) {
+		return true;
+	}
+	return OS::get_singleton()->get_ticks_msec() >= (uint64_t)(int64_t)p_args.get("deadline_msec", 0);
+}
+
+Dictionary SolersScriptService::run_script_finalize(const Dictionary &p_args) {
+	const int64_t run_id = p_args.get("run_id", 0);
+	if (!pending_runs.has(run_id)) {
+		return _error("RUN_STATE_MISSING", "The awaited script state is gone; run the script again.", false);
+	}
+	PendingRun pending = pending_runs[run_id];
+	pending_runs.erase(run_id);
+	if (solers_run_capture_logger) {
+		solers_run_capture_logger->end();
+	}
+	if (!pending.completed) {
+		// Dropping the coroutine and instance references abandons the
+		// suspended run(); freeing the host clears its temporary nodes.
+		Dictionary finished = _finish_run(pending.entry, pending.source_bytes, Variant(), pending.host_id);
+		Dictionary result = _error("SCRIPT_RUN_TIMEOUT", "run() was still awaiting after 30 seconds; the coroutine was abandoned and its host node freed.");
+		result["data"] = finished.get("data", Dictionary());
+		return result;
+	}
+	return _finish_run(pending.entry, pending.source_bytes, pending.result, pending.host_id);
+}
+
+Dictionary SolersScriptService::_finish_run(const String &p_entry, int64_t p_source_bytes, const Variant &p_return_value, ObjectID p_host_id) {
+	Dictionary data;
+	data["entry"] = p_entry;
+	data["output"] = solers_run_capture_logger ? solers_run_capture_logger->output : String();
+	data["error_output"] = solers_run_capture_logger ? solers_run_capture_logger->errors : String();
+	data["result"] = _solers_run_jsonable(p_return_value);
+	Node *host = Object::cast_to<Node>(ObjectDB::get_instance(p_host_id));
+	if (host) {
+		data["host_children_freed"] = host->get_child_count();
+		host->queue_free();
+	}
 	if (action_timeline) {
 		Dictionary event;
-		event["entry"] = String(entry);
-		event["source_bytes"] = source.utf8().length();
+		event["entry"] = p_entry;
+		event["source_bytes"] = p_source_bytes;
 		action_timeline->record_event("script_run", event);
 	}
 	return _ok(data);

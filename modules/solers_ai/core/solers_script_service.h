@@ -31,6 +31,8 @@
 #pragma once
 
 #include "core/object/object.h"
+#include "core/object/ref_counted.h"
+#include "core/templates/hash_map.h"
 #include "core/variant/dictionary.h"
 
 class SolersActionTimeline;
@@ -40,6 +42,24 @@ class SolersScriptService : public Object {
 
 	SolersActionTimeline *action_timeline = nullptr;
 	Error project_settings_save_error = OK;
+
+	// A script.run whose run() awaited: the coroutine state stays alive here
+	// until its "completed" signal fires (or the deadline passes) and the
+	// registry's ready/poll continuation finalizes the call.
+	struct PendingRun {
+		Ref<RefCounted> instance;
+		Ref<RefCounted> state;
+		ObjectID host_id;
+		String entry;
+		int64_t source_bytes = 0;
+		bool completed = false;
+		Variant result;
+	};
+	HashMap<int64_t, PendingRun> pending_runs;
+	int64_t next_run_id = 1;
+
+	void _on_run_completed(const Variant &p_result, int64_t p_run_id);
+	Dictionary _finish_run(const String &p_entry, int64_t p_source_bytes, const Variant &p_return_value, ObjectID p_host_id);
 
 	bool _normalize_project_path(const String &p_path, String &r_res_path, String &r_error, bool p_allow_project_data = false) const;
 	Dictionary _ok(const Variant &p_data) const;
@@ -59,4 +79,6 @@ public:
 	Dictionary edit_script(const Dictionary &p_args);
 	Dictionary validate_script(const Dictionary &p_args) const;
 	Dictionary run_script(const Dictionary &p_args);
+	bool run_script_ready(const Dictionary &p_args) const;
+	Dictionary run_script_finalize(const Dictionary &p_args);
 };
