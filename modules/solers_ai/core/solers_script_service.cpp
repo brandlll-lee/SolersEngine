@@ -37,8 +37,10 @@
 #include "core/io/file_access.h"
 #include "core/io/resource_format_binary.h"
 #include "core/io/resource_loader.h"
+#include "core/io/logger.h"
 #include "core/object/class_db.h"
 #include "core/object/script_language.h"
+#include "core/os/os.h"
 #include "editor/editor_node.h"
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/file_system/editor_file_system.h"
@@ -49,6 +51,9 @@
 #include "servers/rendering/shader_preprocessor.h"
 #include "servers/rendering/shader_types.h"
 
+#include <cstdarg>
+#include <cstdio>
+
 void SolersScriptService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_action_timeline", "action_timeline"), &SolersScriptService::set_action_timeline);
 	ClassDB::bind_method(D_METHOD("write_file", "args"), &SolersScriptService::write_file);
@@ -56,6 +61,7 @@ void SolersScriptService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("edit_project", "args"), &SolersScriptService::edit_project);
 	ClassDB::bind_method(D_METHOD("edit_script", "args"), &SolersScriptService::edit_script);
 	ClassDB::bind_method(D_METHOD("validate_script", "args"), &SolersScriptService::validate_script);
+	ClassDB::bind_method(D_METHOD("run_script", "args"), &SolersScriptService::run_script);
 	ClassDB::bind_method(D_METHOD("_apply_project_settings", "values", "erase"), &SolersScriptService::_apply_project_settings);
 }
 
@@ -338,6 +344,7 @@ Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
 	data["created"] = !existed_before;
 	data["overwritten"] = existed_before;
 	data["size_bytes"] = has_binary_content ? bytes.size() : content.utf8().length();
+	data["sha256"] = FileAccess::get_sha256(res_path);
 	data["binary"] = has_binary_content;
 	data["import_valid"] = ResourceLoader::is_import_valid(res_path);
 	if (is_script_text) {
@@ -502,8 +509,8 @@ Dictionary SolersScriptService::edit_project(const Dictionary &p_args) {
 	}
 	const bool exists = FileAccess::exists(path);
 	const String expected_sha256 = p_args.get("expected_sha256", String());
-	if (exists && (expected_sha256.is_empty() || FileAccess::get_sha256(path) != expected_sha256)) {
-		return _error("FILE_CHANGED", "An existing project file requires its current expected_sha256.");
+	if (exists && !expected_sha256.is_empty() && FileAccess::get_sha256(path) != expected_sha256) {
+		return _error("FILE_CHANGED", "File sha256 does not match expected_sha256.");
 	}
 	Dictionary write_args;
 	write_args["path"] = path;
@@ -531,16 +538,12 @@ Dictionary SolersScriptService::edit_script(const Dictionary &p_args) {
 		return write_file(write_args);
 	}
 	if (operation == "replace") {
-		const String expected_sha256 = p_args.get("expected_sha256", String());
-		if (expected_sha256.is_empty()) {
-			return _error("EXPECTED_HASH_REQUIRED", "script.edit replace requires expected_sha256 from project.read_file.");
-		}
 		Dictionary patch_args;
 		patch_args["path"] = path;
 		patch_args["old_text"] = p_args.get("old_text", String());
 		patch_args["new_text"] = p_args.get("new_text", String());
 		patch_args["occurrence"] = p_args.get("occurrence", 1);
-		patch_args["expected_sha256"] = expected_sha256;
+		patch_args["expected_sha256"] = p_args.get("expected_sha256", String());
 		return patch_file(patch_args);
 	}
 	return _error("INVALID_ARGUMENT", "script.edit operation must be create or replace.");
@@ -569,4 +572,177 @@ Dictionary SolersScriptService::validate_script(const Dictionary &p_args) const 
 	}
 
 	return _ok(_validate_source(res_path, source));
+}
+
+// Captures engine log output while a script.run entry point executes so the
+// caller receives the same prints and errors a developer would see in the
+// editor log. Registered once; the composite logger owns and frees it.
+class SolersRunCaptureLogger : public ::Logger {
+	static constexpr int MAX_CAPTURE_CHARS = 32768;
+
+	void _append(String &r_target, const String &p_text) {
+		if (r_target.length() >= MAX_CAPTURE_CHARS) {
+			return;
+		}
+		r_target += p_text;
+		if (r_target.length() > MAX_CAPTURE_CHARS) {
+			r_target = r_target.substr(0, MAX_CAPTURE_CHARS) + "\n[capture truncated]";
+		}
+	}
+
+public:
+	bool active = false;
+	String output;
+	String errors;
+
+	void begin() {
+		output = String();
+		errors = String();
+		active = true;
+	}
+
+	void end() {
+		active = false;
+	}
+
+	virtual void logv(const char *p_format, va_list p_list, bool p_err) override {
+		if (!active) {
+			return;
+		}
+		va_list list_copy;
+		va_copy(list_copy, p_list);
+		const int length = vsnprintf(nullptr, 0, p_format, list_copy);
+		va_end(list_copy);
+		if (length <= 0) {
+			return;
+		}
+		Vector<char> buffer;
+		buffer.resize(length + 1);
+		vsnprintf(buffer.ptrw(), buffer.size(), p_format, p_list);
+		_append(p_err ? errors : output, String::utf8(buffer.ptr(), length));
+	}
+
+	virtual void log_error(const char *p_function, const char *p_file, int p_line, const char *p_code, const char *p_rationale, bool p_editor_notify, ErrorType p_type, const Vector<Ref<ScriptBacktrace>> &p_script_backtraces) override {
+		if (!active) {
+			return;
+		}
+		const char *details = (p_rationale && p_rationale[0]) ? p_rationale : p_code;
+		_append(errors, vformat("%s: %s (%s:%d)\n", String(error_type_string(p_type)), String::utf8(details), String::utf8(p_file), p_line));
+	}
+};
+
+static SolersRunCaptureLogger *solers_run_capture_logger = nullptr;
+
+// Converts a run() return value into data every provider can serialize:
+// JSON-native types pass through, containers recurse with bounded depth and
+// size, and engine types fall back to their human-readable string form.
+static Variant _solers_run_jsonable(const Variant &p_value, int p_depth = 0) {
+	switch (p_value.get_type()) {
+		case Variant::NIL:
+		case Variant::BOOL:
+		case Variant::INT:
+		case Variant::FLOAT:
+		case Variant::STRING:
+		case Variant::STRING_NAME:
+			return p_value;
+		case Variant::ARRAY: {
+			if (p_depth >= 8) {
+				return String(p_value);
+			}
+			const Array source_array = p_value;
+			Array converted;
+			const int limit = MIN(source_array.size(), 256);
+			for (int i = 0; i < limit; i++) {
+				converted.push_back(_solers_run_jsonable(source_array[i], p_depth + 1));
+			}
+			if (source_array.size() > limit) {
+				converted.push_back(vformat("[%d more items omitted]", source_array.size() - limit));
+			}
+			return converted;
+		}
+		case Variant::DICTIONARY: {
+			if (p_depth >= 8) {
+				return String(p_value);
+			}
+			const Dictionary source_dict = p_value;
+			Dictionary converted;
+			for (const Variant *key = source_dict.next(nullptr); key; key = source_dict.next(key)) {
+				converted[String(*key)] = _solers_run_jsonable(source_dict[*key], p_depth + 1);
+			}
+			return converted;
+		}
+		default:
+			return String(p_value);
+	}
+}
+
+Dictionary SolersScriptService::run_script(const Dictionary &p_args) {
+	const String source = p_args.get("source", String());
+	if (source.strip_edges().is_empty()) {
+		return _error("INVALID_ARGUMENT", "source is required.");
+	}
+
+	const Dictionary validation = _validate_source("res://.solers/script_run.gd", source);
+	if (validation.has("ok") && !(bool)validation.get("ok", true)) {
+		return validation;
+	}
+	if (!(bool)validation.get("valid", true)) {
+		Dictionary result = _error("SCRIPT_PARSE_FAILED", "The script does not parse; fix the reported diagnostics.");
+		result["data"] = validation;
+		return result;
+	}
+
+	Ref<Script> script = Object::cast_to<Script>(ClassDB::instantiate(SNAME("GDScript")));
+	if (script.is_null()) {
+		return _error("GDSCRIPT_UNAVAILABLE", "The GDScript language module is unavailable in this build.", false);
+	}
+	script->set_source_code(source);
+	const Error compile_error = script->reload();
+	if (compile_error != OK) {
+		return _error("SCRIPT_COMPILE_FAILED", vformat("GDScript compilation failed (error %d).", (int)compile_error));
+	}
+	if (!script->is_tool()) {
+		return _error("TOOL_ANNOTATION_REQUIRED", "Start the source with @tool so it can run inside the editor process.");
+	}
+	const StringName base_type = script->get_instance_base_type();
+	if (!ClassDB::is_parent_class(base_type, SNAME("RefCounted"))) {
+		return _error("REFCOUNTED_BASE_REQUIRED", vformat("script.run sources must extend a RefCounted type such as the default base or EditorScript; got %s.", String(base_type)));
+	}
+	Ref<RefCounted> instance = Object::cast_to<RefCounted>(ClassDB::instantiate(base_type));
+	if (instance.is_null()) {
+		return _error("SCRIPT_INSTANTIATION_FAILED", vformat("Could not instantiate script base type %s.", String(base_type)), false);
+	}
+	instance->set_script(script);
+	const StringName entry = instance->has_method(SNAME("run")) ? SNAME("run") : (instance->has_method(SNAME("_run")) ? SNAME("_run") : StringName());
+	if (entry == StringName()) {
+		return _error("RUN_ENTRY_MISSING", "Define func run() (or EditorScript-style _run()) as the entry point.");
+	}
+
+	if (!solers_run_capture_logger) {
+		solers_run_capture_logger = memnew(SolersRunCaptureLogger);
+		OS::get_singleton()->add_logger(solers_run_capture_logger);
+	}
+	solers_run_capture_logger->begin();
+	Callable::CallError call_error;
+	const Variant return_value = instance->callp(entry, nullptr, 0, call_error);
+	solers_run_capture_logger->end();
+
+	Dictionary data;
+	data["entry"] = String(entry);
+	data["output"] = solers_run_capture_logger->output;
+	data["error_output"] = solers_run_capture_logger->errors;
+	if (call_error.error != Callable::CallError::CALL_OK) {
+		Dictionary result = _error("SCRIPT_RUN_FAILED", vformat("Calling %s() failed: %s", String(entry), Variant::get_call_error_text(instance.ptr(), entry, nullptr, 0, call_error)));
+		result["data"] = data;
+		return result;
+	}
+	data["result"] = _solers_run_jsonable(return_value);
+
+	if (action_timeline) {
+		Dictionary event;
+		event["entry"] = String(entry);
+		event["source_bytes"] = source.utf8().length();
+		action_timeline->record_event("script_run", event);
+	}
+	return _ok(data);
 }

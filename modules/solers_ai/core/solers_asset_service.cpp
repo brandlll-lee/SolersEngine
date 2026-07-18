@@ -3496,18 +3496,17 @@ Dictionary SolersAssetService::plugin_ensure(const Dictionary &p_args) {
 		result["data"] = data;
 		return result;
 	}
-	if (load_failed) {
-		Dictionary result = _error("PLUGIN_LOAD_FAILED", load_errors.is_empty() ? "The plugin failed its runtime readiness checks." : String(load_errors[0]), false);
-		result["data"] = data;
-		return result;
-	}
 	if (restart_required) {
 		Dictionary result = _error("PLUGIN_RESTART_REQUIRED", restart_reasons.is_empty() ? "Installation completed; restart the editor once, then call plugin.ensure with the same arguments." : String(restart_reasons[0]));
 		result["data"] = data;
 		return result;
 	}
-	if (!ready) {
-		Dictionary result = _error("PLUGIN_LOAD_FAILED", "The plugin did not satisfy its declared readiness conditions.", false);
+	// The verdict follows the authoritative usability facts: files on disk and
+	// every declared entry class registered in ClassDB. Residual issues (for
+	// example an addon editor script that failed to enable) stay visible as
+	// load_errors data without blocking a plugin whose classes already work.
+	if (!files_present || !missing_classes.is_empty()) {
+		Dictionary result = _error("PLUGIN_LOAD_FAILED", load_errors.is_empty() ? "The plugin failed its runtime readiness checks." : String(load_errors[0]));
 		result["data"] = data;
 		return result;
 	}

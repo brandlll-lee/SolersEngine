@@ -58,4 +58,5 @@ public:
 	Dictionary edit_project(const Dictionary &p_args);
 	Dictionary edit_script(const Dictionary &p_args);
 	Dictionary validate_script(const Dictionary &p_args) const;
+	Dictionary run_script(const Dictionary &p_args);
 };

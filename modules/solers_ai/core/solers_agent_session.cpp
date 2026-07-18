@@ -723,6 +723,7 @@ String SolersAgentSession::_default_system_prompt() const {
 			"- Prefer the smallest coherent native change. Inspect live state before editing; do not guess APIs or scene contents.\n"
 			"- Built-in tools are already available. If tool.search is present, it discovers only external plugin, connector, or MCP tools. Skills provide knowledge and never activate capabilities.\n"
 			"- Keep scene edits undoable and authored in scene/resources. Write or patch code only when native composition cannot express the requested behavior.\n"
+			"- For algorithmic or bulk work (procedural data, batch changes), run a one-shot @tool script through script.run instead of attaching temporary scripts to the scene or playing it.\n"
 			"- Background tools return stable job ids immediately. Continue independent work; when nothing else is runnable, call job.wait once with the required ids. Solers resumes this same task when any requested job reaches a terminal state.\n"
 			"- Tool errors carry the native cause; read it, change what it names, and retry. Repeating an identical failed call wastes a step.\n"
 			"- Use update_plan only as a concise optional progress display. A final assistant message ends the task directly.";

@@ -622,9 +622,12 @@ Dictionary SolersObservationService::_begin_scene_view_capture(const String &p_t
 			}
 		}
 		if (!found) {
-			memdelete(viewport);
-			return _capture_error("SCENE_HAS_NO_GEOMETRY", "The requested orthographic focus contains no visible 3D geometry.", true);
+			// Nodes rendering through RenderingServer directly (for example
+			// GDExtension terrain) are invisible to the node AABB walk, so
+			// frame a default volume and let the caller judge the image.
+			bounds = AABB(Vector3(-64, -16, -64), Vector3(128, 96, 128));
 		}
+		extra["bounds_source"] = found ? "visible_geometry" : "default_volume";
 		String axis_name = p_target == "top_down" ? String("y") : String(p_args.get("axis", String())).to_lower();
 		String direction_name = p_target == "top_down" ? String("positive") : String(p_args.get("direction", String())).to_lower();
 		const int axis = axis_name == "x" ? Vector3::AXIS_X : (axis_name == "y" ? Vector3::AXIS_Y : (axis_name == "z" ? Vector3::AXIS_Z : -1));
@@ -1329,6 +1332,7 @@ Dictionary SolersObservationService::read_project_file(const String &p_path, int
 	result["ok"] = true;
 	result["path"] = res_path;
 	result["size_bytes"] = length;
+	result["sha256"] = FileAccess::get_sha256(res_path);
 	result["truncated"] = length > max_bytes;
 	Vector<uint8_t> bytes = file->get_buffer(MIN((int64_t)max_bytes, length));
 	result["content"] = bytes.is_empty() ? String() : String::utf8((const char *)bytes.ptr(), bytes.size());

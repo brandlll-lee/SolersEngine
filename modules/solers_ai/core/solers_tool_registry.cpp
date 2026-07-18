@@ -1290,6 +1290,20 @@ void SolersToolRegistry::_register_script_tools() {
 			R"({"type":"object","properties":{"path":{"type":"string","description":"res:// path of the script to validate."},"source":{"type":"string","description":"Optional source override; validates this text instead of the file content."}},"required":["path"]})",
 			SolersToolExposure::DIRECT,
 			[svc](const SolersToolContext &, const Dictionary &a) { return svc->validate_script(a); });
+	Vector<String> run_redact;
+	run_redact.push_back("source");
+	_add("script.run", "Run a one-shot @tool GDScript inside the editor process for algorithmic or bulk work the typed tools cannot express (procedural data, batch edits). The source must start with @tool, extend a RefCounted type (default base or EditorScript), and define func run(). Returns printed output, script errors, and run()'s return value; nothing is written to disk and the running game is not involved.",
+			R"({"type":"object","properties":{"source":{"type":"string","minLength":1,"description":"Complete GDScript source. Starts with @tool and defines func run()."}},"required":["source"],"additionalProperties":false})",
+			SolersPermissionManager::PERMISSION_EDIT_SCENE, SolersToolMutationPolicy::IRREVERSIBLE, true, run_redact, SolersToolExposure::DIRECT,
+			[svc](const SolersToolContext &, const Dictionary &a) { return svc->run_script(a); }, false,
+			SolersToolExecution::MAIN_THREAD, [](const Dictionary &) {
+				Array accesses;
+				Dictionary access;
+				access["mode"] = "write";
+				access["key"] = "engine-native:";
+				accesses.push_back(access);
+				return accesses;
+			});
 	_add("history.revert", "Revert the latest reversible Agent mutation when its authored revision and native UndoRedo or file checkpoint state still match.",
 			R"({"type":"object","properties":{"reversal_id":{"type":"string","minLength":1},"expected_revision":{"type":"integer","minimum":0}},"required":["reversal_id","expected_revision"]})",
 			SolersPermissionManager::PERMISSION_EDIT_SCENE, SolersToolMutationPolicy::IRREVERSIBLE, true, Vector<String>(), SolersToolExposure::DIRECT,

@@ -811,6 +811,7 @@ TEST_CASE("[SolersToolRegistry] default model surface is domain-first") {
 		"resource.edit",
 		"script.edit",
 		"script.validate",
+		"script.run",
 		"engine.inspect",
 		"engine.execute",
 		"runtime.control",
@@ -887,6 +888,10 @@ TEST_CASE("[SolersToolRegistry] default model surface is domain-first") {
 	CHECK(engine_execute.get("mutation_policy", String()) == "irreversible");
 	CHECK(engine_execute.get("permission", String()) == "edit_scene");
 	CHECK_FALSE(Dictionary(Dictionary(engine_execute.get("input_schema", Dictionary())).get("properties", Dictionary())).has("contract_id"));
+	Dictionary script_run = find_tool_def(tools, "script.run");
+	CHECK(script_run.get("mutation_policy", String()) == "irreversible");
+	CHECK(script_run.get("permission", String()) == "edit_scene");
+	CHECK(Dictionary(Dictionary(script_run.get("input_schema", Dictionary())).get("properties", Dictionary())).has("source"));
 	Dictionary project_edit = find_tool_def(tools, "project.edit");
 	CHECK(project_edit.get("permission", String()) == "edit_files");
 	CHECK(project_edit.get("mutation_policy_dynamic", false));
