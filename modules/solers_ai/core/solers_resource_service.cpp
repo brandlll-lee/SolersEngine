@@ -610,9 +610,12 @@ Dictionary SolersResourceService::edit_resource(const Dictionary &p_args) const 
 		create_args.erase("expected_sha256");
 		result = create_resource(create_args);
 	} else if (action == "update") {
+		if (!FileAccess::exists(path)) {
+			return _error("RESOURCE_NOT_FOUND", vformat("Resource does not exist: %s", path));
+		}
 		const String expected_sha256 = p_args.get("expected_sha256", String());
-		if (expected_sha256.is_empty() || !FileAccess::exists(path) || FileAccess::get_sha256(path) != expected_sha256) {
-			return _error("RESOURCE_CHANGED", "resource.edit update requires the current resource expected_sha256.");
+		if (!expected_sha256.is_empty() && FileAccess::get_sha256(path) != expected_sha256) {
+			return _error("RESOURCE_CHANGED", "The resource changed since it was read; its current content no longer matches expected_sha256.");
 		}
 		Dictionary update_args;
 		update_args["path"] = path;

@@ -724,7 +724,7 @@ String SolersAgentSession::_default_system_prompt() const {
 			"- Built-in tools are already available. If tool.search is present, it discovers only external plugin, connector, or MCP tools. Skills provide knowledge and never activate capabilities.\n"
 			"- Keep scene edits undoable and authored in scene/resources. Write or patch code only when native composition cannot express the requested behavior.\n"
 			"- Background tools return stable job ids immediately. Continue independent work; when nothing else is runnable, call job.wait once with the required ids. Solers resumes this same task when any requested job reaches a terminal state.\n"
-			"- Tool argument errors are stable and occur before execution. Correct the named argument or change resource state before retrying; unchanged failures are deduplicated automatically. Godot diagnostics are evidence, not a replacement for the tool's result.\n"
+			"- Tool errors carry the native cause; read it, change what it names, and retry. Repeating an identical failed call wastes a step.\n"
 			"- Use update_plan only as a concise optional progress display. A final assistant message ends the task directly.";
 	if (tool_registry) {
 		const String skill_catalog = tool_registry->get_skill_catalog_prompt();
@@ -747,6 +747,33 @@ String SolersAgentSession::_request_system_prompt(bool p_include_observation_del
 	context["platform"] = OS::get_singleton()->get_name();
 	context["runtime"] = observation->get_runtime_status();
 	context["enabled_plugins"] = GLOBAL_GET("editor_plugins/enabled");
+	// Plugin health up front: a half-loaded plugin (missing classes, load
+	// errors, pending restart) is the model's first fact, not something it has
+	// to rediscover through failing tool calls.
+	if (tool_registry->asset_service) {
+		const Dictionary plugin_report = tool_registry->asset_service->plugin_list(Dictionary());
+		const Array plugins = Dictionary(plugin_report.get("data", Dictionary())).get("plugins", Array());
+		Array plugin_health;
+		for (const Variant &value : plugins) {
+			const Dictionary plugin = value;
+			Dictionary summary;
+			summary["id"] = plugin.get("key", String());
+			summary["version"] = plugin.get("version", String());
+			const bool ready = plugin.get("ready", false);
+			summary["ready"] = ready;
+			if (!ready) {
+				summary["installed"] = plugin.get("installed", false);
+				summary["enabled"] = plugin.get("enabled", false);
+				summary["restart_required"] = plugin.get("restart_required", false);
+				summary["missing_classes"] = plugin.get("missing_classes", Array());
+				summary["load_errors"] = plugin.get("load_errors", Array());
+			}
+			plugin_health.push_back(summary);
+		}
+		if (!plugin_health.is_empty()) {
+			context["installed_plugins_health"] = plugin_health;
+		}
+	}
 	EditorInterface *editor_interface = EditorInterface::get_singleton();
 	Node *edited_root = editor_interface ? editor_interface->get_edited_scene_root() : nullptr;
 	context["current_scene"] = edited_root ? edited_root->get_scene_file_path() : String();
@@ -1613,9 +1640,8 @@ void SolersAgentSession::_on_model_turn_complete() {
 				context.session_id = session_id;
 				context.project_path = project_path;
 				context.authored_revision = authored_revision;
-				String failure_cache_key;
 				Dictionary normalized_args;
-				preflight_result = tool_registry->_preflight_tool_call(StringName(canonical_name), parsed_args, context, normalized_args, failure_cache_key);
+				preflight_result = tool_registry->_preflight_tool_call(StringName(canonical_name), parsed_args, context, normalized_args);
 			}
 		}
 		call["parsed_args"] = parsed_args;

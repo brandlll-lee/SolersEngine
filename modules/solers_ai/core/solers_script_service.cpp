@@ -272,7 +272,6 @@ Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
 	}
 	const bool create = p_args.get("create", true);
 	const bool overwrite = p_args.get("overwrite", true);
-	const bool validate_if_script = p_args.get("validate_if_script", true);
 
 	String res_path;
 	String path_error;
@@ -294,22 +293,6 @@ Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
 		return _error("FILE_NOT_FOUND", vformat("File does not exist and create=false: %s", res_path));
 	}
 	const bool is_script_text = has_text_content && _solers_is_script_source_path(res_path);
-	if (is_script_text && !validate_if_script) {
-		return _error("SCRIPT_VALIDATION_REQUIRED", "Script writes must use validation.");
-	}
-
-	Dictionary validation_data;
-	if (is_script_text) {
-		validation_data = _validate_source(res_path, content);
-		if (!(bool)validation_data.get("valid", true)) {
-			Dictionary result = _error("SCRIPT_VALIDATE_FAILED", "Refusing to write script because validation failed.");
-			Dictionary error = result.get("error", Dictionary());
-			error["path"] = res_path;
-			error["validation"] = validation_data;
-			result["error"] = error;
-			return result;
-		}
-	}
 
 	Vector<uint8_t> bytes;
 	if (has_binary_content) {
@@ -342,6 +325,14 @@ Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
 		filesystem->update_file(res_path);
 	}
 
+	// Post-write diagnostics: the file is committed either way, and the model
+	// reads the exact parser output to self-correct. Reversal stays available
+	// through the file checkpoint (history.revert).
+	Dictionary validation_data;
+	if (is_script_text) {
+		validation_data = _validate_source(res_path, content);
+	}
+
 	Dictionary data;
 	data["path"] = res_path;
 	data["created"] = !existed_before;
@@ -349,7 +340,10 @@ Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
 	data["size_bytes"] = has_binary_content ? bytes.size() : content.utf8().length();
 	data["binary"] = has_binary_content;
 	data["import_valid"] = ResourceLoader::is_import_valid(res_path);
-	data["validation"] = validation_data;
+	if (is_script_text) {
+		data["valid"] = validation_data.get("valid", true);
+		data["validation"] = validation_data;
+	}
 
 	if (action_timeline) {
 		action_timeline->record_event("file_written", data);
@@ -363,7 +357,6 @@ Dictionary SolersScriptService::patch_file(const Dictionary &p_args) {
 	const String old_text = p_args.get("old_text", String());
 	const String new_text = p_args.get("new_text", String());
 	const String expected_sha256 = p_args.get("expected_sha256", String());
-	const bool validate_if_script = p_args.get("validate_if_script", true);
 	const int occurrence = p_args.get("occurrence", 1);
 
 	if (old_text.is_empty()) {
@@ -417,7 +410,6 @@ Dictionary SolersScriptService::patch_file(const Dictionary &p_args) {
 	write_args["content"] = patched;
 	write_args["create"] = false;
 	write_args["overwrite"] = true;
-	write_args["validate_if_script"] = validate_if_script;
 	Dictionary write_result = write_file(write_args);
 	if (!(bool)write_result.get("ok", false)) {
 		return write_result;

@@ -31,7 +31,6 @@ struct SolersPreparedToolCall {
 	Dictionary args;
 	Dictionary timeline_payload;
 	SolersToolContext context;
-	String failure_cache_key;
 	SolersToolExecution execution = SolersToolExecution::MAIN_THREAD;
 	SolersToolMutationPolicy mutation_policy = SolersToolMutationPolicy::READ_ONLY;
 	Dictionary reversal_state;
@@ -42,10 +41,8 @@ class SolersToolRegistry : public Object {
 
 	HashMap<StringName, SolersTool *> tools; // owned; freed on clear/destroy
 	HashMap<StringName, StringName> model_name_index;
-	HashMap<String, Dictionary> failed_calls;
 	HashMap<String, Dictionary> reversals;
 	HashMap<String, String> latest_reversal_by_session;
-	HashMap<String, Dictionary> engine_contracts;
 	HashSet<String> delivered_plugin_contracts;
 
 	SolersObservationService *observation_service = nullptr;
@@ -74,8 +71,7 @@ class SolersToolRegistry : public Object {
 			SolersFunctionTool::ReadyHandler p_ready_handler = {},
 			SolersFunctionTool::CompletionHandler p_completion_handler = {},
 			std::function<SolersPermissionManager::Permission(const Dictionary &)> p_permission_resolver = {},
-			std::function<SolersToolMutationPolicy(const Dictionary &)> p_mutation_policy_resolver = {},
-			SolersFunctionTool::PreflightHandler p_preflight_handler = {});
+			std::function<SolersToolMutationPolicy(const Dictionary &)> p_mutation_policy_resolver = {});
 	void _add_observe_exposed(const char *p_name, const char *p_description, const char *p_schema_json,
 			SolersToolExposure p_exposure, SolersFunctionTool::Handler p_handler, bool p_ephemeral_result = true,
 			std::function<Array(const Dictionary &)> p_resource_access = {},
@@ -95,10 +91,8 @@ class SolersToolRegistry : public Object {
 	void _register_reflection_tools();
 	void _register_skill_tools();
 	void _register_search_tools();
-	Dictionary _inspect_engine(const SolersToolContext &p_context, const Dictionary &p_args);
-	Dictionary _preflight_engine_execute(const SolersToolContext &p_context, const Dictionary &p_args) const;
-	Dictionary _execute_engine(const SolersToolContext &p_context, const Dictionary &p_args);
-	String _engine_fingerprint() const;
+	Dictionary _inspect_engine(const Dictionary &p_args);
+	Dictionary _execute_engine(const Dictionary &p_args);
 	Dictionary _compact_plugin_contract(const SolersToolContext &p_context, const Dictionary &p_result);
 	Dictionary _run_control(const Dictionary &p_args) const;
 	Dictionary _poll_runtime_control(const Dictionary &p_args) const;
@@ -107,8 +101,7 @@ class SolersToolRegistry : public Object {
 	void _persist_reversal_event(const SolersToolContext &p_context, const String &p_event, const Dictionary &p_record = Dictionary()) const;
 	Dictionary _prepare_reversal(SolersPreparedToolCall &r_call);
 	Dictionary _finalize_prepared_result(SolersPreparedToolCall &r_call, const Dictionary &p_result);
-	uint64_t _resource_state_hash(const Array &p_accesses) const;
-	Dictionary _preflight_tool_call(const StringName &p_name, const Dictionary &p_args, const SolersToolContext &p_context, Dictionary &r_args, String &r_failure_cache_key);
+	Dictionary _preflight_tool_call(const StringName &p_name, const Dictionary &p_args, const SolersToolContext &p_context, Dictionary &r_args);
 	Dictionary _prepare_tool_call(const StringName &p_name, const Dictionary &p_args, const SolersToolContext &p_context, SolersPreparedToolCall &r_call);
 	Dictionary _execute_prepared_tool(SolersPreparedToolCall &p_call);
 	Dictionary _poll_prepared_tool(SolersPreparedToolCall &p_call, const Dictionary &p_args);

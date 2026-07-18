@@ -630,8 +630,6 @@ void SolersToolRegistry::_clear_tools() {
 	}
 	tools.clear();
 	model_name_index.clear();
-	failed_calls.clear();
-	engine_contracts.clear();
 	delivered_plugin_contracts.clear();
 }
 
@@ -665,8 +663,7 @@ void SolersToolRegistry::_add(const char *p_name, const char *p_description, con
 		SolersToolExecution p_execution, std::function<Array(const Dictionary &)> p_resource_access,
 		bool p_cache_across_revisions, SolersFunctionTool::PollHandler p_poll_handler, bool p_produces_scene_validation, SolersFunctionTool::ReadyHandler p_ready_handler, SolersFunctionTool::CompletionHandler p_completion_handler,
 		std::function<SolersPermissionManager::Permission(const Dictionary &)> p_permission_resolver,
-		std::function<SolersToolMutationPolicy(const Dictionary &)> p_mutation_policy_resolver,
-		SolersFunctionTool::PreflightHandler p_preflight_handler) {
+		std::function<SolersToolMutationPolicy(const Dictionary &)> p_mutation_policy_resolver) {
 	SolersToolCapability cap;
 	cap.permission = p_permission;
 	cap.permission_resolver = std::move(p_permission_resolver);
@@ -680,7 +677,7 @@ void SolersToolRegistry::_add(const char *p_name, const char *p_description, con
 	cap.resource_access = std::move(p_resource_access);
 	cap.redact_args = p_redact;
 	SolersTool *tool = memnew(SolersFunctionTool(StringName(String::utf8(p_name)), String::utf8(p_description),
-			_schema(p_schema_json), p_exposure, cap, std::move(p_handler), std::move(p_poll_handler), std::move(p_ready_handler), std::move(p_completion_handler), std::move(p_preflight_handler)));
+			_schema(p_schema_json), p_exposure, cap, std::move(p_handler), std::move(p_poll_handler), std::move(p_ready_handler), std::move(p_completion_handler)));
 	_register(tool);
 }
 
@@ -969,17 +966,6 @@ Dictionary SolersToolRegistry::_revert_latest(const SolersToolContext &p_context
 	return _ok(data);
 }
 
-// Idempotent playback control that always reports the authoritative
-// post-state. Requesting a state the editor is already in is a no-op success,
-// so a replayed or duplicated call can never spawn a second game instance.
-String SolersToolRegistry::_engine_fingerprint() const {
-	const String lock_hash = FileAccess::exists("res://.solers/plugins.lock.json") ? FileAccess::get_sha256("res://.solers/plugins.lock.json") : String("none");
-	const String source = String(VERSION_FULL_NAME) + ":" + String::num_uint64(ClassDB::get_api_hash(ClassDB::API_CORE)) + ":" +
-			String::num_uint64(ClassDB::get_api_hash(ClassDB::API_EDITOR)) + ":" + String::num_uint64(ClassDB::get_api_hash(ClassDB::API_EXTENSION)) + ":" +
-			String::num_uint64(ClassDB::get_api_hash(ClassDB::API_EDITOR_EXTENSION)) + ":" + lock_hash;
-	return source.sha256_text();
-}
-
 Dictionary SolersToolRegistry::_compact_plugin_contract(const SolersToolContext &p_context, const Dictionary &p_result) {
 	if (!(bool)p_result.get("ok", false)) {
 		return p_result;
@@ -1004,243 +990,33 @@ Dictionary SolersToolRegistry::_compact_plugin_contract(const SolersToolContext 
 	return result;
 }
 
-Dictionary SolersToolRegistry::_inspect_engine(const SolersToolContext &p_context, const Dictionary &p_args) {
+Dictionary SolersToolRegistry::_inspect_engine(const Dictionary &p_args) {
 	if (!reflection_service) {
 		return _error("ENGINE_INSPECTION_UNAVAILABLE", "ClassDB inspection is unavailable.", false);
 	}
-	const String mode = p_args.get("mode", String());
-	if (mode == "search") {
+	const Array classes = p_args.get("classes", Array());
+	if (classes.is_empty()) {
 		Dictionary search_args = p_args.duplicate(true);
-		search_args.erase("mode");
+		search_args.erase("classes");
 		return reflection_service->search_classes(search_args);
 	}
-	if (mode != "contract") {
-		return _error("INVALID_ARGUMENT", "engine.inspect mode must be search or contract.");
-	}
-
-	const String fingerprint = _engine_fingerprint();
-	const String contract_id = (p_context.session_id + ":" + fingerprint + ":" + JSON::stringify(p_args)).sha256_text();
-	if (engine_contracts.has(contract_id)) {
-		Dictionary data;
-		data["contract_id"] = contract_id;
-		data["fingerprint"] = fingerprint;
-		data["unchanged"] = true;
-		return _ok(data);
-	}
-
-	Dictionary allowed_classes;
 	Array inspected_classes;
-	const Array classes = p_args.get("classes", Array());
 	for (const Variant &value : classes) {
-		const Dictionary request = value;
-		const Dictionary inspected = reflection_service->introspect_class(request);
+		const Dictionary inspected = reflection_service->introspect_class(Dictionary(value));
 		if (!(bool)inspected.get("ok", false)) {
 			return inspected;
 		}
-		const Dictionary class_data = inspected.get("data", Dictionary());
-		const String class_name = class_data.get("class_name", String());
-		Dictionary allowed;
-		Array methods;
-		for (const Variant &method_value : Array(class_data.get("methods", Array()))) {
-			methods.push_back(String(Dictionary(method_value).get("name", String())));
-		}
-		Array properties;
-		for (const Variant &property_value : Array(class_data.get("properties", Array()))) {
-			properties.push_back(String(Dictionary(property_value).get("name", String())));
-		}
-		allowed["methods"] = methods;
-		allowed["properties"] = properties;
-		allowed_classes[class_name] = allowed;
-		inspected_classes.push_back(class_data);
+		inspected_classes.push_back(inspected.get("data", Dictionary()));
 	}
-
-	Dictionary plugin_contract;
-	if (p_args.has("plugin")) {
-		if (!asset_service) {
-			return _error("PLUGIN_CONTRACT_UNAVAILABLE", "Plugin inspection is unavailable.", false);
-		}
-		const Dictionary plugin_result = asset_service->plugin_agent_contract(p_args.get("plugin", Dictionary()));
-		if (!(bool)plugin_result.get("ok", false)) {
-			return plugin_result;
-		}
-		plugin_contract = plugin_result.get("data", Dictionary());
-	}
-
-	Dictionary contract;
-	contract["contract_id"] = contract_id;
-	contract["session_id"] = p_context.session_id;
-	contract["fingerprint"] = fingerprint;
-	contract["classes"] = allowed_classes;
-	engine_contracts[contract_id] = contract;
-
 	Dictionary data;
-	data["contract_id"] = contract_id;
-	data["fingerprint"] = fingerprint;
 	data["classes"] = inspected_classes;
-	if (!plugin_contract.is_empty()) {
-		data["plugin_contract"] = plugin_contract;
-	}
-	data["unchanged"] = false;
 	return _ok(data);
 }
 
-Dictionary SolersToolRegistry::_preflight_engine_execute(const SolersToolContext &p_context, const Dictionary &p_args) const {
-	const String contract_id = p_args.get("contract_id", String());
-	const Dictionary *contract_ptr = engine_contracts.getptr(contract_id);
-	if (!contract_ptr) {
-		return _error("ENGINE_CONTRACT_REQUIRED", "Call engine.inspect with mode=contract for the exact classes and members, then use its contract_id.");
-	}
-	const Dictionary contract = *contract_ptr;
-	if (String(contract.get("session_id", String())) != p_context.session_id) {
-		return _error("ENGINE_CONTRACT_SCOPE_MISMATCH", "This contract_id belongs to another Agent task. Inspect the required API in the current task.");
-	}
-	if (String(contract.get("fingerprint", String())) != _engine_fingerprint()) {
-		return _error("ENGINE_CONTRACT_EXPIRED", "The Godot or plugin API changed. Run one new engine.inspect contract request.");
-	}
-	const Dictionary classes = contract.get("classes", Dictionary());
-	auto allowed_for_class = [&classes](const String &p_class, Dictionary &r_allowed) {
-		if (classes.has(p_class)) {
-			r_allowed = classes[p_class];
-			return true;
-		}
-		for (const Variant *key = classes.next(nullptr); key; key = classes.next(key)) {
-			const String allowed_class = String(*key);
-			if (ClassDB::class_exists(p_class) && ClassDB::class_exists(allowed_class) && ClassDB::is_parent_class(p_class, allowed_class)) {
-				r_allowed = classes[*key];
-				return true;
-			}
-		}
-		return false;
-	};
-	auto member_allowed = [](const Dictionary &p_allowed, const String &p_kind, const String &p_name) {
-		return Array(p_allowed.get(p_kind, Array())).has(p_name);
-	};
-	Dictionary result_classes;
-	const Array operations = p_args.get("operations", Array());
-	for (int i = 0; i < operations.size(); i++) {
-		const Dictionary operation = operations[i];
-		const String op = operation.get("op", String());
-		const String id = operation.get("id", String());
-		if (!id.is_empty() && result_classes.has(id)) {
-			return _error("ENGINE_RESULT_ID_DUPLICATE", vformat("Operation result id '%s' is already defined.", id));
-		}
-		if (!id.is_empty() && op != "instantiate" && op != "load") {
-			return _error("ENGINE_OPERATION_ARGUMENT_INVALID", vformat("Operation %d can declare id only for instantiate or load.", i));
-		}
-		String class_name = operation.get("class_name", String());
-		const String ref = operation.get("ref", String());
-		const Variant object_id = operation.get("object_id", Variant());
-		if (class_name.is_empty() && object_id.get_type() == Variant::DICTIONARY) {
-			class_name = Dictionary(object_id).get("class_name", String());
-		}
-		if (!ref.is_empty() && object_id.get_type() != Variant::NIL) {
-			return _error("ENGINE_OPERATION_ARGUMENT_INVALID", vformat("Operation %d must use either ref or object_id, not both.", i));
-		}
-		if (!ref.is_empty()) {
-			if (!result_classes.has(ref)) {
-				return _error("ENGINE_RESULT_REF_UNKNOWN", vformat("Operation %d references unknown prior result '%s'.", i, ref));
-			}
-			class_name = result_classes.get(ref, class_name);
-		}
-		if (op == "instantiate" && class_name.is_empty()) {
-			return _error("ENGINE_OPERATION_ARGUMENT_INVALID", vformat("Operation %d instantiate requires class_name.", i));
-		}
-		if (op == "load" && (class_name.is_empty() || String(operation.get("path", String())).is_empty())) {
-			return _error("ENGINE_OPERATION_ARGUMENT_INVALID", vformat("Operation %d load requires class_name and path.", i));
-		}
-		if (op != "instantiate" && op != "load" && op != "editor_call") {
-			if (ref.is_empty() && object_id.get_type() == Variant::NIL) {
-				return _error("ENGINE_OPERATION_ARGUMENT_INVALID", vformat("Operation %d %s requires ref or object_id.", i, op));
-			}
-			if (class_name.is_empty()) {
-				return _error("ENGINE_OPERATION_ARGUMENT_INVALID", vformat("Operation %d must provide class_name when using a raw object_id.", i));
-			}
-		}
-		if ((op == "get" || op == "set") && String(operation.get("property", String())).is_empty()) {
-			return _error("ENGINE_OPERATION_ARGUMENT_INVALID", vformat("Operation %d %s requires property.", i, op));
-		}
-		if (op == "set" && !operation.has("value")) {
-			return _error("ENGINE_OPERATION_ARGUMENT_INVALID", vformat("Operation %d set requires value.", i));
-		}
-		if ((op == "call" || op == "editor_call") && String(operation.get("method", String())).is_empty()) {
-			return _error("ENGINE_OPERATION_ARGUMENT_INVALID", vformat("Operation %d %s requires method.", i, op));
-		}
-		if (op == "save" && String(operation.get("path", String())).is_empty()) {
-			return _error("ENGINE_OPERATION_ARGUMENT_INVALID", vformat("Operation %d save requires path.", i));
-		}
-		if (op == "instantiate" || op == "load") {
-			Dictionary allowed;
-			if (class_name.is_empty() || !allowed_for_class(class_name, allowed)) {
-				return _error("ENGINE_CONTRACT_CLASS_DENIED", vformat("Operation %d class '%s' is outside this contract.", i, class_name));
-			}
-		} else if (op == "editor_call") {
-			Dictionary allowed;
-			const String method = operation.get("method", String());
-			if (!allowed_for_class("EditorInterface", allowed) || !member_allowed(allowed, "methods", method)) {
-				return _error("ENGINE_CONTRACT_MEMBER_DENIED", vformat("EditorInterface.%s is outside this contract.", method));
-			}
-		} else if (!class_name.is_empty()) {
-			Dictionary allowed;
-			if (!allowed_for_class(class_name, allowed)) {
-				return _error("ENGINE_CONTRACT_CLASS_DENIED", vformat("Operation %d class '%s' is outside this contract.", i, class_name));
-			}
-			if ((op == "get" || op == "set") && !member_allowed(allowed, "properties", operation.get("property", String()))) {
-				return _error("ENGINE_CONTRACT_MEMBER_DENIED", vformat("%s.%s is outside this contract.", class_name, operation.get("property", String())));
-			}
-			if (op == "call" && !member_allowed(allowed, "methods", operation.get("method", String()))) {
-				return _error("ENGINE_CONTRACT_MEMBER_DENIED", vformat("%s.%s is outside this contract.", class_name, operation.get("method", String())));
-			}
-		}
-		if (!id.is_empty()) {
-			result_classes[id] = class_name;
-		}
-	}
-	return Dictionary();
-}
-
-Dictionary SolersToolRegistry::_execute_engine(const SolersToolContext &p_context, const Dictionary &p_args) {
+Dictionary SolersToolRegistry::_execute_engine(const Dictionary &p_args) {
 	if (!resource_service || !reflection_service) {
 		return _error("ENGINE_EXECUTION_UNAVAILABLE", "Native engine execution is unavailable.", false);
 	}
-	const Dictionary preflight_error = _preflight_engine_execute(p_context, p_args);
-	if (!preflight_error.is_empty()) {
-		return preflight_error;
-	}
-	const String contract_id = p_args.get("contract_id", String());
-	const Dictionary *contract_ptr = engine_contracts.getptr(contract_id);
-	ERR_FAIL_NULL_V(contract_ptr, _error("ENGINE_CONTRACT_REQUIRED", "The validated engine contract is unavailable."));
-	const Dictionary contract = *contract_ptr;
-	const Dictionary classes = contract.get("classes", Dictionary());
-
-	auto allowed_for_class = [&classes](const String &p_actual_class, Dictionary &r_allowed) {
-		if (classes.has(p_actual_class)) {
-			r_allowed = classes[p_actual_class];
-			return true;
-		}
-		for (const Variant *key = classes.next(nullptr); key; key = classes.next(key)) {
-			const String allowed_class = String(*key);
-			if (ClassDB::class_exists(p_actual_class) && ClassDB::class_exists(allowed_class) && ClassDB::is_parent_class(p_actual_class, allowed_class)) {
-				r_allowed = classes[*key];
-				return true;
-			}
-		}
-		return false;
-	};
-	auto has_member = [](const Dictionary &p_allowed, const String &p_kind, const String &p_name) {
-		return Array(p_allowed.get(p_kind, Array())).has(p_name);
-	};
-	auto object_class = [this](const Variant &p_object_id, String &r_class, Dictionary &r_error_result) {
-		Dictionary inspect_args;
-		inspect_args["object_id"] = p_object_id;
-		const Dictionary inspected = resource_service->native_list_properties(inspect_args);
-		if (!(bool)inspected.get("ok", false)) {
-			r_error_result = inspected;
-			return false;
-		}
-		const Dictionary object = Dictionary(inspected.get("data", Dictionary())).get("object", Dictionary());
-		r_class = object.get("class_name", String());
-		return !r_class.is_empty();
-	};
 
 	Dictionary refs;
 	Array results;
@@ -1263,15 +1039,10 @@ Dictionary SolersToolRegistry::_execute_engine(const SolersToolContext &p_contex
 		}
 
 		Dictionary result;
-		String actual_class = operation.get("class_name", String());
-		Dictionary allowed;
 		if (op == "instantiate" || op == "load") {
-			if (actual_class.is_empty() || !allowed_for_class(actual_class, allowed)) {
-				return _error("ENGINE_CONTRACT_CLASS_DENIED", vformat("Operation %d class '%s' is outside this contract.", i, actual_class));
-			}
 			Dictionary args;
 			if (op == "instantiate") {
-				args["class_name"] = actual_class;
+				args["class_name"] = operation.get("class_name", String());
 				result = resource_service->native_instantiate(args);
 			} else {
 				args["path"] = operation.get("path", String());
@@ -1279,9 +1050,6 @@ Dictionary SolersToolRegistry::_execute_engine(const SolersToolContext &p_contex
 				result = resource_service->native_load(args);
 			}
 		} else if (op == "editor_call") {
-			if (!allowed_for_class("EditorInterface", allowed) || !has_member(allowed, "methods", operation.get("method", String()))) {
-				return _error("ENGINE_CONTRACT_MEMBER_DENIED", vformat("EditorInterface.%s is outside this contract.", operation.get("method", String())));
-			}
 			Dictionary args;
 			args["method"] = operation.get("method", String());
 			args["args"] = operation.get("args", Array());
@@ -1290,21 +1058,10 @@ Dictionary SolersToolRegistry::_execute_engine(const SolersToolContext &p_contex
 			if (object_id.get_type() == Variant::NIL) {
 				return _error("ENGINE_OBJECT_REQUIRED", vformat("Operation %d requires object_id or ref.", i));
 			}
-			Dictionary inspect_error;
-			if (!object_class(object_id, actual_class, inspect_error)) {
-				return inspect_error;
-			}
-			if (!allowed_for_class(actual_class, allowed)) {
-				return _error("ENGINE_CONTRACT_CLASS_DENIED", vformat("Live object class '%s' is outside this contract.", actual_class));
-			}
 			Dictionary args;
 			args["object_id"] = object_id;
 			if (op == "get" || op == "set") {
-				const String property = operation.get("property", String());
-				if (!has_member(allowed, "properties", property)) {
-					return _error("ENGINE_CONTRACT_MEMBER_DENIED", vformat("%s.%s is outside this contract.", actual_class, property));
-				}
-				args["property"] = property;
+				args["property"] = operation.get("property", String());
 				if (op == "set") {
 					args["value"] = operation.get("value", Variant());
 					result = resource_service->native_set(args);
@@ -1312,11 +1069,7 @@ Dictionary SolersToolRegistry::_execute_engine(const SolersToolContext &p_contex
 					result = resource_service->native_get(args);
 				}
 			} else if (op == "call") {
-				const String method = operation.get("method", String());
-				if (!has_member(allowed, "methods", method)) {
-					return _error("ENGINE_CONTRACT_MEMBER_DENIED", vformat("%s.%s is outside this contract.", actual_class, method));
-				}
-				args["method"] = method;
+				args["method"] = operation.get("method", String());
 				args["args"] = operation.get("args", Array());
 				result = resource_service->native_call(args);
 			} else if (op == "save") {
@@ -1343,20 +1096,6 @@ Dictionary SolersToolRegistry::_execute_engine(const SolersToolContext &p_contex
 			failure["data"] = data;
 			return failure;
 		}
-		if (op == "instantiate" || op == "load") {
-			const Dictionary data = result.get("data", Dictionary());
-			const String result_class = data.get("class_name", String());
-			const bool expected_type = result_class == actual_class || (ClassDB::class_exists(result_class) && ClassDB::class_exists(actual_class) && ClassDB::is_parent_class(result_class, actual_class));
-			Dictionary result_allowed;
-			if (!expected_type || !allowed_for_class(result_class, result_allowed)) {
-				if (data.has("object_id")) {
-					Dictionary free_args;
-					free_args["object_id"] = data;
-					resource_service->native_free(free_args);
-				}
-				return _error("ENGINE_RESULT_CLASS_MISMATCH", vformat("Operation %d declared %s but returned %s.", i, actual_class, result_class));
-			}
-		}
 
 		if (!id.is_empty()) {
 			const Dictionary data = result.get("data", Dictionary());
@@ -1378,7 +1117,6 @@ Dictionary SolersToolRegistry::_execute_engine(const SolersToolContext &p_contex
 	}
 
 	Dictionary data;
-	data["contract_id"] = contract_id;
 	data["results"] = results;
 	data["count"] = results.size();
 	return _ok(data);
@@ -1499,7 +1237,7 @@ void SolersToolRegistry::_register_observation_tools() {
 				[svc](const SolersToolContext &, const Dictionary &a) { return svc->inspect_resource(a); }, true,
 				_access_by_arg("read", "project:", "path"));
 		_add("resource.edit", "Create or update one Resource atomically, save it, and verify it can be reloaded. Existing resources require the current SHA-256.",
-				R"({"oneOf":[{"type":"object","properties":{"action":{"const":"create"},"class_name":{"type":"string","minLength":1},"path":{"type":"string","pattern":"^res://"},"properties":{"type":"object"},"type_hint":{"type":"string"}},"required":["action","class_name","path"],"additionalProperties":false},{"type":"object","properties":{"action":{"const":"update"},"path":{"type":"string","pattern":"^res://"},"properties":{"type":"object","minProperties":1},"type_hint":{"type":"string"},"expected_sha256":{"type":"string","pattern":"^[0-9a-fA-F]{64}$"}},"required":["action","path","properties","expected_sha256"],"additionalProperties":false}]})",
+				R"({"oneOf":[{"type":"object","properties":{"action":{"const":"create"},"class_name":{"type":"string","minLength":1},"path":{"type":"string","pattern":"^res://"},"properties":{"type":"object"},"type_hint":{"type":"string"}},"required":["action","class_name","path"],"additionalProperties":false},{"type":"object","properties":{"action":{"const":"update"},"path":{"type":"string","pattern":"^res://"},"properties":{"type":"object","minProperties":1},"type_hint":{"type":"string"},"expected_sha256":{"type":"string","pattern":"^[0-9a-fA-F]{64}$","description":"Optional concurrency guard."}},"required":["action","path","properties"],"additionalProperties":false}]})",
 				SolersPermissionManager::PERMISSION_EDIT_FILES, SolersToolMutationPolicy::FILE_CHECKPOINT, true, Vector<String>(), SolersToolExposure::DIRECT,
 				[svc](const SolersToolContext &, const Dictionary &a) { return svc->edit_resource(a); }, false,
 				SolersToolExecution::MAIN_THREAD, _access_by_arg("write", "project:", "path"));
@@ -1543,8 +1281,8 @@ void SolersToolRegistry::_register_script_tools() {
 	script_redact.push_back("content");
 	script_redact.push_back("old_text");
 	script_redact.push_back("new_text");
-	_add("script.edit", "Create a script or apply one hash-guarded exact replacement. GDScript and Shader source must parse successfully before the file mutation is committed.",
-			R"({"oneOf":[{"type":"object","properties":{"operation":{"const":"create"},"path":{"type":"string","pattern":"^res://.*\\.(gd|cs|gdshader|gdshaderinc)$"},"content":{"type":"string"}},"required":["operation","path","content"],"additionalProperties":false},{"type":"object","properties":{"operation":{"const":"replace"},"path":{"type":"string","pattern":"^res://.*\\.(gd|cs|gdshader|gdshaderinc)$"},"old_text":{"type":"string","minLength":1},"new_text":{"type":"string"},"occurrence":{"type":"integer","minimum":1},"expected_sha256":{"type":"string","pattern":"^[0-9a-fA-F]{64}$"}},"required":["operation","path","old_text","new_text","expected_sha256"],"additionalProperties":false}]})",
+	_add("script.edit", "Create a script or apply one exact text replacement. The write commits, is checkpointed (reversible via history.revert), and returns the parser's full diagnostics; fix reported errors with a follow-up edit.",
+			R"({"oneOf":[{"type":"object","properties":{"operation":{"const":"create"},"path":{"type":"string","pattern":"^res://.*\\.(gd|cs|gdshader|gdshaderinc)$"},"content":{"type":"string"}},"required":["operation","path","content"],"additionalProperties":false},{"type":"object","properties":{"operation":{"const":"replace"},"path":{"type":"string","pattern":"^res://.*\\.(gd|cs|gdshader|gdshaderinc)$"},"old_text":{"type":"string","minLength":1},"new_text":{"type":"string"},"occurrence":{"type":"integer","minimum":1},"expected_sha256":{"type":"string","pattern":"^[0-9a-fA-F]{64}$","description":"Optional concurrency guard."}},"required":["operation","path","old_text","new_text"],"additionalProperties":false}]})",
 			SolersPermissionManager::PERMISSION_EDIT_FILES, SolersToolMutationPolicy::FILE_CHECKPOINT, true, script_redact, SolersToolExposure::DIRECT,
 			[svc](const SolersToolContext &, const Dictionary &a) { return svc->edit_script(a); }, false,
 			SolersToolExecution::MAIN_THREAD, _access_by_arg("write", "project:", "path"));
@@ -1840,14 +1578,14 @@ void SolersToolRegistry::_register_reflection_tools() {
 			edit_scene, SolersToolMutationPolicy::IRREVERSIBLE, true, Vector<String>(), SolersToolExposure::DIRECT,
 			[ref](const SolersToolContext &, const Dictionary &a) { return ref->bake_lightmap(a); });
 
-	_add_observe_exposed("engine.inspect", "Search or inspect the current Godot/ClassDB and plugin API. Exact inspection returns a version-bound contract_id required by engine.execute.",
-			R"({"oneOf":[{"type":"object","properties":{"mode":{"const":"search"},"query":{"type":"string","minLength":1},"inherits":{"type":"string"},"max_results":{"type":"integer","minimum":1,"maximum":200}},"required":["mode","query"],"additionalProperties":false},{"type":"object","properties":{"mode":{"const":"contract"},"classes":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","properties":{"class_name":{"type":"string","minLength":1},"include_inherited":{"type":"boolean"},"member_query":{"type":"string"}},"required":["class_name"],"additionalProperties":false}},"plugin":{"type":"object","properties":{"source":{"type":"string","enum":["bundled","assetlib"]},"plugin_id":{"type":"string","minLength":1},"version":{"type":"string","minLength":1},"sha256":{"type":"string","pattern":"^[0-9A-Fa-f]{64}$"}},"required":["source","plugin_id","version","sha256"],"additionalProperties":false}},"required":["mode","classes"],"additionalProperties":false}]})",
+	_add_observe_exposed("engine.inspect", "Search Godot/plugin ClassDB by query, or introspect exact classes for full signatures and integrated documentation. Inspect a class before calling unfamiliar API through engine.execute.",
+			R"({"type":"object","properties":{"query":{"type":"string","minLength":1,"description":"Fuzzy class search."},"inherits":{"type":"string"},"max_results":{"type":"integer","minimum":1,"maximum":200},"classes":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","properties":{"class_name":{"type":"string","minLength":1},"include_inherited":{"type":"boolean"},"member_query":{"type":"string"}},"required":["class_name"],"additionalProperties":false},"description":"Exact classes to introspect with signatures and docs."}},"additionalProperties":false})",
 			SolersToolExposure::DIRECT,
-			[this](const SolersToolContext &ctx, const Dictionary &a) { return _inspect_engine(ctx, a); }, true, {}, true);
-	_add("engine.execute", "Execute a bounded sequence of typed RefCounted/Resource or EditorInterface operations authorized by an unexpired engine.inspect contract. Scene and ordinary Resource editing must use their domain tools.",
-			R"({"type":"object","properties":{"contract_id":{"type":"string","minLength":1},"operations":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"object","properties":{"id":{"type":"string","minLength":1},"op":{"type":"string","enum":["instantiate","load","get","set","call","save","free","editor_call"]},"class_name":{"type":"string"},"path":{"type":"string","pattern":"^res://"},"type_hint":{"type":"string"},"object_id":{},"ref":{"type":"string"},"property":{"type":"string"},"value":{},"method":{"type":"string"},"args":{"type":"array"}},"required":["op"],"additionalProperties":false}}},"required":["contract_id","operations"],"additionalProperties":false})",
+			[this](const SolersToolContext &, const Dictionary &a) { return _inspect_engine(a); }, true, {}, true);
+	_add("engine.execute", "Execute a bounded sequence of typed RefCounted/Resource or EditorInterface operations against the live engine. Failures report the exact operation index and native cause. Scene and ordinary Resource editing must use their domain tools.",
+			R"({"type":"object","properties":{"operations":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"object","properties":{"id":{"type":"string","minLength":1},"op":{"type":"string","enum":["instantiate","load","get","set","call","save","free","editor_call"]},"class_name":{"type":"string"},"path":{"type":"string","pattern":"^res://"},"type_hint":{"type":"string"},"object_id":{},"ref":{"type":"string"},"property":{"type":"string"},"value":{},"method":{"type":"string"},"args":{"type":"array"}},"required":["op"],"additionalProperties":false}}},"required":["operations"],"additionalProperties":false})",
 			edit_scene, SolersToolMutationPolicy::IRREVERSIBLE, true, Vector<String>(), SolersToolExposure::DIRECT,
-			[this](const SolersToolContext &ctx, const Dictionary &a) { return _execute_engine(ctx, a); }, false,
+			[this](const SolersToolContext &, const Dictionary &a) { return _execute_engine(a); }, false,
 			SolersToolExecution::MAIN_THREAD, [](const Dictionary &) {
 				Array accesses;
 				Dictionary access;
@@ -1855,8 +1593,7 @@ void SolersToolRegistry::_register_reflection_tools() {
 				access["key"] = "engine-native:";
 				accesses.push_back(access);
 				return accesses;
-			}, false, {}, false, {}, {}, {}, {},
-			[this](const SolersToolContext &ctx, const Dictionary &a) { return _preflight_engine_execute(ctx, a); });
+			});
 }
 
 void SolersToolRegistry::_register_search_tools() {
@@ -2185,24 +1922,7 @@ Dictionary SolersToolRegistry::call_tool_with_context(const StringName &p_name, 
 	return result;
 }
 
-uint64_t SolersToolRegistry::_resource_state_hash(const Array &p_accesses) const {
-	String state;
-	for (int i = 0; i < p_accesses.size(); i++) {
-		const Dictionary access = p_accesses[i];
-		const String key = access.get("key", String());
-		state += String(access.get("mode", String())) + ":" + key + ":";
-		if (key.begins_with("scene:") && reflection_service) {
-			state += String::num_uint64(reflection_service->get_scene_state_digest());
-		} else if (key.begins_with("project:res://") && !key.contains("*")) {
-			const String path = key.trim_prefix("project:");
-			state += FileAccess::exists(path) ? FileAccess::get_sha256(path) : "missing";
-		}
-		state += ";";
-	}
-	return state.hash64();
-}
-
-Dictionary SolersToolRegistry::_preflight_tool_call(const StringName &p_name, const Dictionary &p_args, const SolersToolContext &p_context, Dictionary &r_args, String &r_failure_cache_key) {
+Dictionary SolersToolRegistry::_preflight_tool_call(const StringName &p_name, const Dictionary &p_args, const SolersToolContext &p_context, Dictionary &r_args) {
 	SolersTool *const *tool_ptr = tools.getptr(p_name);
 	if (!tool_ptr || !*tool_ptr) {
 		return _tool_result_envelope(_error("TOOL_NOT_FOUND", vformat("Solers tool not found: %s", p_name), true), p_context.call_id);
@@ -2221,14 +1941,6 @@ Dictionary SolersToolRegistry::_preflight_tool_call(const StringName &p_name, co
 	for (const Variant &key : internal_keys) {
 		schema_args.erase(key);
 	}
-	const Array resource_accesses = resolve_resource_access(p_name, args);
-	r_failure_cache_key = p_context.session_id + ":" + String(p_name) + ":" + String::num_uint64(p_context.authored_revision) + ":" + String::num_uint64(schema_args.hash()) + ":" + String::num_uint64(_resource_state_hash(resource_accesses));
-	if (const Dictionary *cached = failed_calls.getptr(r_failure_cache_key)) {
-		Dictionary duplicate = cached->duplicate(true);
-		duplicate["call_id"] = p_context.call_id;
-		duplicate["deduplicated"] = true;
-		return duplicate;
-	}
 	String argument_error;
 	if (!_validate_tool_schema_value(schema_args, tool->parameters_schema(), "parameters", argument_error)) {
 		Dictionary invalid = _error("TOOL_ARGUMENT_INVALID", argument_error, true);
@@ -2240,23 +1952,7 @@ Dictionary SolersToolRegistry::_preflight_tool_call(const StringName &p_name, co
 			rejected["result"] = invalid;
 			action_timeline->record_event("tool_call_rejected", rejected);
 		}
-		const Dictionary result = _tool_result_envelope(invalid, p_context.call_id);
-		failed_calls[r_failure_cache_key] = result;
-		return result;
-	}
-	const Dictionary semantic_error = tool->preflight(p_context, args);
-	if (!semantic_error.is_empty()) {
-		SOLERS_TRACE("registry.preflight_rejected", vformat("%s %s", String(p_name), summarize_tool_result_for_audit(semantic_error)));
-		if (action_timeline) {
-			Dictionary rejected;
-			rejected["tool"] = p_name;
-			rejected["args"] = redact_tool_args_for_audit(p_name, args);
-			rejected["result"] = semantic_error;
-			action_timeline->record_event("tool_call_rejected", rejected);
-		}
-		const Dictionary result = _tool_result_envelope(semantic_error, p_context.call_id);
-		failed_calls[r_failure_cache_key] = result;
-		return result;
+		return _tool_result_envelope(invalid, p_context.call_id);
 	}
 	r_args = args;
 	return Dictionary();
@@ -2264,8 +1960,7 @@ Dictionary SolersToolRegistry::_preflight_tool_call(const StringName &p_name, co
 
 Dictionary SolersToolRegistry::_prepare_tool_call(const StringName &p_name, const Dictionary &p_args, const SolersToolContext &p_context, SolersPreparedToolCall &r_call) {
 	Dictionary args;
-	String failure_cache_key;
-	const Dictionary preflight_error = _preflight_tool_call(p_name, p_args, p_context, args, failure_cache_key);
+	const Dictionary preflight_error = _preflight_tool_call(p_name, p_args, p_context, args);
 	if (!preflight_error.is_empty()) {
 		return preflight_error;
 	}
@@ -2320,7 +2015,6 @@ Dictionary SolersToolRegistry::_prepare_tool_call(const StringName &p_name, cons
 	r_call.args = handler_args;
 	r_call.timeline_payload = timeline_payload;
 	r_call.context = ctx;
-	r_call.failure_cache_key = failure_cache_key;
 	r_call.execution = cap.execution;
 	return _prepare_reversal(r_call);
 }
@@ -2354,41 +2048,11 @@ void SolersToolRegistry::_complete_prepared_tool(const SolersPreparedToolCall &p
 		completed_payload["ok"] = p_result.get("ok", false);
 		action_timeline->record_event("tool_call_completed", completed_payload);
 	}
-	if (p_call.failure_cache_key.is_empty()) {
-		return;
-	}
-	if ((bool)p_result.get("ok", false)) {
-		failed_calls.erase(p_call.failure_cache_key);
-		return;
-	}
-	const String code = String(Dictionary(p_result.get("error", Dictionary())).get("code", String()));
-	if (code != "TOOL_CANCELLED" && code != "APPROVAL_EXPIRED" && code != "USER_APPROVAL_REQUIRED") {
-		failed_calls[p_call.failure_cache_key] = p_result.duplicate(true);
-	}
 }
 
 void SolersToolRegistry::clear_task_state(const String &p_session_id) {
 	if (p_session_id.is_empty()) {
 		return;
-	}
-	Vector<String> erase_keys;
-	const String prefix = p_session_id + ":";
-	for (const KeyValue<String, Dictionary> &entry : failed_calls) {
-		if (entry.key.begins_with(prefix)) {
-			erase_keys.push_back(entry.key);
-		}
-	}
-	for (const String &key : erase_keys) {
-		failed_calls.erase(key);
-	}
-	erase_keys.clear();
-	for (const KeyValue<String, Dictionary> &entry : engine_contracts) {
-		if (String(entry.value.get("session_id", String())) == p_session_id) {
-			erase_keys.push_back(entry.key);
-		}
-	}
-	for (const String &key : erase_keys) {
-		engine_contracts.erase(key);
 	}
 	Vector<String> delivery_keys;
 	const String delivery_prefix = p_session_id + ":";
@@ -2429,6 +2093,5 @@ SolersToolRegistry::~SolersToolRegistry() {
 	_clear_tools();
 	reversals.clear();
 	latest_reversal_by_session.clear();
-	engine_contracts.clear();
 	delivered_plugin_contracts.clear();
 }

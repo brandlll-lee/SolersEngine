@@ -607,116 +607,6 @@ TEST_CASE("[SolersToolRegistry] schema preflight runs before approval or handler
 	CHECK(permissions.get_pending_request_count() == 1);
 }
 
-TEST_CASE("[SolersToolRegistry] unchanged failures are deduplicated by task and revision") {
-	SolersPermissionManager permissions;
-	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
-	SolersToolRegistry registry;
-	registry.set_permission_manager(&permissions);
-	int calls = 0;
-	SolersToolCapability cap;
-	cap.permission = SolersPermissionManager::PERMISSION_OBSERVE;
-	cap.mutation_policy = SolersToolMutationPolicy::READ_ONLY;
-	Dictionary value;
-	value["type"] = "integer";
-	Dictionary properties;
-	properties["value"] = value;
-	Dictionary schema;
-	schema["type"] = "object";
-	schema["properties"] = properties;
-	schema["additionalProperties"] = false;
-	registry.register_tool(memnew(SolersFunctionTool(
-			SNAME("synthetic.failure"), "Synthetic failure fixture.", schema, SolersToolExposure::DIRECT, cap,
-			[&calls](const SolersToolContext &, const Dictionary &) {
-				calls++;
-				Dictionary error;
-				error["code"] = "SYNTHETIC_FAILURE";
-				error["message"] = "Stable failure.";
-				error["recoverable"] = true;
-				Dictionary result;
-				result["ok"] = false;
-				result["error"] = error;
-				return result;
-			})));
-	SolersToolContext context;
-	context.session_id = "dedup-task";
-	context.authored_revision = 7;
-	Dictionary args;
-	args["value"] = "invalid";
-	CHECK_FALSE((bool)registry.call_tool_with_context(SNAME("synthetic.failure"), args, context).get("ok", true));
-	const Dictionary rejected_duplicate = registry.call_tool_with_context(SNAME("synthetic.failure"), args, context);
-	CHECK(rejected_duplicate.get("deduplicated", false));
-	CHECK(calls == 0);
-	args["value"] = 1.0;
-	CHECK_FALSE((bool)registry.call_tool_with_context(SNAME("synthetic.failure"), args, context).get("ok", true));
-	const Dictionary duplicate = registry.call_tool_with_context(SNAME("synthetic.failure"), args, context);
-	CHECK_FALSE((bool)duplicate.get("ok", true));
-	CHECK(duplicate.get("deduplicated", false));
-	CHECK(calls == 1);
-	args["value"] = 2;
-	registry.call_tool_with_context(SNAME("synthetic.failure"), args, context);
-	CHECK(calls == 2);
-	args["value"] = 1;
-	context.authored_revision++;
-	registry.call_tool_with_context(SNAME("synthetic.failure"), args, context);
-	CHECK(calls == 3);
-	registry.clear_task_state(context.session_id);
-	registry.call_tool_with_context(SNAME("synthetic.failure"), args, context);
-	CHECK(calls == 4);
-}
-
-TEST_CASE("[SolersToolRegistry] changed resource state re-enables a failed call") {
-	const String path = "res://.solers_failure_state_contract.txt";
-	{
-		Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
-		REQUIRE(file.is_valid());
-		file->store_string("before");
-	}
-	SolersPermissionManager permissions;
-	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
-	SolersToolRegistry registry;
-	registry.set_permission_manager(&permissions);
-	int calls = 0;
-	SolersToolCapability capability;
-	capability.permission = SolersPermissionManager::PERMISSION_OBSERVE;
-	capability.resource_access = [path](const Dictionary &) {
-		Array accesses;
-		Dictionary access;
-		access["mode"] = "read";
-		access["key"] = "project:" + path;
-		accesses.push_back(access);
-		return accesses;
-	};
-	Dictionary schema;
-	schema["type"] = "object";
-	schema["additionalProperties"] = false;
-	registry.register_tool(memnew(SolersFunctionTool(
-			SNAME("synthetic.resource_failure"), "Resource-sensitive failure fixture.", schema, SolersToolExposure::DIRECT, capability,
-			[&calls](const SolersToolContext &, const Dictionary &) {
-				calls++;
-				Dictionary error;
-				error["code"] = "SYNTHETIC_FAILURE";
-				error["message"] = "Stable failure.";
-				error["recoverable"] = true;
-				Dictionary result;
-				result["ok"] = false;
-				result["error"] = error;
-				return result;
-			})));
-	SolersToolContext context;
-	context.session_id = "resource-dedup-task";
-	CHECK_FALSE((bool)registry.call_tool_with_context(SNAME("synthetic.resource_failure"), Dictionary(), context).get("ok", true));
-	CHECK(registry.call_tool_with_context(SNAME("synthetic.resource_failure"), Dictionary(), context).get("deduplicated", false));
-	CHECK(calls == 1);
-	{
-		Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
-		REQUIRE(file.is_valid());
-		file->store_string("after");
-	}
-	CHECK_FALSE((bool)registry.call_tool_with_context(SNAME("synthetic.resource_failure"), Dictionary(), context).get("ok", true));
-	CHECK(calls == 2);
-	DirAccess::remove_file_or_error(ProjectSettings::get_singleton()->globalize_path(path));
-}
-
 TEST_CASE("[SolersToolRegistry] file checkpoint reversal survives session restoration") {
 	const String path = "res://.solers_reversal_contract.txt";
 	const String global_path = ProjectSettings::get_singleton()->globalize_path(path);
@@ -990,10 +880,13 @@ TEST_CASE("[SolersToolRegistry] default model surface is domain-first") {
 
 	Dictionary engine_inspect = find_tool_def(tools, "engine.inspect");
 	CHECK(engine_inspect.get("ephemeral_result", false));
-	CHECK(Dictionary(engine_inspect.get("input_schema", Dictionary())).has("oneOf"));
+	const Dictionary engine_inspect_properties = Dictionary(engine_inspect.get("input_schema", Dictionary())).get("properties", Dictionary());
+	CHECK(engine_inspect_properties.has("query"));
+	CHECK(engine_inspect_properties.has("classes"));
 	Dictionary engine_execute = find_tool_def(tools, "engine.execute");
 	CHECK(engine_execute.get("mutation_policy", String()) == "irreversible");
 	CHECK(engine_execute.get("permission", String()) == "edit_scene");
+	CHECK_FALSE(Dictionary(Dictionary(engine_execute.get("input_schema", Dictionary())).get("properties", Dictionary())).has("contract_id"));
 	Dictionary project_edit = find_tool_def(tools, "project.edit");
 	CHECK(project_edit.get("permission", String()) == "edit_files");
 	CHECK(project_edit.get("mutation_policy_dynamic", false));
@@ -1051,9 +944,10 @@ TEST_CASE("[SolersToolRegistry] default model surface is domain-first") {
 	}
 }
 
-TEST_CASE("[SolersToolRegistry] engine execution requires a current task-scoped contract") {
+TEST_CASE("[SolersToolRegistry] engine execution runs typed operations and reports the native cause") {
 	SolersPermissionManager permissions;
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_SCENE, true);
 	SolersReflectionService reflection_service;
 	SolersResourceService resource_service;
 	SolersToolRegistry registry;
@@ -1063,58 +957,61 @@ TEST_CASE("[SolersToolRegistry] engine execution requires a current task-scoped 
 	registry.register_default_tools();
 
 	SolersToolContext context;
-	context.session_id = "engine-contract-task";
-	Dictionary missing;
-	missing["contract_id"] = "missing";
-	Dictionary instantiate;
-	instantiate["id"] = "value";
-	instantiate["op"] = "instantiate";
-	instantiate["class_name"] = "RefCounted";
-	Array operations;
-	operations.push_back(instantiate);
-	missing["operations"] = operations;
-	Dictionary rejected = registry.call_tool_with_context(SNAME("engine.execute"), missing, context);
-	CHECK_FALSE(rejected.get("ok", true));
-	CHECK(Dictionary(rejected.get("error", Dictionary())).get("code", String()) == "ENGINE_CONTRACT_REQUIRED");
+	context.session_id = "engine-execute-task";
 
+	// engine.inspect introspects exact classes directly; no contract token round-trip.
 	Dictionary class_request;
 	class_request["class_name"] = "RefCounted";
 	Array classes;
 	classes.push_back(class_request);
 	Dictionary inspect;
-	inspect["mode"] = "contract";
 	inspect["classes"] = classes;
 	const Dictionary inspected = registry.call_tool_with_context(SNAME("engine.inspect"), inspect, context);
 	REQUIRE(inspected.get("ok", false));
-	const String contract_id = Dictionary(inspected.get("data", Dictionary())).get("contract_id", String());
-	REQUIRE(!contract_id.is_empty());
+	const Array inspected_classes = Dictionary(inspected.get("data", Dictionary())).get("classes", Array());
+	REQUIRE(inspected_classes.size() == 1);
+	CHECK_FALSE(Dictionary(inspected.get("data", Dictionary())).has("contract_id"));
+
+	// A structurally broken operation fails with the exact reason, not a gate code.
 	Dictionary malformed;
 	malformed["op"] = "free";
 	Array malformed_operations;
 	malformed_operations.push_back(malformed);
 	Dictionary malformed_execute;
-	malformed_execute["contract_id"] = contract_id;
 	malformed_execute["operations"] = malformed_operations;
 	const Dictionary malformed_result = registry.call_tool_with_context(SNAME("engine.execute"), malformed_execute, context);
 	CHECK_FALSE(malformed_result.get("ok", true));
-	CHECK(Dictionary(malformed_result.get("error", Dictionary())).get("code", String()) == "ENGINE_OPERATION_ARGUMENT_INVALID");
+	CHECK(Dictionary(malformed_result.get("error", Dictionary())).get("code", String()) == "ENGINE_OBJECT_REQUIRED");
 
+	// instantiate + free runs without any prior inspection ceremony.
+	Dictionary instantiate;
+	instantiate["id"] = "value";
+	instantiate["op"] = "instantiate";
+	instantiate["class_name"] = "RefCounted";
 	Dictionary release;
 	release["op"] = "free";
 	release["ref"] = "value";
+	Array operations;
+	operations.push_back(instantiate);
 	operations.push_back(release);
 	Dictionary execute;
-	execute["contract_id"] = contract_id;
 	execute["operations"] = operations;
-	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_SCENE, true);
 	const Dictionary executed = registry.call_tool_with_context(SNAME("engine.execute"), execute, context);
 	CHECK(executed.get("ok", false));
+	CHECK((int)Dictionary(executed.get("data", Dictionary())).get("count", 0) == 2);
 
-	SolersToolContext other_context = context;
-	other_context.session_id = "other-engine-contract-task";
-	const Dictionary scoped = registry.call_tool_with_context(SNAME("engine.execute"), execute, other_context);
-	CHECK_FALSE(scoped.get("ok", true));
-	CHECK(Dictionary(scoped.get("error", Dictionary())).get("code", String()) == "ENGINE_CONTRACT_SCOPE_MISMATCH");
+	// A failing native call surfaces the failed index and underlying cause.
+	Dictionary bad_instantiate;
+	bad_instantiate["op"] = "instantiate";
+	bad_instantiate["class_name"] = "NoSuchClass";
+	Array bad_operations;
+	bad_operations.push_back(bad_instantiate);
+	Dictionary bad_execute;
+	bad_execute["operations"] = bad_operations;
+	const Dictionary failed = registry.call_tool_with_context(SNAME("engine.execute"), bad_execute, context);
+	CHECK_FALSE(failed.get("ok", true));
+	CHECK(Dictionary(failed.get("error", Dictionary())).get("code", String()) == "ENGINE_EXECUTION_FAILED");
+	CHECK((int)Dictionary(failed.get("data", Dictionary())).get("failed_index", -1) == 0);
 }
 
 TEST_CASE("[SolersScriptService] project.godot cannot use the raw file path") {
@@ -1128,7 +1025,7 @@ TEST_CASE("[SolersScriptService] project.godot cannot use the raw file path") {
 	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "EDITOR_OWNED_FILE");
 }
 
-TEST_CASE("[SolersScriptService] script edits cannot bypass validation") {
+TEST_CASE("[SolersScriptService] script edits commit and return post-write diagnostics") {
 	const String path = "res://solers_script_validation_contract.gd";
 	const String fs_path = ProjectSettings::get_singleton()->globalize_path(path);
 	if (FileAccess::exists(path)) {
@@ -1137,32 +1034,27 @@ TEST_CASE("[SolersScriptService] script edits cannot bypass validation") {
 
 	SolersScriptService script_service;
 
-	Dictionary bypass_args;
-	bypass_args["path"] = path;
-	bypass_args["content"] = "extends Node\n";
-	bypass_args["validate_if_script"] = false;
-	Dictionary bypass = script_service.write_file(bypass_args);
-	REQUIRE_FALSE((bool)bypass.get("ok", true));
-	Dictionary bypass_error = bypass.get("error", Dictionary());
-	CHECK(bypass_error.get("code", String()) == "SCRIPT_VALIDATION_REQUIRED");
-	CHECK_FALSE(FileAccess::exists(path));
-
 	const String valid_source = "extends Node\nfunc value() -> int:\n\treturn 1\n";
 	Dictionary write_args;
 	write_args["path"] = path;
 	write_args["content"] = valid_source;
 	Dictionary written = script_service.write_file(write_args);
 	REQUIRE((bool)written.get("ok", false));
+	CHECK(Dictionary(written.get("data", Dictionary())).get("valid", false));
 
+	// A broken edit still commits; the parser diagnostics come back as data the
+	// model can act on, and the file checkpoint keeps the mutation reversible.
 	Dictionary patch_args;
 	patch_args["path"] = path;
 	patch_args["old_text"] = "\treturn 1";
 	patch_args["new_text"] = "\treturn +";
 	Dictionary patched = script_service.patch_file(patch_args);
-	REQUIRE_FALSE((bool)patched.get("ok", true));
-	Dictionary patch_error = patched.get("error", Dictionary());
-	CHECK(patch_error.get("code", String()) == "SCRIPT_VALIDATE_FAILED");
-	CHECK(FileAccess::get_file_as_string(path) == valid_source);
+	REQUIRE((bool)patched.get("ok", false));
+	const Dictionary patched_data = patched.get("data", Dictionary());
+	CHECK_FALSE((bool)patched_data.get("valid", true));
+	const Dictionary validation = patched_data.get("validation", Dictionary());
+	CHECK((int)validation.get("error_count", 0) > 0);
+	CHECK(FileAccess::get_file_as_string(path).contains("return +"));
 
 	DirAccess::remove_file_or_error(fs_path);
 
@@ -1176,9 +1068,10 @@ TEST_CASE("[SolersScriptService] script edits cannot bypass validation") {
 	shader_args["path"] = shader_path;
 	shader_args["content"] = "shader_type spatial;\nvoid fragment() { ALBEDO = missing_identifier; }\n";
 	const Dictionary shader_result = script_service.edit_script(shader_args);
-	CHECK_FALSE(shader_result.get("ok", true));
-	CHECK(Dictionary(shader_result.get("error", Dictionary())).get("code", String()) == "SCRIPT_VALIDATE_FAILED");
-	CHECK_FALSE(FileAccess::exists(shader_path));
+	REQUIRE((bool)shader_result.get("ok", false));
+	CHECK_FALSE((bool)Dictionary(shader_result.get("data", Dictionary())).get("valid", true));
+	CHECK(FileAccess::exists(shader_path));
+	DirAccess::remove_file_or_error(shader_fs_path);
 }
 
 TEST_CASE("[SolersScriptService] native serialized resources require native resource APIs") {

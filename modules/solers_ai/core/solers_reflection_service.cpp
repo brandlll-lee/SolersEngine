@@ -644,7 +644,7 @@ Dictionary SolersReflectionService::get_property(const Dictionary &p_args) {
 		}
 	}
 	if (!valid) {
-		return _error("UNKNOWN_PROPERTY", vformat("Property '%s' is not exposed by %s. Inspect the node or request an engine.inspect contract.", property, node->get_class()));
+		return _error("UNKNOWN_PROPERTY", vformat("Property '%s' is not exposed by %s. Check the exact member with engine.inspect.", property, node->get_class()));
 	}
 
 	String safe_path;
