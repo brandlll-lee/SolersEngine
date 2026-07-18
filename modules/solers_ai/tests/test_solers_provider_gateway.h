@@ -51,6 +51,7 @@
 #include "modules/solers_ai/core/solers_agent_session.h"
 #include "modules/solers_ai/core/solers_asset_service.h"
 #include "modules/solers_ai/core/solers_context_manager.h"
+#include "modules/solers_ai/core/solers_file_checkpoint.h"
 #include "modules/solers_ai/core/solers_geometry_facts.h"
 #include "modules/solers_ai/core/solers_permission_manager.h"
 #include "modules/solers_ai/core/solers_observation_service.h"
@@ -328,7 +329,7 @@ TEST_CASE("[SolersToolRegistry] registers tools by lookup, not a hardcoded catal
 
 	SolersToolCapability cap;
 	cap.permission = SolersPermissionManager::PERMISSION_OBSERVE;
-	cap.mutation_kind = "none";
+	cap.mutation_policy = SolersToolMutationPolicy::READ_ONLY;
 	cap.execution = SolersToolExecution::WORKER_THREAD;
 
 	Dictionary schema;
@@ -551,7 +552,7 @@ TEST_CASE("[SolersToolRegistry] schema preflight runs before approval or handler
 	int calls = 0;
 	SolersToolCapability cap;
 	cap.permission = SolersPermissionManager::PERMISSION_EDIT_FILES;
-	cap.mutation_kind = "file_write";
+	cap.mutation_policy = SolersToolMutationPolicy::IRREVERSIBLE;
 	cap.requires_approval = true;
 	Dictionary amount;
 	amount["type"] = "number";
@@ -600,7 +601,7 @@ TEST_CASE("[SolersToolRegistry] unchanged failures are deduplicated by task and 
 	int calls = 0;
 	SolersToolCapability cap;
 	cap.permission = SolersPermissionManager::PERMISSION_OBSERVE;
-	cap.mutation_kind = "none";
+	cap.mutation_policy = SolersToolMutationPolicy::READ_ONLY;
 	Dictionary value;
 	value["type"] = "integer";
 	Dictionary properties;
@@ -649,6 +650,119 @@ TEST_CASE("[SolersToolRegistry] unchanged failures are deduplicated by task and 
 	CHECK(calls == 4);
 }
 
+TEST_CASE("[SolersToolRegistry] changed resource state re-enables a failed call") {
+	const String path = "res://.solers_failure_state_contract.txt";
+	{
+		Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
+		REQUIRE(file.is_valid());
+		file->store_string("before");
+	}
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
+	SolersToolRegistry registry;
+	registry.set_permission_manager(&permissions);
+	int calls = 0;
+	SolersToolCapability capability;
+	capability.permission = SolersPermissionManager::PERMISSION_OBSERVE;
+	capability.resource_access = [path](const Dictionary &) {
+		Array accesses;
+		Dictionary access;
+		access["mode"] = "read";
+		access["key"] = "project:" + path;
+		accesses.push_back(access);
+		return accesses;
+	};
+	Dictionary schema;
+	schema["type"] = "object";
+	schema["additionalProperties"] = false;
+	registry.register_tool(memnew(SolersFunctionTool(
+			SNAME("synthetic.resource_failure"), "Resource-sensitive failure fixture.", schema, SolersToolExposure::DIRECT, capability,
+			[&calls](const SolersToolContext &, const Dictionary &) {
+				calls++;
+				Dictionary error;
+				error["code"] = "SYNTHETIC_FAILURE";
+				error["message"] = "Stable failure.";
+				error["recoverable"] = true;
+				Dictionary result;
+				result["ok"] = false;
+				result["error"] = error;
+				return result;
+			})));
+	SolersToolContext context;
+	context.session_id = "resource-dedup-task";
+	CHECK_FALSE((bool)registry.call_tool_with_context(SNAME("synthetic.resource_failure"), Dictionary(), context).get("ok", true));
+	CHECK(registry.call_tool_with_context(SNAME("synthetic.resource_failure"), Dictionary(), context).get("deduplicated", false));
+	CHECK(calls == 1);
+	{
+		Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
+		REQUIRE(file.is_valid());
+		file->store_string("after");
+	}
+	CHECK_FALSE((bool)registry.call_tool_with_context(SNAME("synthetic.resource_failure"), Dictionary(), context).get("ok", true));
+	CHECK(calls == 2);
+	DirAccess::remove_file_or_error(ProjectSettings::get_singleton()->globalize_path(path));
+}
+
+TEST_CASE("[SolersToolRegistry] file checkpoint reversal survives session restoration") {
+	const String path = "res://.solers_reversal_contract.txt";
+	const String global_path = ProjectSettings::get_singleton()->globalize_path(path);
+	if (FileAccess::exists(path)) {
+		DirAccess::remove_file_or_error(global_path);
+	}
+	const String session_id = "reversal-contract-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
+	const String project_path = "test://solers-reversal-contract";
+
+	SolersPermissionManager write_permissions;
+	write_permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_FILES, true);
+	SolersFileCheckpoint write_checkpoint;
+	SolersScriptService write_scripts;
+	SolersToolRegistry write_registry;
+	write_registry.set_permission_manager(&write_permissions);
+	write_registry.set_file_checkpoint(&write_checkpoint);
+	write_registry.set_script_service(&write_scripts);
+	write_registry.register_default_tools();
+	SolersToolContext write_context;
+	write_context.call_id = "create-file";
+	write_context.session_id = session_id;
+	write_context.project_path = project_path;
+	Dictionary write_args;
+	write_args["path"] = path;
+	write_args["content"] = "created by reversible contract\n";
+	const Dictionary write_result = write_registry.call_tool_with_context(SNAME("project.write_file"), write_args, write_context);
+	REQUIRE((bool)write_result.get("ok", false));
+	const Dictionary mutation = Dictionary(write_result.get("data", Dictionary())).get("mutation", Dictionary());
+	const String reversal_id = mutation.get("reversal_id", String());
+	REQUIRE(!reversal_id.is_empty());
+	CHECK(FileAccess::exists(path));
+
+	SolersPermissionManager restore_permissions;
+	restore_permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_FILES, true);
+	SolersFileCheckpoint restore_checkpoint;
+	SolersScriptService restore_scripts;
+	SolersToolRegistry restore_registry;
+	restore_registry.set_permission_manager(&restore_permissions);
+	restore_registry.set_file_checkpoint(&restore_checkpoint);
+	restore_registry.set_script_service(&restore_scripts);
+	restore_registry.register_default_tools();
+	SolersAgentSession restored_session;
+	restored_session.set_tool_registry(&restore_registry);
+	restored_session.set_session(project_path, session_id);
+	CHECK((int64_t)restored_session.get_status().get("authored_revision", -1) == 1);
+
+	SolersToolContext revert_context;
+	revert_context.call_id = "revert-file";
+	revert_context.session_id = session_id;
+	revert_context.project_path = project_path;
+	revert_context.authored_revision = 1;
+	Dictionary revert_args;
+	revert_args["reversal_id"] = reversal_id;
+	revert_args["expected_revision"] = 1;
+	const Dictionary revert_result = restore_registry.call_tool_with_context(SNAME("history.revert"), revert_args, revert_context);
+	REQUIRE((bool)revert_result.get("ok", false));
+	CHECK_FALSE(FileAccess::exists(path));
+	restored_session.shutdown();
+}
+
 TEST_CASE("[SolersToolRegistry] preserves internal session context without changing the bound API") {
 	SolersToolRegistry registry;
 	SolersPermissionManager permissions;
@@ -657,7 +771,7 @@ TEST_CASE("[SolersToolRegistry] preserves internal session context without chang
 
 	SolersToolCapability cap;
 	cap.permission = SolersPermissionManager::PERMISSION_OBSERVE;
-	cap.mutation_kind = "none";
+	cap.mutation_policy = SolersToolMutationPolicy::READ_ONLY;
 	registry.register_tool(memnew(SolersFunctionTool(
 			"synthetic.context", "Returns its internal execution context.", Dictionary(), SolersToolExposure::DIRECT, cap,
 			[](const SolersToolContext &p_context, const Dictionary &) {
@@ -708,22 +822,23 @@ TEST_CASE("[SolersTool] pending work has a distinct continuation callback") {
 }
 
 TEST_CASE("[SolersBuiltinSkills] compiled index exposes catalog summary without full content") {
-	CHECK(SolersBuiltinSkills::get_count() >= 1);
+	CHECK(SolersBuiltinSkills::get_count() == 12);
 
 	SolersBuiltinSkillView skill;
-	REQUIRE(SolersBuiltinSkills::find_by_name("godot-3d-scene-building", skill));
-	CHECK(skill.name == "godot-3d-scene-building");
+	REQUIRE(SolersBuiltinSkills::find_by_name("godot-3d-rendering", skill));
+	CHECK(skill.name == "godot-3d-rendering");
 	CHECK(!skill.description.is_empty());
-	CHECK(skill.content.contains("Prove one unfamiliar operation before repeating it"));
-	CHECK(skill.content.contains("Omit `placement_roots` and `placements` until physical prop/fixture support must be verified"));
-	REQUIRE(SolersBuiltinSkills::find_by_name("godot-native-capabilities", skill));
-	CHECK(skill.content.contains("Solers exposes Godot's real ClassDB"));
-	REQUIRE(SolersBuiltinSkills::find_by_name("godot-rendering-lighting", skill));
-	CHECK(skill.content.contains("one coherent renderer and one final GI path"));
+	CHECK(skill.content.contains("Use ClassDB only for an unknown current-engine API"));
+	CHECK(skill.content.contains("one authoritative final GI path"));
+	REQUIRE(SolersBuiltinSkills::find_by_name("godot-project-editor-assets", skill));
+	CHECK(skill.content.contains("Preserve standard Godot paths"));
+	REQUIRE(SolersBuiltinSkills::find_by_name("godot-plugins-terrain", skill));
+	CHECK(skill.content.contains("never invent a `terrain.*` API"));
 
 	const String catalog = SolersBuiltinSkills::build_catalog_prompt();
-	CHECK(catalog.contains("godot-3d-scene-building"));
-	CHECK_FALSE(catalog.contains("Visual verification loop"));
+	CHECK(catalog.contains("godot-3d-rendering"));
+	CHECK(catalog.contains("godot-xr-mobile-platforms"));
+	CHECK_FALSE(catalog.contains("one authoritative final GI path"));
 
 	SolersBuiltinSkillView missing;
 	CHECK_FALSE(SolersBuiltinSkills::find_by_name("synthetic-never-registered-skill", missing));
@@ -737,13 +852,13 @@ TEST_CASE("[SolersToolRegistry] skill.read serves compiled builtin skills") {
 	registry.register_default_tools();
 
 	Dictionary args;
-	args["name"] = "godot-3d-scene-building";
+	args["name"] = "godot-3d-rendering";
 	const Dictionary result = registry.call_tool(StringName("skill.read"), args);
 	REQUIRE((bool)result.get("ok", false));
 	const Dictionary data = result.get("data", Dictionary());
-	CHECK(data.get("name", String()) == "godot-3d-scene-building");
+	CHECK(data.get("name", String()) == "godot-3d-rendering");
 	CHECK(!String(data.get("content", String())).is_empty());
-	CHECK(String(data.get("content", String())).contains("Prove one unfamiliar operation before repeating it"));
+	CHECK(String(data.get("content", String())).contains("one authoritative final GI path"));
 	CHECK_FALSE(data.has("required_tools"));
 }
 
@@ -786,7 +901,7 @@ TEST_CASE("[SolersToolRegistry] default model surface is primitive-first") {
 		"objects.batch",
 		"editor.get_snapshot",
 		"project.read_file",
-		"project.search_files",
+		"project.search",
 		"project.write_file",
 		"script.patch",
 		"script.validate",
@@ -809,6 +924,8 @@ TEST_CASE("[SolersToolRegistry] default model surface is primitive-first") {
 		"object.call_method",
 		"editor.invoke",
 		"runtime.control",
+		"runtime.observe",
+		"history.revert",
 		"skill.read",
 		"scene.validate_spatial",
 		"scene.validate_structure",
@@ -924,9 +1041,11 @@ TEST_CASE("[SolersToolRegistry] default model surface is primitive-first") {
 	Dictionary patch_properties = patch_schema.get("properties", Dictionary());
 	CHECK_FALSE(patch_properties.has("validate_if_script"));
 
-	Dictionary search_files = find_tool_def(tools, "project.search_files");
-	REQUIRE_FALSE(search_files.is_empty());
-	CHECK(search_files.get("exposure", String()) == "direct");
+	Dictionary project_search = find_tool_def(tools, "project.search");
+	REQUIRE_FALSE(project_search.is_empty());
+	CHECK(project_search.get("exposure", String()) == "direct");
+	CHECK(Dictionary(project_search.get("input_schema", Dictionary())).has("oneOf"));
+	CHECK(find_tool_def(tools, "project.search_files").is_empty());
 	CHECK(find_tool_def(tools, "project.get_info").is_empty());
 	CHECK(find_tool_def(tools, "project.get_settings_summary").is_empty());
 	CHECK(find_tool_def(tools, "project.list_files").is_empty());
@@ -1166,7 +1285,7 @@ TEST_CASE("[SolersToolRegistry] external search prioritizes exact ids and never 
 	registry.register_default_tools();
 	SolersToolCapability cap;
 	cap.permission = SolersPermissionManager::PERMISSION_OBSERVE;
-	cap.mutation_kind = "none";
+	cap.mutation_policy = SolersToolMutationPolicy::READ_ONLY;
 	auto add_external = [&](const StringName &p_name, const String &p_description) {
 		registry.register_tool(memnew(SolersFunctionTool(
 				p_name, p_description, Dictionary(), SolersToolExposure::DEFERRED, cap,
@@ -1214,7 +1333,7 @@ TEST_CASE("[SolersToolRegistry] tool.search uses Godot fuzzy fallback for extern
 
 	SolersToolCapability cap;
 	cap.permission = SolersPermissionManager::PERMISSION_OBSERVE;
-	cap.mutation_kind = "none";
+	cap.mutation_policy = SolersToolMutationPolicy::READ_ONLY;
 
 	Dictionary payload_schema;
 	payload_schema["description"] = "Accepts metadataquartz data from any future tool.";
@@ -1258,7 +1377,7 @@ TEST_CASE("[SolersToolRegistry] normalize_tool_args is public and idempotent") {
 
 	SolersToolCapability cap;
 	cap.permission = SolersPermissionManager::PERMISSION_OBSERVE;
-	cap.mutation_kind = "none";
+	cap.mutation_policy = SolersToolMutationPolicy::READ_ONLY;
 
 	Dictionary schema;
 	schema["type"] = "object";
@@ -1334,7 +1453,7 @@ TEST_CASE("[SolersToolRegistry] audit redaction normalizes payload fields") {
 
 	SolersToolCapability cap;
 	cap.permission = SolersPermissionManager::PERMISSION_OBSERVE;
-	cap.mutation_kind = "file_write";
+	cap.mutation_policy = SolersToolMutationPolicy::IRREVERSIBLE;
 	cap.redact_args.push_back("content");
 
 	Dictionary schema;
@@ -1399,7 +1518,7 @@ TEST_CASE("[SolersToolRegistry] replay protection preserves sensitive arguments 
 	CHECK(restored.get("content", String()) == "sensitive replay payload");
 }
 
-TEST_CASE("[SolersReflectionService] batch dispatches generic scene mutation ops") {
+TEST_CASE("[SolersReflectionService] batch refuses mutations without an undo history") {
 	SolersReflectionService reflection_service;
 
 	const char *ops[] = {
@@ -1434,15 +1553,8 @@ TEST_CASE("[SolersReflectionService] batch dispatches generic scene mutation ops
 		Dictionary result = reflection_service.batch(args);
 		CHECK_FALSE((bool)result.get("ok", true));
 		Dictionary batch_error = result.get("error", Dictionary());
-		CHECK(batch_error.get("code", String()) == "BATCH_FAILED");
-		Dictionary data = result.get("data", Dictionary());
-		CHECK_FALSE((bool)data.get("completed", true));
-		Array entries = data.get("results", Array());
-		REQUIRE(entries.size() == 1);
-		Dictionary entry = entries[0];
-		Dictionary op_result = entry.get("result", Dictionary());
-		Dictionary error = op_result.get("error", Dictionary());
-		CHECK(error.get("code", String()) != "UNKNOWN_OP");
+		CHECK(batch_error.get("code", String()) == "UNDO_REDO_UNAVAILABLE");
+		CHECK_FALSE(result.has("data"));
 	}
 
 	Dictionary unknown_op;
@@ -1696,11 +1808,53 @@ TEST_CASE("[SolersToolRegistry] objects.batch access follows its operation contr
 
 TEST_CASE("[SolersObservationService] empty file search lists bounded project files") {
 	SolersObservationService observation_service;
-	Dictionary result = observation_service.search_project_files("  ", 4);
-	CHECK(result.get("ok", false));
-	CHECK(result.get("mode", String()) == "list_all");
+	Dictionary result = observation_service.list_project_files(4);
 	CHECK(result.has("files"));
 	CHECK((int)result.get("count", -1) >= 0);
+}
+
+TEST_CASE("[SolersObservationService] structured search and runtime observations stay bounded") {
+	const String path = "res://solers_search_contract.txt";
+	{
+		Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
+		REQUIRE(file.is_valid());
+		file->store_string("solers-structured-search-contract\n");
+	}
+	SolersObservationService observation_service;
+	Dictionary search_args;
+	search_args["type"] = "path";
+	search_args["query"] = "solers_search_contract";
+	search_args["max_results"] = 4;
+	const Dictionary search = observation_service.search_project(search_args);
+	CHECK(search.get("type", String()) == "path");
+	CHECK((int)search.get("count", 0) >= 1);
+	CHECK((int)search.get("count", 0) <= 4);
+
+	Dictionary observe_args;
+	observe_args["since_cursor"] = 0;
+	observe_args["max_events"] = 2;
+	const Dictionary runtime = observation_service.observe_runtime(observe_args);
+	CHECK(runtime.has("cursor"));
+	CHECK(runtime.has("runtime_epoch"));
+	CHECK(Array(runtime.get("events", Array())).size() <= 2);
+	Ref<DirAccess> project_root = DirAccess::open("res://");
+	REQUIRE(project_root.is_valid());
+	CHECK(project_root->remove(path.get_file()) == OK);
+}
+
+TEST_CASE("[SolersToolRegistry] project.search rejects incomplete requests before execution") {
+	SolersObservationService observation_service;
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
+	SolersToolRegistry registry;
+	registry.set_observation_service(&observation_service);
+	registry.set_permission_manager(&permissions);
+	registry.register_default_tools();
+	Dictionary args;
+	args["type"] = "text";
+	const Dictionary result = registry.call_tool(SNAME("project.search"), args);
+	CHECK_FALSE((bool)result.get("ok", true));
+	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "TOOL_ARGUMENT_INVALID");
 }
 
 TEST_CASE("[SolersObservationService] visual statistics expose color and regional evidence") {
@@ -2677,6 +2831,7 @@ TEST_CASE("[SolersToolRegistry] runtime lifecycle does not mutate authored proje
 	registry.register_default_tools();
 
 	CHECK_FALSE(registry.affects_authored_state(SNAME("runtime.control")));
+	CHECK_FALSE(registry.affects_authored_state(SNAME("native.instantiate")));
 	CHECK(registry.affects_authored_state(SNAME("asset.import_to_project")));
 
 	Dictionary play;
