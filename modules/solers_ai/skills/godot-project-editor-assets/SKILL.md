@@ -18,6 +18,12 @@ Use for project settings, scene/file organization, imports, resources, editor st
 3. Inspect and approve executable plugins before installation; pin identity and version where reproducibility matters.
 4. Save the owning resource or scene once the complete change is valid.
 
+## Importing library assets
+- Before acquiring a 3D catalog asset, compare its triangle count against the project's import budget; prefer the smallest variant that satisfies the visual goal.
+- `asset.import_to_project` enforces a source triangle budget (`max_triangles`, defaulting to the asset's remesh target or the project setting). If it returns `TOPOLOGY_BUDGET_EXCEEDED`, acquire a lower-poly variant or remesh with `asset.run_operation` — do not retry with a raised budget unless the user asked for that fidelity.
+- Declare `import_profile: "baked_static"` only when the scene actually bakes lightmaps. UV2 unwrapping is expensive on dense meshes; the default `"runtime"` profile imports geometry as-is.
+- Imports run through the editor's frame-budgeted incremental pipeline: the tool stays pending while files import one by one and resumes with per-file results. Do not re-issue the same import while one is pending; the coordinator reuses the pending transaction.
+
 ## Validate
 Confirm every path loads, dependencies resolve, reimport succeeds, the scene reopens, and no unrelated project setting changed.
 

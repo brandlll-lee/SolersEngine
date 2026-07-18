@@ -3433,6 +3433,121 @@ void EditorFileSystem::reimport_files(const Vector<String> &p_files) {
 	importing = false;
 }
 
+Error EditorFileSystem::reimport_files_incremental_begin(const Vector<String> &p_files) {
+	ERR_FAIL_COND_V_MSG(importing, ERR_BUSY, "Cannot begin an incremental reimport while another import is active.");
+	ERR_FAIL_COND_V_MSG(incremental_import_active, ERR_BUSY, "An incremental reimport is already active.");
+	if (p_files.is_empty()) {
+		return OK;
+	}
+
+	incremental_import = IncrementalImportQueue();
+	for (int i = 0; i < p_files.size(); i++) {
+		String file = p_files[i];
+
+		ResourceUID::ID uid = ResourceUID::get_singleton()->text_to_id(file);
+		if (uid != ResourceUID::INVALID_ID && ResourceUID::get_singleton()->has_id(uid)) {
+			file = ResourceUID::get_singleton()->get_id_path(uid);
+		}
+
+		String group_file = ResourceFormatImporter::get_singleton()->get_import_group_file(file);
+
+		if (group_file_cache.has(file)) {
+			incremental_import.groups_to_reimport.insert(file);
+			group_file = String();
+		} else if (incremental_import.groups_to_reimport.has(file)) {
+			group_file = String();
+		} else if (!group_file.is_empty()) {
+			incremental_import.groups_to_reimport.insert(group_file);
+		} else {
+			ImportFile ifile;
+			ifile.path = file;
+			ResourceFormatImporter::get_singleton()->get_import_order_threads_and_importer(file, ifile.order, ifile.threaded, ifile.importer);
+			incremental_import.files.push_back(ifile);
+		}
+
+		EditorFileSystemDirectory *fs = nullptr;
+		int cpos = -1;
+		if (_find_file(file, &fs, cpos)) {
+			fs->files.write[cpos]->import_group_file = group_file;
+		}
+	}
+	incremental_import.files.sort();
+	if (EditorNode::get_singleton()) {
+		incremental_import.progress = memnew(EditorProgressBG("solers_incremental_reimport", TTR("Importing assets..."), incremental_import.files.size() + incremental_import.groups_to_reimport.size()));
+	}
+	incremental_import_active = true;
+	return OK;
+}
+
+bool EditorFileSystem::reimport_files_incremental_step(uint64_t p_budget_msec) {
+	if (!incremental_import_active) {
+		return true;
+	}
+	// A modal import or a scan owns the pipeline right now; resume next frame.
+	if (importing || is_scanning()) {
+		return false;
+	}
+	importing = true;
+
+	// The budget is measured against real import work: each file is atomic, and
+	// at least one file makes progress per step. Signals are paired per file so
+	// observers receive authoritative completion events at file granularity.
+	const uint64_t deadline = OS::get_singleton()->get_ticks_msec() + MAX((uint64_t)1, p_budget_msec);
+	while (incremental_import.next < incremental_import.files.size()) {
+		const String path = incremental_import.files[incremental_import.next].path;
+		if (incremental_import.progress) {
+			incremental_import.progress->step(incremental_import.next);
+		}
+		incremental_import.next++;
+		Vector<String> reloads;
+		reloads.push_back(path);
+		emit_signal(SNAME("resources_reimporting"), reloads);
+		_reimport_file(path);
+		emit_signal(SNAME("resources_reimported"), reloads);
+		if (OS::get_singleton()->get_ticks_msec() >= deadline) {
+			break;
+		}
+	}
+	const bool queue_drained = incremental_import.next >= incremental_import.files.size();
+
+	if (queue_drained && incremental_import.groups_to_reimport.size()) {
+		HashMap<String, Vector<String>> group_files;
+		_find_group_files(filesystem, group_files, incremental_import.groups_to_reimport);
+		for (const KeyValue<String, Vector<String>> &E : group_files) {
+			Vector<String> reloads;
+			reloads.push_back(E.key);
+			reloads.append_array(E.value);
+			emit_signal(SNAME("resources_reimporting"), reloads);
+			Error err = _reimport_group(E.key, E.value);
+			if (err == OK) {
+				_reimport_file(E.key);
+			}
+			emit_signal(SNAME("resources_reimported"), reloads);
+		}
+		incremental_import.groups_to_reimport.clear();
+	}
+
+	if (queue_drained) {
+		ResourceUID::get_singleton()->update_cache();
+		_save_filesystem_cache();
+		_process_update_pending();
+		if (!is_scanning()) {
+			emit_signal(SNAME("filesystem_changed"));
+		}
+	}
+	importing = false;
+
+	if (queue_drained) {
+		if (incremental_import.progress) {
+			memdelete(incremental_import.progress);
+			incremental_import.progress = nullptr;
+		}
+		incremental_import = IncrementalImportQueue();
+		incremental_import_active = false;
+	}
+	return queue_drained;
+}
+
 Error EditorFileSystem::reimport_append(const String &p_file, const HashMap<StringName, Variant> &p_custom_options, const String &p_custom_importer, Variant p_generator_parameters) {
 	Vector<String> reloads;
 	reloads.append(p_file);

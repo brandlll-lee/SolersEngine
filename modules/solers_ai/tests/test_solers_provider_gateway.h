@@ -2013,7 +2013,7 @@ TEST_CASE("[SolersAssetService] Meshy topology target is an integer contract for
 	CHECK(String(Dictionary(remesh_contract.get("error", Dictionary())).get("message", String())).contains("should_remesh=true"));
 }
 
-TEST_CASE("[SolersAssetService][SceneTree] static models use Godot native lightmap import UV2") {
+TEST_CASE("[SolersAssetService][SceneTree] baked_static imports use Godot native lightmap import UV2") {
 	EditorFileSystem *filesystem = Engine::get_singleton()->is_editor_hint() ? EditorFileSystem::get_singleton() : nullptr;
 	if (!filesystem) {
 		WARN("EditorFileSystem is initialized after the command-line unit test runner; run this contract in an editor integration test.");
@@ -2068,6 +2068,7 @@ TEST_CASE("[SolersAssetService][SceneTree] static models use Godot native lightm
 	Dictionary args;
 	args["asset_id"] = asset_id;
 	args["target_dir"] = target_dir;
+	args["import_profile"] = "baked_static";
 	Dictionary result = asset_service.import_to_project(args);
 	REQUIRE(result.get("ok", false));
 	Dictionary data = result.get("data", Dictionary());

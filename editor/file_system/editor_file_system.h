@@ -366,6 +366,17 @@ class EditorFileSystem : public Node {
 
 	void _reimport_thread(uint32_t p_index, ImportThreadData *p_import_data);
 
+	// Solers: state for the incremental (frame-sliced) reimport variant used by
+	// agent-driven asset imports. See reimport_files_incremental_begin().
+	struct IncrementalImportQueue {
+		Vector<ImportFile> files;
+		HashSet<String> groups_to_reimport;
+		int next = 0;
+		EditorProgressBG *progress = nullptr;
+	};
+	IncrementalImportQueue incremental_import;
+	bool incremental_import_active = false;
+
 	static ResourceUID::ID _resource_saver_get_resource_id_for_path(const String &p_path, bool p_generate);
 
 	bool _scan_extensions();
@@ -410,6 +421,15 @@ public:
 
 	void reimport_file_with_custom_parameters(const String &p_file, const String &p_importer, const HashMap<StringName, Variant> &p_custom_params);
 	void queue_import_options(const String &p_file, const String &p_importer, const HashMap<StringName, Variant> &p_custom_params);
+
+	// Solers: incremental reimport — the same per-file import kernel as
+	// reimport_files(), sliced across frames with background progress so the
+	// editor stays interactive during agent-driven imports. Each step imports
+	// whole files until the budget elapses and emits resources_reimporting /
+	// resources_reimported for exactly the files of that slice.
+	Error reimport_files_incremental_begin(const Vector<String> &p_files);
+	bool reimport_files_incremental_step(uint64_t p_budget_msec);
+	bool is_incremental_importing() const { return incremental_import_active; }
 
 	bool is_group_file(const String &p_path) const;
 	void move_group_file(const String &p_path, const String &p_new_path);

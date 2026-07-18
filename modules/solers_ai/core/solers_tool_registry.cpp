@@ -1426,8 +1426,8 @@ void SolersToolRegistry::_register_asset_tools() {
 				accesses.push_back(access);
 				return accesses;
 			});
-	_add("asset.import_to_project", "Copy a ready Solers Library asset into res://, then wait until Godot finishes importing every selected dependency and the resources can actually be loaded. Static 3D models use Godot's native Static Lightmaps importer mode and report actual mesh/triangle/UV2 statistics; generated assets that exceed their requested topology budget are rejected before placement. Texture-set materials require map_types chosen from the manifest's exact map roles, so unused alternatives are not imported.",
-			R"({"type":"object","properties":{"asset_id":{"type":"string","description":"Local Solers asset id."},"target_dir":{"type":"string","description":"Optional res:// destination directory. Defaults to res://solers_assets/<kind>/<name>."},"map_types":{"type":"array","items":{"type":"string"},"description":"For texture-set materials, exact map role names from manifest.map_files that the final material will reference. Omit for native materials, HDRIs, and 3D assets."}},"required":["asset_id"]})",
+	_add("asset.import_to_project", "Copy a ready Solers Library asset into res://, then import it through the editor's frame-budgeted incremental pipeline (the editor stays responsive) and resume once every selected dependency actually loads. 3D imports enforce a source triangle budget from glTF metadata before any file is copied; oversized assets are rejected with TOPOLOGY_BUDGET_EXCEEDED so you can pick a smaller variant or remesh first. Declare import_profile=\"baked_static\" only when the scene will bake lightmaps — it configures Godot's native Static Lightmaps mode (UV2 unwrap), which is expensive on dense meshes. Texture-set materials require map_types chosen from the manifest's exact map roles, so unused alternatives are not imported.",
+			R"({"type":"object","properties":{"asset_id":{"type":"string","description":"Local Solers asset id."},"target_dir":{"type":"string","description":"Optional res:// destination directory. Defaults to res://solers_assets/<kind>/<name>."},"import_profile":{"type":"string","enum":["runtime","baked_static"],"description":"3D import intent. \"runtime\" (default) imports geometry as-is; \"baked_static\" additionally configures Godot's Static Lightmaps mode with UV2 unwrap for lightmap baking."},"max_triangles":{"type":"integer","minimum":0,"description":"Source triangle budget for 3D imports. Defaults to the asset's remesh target or the project's solers/ai_assets/import/max_source_triangles setting; 0 disables the budget."},"map_types":{"type":"array","items":{"type":"string"},"description":"For texture-set materials, exact map role names from manifest.map_files that the final material will reference. Omit for native materials, HDRIs, and 3D assets."}},"required":["asset_id"]})",
 			SolersPermissionManager::PERMISSION_EDIT_FILES, SolersToolMutationPolicy::IRREVERSIBLE, true, Vector<String>(), SolersToolExposure::DIRECT,
 			[svc](const SolersToolContext &, const Dictionary &a) { return svc->import_to_project(a); }, false,
 			SolersToolExecution::WORKER_THREAD, [](const Dictionary &a) {
@@ -1447,7 +1447,8 @@ void SolersToolRegistry::_register_asset_tools() {
 				return accesses;
 			}, false,
 			[svc](const SolersToolContext &, const Dictionary &a) { return svc->poll_project_import(a); }, false,
-			[svc](const SolersToolContext &, const Dictionary &a) { return svc->is_project_import_ready(a); });
+			[svc](const SolersToolContext &, const Dictionary &a) { return svc->is_project_import_ready(a); },
+			[svc](const SolersToolContext &, const Dictionary &a, const Dictionary &r) { svc->release_project_import(a, r); });
 }
 
 void SolersToolRegistry::_register_plugin_tools() {

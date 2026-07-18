@@ -47,8 +47,6 @@ class SolersAssetService : public Object {
 	HashMap<String, Dictionary> project_imports;
 	mutable Mutex project_imports_mutex;
 	bool project_import_signals_connected = false;
-	bool project_import_wave_active = false;
-	uint64_t project_import_wave_id = 0;
 	mutable Mutex catalog_cache_mutex;
 	Dictionary ambientcg_assets_cache;
 	Dictionary polyhaven_assets_cache;
@@ -99,8 +97,6 @@ class SolersAssetService : public Object {
 	Dictionary _generate(const Dictionary &p_args, const String &p_session_id);
 	Dictionary _run_operation(const Dictionary &p_args, const String &p_session_id);
 	void _ensure_project_import_signals();
-	void _start_project_import_wave();
-	void _on_project_filesystem_changed();
 	void _on_project_resources_reimported(const PackedStringArray &p_resources);
 
 protected:
@@ -133,12 +129,13 @@ public:
 	Dictionary poll_project_import(const Dictionary &p_args);
 	bool is_project_import_ready(const Dictionary &p_args) const;
 	Dictionary get_project_import_coordinator_state() const;
+	void release_project_import(const Dictionary &p_args, const Dictionary &p_result);
 	Dictionary delete_asset(const Dictionary &p_args);
 	Array take_terminal_events(const String &p_session_id);
 	Array pending_terminal_events(const String &p_session_id) const;
 	bool has_active_tasks(const String &p_session_id) const;
 	void mark_terminal_delivered(const String &p_asset_id, const String &p_session_id);
-	void poll(bool p_allow_new_import_wave = true);
+	void poll(bool p_allow_new_imports = true);
 
 	SolersAssetService();
 	~SolersAssetService();

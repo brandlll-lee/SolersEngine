@@ -2031,6 +2031,76 @@ static Dictionary _project_import_contract_error(const Dictionary &p_result, con
 	return Dictionary();
 }
 
+static bool _solers_gltf_document_json(const String &p_path, Dictionary &r_document, String &r_error) {
+	Error open_error = OK;
+	Ref<FileAccess> file = FileAccess::open(p_path, FileAccess::READ, &open_error);
+	if (file.is_null()) {
+		r_error = vformat("Unable to open %s (error %d).", p_path, (int)open_error);
+		return false;
+	}
+	String json_text;
+	if (p_path.get_extension().to_lower() == "glb") {
+		if (file->get_length() < 20) {
+			r_error = "GLB file is truncated.";
+			return false;
+		}
+		const uint32_t magic = file->get_32();
+		file->get_32(); // Container version.
+		file->get_32(); // Total length.
+		const uint32_t chunk_length = file->get_32();
+		const uint32_t chunk_type = file->get_32();
+		if (magic != 0x46546C67 || chunk_type != 0x4E4F534A || (uint64_t)chunk_length > file->get_length()) {
+			r_error = "GLB header does not contain a leading JSON chunk.";
+			return false;
+		}
+		PackedByteArray bytes;
+		bytes.resize(chunk_length);
+		file->get_buffer(bytes.ptrw(), chunk_length);
+		json_text = String::utf8((const char *)bytes.ptr(), bytes.size());
+	} else {
+		json_text = file->get_as_utf8_string();
+	}
+	JSON json;
+	if (json.parse(json_text) != OK || json.get_data().get_type() != Variant::DICTIONARY) {
+		r_error = vformat("%s does not contain a parsable glTF JSON document.", p_path);
+		return false;
+	}
+	r_document = json.get_data();
+	return true;
+}
+
+// Sums TRIANGLES-mode primitive counts from glTF accessor metadata, so topology
+// budgets are enforced from source data before any file is copied or imported.
+static int64_t _solers_gltf_source_triangle_count(const Dictionary &p_document) {
+	const Array accessors = p_document.get("accessors", Array());
+	const Array meshes = p_document.get("meshes", Array());
+	int64_t triangles = 0;
+	for (int mesh_index = 0; mesh_index < meshes.size(); mesh_index++) {
+		const Array primitives = Dictionary(meshes[mesh_index]).get("primitives", Array());
+		for (int primitive_index = 0; primitive_index < primitives.size(); primitive_index++) {
+			const Dictionary primitive = primitives[primitive_index];
+			if ((int64_t)primitive.get("mode", 4) != 4) {
+				continue;
+			}
+			int64_t element_count = 0;
+			if (primitive.has("indices")) {
+				const int64_t accessor_index = primitive.get("indices", -1);
+				if (accessor_index >= 0 && accessor_index < accessors.size()) {
+					element_count = (int64_t)Dictionary(accessors[accessor_index]).get("count", 0);
+				}
+			} else {
+				const Dictionary attributes = primitive.get("attributes", Dictionary());
+				const int64_t accessor_index = attributes.get("POSITION", -1);
+				if (accessor_index >= 0 && accessor_index < accessors.size()) {
+					element_count = (int64_t)Dictionary(accessors[accessor_index]).get("count", 0);
+				}
+			}
+			triangles += element_count / 3;
+		}
+	}
+	return triangles;
+}
+
 static Dictionary _static_lightmap_import_config(const String &p_path) {
 	Dictionary config;
 	ResourceFormatImporter *format_importer = ResourceFormatImporter::get_singleton();
@@ -4321,6 +4391,44 @@ Dictionary SolersAssetService::import_to_project(const Dictionary &p_args) {
 	if (files.is_empty()) {
 		return _error("ASSET_HAS_NO_FILES", "Asset has no source files.");
 	}
+	const String asset_kind = String(manifest.get("kind", String())).to_lower();
+	// Import policy is declared by the caller, never inferred from asset traits:
+	// "runtime" imports geometry as-is; "baked_static" additionally configures
+	// Godot's native Static Lightmaps mode (UV2 unwrap) on model entrypoints.
+	String import_profile = "runtime";
+	if (p_args.has("import_profile")) {
+		import_profile = String(p_args.get("import_profile", String())).strip_edges().to_lower();
+		if (import_profile != "runtime" && import_profile != "baked_static") {
+			return _error("INVALID_ARGUMENT", "import_profile must be \"runtime\" or \"baked_static\".");
+		}
+		if (import_profile == "baked_static" && asset_kind != "3d") {
+			return _error("INVALID_ARGUMENT", "import_profile \"baked_static\" only applies to 3d assets.");
+		}
+	}
+	int64_t max_triangles = -1;
+	String triangle_budget_source = "declared";
+	if (p_args.has("max_triangles")) {
+		const Variant declared_budget = p_args.get("max_triangles", Variant());
+		if (!declared_budget.is_num() || (double)declared_budget != Math::floor((double)declared_budget) || (double)declared_budget < 0.0) {
+			return _error("INVALID_ARGUMENT", "max_triangles must be a non-negative integer; 0 disables the topology budget.");
+		}
+		max_triangles = (int64_t)declared_budget;
+	}
+	const Dictionary generation_options = manifest.get("provider_options", Dictionary());
+	int64_t remesh_triangle_target = 0;
+	if (String(manifest.get("provider", String())).to_lower() == "meshy" && generation_options.has("target_polycount") && (bool)generation_options.get("should_remesh", false)) {
+		const int64_t target_polycount = generation_options.get("target_polycount", 0);
+		remesh_triangle_target = String(generation_options.get("topology", "triangle")).to_lower() == "quad" ? target_polycount * 2 : target_polycount;
+	}
+	if (max_triangles < 0 && asset_kind == "3d") {
+		if (remesh_triangle_target > 0) {
+			max_triangles = remesh_triangle_target;
+			triangle_budget_source = "asset_manifest";
+		} else {
+			max_triangles = ProjectSettings::get_singleton()->get_setting("solers/ai_assets/import/max_source_triangles", 2000000);
+			triangle_budget_source = "project_default";
+		}
+	}
 	String target_dir = String(p_args.get("target_dir", String()));
 	if (target_dir.is_empty()) {
 		target_dir = "res://solers_assets/" + String(manifest.get("kind", "asset")) + "/" + _safe_slug(String(manifest.get("name", asset_id)));
@@ -4337,6 +4445,42 @@ Dictionary SolersAssetService::import_to_project(const Dictionary &p_args) {
 		}
 		if (filesystem->requires_import_format_support(selected_files)) {
 			return _error("IMPORT_FORMAT_CONFIGURATION_REQUIRED", "The selected asset requires interactive importer configuration. Configure that format in the editor before importing it through an Agent tool.");
+		}
+	}
+	// Topology budgets are enforced against glTF accessor metadata before any
+	// file is copied, so a pathological model is rejected in milliseconds
+	// instead of after minutes of native import work. Sources that are not
+	// glTF fall through to the post-import mesh statistics contract.
+	if (asset_kind == "3d" && max_triangles > 0) {
+		int64_t source_triangle_count = 0;
+		Array source_geometry;
+		for (int i = 0; i < files.size(); i++) {
+			const String src = String(files[i]);
+			const String extension = src.get_extension().to_lower();
+			if (extension != "gltf" && extension != "glb") {
+				continue;
+			}
+			Dictionary document;
+			String parse_error;
+			if (!_solers_gltf_document_json(src, document, parse_error)) {
+				continue;
+			}
+			const int64_t file_triangles = _solers_gltf_source_triangle_count(document);
+			source_triangle_count += file_triangles;
+			Dictionary entry;
+			entry["path"] = src;
+			entry["triangle_count"] = file_triangles;
+			source_geometry.push_back(entry);
+		}
+		if (source_triangle_count > max_triangles) {
+			Dictionary error = _error("TOPOLOGY_BUDGET_EXCEEDED", vformat("The asset's source geometry contains %d triangles, exceeding the import budget of %d (%s). Acquire a lower-poly variant, remesh it with asset.run_operation, or declare a larger max_triangles if the project can afford it.", source_triangle_count, max_triangles, triangle_budget_source));
+			Dictionary data;
+			data["triangle_count"] = source_triangle_count;
+			data["max_triangles"] = max_triangles;
+			data["triangle_budget_source"] = triangle_budget_source;
+			data["files"] = source_geometry;
+			error["data"] = data;
+			return error;
 		}
 	}
 	Array imported;
@@ -4383,19 +4527,19 @@ Dictionary SolersAssetService::import_to_project(const Dictionary &p_args) {
 	}
 	result_data["copied_file_count"] = copied_file_count;
 	result_data["authored_state_changed"] = copied_file_count > 0;
-	const Dictionary generation_options = manifest.get("provider_options", Dictionary());
-	if (String(manifest.get("provider", String())).to_lower() == "meshy" && generation_options.has("target_polycount") && (bool)generation_options.get("should_remesh", false)) {
-		const int64_t target_polycount = generation_options.get("target_polycount", 0);
-		const String topology = String(generation_options.get("topology", "triangle")).to_lower();
-		result_data["requested_polygon_target"] = target_polycount;
-		result_data["requested_topology"] = topology;
-		result_data["max_import_triangle_count"] = topology == "quad" ? target_polycount * 2 : target_polycount;
+	result_data["import_profile"] = import_profile;
+	if (remesh_triangle_target > 0) {
+		result_data["requested_polygon_target"] = generation_options.get("target_polycount", 0);
+		result_data["requested_topology"] = String(generation_options.get("topology", "triangle")).to_lower();
+	}
+	if (asset_kind == "3d" && max_triangles >= 0) {
+		result_data["max_import_triangle_count"] = max_triangles;
+		result_data["triangle_budget_source"] = triangle_budget_source;
 	}
 	Array static_lightmap_paths;
 	Array static_lightmap_import_requests;
 	bool static_lightmap_reimport_required = false;
-	const Dictionary traits = _solers_asset_traits(manifest);
-	if (String(manifest.get("kind", String())).to_lower() == "3d" && String(traits.get("model_state", String())).to_lower() == "static_model") {
+	if (asset_kind == "3d" && import_profile == "baked_static") {
 		EditorFileSystem *filesystem = _solers_editor_filesystem();
 		for (int i = 0; filesystem && i < entrypoints.size(); i++) {
 			const String path = entrypoints[i];
@@ -4431,7 +4575,7 @@ Dictionary SolersAssetService::import_to_project(const Dictionary &p_args) {
 			}
 			Dictionary pending;
 			pending["status"] = "pending";
-			pending["stage"] = E.value.get("stage", "waiting_for_godot");
+			pending["stage"] = E.value.get("stage", "queued");
 			pending["poll_args"] = E.value.get("poll_args", Dictionary());
 			pending["transaction_key"] = transaction_key;
 			pending["reused"] = true;
@@ -4474,6 +4618,28 @@ Dictionary SolersAssetService::import_to_project(const Dictionary &p_args) {
 		}
 	}
 
+	// Files Godot itself must (re)import: freshly copied sources plus any
+	// entrypoint whose queued import options change its sidecar. Every path
+	// listed here is settled exclusively by the editor's resources_reimported
+	// signal — completion is never guessed from pipeline idleness.
+	ResourceFormatImporter *format_importer = ResourceFormatImporter::get_singleton();
+	HashSet<String> forced_import;
+	for (int i = 0; i < static_lightmap_import_requests.size(); i++) {
+		forced_import.insert(String(Dictionary(static_lightmap_import_requests[i]).get("path", String())));
+	}
+	Array pending_import_files;
+	for (int i = 0; i < imported.size(); i++) {
+		const String dst = imported[i];
+		const Ref<ResourceImporter> dst_importer = format_importer ? format_importer->get_importer_by_file(dst) : Ref<ResourceImporter>();
+		if (dst_importer.is_null()) {
+			continue;
+		}
+		if (!(bool)copy_required[i] && !forced_import.has(dst) && ResourceLoader::is_import_valid(dst)) {
+			continue;
+		}
+		pending_import_files.push_back(dst);
+	}
+
 	const String new_import_id = (asset_id + target_dir + String::num_uint64(OS::get_singleton()->get_ticks_usec())).md5_text();
 	Dictionary poll_args;
 	poll_args["asset_id"] = asset_id;
@@ -4481,16 +4647,15 @@ Dictionary SolersAssetService::import_to_project(const Dictionary &p_args) {
 	poll_args["_import_id"] = new_import_id;
 	Dictionary state;
 	state["status"] = "pending";
-	state["stage"] = destination_matches && static_lightmap_reimport_required ? "queued_for_reimport" : "queued_for_scan";
+	state["stage"] = "queued";
 	state["files"] = imported;
 	state["entrypoints"] = entrypoints;
+	state["pending_files"] = pending_import_files;
+	state["import_file_count"] = pending_import_files.size();
 	state["result"] = result_data;
 	state["poll_args"] = poll_args;
 	state["transaction_key"] = transaction_key;
 	state["last_progress_msec"] = OS::get_singleton()->get_ticks_msec();
-	state["indexed_count"] = 0;
-	state["import_valid_count"] = 0;
-	state["scan_progress"] = -1.0;
 	const int64_t stall_timeout_seconds = ProjectSettings::get_singleton()->get_setting("solers/ai_assets/import/stall_timeout_seconds", 300);
 	state["stall_timeout_msec"] = stall_timeout_seconds > 0 ? stall_timeout_seconds * 1000 : 0;
 	{
@@ -4513,104 +4678,40 @@ void SolersAssetService::_ensure_project_import_signals() {
 	if (!filesystem) {
 		return;
 	}
-	filesystem->connect(SNAME("filesystem_changed"), callable_mp(this, &SolersAssetService::_on_project_filesystem_changed));
 	filesystem->connect(SNAME("resources_reimported"), callable_mp(this, &SolersAssetService::_on_project_resources_reimported));
 	project_import_signals_connected = true;
 }
 
-void SolersAssetService::_on_project_filesystem_changed() {
-	const uint64_t now = OS::get_singleton()->get_ticks_msec();
-	MutexLock lock(project_imports_mutex);
-	for (KeyValue<String, Dictionary> &E : project_imports) {
-		Dictionary state = E.value;
-		if (String(state.get("status", String())) == "pending" && (uint64_t)(int64_t)state.get("wave_id", 0) == project_import_wave_id) {
-			state["last_progress_msec"] = now;
-			state["saw_native_activity"] = true;
-			E.value = state;
-		}
-	}
-}
-
 void SolersAssetService::_on_project_resources_reimported(const PackedStringArray &p_resources) {
+	// The editor emits this signal once per settled file (incremental steps,
+	// modal imports, and scans alike), so it is the single authoritative
+	// completion record for every pending import file.
 	const uint64_t now = OS::get_singleton()->get_ticks_msec();
-	MutexLock lock(project_imports_mutex);
 	HashSet<String> resources;
 	for (const String &path : p_resources) {
 		resources.insert(path);
 	}
+	MutexLock lock(project_imports_mutex);
 	for (KeyValue<String, Dictionary> &E : project_imports) {
 		Dictionary state = E.value;
-		if (String(state.get("status", String())) != "pending" || (uint64_t)(int64_t)state.get("wave_id", 0) != project_import_wave_id) {
+		if (String(state.get("status", String())) != "pending") {
 			continue;
 		}
-		const Array files = state.get("files", Array());
-		bool relevant = resources.is_empty();
-		for (int i = 0; i < files.size() && !relevant; i++) {
-			relevant = resources.has(String(files[i]));
+		const Array pending_files = state.get("pending_files", Array());
+		if (pending_files.is_empty()) {
+			continue;
 		}
-		if (relevant) {
+		Array remaining;
+		for (int i = 0; i < pending_files.size(); i++) {
+			if (!resources.has(String(pending_files[i]))) {
+				remaining.push_back(pending_files[i]);
+			}
+		}
+		if (remaining.size() != pending_files.size()) {
+			state["pending_files"] = remaining;
 			state["last_progress_msec"] = now;
-			state["saw_native_activity"] = true;
 			E.value = state;
 		}
-	}
-}
-
-void SolersAssetService::_start_project_import_wave() {
-	if (project_import_wave_active) {
-		return;
-	}
-	EditorFileSystem *filesystem = _solers_editor_filesystem();
-	if (!filesystem || filesystem->is_scanning() || filesystem->is_importing()) {
-		return;
-	}
-	String selected_stage;
-	Vector<String> reimport_files;
-	{
-		MutexLock lock(project_imports_mutex);
-		bool has_scan = false;
-		bool has_reimport = false;
-		for (const KeyValue<String, Dictionary> &E : project_imports) {
-			if (String(E.value.get("status", String())) != "pending") {
-				continue;
-			}
-			has_scan = has_scan || String(E.value.get("stage", String())) == "queued_for_scan";
-			has_reimport = has_reimport || String(E.value.get("stage", String())) == "queued_for_reimport";
-		}
-		if (!has_scan && !has_reimport) {
-			return;
-		}
-		selected_stage = has_scan ? "queued_for_scan" : "queued_for_reimport";
-		project_import_wave_active = true;
-		project_import_wave_id++;
-		const uint64_t now = OS::get_singleton()->get_ticks_msec();
-		for (KeyValue<String, Dictionary> &E : project_imports) {
-			Dictionary state = E.value;
-			if (String(state.get("status", String())) == "pending" && String(state.get("stage", String())) == selected_stage) {
-				state["stage"] = "waiting_for_godot";
-				state["wave_id"] = (int64_t)project_import_wave_id;
-				state["last_progress_msec"] = now;
-				state["saw_native_activity"] = false;
-				if (selected_stage == "queued_for_reimport") {
-					state["static_lightmap_reimport_attempted"] = true;
-				}
-				E.value = state;
-				if (selected_stage == "queued_for_reimport") {
-					const Array paths = Dictionary(state.get("result", Dictionary())).get("static_lightmap_import_paths", Array());
-					for (int i = 0; i < paths.size(); i++) {
-						const String path = paths[i];
-						if (!reimport_files.has(path)) {
-							reimport_files.push_back(path);
-						}
-					}
-				}
-			}
-		}
-	}
-	if (selected_stage == "queued_for_reimport") {
-		filesystem->reimport_files(reimport_files);
-	} else {
-		filesystem->scan_changes();
 	}
 }
 
@@ -4650,11 +4751,11 @@ Dictionary SolersAssetService::poll_project_import(const Dictionary &p_args) {
 	}
 	Dictionary data;
 	data["status"] = "pending";
-	data["stage"] = state.get("stage", "waiting_for_godot");
+	data["stage"] = state.get("stage", "queued");
 	data["file_count"] = Array(state.get("files", Array())).size();
-	data["indexed_count"] = state.get("indexed_count", 0);
-	data["import_valid_count"] = state.get("import_valid_count", 0);
-	data["scan_progress"] = state.get("scan_progress", -1.0);
+	const int import_file_count = state.get("import_file_count", 0);
+	data["import_file_count"] = import_file_count;
+	data["imported_count"] = import_file_count - Array(state.get("pending_files", Array())).size();
 	data["poll_args"] = state.get("poll_args", Dictionary());
 	return _ok(data);
 }
@@ -4668,8 +4769,8 @@ bool SolersAssetService::is_project_import_ready(const Dictionary &p_args) const
 
 Dictionary SolersAssetService::get_project_import_coordinator_state() const {
 	Dictionary state;
-	state["wave_active"] = project_import_wave_active;
-	state["wave_id"] = (int64_t)project_import_wave_id;
+	EditorFileSystem *filesystem = _solers_editor_filesystem();
+	state["wave_active"] = filesystem && filesystem->is_incremental_importing();
 	int queued = 0;
 	int active = 0;
 	MutexLock lock(project_imports_mutex);
@@ -4677,10 +4778,9 @@ Dictionary SolersAssetService::get_project_import_coordinator_state() const {
 		if (String(E.value.get("status", String())) != "pending") {
 			continue;
 		}
-		const String stage = E.value.get("stage", String());
-		if (stage == "queued_for_scan" || stage == "queued_for_reimport") {
+		if (String(E.value.get("stage", String())) == "queued") {
 			queued++;
-		} else if ((uint64_t)(int64_t)E.value.get("wave_id", 0) == project_import_wave_id) {
+		} else {
 			active++;
 		}
 	}
@@ -4689,140 +4789,201 @@ Dictionary SolersAssetService::get_project_import_coordinator_state() const {
 	return state;
 }
 
-void SolersAssetService::poll(bool p_allow_new_import_wave) {
+void SolersAssetService::release_project_import(const Dictionary &p_args, const Dictionary &p_result) {
+	// Invoked when the tool call reaches a terminal state without consuming
+	// its continuation — an aborted turn delivers TOOL_CANCELLED here. Pending
+	// states are dropped so no further batches start for them; files already
+	// handed to the incremental queue finish within the frame budget and leave
+	// the project in a consistent imported state.
+	if ((bool)p_result.get("ok", false) || String(Dictionary(p_result.get("error", Dictionary())).get("code", String())) != "TOOL_CANCELLED") {
+		return;
+	}
+	const String asset_id = String(p_args.get("asset_id", String())).strip_edges();
+	if (asset_id.is_empty()) {
+		return;
+	}
+	const String target_dir = String(p_args.get("target_dir", String())).replace_char('\\', '/').simplify_path();
+	Vector<String> released;
+	MutexLock lock(project_imports_mutex);
+	for (const KeyValue<String, Dictionary> &E : project_imports) {
+		if (String(E.value.get("status", String())) != "pending") {
+			continue;
+		}
+		const Dictionary poll_args = E.value.get("poll_args", Dictionary());
+		if (String(poll_args.get("asset_id", String())) != asset_id) {
+			continue;
+		}
+		if (!target_dir.is_empty() && String(poll_args.get("target_dir", String())) != target_dir) {
+			continue;
+		}
+		released.push_back(E.key);
+	}
+	for (int i = 0; i < released.size(); i++) {
+		project_imports.erase(released[i]);
+	}
+}
+
+void SolersAssetService::poll(bool p_allow_new_imports) {
 	_ensure_project_import_signals();
-	Array import_ids;
+	EditorFileSystem *filesystem = _solers_editor_filesystem();
+	if (!filesystem) {
+		MutexLock lock(project_imports_mutex);
+		for (KeyValue<String, Dictionary> &E : project_imports) {
+			Dictionary state = E.value;
+			if (String(state.get("status", String())) != "pending") {
+				continue;
+			}
+			state["status"] = "failed";
+			state["stage"] = "failed";
+			state["error"] = _error_data("EDITOR_FILESYSTEM_UNAVAILABLE", "Godot's editor filesystem became unavailable during project import.");
+			E.value = state;
+		}
+		return;
+	}
+
+	// 1. Drive the active incremental batch within this frame's budget. Each
+	// step imports whole files and emits resources_reimporting/reimported per
+	// file, so the editor keeps rendering and responding between steps.
+	bool stepped = false;
+	if (filesystem->is_incremental_importing()) {
+		const int64_t frame_budget_msec = ProjectSettings::get_singleton()->get_setting("solers/ai_assets/import/frame_budget_msec", 8);
+		filesystem->reimport_files_incremental_step((uint64_t)MAX((int64_t)1, frame_budget_msec));
+		stepped = true;
+	}
+
+	// 2. Hand the next batch of queued imports to the editor once the native
+	// pipeline is free. update_files() registers every copied file in the
+	// filesystem index; the incremental queue then owns the actual imports.
+	if (p_allow_new_imports && !stepped && !filesystem->is_scanning() && !filesystem->is_importing() && !filesystem->is_incremental_importing()) {
+		Vector<String> register_files;
+		Vector<String> batch_files;
+		Vector<String> batch_import_ids;
+		HashSet<String> seen_register;
+		HashSet<String> seen_batch;
+		{
+			MutexLock lock(project_imports_mutex);
+			const uint64_t now = OS::get_singleton()->get_ticks_msec();
+			for (KeyValue<String, Dictionary> &E : project_imports) {
+				Dictionary state = E.value;
+				if (String(state.get("status", String())) != "pending" || String(state.get("stage", String())) != "queued") {
+					continue;
+				}
+				const Array files = state.get("files", Array());
+				for (int i = 0; i < files.size(); i++) {
+					const String path = files[i];
+					if (!seen_register.has(path)) {
+						seen_register.insert(path);
+						register_files.push_back(path);
+					}
+				}
+				const Array pending_files = state.get("pending_files", Array());
+				for (int i = 0; i < pending_files.size(); i++) {
+					const String path = pending_files[i];
+					if (!seen_batch.has(path)) {
+						seen_batch.insert(path);
+						batch_files.push_back(path);
+					}
+				}
+				state["stage"] = "importing";
+				state["last_progress_msec"] = now;
+				E.value = state;
+				batch_import_ids.push_back(E.key);
+			}
+		}
+		if (!register_files.is_empty()) {
+			filesystem->update_files(register_files);
+		}
+		if (!batch_files.is_empty() && filesystem->reimport_files_incremental_begin(batch_files) != OK) {
+			// The pipeline was grabbed between the checks above; retry next frame.
+			MutexLock lock(project_imports_mutex);
+			for (int i = 0; i < batch_import_ids.size(); i++) {
+				Dictionary *state = project_imports.getptr(batch_import_ids[i]);
+				if (state && String(state->get("status", String())) == "pending") {
+					(*state)["stage"] = "queued";
+				}
+			}
+		}
+	}
+
+	// 3. Settle imports whose files the editor has all confirmed through
+	// resources_reimported. Verification loads each entrypoint once (the
+	// resource cache reuses it afterwards); one import settles per frame to
+	// bound main-thread work.
+	const bool pipeline_busy = stepped || filesystem->is_scanning() || filesystem->is_importing() || filesystem->is_incremental_importing();
+	String verify_id;
+	Dictionary verify_state;
 	{
 		MutexLock lock(project_imports_mutex);
-		for (const KeyValue<String, Dictionary> &E : project_imports) {
-			import_ids.push_back(E.key);
+		const uint64_t now = OS::get_singleton()->get_ticks_msec();
+		for (KeyValue<String, Dictionary> &E : project_imports) {
+			Dictionary state = E.value;
+			if (String(state.get("status", String())) != "pending") {
+				continue;
+			}
+			const String stage = state.get("stage", String());
+			if (pipeline_busy || (!p_allow_new_imports && stage == "queued")) {
+				state["last_progress_msec"] = now;
+				E.value = state;
+			}
+			if (!pipeline_busy && verify_id.is_empty() && stage == "importing" && Array(state.get("pending_files", Array())).is_empty()) {
+				verify_id = E.key;
+				verify_state = state.duplicate(true);
+			}
 		}
 	}
-	bool wave_has_pending = false;
-	for (int import_index = 0; import_index < import_ids.size(); import_index++) {
-		const String import_id = import_ids[import_index];
-		Dictionary state;
-		{
-			MutexLock lock(project_imports_mutex);
-			const Dictionary *stored = project_imports.getptr(import_id);
-			if (stored) {
-				state = stored->duplicate(true);
-			}
-		}
-		if (state.is_empty()) {
-			continue;
-		}
-		if (String(state.get("status", String())) != "pending") {
-			continue;
-		}
-		EditorFileSystem *filesystem = _solers_editor_filesystem();
-		if (!filesystem) {
-			state["status"] = "failed";
-			state["error"] = _error_data("EDITOR_FILESYSTEM_UNAVAILABLE", "Godot's editor filesystem became unavailable during project import.");
-			MutexLock lock(project_imports_mutex);
-			if (project_imports.has(import_id)) {
-				project_imports[import_id] = state;
-			}
-			continue;
-		}
-		const bool in_active_wave = (uint64_t)(int64_t)state.get("wave_id", 0) == project_import_wave_id;
-		wave_has_pending = wave_has_pending || in_active_wave;
-		const Array files = state.get("files", Array());
-		const Array entrypoints = state.get("entrypoints", files);
-		const bool busy = filesystem->is_scanning() || filesystem->is_importing();
-		if (busy && in_active_wave) {
-			state["saw_native_activity"] = true;
-		}
-		const Dictionary inspection = _project_import_inspection(files, entrypoints, !busy);
-		const int indexed_count = inspection.get("indexed_count", 0);
-		const int import_valid_count = inspection.get("import_valid_count", 0);
-		const real_t scan_progress = filesystem->get_scanning_progress();
-		if (indexed_count != (int)state.get("indexed_count", 0) || import_valid_count != (int)state.get("import_valid_count", 0) || !Math::is_equal_approx(scan_progress, (real_t)state.get("scan_progress", -1.0))) {
-			state["last_progress_msec"] = OS::get_singleton()->get_ticks_msec();
-			state["indexed_count"] = indexed_count;
-			state["import_valid_count"] = import_valid_count;
-			state["scan_progress"] = scan_progress;
-		}
-
-		const Array static_lightmap_paths = Dictionary(state.get("result", Dictionary())).get("static_lightmap_import_paths", Array());
-		const bool static_lightmaps_ready = _static_lightmap_imports_ready(static_lightmap_paths);
-		if ((bool)inspection.get("ready", false) && !static_lightmaps_ready && !busy && (bool)state.get("saw_native_activity", false)) {
-			if ((bool)state.get("static_lightmap_reimport_attempted", false)) {
-				state["status"] = "failed";
-				state["stage"] = "failed";
-				state["error"] = _error_data("IMPORT_OPTIONS_NOT_APPLIED", "Godot imported the static model without applying its native lightmap UV2 options.");
+	if (!verify_id.is_empty()) {
+		const Array files = verify_state.get("files", Array());
+		const Array entrypoints = verify_state.get("entrypoints", files);
+		const Dictionary inspection = _project_import_inspection(files, entrypoints, true);
+		const Array static_lightmap_paths = Dictionary(verify_state.get("result", Dictionary())).get("static_lightmap_import_paths", Array());
+		if (!(bool)inspection.get("ready", false)) {
+			verify_state["status"] = "failed";
+			verify_state["stage"] = "failed";
+			verify_state["error"] = _error_data("IMPORT_FAILED", "Godot confirmed every requested file import, but one or more resources are not indexed, valid, or loadable.");
+			verify_state["diagnostics"] = inspection;
+		} else if (!_static_lightmap_imports_ready(static_lightmap_paths)) {
+			verify_state["status"] = "failed";
+			verify_state["stage"] = "failed";
+			verify_state["error"] = _error_data("IMPORT_OPTIONS_NOT_APPLIED", "Godot imported the static model without applying its native lightmap UV2 options.");
+			verify_state["diagnostics"] = inspection;
+		} else {
+			const Dictionary contract_error = _project_import_contract_error(verify_state.get("result", Dictionary()), inspection);
+			if (!contract_error.is_empty()) {
+				verify_state["status"] = "failed";
+				verify_state["stage"] = "failed";
+				verify_state["error"] = _error_data(contract_error.get("code", "IMPORT_CONTRACT_FAILED"), contract_error.get("message", "Imported asset contract failed."));
+				verify_state["diagnostics"] = contract_error.get("diagnostics", inspection);
 			} else {
-				state["stage"] = "queued_for_reimport";
-				state["wave_id"] = (int64_t)0;
-				state["saw_native_activity"] = false;
+				verify_state["status"] = "complete";
+				verify_state["stage"] = "complete";
+				verify_state["result"] = _project_import_completed_data(verify_state.get("result", Dictionary()), inspection);
 			}
-			MutexLock lock(project_imports_mutex);
-			if (project_imports.has(import_id)) {
-				project_imports[import_id] = state;
-			}
-			continue;
 		}
-
-		const Dictionary contract_error = (bool)inspection.get("ready", false) && static_lightmaps_ready ? _project_import_contract_error(state.get("result", Dictionary()), inspection) : Dictionary();
-		if (!contract_error.is_empty()) {
-			state["status"] = "failed";
-			state["stage"] = "failed";
-			state["error"] = _error_data(contract_error.get("code", "IMPORT_CONTRACT_FAILED"), contract_error.get("message", "Imported asset contract failed."));
-			state["diagnostics"] = contract_error.get("diagnostics", inspection);
-			MutexLock lock(project_imports_mutex);
-			if (project_imports.has(import_id)) {
-				project_imports[import_id] = state;
-			}
-			continue;
-		}
-
-		if ((bool)inspection.get("ready", false) && static_lightmaps_ready) {
-			state["status"] = "complete";
-			state["stage"] = "complete";
-			state["result"] = _project_import_completed_data(state.get("result", Dictionary()), inspection);
-			MutexLock lock(project_imports_mutex);
-			if (project_imports.has(import_id)) {
-				project_imports[import_id] = state;
-			}
-			continue;
-		}
-
-		if (!busy && (bool)state.get("saw_native_activity", false)) {
-			state["status"] = "failed";
-			state["stage"] = "failed";
-			state["error"] = _error_data("IMPORT_FAILED", "Godot finished scanning, but one or more copied resources are not indexed, imported, or loadable.");
-			state["diagnostics"] = inspection;
-			MutexLock lock(project_imports_mutex);
-			if (project_imports.has(import_id)) {
-				project_imports[import_id] = state;
-			}
-			continue;
-		}
-
-		const uint64_t stall_timeout_msec = state.get("stall_timeout_msec", 0);
-		if (stall_timeout_msec > 0 && OS::get_singleton()->get_ticks_msec() - (uint64_t)state.get("last_progress_msec", 0) >= stall_timeout_msec) {
-			state["status"] = "failed";
-			state["stage"] = "stalled";
-			state["error"] = _error_data("IMPORT_STALLED", "Godot's native import pipeline stopped making observable progress.");
-			state["diagnostics"] = inspection;
-			MutexLock lock(project_imports_mutex);
-			if (project_imports.has(import_id)) {
-				project_imports[import_id] = state;
-			}
-			continue;
-		}
-		{
-			MutexLock lock(project_imports_mutex);
-			if (project_imports.has(import_id)) {
-				project_imports[import_id] = state;
-			}
+		MutexLock lock(project_imports_mutex);
+		if (project_imports.has(verify_id)) {
+			project_imports[verify_id] = verify_state;
 		}
 	}
-	if (project_import_wave_active && !wave_has_pending) {
-		project_import_wave_active = false;
-	}
-	if (p_allow_new_import_wave) {
-		_start_project_import_wave();
+
+	// 4. Stall backstop: a pending import whose files stop producing
+	// completion events while the pipeline sits idle (for example a modal
+	// dialog holding the import lock) eventually fails instead of hanging.
+	if (!pipeline_busy) {
+		MutexLock lock(project_imports_mutex);
+		const uint64_t now = OS::get_singleton()->get_ticks_msec();
+		for (KeyValue<String, Dictionary> &E : project_imports) {
+			Dictionary state = E.value;
+			if (String(state.get("status", String())) != "pending") {
+				continue;
+			}
+			const uint64_t stall_timeout_msec = state.get("stall_timeout_msec", 0);
+			if (stall_timeout_msec > 0 && now - (uint64_t)state.get("last_progress_msec", 0) >= stall_timeout_msec) {
+				state["status"] = "failed";
+				state["stage"] = "stalled";
+				state["error"] = _error_data("IMPORT_STALLED", "Godot's native import pipeline stopped making observable progress.");
+				E.value = state;
+			}
+		}
 	}
 }
 
