@@ -29,6 +29,7 @@ struct SolersPreparedToolCall {
 	Dictionary args;
 	Dictionary timeline_payload;
 	SolersToolContext context;
+	String failure_cache_key;
 	SolersToolExecution execution = SolersToolExecution::MAIN_THREAD;
 };
 
@@ -37,6 +38,7 @@ class SolersToolRegistry : public Object {
 
 	HashMap<StringName, SolersTool *> tools; // owned; freed on clear/destroy
 	HashMap<StringName, StringName> model_name_index;
+	HashMap<String, Dictionary> failed_calls;
 
 	SolersObservationService *observation_service = nullptr;
 	SolersAssetService *asset_service = nullptr;
@@ -82,6 +84,7 @@ class SolersToolRegistry : public Object {
 	void _register_skill_tools();
 	void _register_search_tools();
 	Dictionary _run_control(const Dictionary &p_args) const;
+	Dictionary _preflight_tool_call(const StringName &p_name, const Dictionary &p_args, const SolersToolContext &p_context, Dictionary &r_args, String &r_failure_cache_key);
 	Dictionary _prepare_tool_call(const StringName &p_name, const Dictionary &p_args, const SolersToolContext &p_context, SolersPreparedToolCall &r_call);
 	Dictionary _execute_prepared_tool(const SolersPreparedToolCall &p_call) const;
 	Dictionary _poll_prepared_tool(const SolersPreparedToolCall &p_call, const Dictionary &p_args) const;
@@ -106,7 +109,6 @@ public:
 	void set_action_timeline(SolersActionTimeline *p_action_timeline);
 
 	void register_default_tools();
-	void validate_builtin_skills() const;
 	void register_tool(SolersTool *p_tool);
 	Array list_tools() const;
 	String get_skill_catalog_prompt() const;
@@ -128,6 +130,7 @@ public:
 	String summarize_tool_result_for_audit(const Dictionary &p_result) const;
 	Dictionary call_tool(const StringName &p_name, const Dictionary &p_args);
 	Dictionary call_tool_with_context(const StringName &p_name, const Dictionary &p_args, const SolersToolContext &p_context);
+	void clear_task_state(const String &p_session_id);
 	int get_tool_count() const;
 
 	SolersToolRegistry();

@@ -36,9 +36,6 @@ enum class SolersToolExposure {
 	// Registered for later discovery (via tool_search) but omitted from the
 	// initial list. Keeps the long tail out of the prompt until needed.
 	DEFERRED,
-	// Visible in the model tool list, but excluded from any nested/batch
-	// (code-mode-equivalent) surface.
-	DIRECT_MODEL_ONLY,
 	// Dispatchable but never shown to the model.
 	HIDDEN,
 };
@@ -85,7 +82,7 @@ struct SolersToolCapability {
 struct SolersToolContext {
 	String call_id;
 	String session_id;
-	String retry_of;
+	uint64_t authored_revision = 0;
 	int approval_id = 0;
 	const SafeFlag *cancel_requested = nullptr;
 };

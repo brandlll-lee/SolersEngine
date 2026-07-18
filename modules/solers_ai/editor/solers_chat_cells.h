@@ -205,10 +205,12 @@ private:
 	StringName tool_glyph;
 	String args_summary;
 	String error_text;
+	String details_text;
 	Status status = STATUS_RUNNING;
 	int duration_msec = -1;
 
 	Ref<TextParagraph> error_paragraph;
+	Ref<TextParagraph> details_paragraph;
 	float shaped_for_width = -1.0f;
 	float cell_height = 0.0f;
 
@@ -225,9 +227,12 @@ public:
 
 	void start(const String &p_tool_name, const String &p_arguments_json, const StringName &p_tool_glyph);
 	void update(const String &p_tool_name, const String &p_arguments_json, const StringName &p_tool_glyph);
-	void finish(bool p_ok, const String &p_error_message, int p_duration_msec);
+	void finish(bool p_ok, const String &p_error_message, int p_duration_msec, const Dictionary &p_result = Dictionary());
+	static Dictionary format_model_batch_result(const Dictionary &p_result);
 	StringName get_tool_glyph() const { return tool_glyph; }
 	Status get_status() const { return status; }
+	String get_compact_label() const;
+	String get_details_text() const { return details_text; }
 
 	void set_content_changed_callback(const Callable &p_cb) { content_changed = p_cb; }
 

@@ -59,10 +59,18 @@ static Vector3 _modifier_vector3(const Variant &p_value, const Vector3 &p_defaul
 
 static Vector3 _modifier_face_normal(const SolersEditableMesh &p_mesh, int64_t p_face_id) {
 	const Vector<int64_t> vertex_ids = p_mesh.get_face_vertices(p_face_id);
+	if (vertex_ids.size() < 3) {
+		return Vector3();
+	}
 	Vector3 normal;
 	for (int i = 0; i < vertex_ids.size(); i++) {
-		const Vector3 a = p_mesh.get_vertex(vertex_ids[i])->position;
-		const Vector3 b = p_mesh.get_vertex(vertex_ids[(i + 1) % vertex_ids.size()])->position;
+		const SolersEditableMesh::Vertex *vertex_a = p_mesh.get_vertex(vertex_ids[i]);
+		const SolersEditableMesh::Vertex *vertex_b = p_mesh.get_vertex(vertex_ids[(i + 1) % vertex_ids.size()]);
+		if (!vertex_a || !vertex_b) {
+			return Vector3();
+		}
+		const Vector3 a = vertex_a->position;
+		const Vector3 b = vertex_b->position;
 		normal.x += (a.y - b.y) * (a.z + b.z);
 		normal.y += (a.z - b.z) * (a.x + b.x);
 		normal.z += (a.x - b.x) * (a.y + b.y);
@@ -222,7 +230,8 @@ static Error _apply_bevel(SolersEditableMesh &r_mesh, const Dictionary &p_parame
 		return ERR_INVALID_PARAMETER;
 	}
 	for (int64_t edge_id : r_mesh.get_edge_ids()) {
-		if (r_mesh.get_edge(edge_id)->loops.size() != 2) {
+		const SolersEditableMesh::Edge *edge = r_mesh.get_edge(edge_id);
+		if (!edge || edge->loops.size() != 2) {
 			_modifier_error(r_error, "The Bevel modifier currently requires a closed manifold mesh.");
 			return ERR_INVALID_DATA;
 		}
@@ -233,11 +242,23 @@ static Error _apply_bevel(SolersEditableMesh &r_mesh, const Dictionary &p_parame
 	HashMap<_ModelCornerKey, int64_t, _ModelCornerKey> corners;
 	for (int64_t face_id : r_mesh.get_face_ids()) {
 		const Vector<int64_t> face_vertices = r_mesh.get_face_vertices(face_id);
+		const SolersEditableMesh::Face *face = r_mesh.get_face(face_id);
+		if (!face || face_vertices.size() < 3) {
+			_modifier_error(r_error, vformat("Bevel encountered invalid face %d.", face_id));
+			return ERR_INVALID_DATA;
+		}
 		Vector<int64_t> inset_face;
 		for (int i = 0; i < face_vertices.size(); i++) {
-			const Vector3 previous = r_mesh.get_vertex(face_vertices[(i + face_vertices.size() - 1) % face_vertices.size()])->position;
-			const Vector3 current = r_mesh.get_vertex(face_vertices[i])->position;
-			const Vector3 next = r_mesh.get_vertex(face_vertices[(i + 1) % face_vertices.size()])->position;
+			const SolersEditableMesh::Vertex *previous_vertex = r_mesh.get_vertex(face_vertices[(i + face_vertices.size() - 1) % face_vertices.size()]);
+			const SolersEditableMesh::Vertex *current_vertex = r_mesh.get_vertex(face_vertices[i]);
+			const SolersEditableMesh::Vertex *next_vertex = r_mesh.get_vertex(face_vertices[(i + 1) % face_vertices.size()]);
+			if (!previous_vertex || !current_vertex || !next_vertex) {
+				_modifier_error(r_error, vformat("Bevel face %d references a missing vertex.", face_id));
+				return ERR_INVALID_DATA;
+			}
+			const Vector3 previous = previous_vertex->position;
+			const Vector3 current = current_vertex->position;
+			const Vector3 next = next_vertex->position;
 			const Vector3 to_previous = (previous - current).normalized();
 			const Vector3 to_next = (next - current).normalized();
 			const double sin_half = Math::sqrt(MAX(0.0, (1.0 - to_previous.dot(to_next)) * 0.5));
@@ -248,31 +269,53 @@ static Error _apply_bevel(SolersEditableMesh &r_mesh, const Dictionary &p_parame
 			corners.insert({ face_id, face_vertices[i] }, corner);
 			inset_face.push_back(corner);
 		}
-		const SolersEditableMesh::Face *face = r_mesh.get_face(face_id);
-		beveled.add_face(inset_face, face->material, face->smooth);
+		String face_error;
+		if (beveled.add_face(inset_face, face->material, face->smooth, &face_error) == 0) {
+			_modifier_error(r_error, vformat("Bevel could not create inset face %d: %s", face_id, face_error));
+			return ERR_INVALID_DATA;
+		}
 	}
 
 	HashMap<int64_t, Vector<int64_t>> cap_vertices;
 	for (int64_t edge_id : r_mesh.get_edge_ids()) {
 		const SolersEditableMesh::Edge *edge = r_mesh.get_edge(edge_id);
-		const int64_t face_a = r_mesh.get_loop(edge->loops[0])->face;
-		const int64_t face_b = r_mesh.get_loop(edge->loops[1])->face;
+		if (!edge || edge->loops.size() != 2) {
+			_modifier_error(r_error, vformat("Bevel encountered invalid edge %d.", edge_id));
+			return ERR_INVALID_DATA;
+		}
+		const SolersEditableMesh::Loop *loop_a = r_mesh.get_loop(edge->loops[0]);
+		const SolersEditableMesh::Loop *loop_b = r_mesh.get_loop(edge->loops[1]);
+		if (!loop_a || !loop_b) {
+			_modifier_error(r_error, vformat("Bevel edge %d references a missing loop.", edge_id));
+			return ERR_INVALID_DATA;
+		}
+		const int64_t face_a = loop_a->face;
+		const int64_t face_b = loop_b->face;
 		Vector<int64_t> curve_a;
 		Vector<int64_t> curve_b;
 		const int64_t endpoints[2] = { edge->vertex_a, edge->vertex_b };
 		for (int endpoint_index = 0; endpoint_index < 2; endpoint_index++) {
 			const int64_t endpoint = endpoints[endpoint_index];
-			const Vector3 start = beveled.get_vertex(corners[{ face_a, endpoint }])->position;
-			const Vector3 control = r_mesh.get_vertex(endpoint)->position;
-			const Vector3 end = beveled.get_vertex(corners[{ face_b, endpoint }])->position;
+			const int64_t *start_id = corners.getptr({ face_a, endpoint });
+			const int64_t *end_id = corners.getptr({ face_b, endpoint });
+			const SolersEditableMesh::Vertex *control_vertex = r_mesh.get_vertex(endpoint);
+			const SolersEditableMesh::Vertex *start_vertex = start_id ? beveled.get_vertex(*start_id) : nullptr;
+			const SolersEditableMesh::Vertex *end_vertex = end_id ? beveled.get_vertex(*end_id) : nullptr;
+			if (!start_id || !end_id || !control_vertex || !start_vertex || !end_vertex) {
+				_modifier_error(r_error, vformat("Bevel edge %d has incomplete corner topology.", edge_id));
+				return ERR_INVALID_DATA;
+			}
+			const Vector3 start = start_vertex->position;
+			const Vector3 control = control_vertex->position;
+			const Vector3 end = end_vertex->position;
 			Vector<int64_t> *curve = endpoint_index == 0 ? &curve_a : &curve_b;
-			curve->push_back(corners[{ face_a, endpoint }]);
+			curve->push_back(*start_id);
 			for (int segment = 1; segment < segments; segment++) {
 				const double t = (double)segment / segments;
 				const Vector3 point = start * ((1.0 - t) * (1.0 - t)) + control * (2.0 * (1.0 - t) * t) + end * (t * t);
 				curve->push_back(beveled.add_vertex(point));
 			}
-			curve->push_back(corners[{ face_b, endpoint }]);
+			curve->push_back(*end_id);
 			for (int64_t vertex_id : *curve) {
 				cap_vertices[endpoint].push_back(vertex_id);
 			}
@@ -283,7 +326,16 @@ static Error _apply_bevel(SolersEditableMesh &r_mesh, const Dictionary &p_parame
 			strip.push_back(curve_b[segment]);
 			strip.push_back(curve_b[segment + 1]);
 			strip.push_back(curve_a[segment + 1]);
-			beveled.add_face(strip);
+			String strip_error;
+			const int64_t strip_face = beveled.add_face(strip, 0, false, &strip_error);
+			if (strip_face == 0) {
+				_modifier_error(r_error, vformat("Bevel could not create edge strip %d: %s", edge_id, strip_error));
+				return ERR_INVALID_DATA;
+			}
+			const Vector3 outward = _modifier_face_normal(r_mesh, face_a) + _modifier_face_normal(r_mesh, face_b);
+			if (_modifier_face_normal(beveled, strip_face).dot(outward) < 0.0) {
+				beveled.reverse_face(strip_face);
+			}
 		}
 	}
 
@@ -306,10 +358,20 @@ static Error _apply_bevel(SolersEditableMesh &r_mesh, const Dictionary &p_parame
 		}
 		tangent.normalize();
 		const Vector3 bitangent = normal.cross(tangent).normalized();
-		const Vector3 center = r_mesh.get_vertex(vertex_id)->position;
+		const SolersEditableMesh::Vertex *source_vertex = r_mesh.get_vertex(vertex_id);
+		if (!source_vertex) {
+			_modifier_error(r_error, vformat("Bevel cap references missing source vertex %d.", vertex_id));
+			return ERR_INVALID_DATA;
+		}
+		const Vector3 center = source_vertex->position;
 		Vector<_ModelAngleVertex> angular;
 		for (int64_t cap_vertex : unique) {
-			const Vector3 direction = beveled.get_vertex(cap_vertex)->position - center;
+			const SolersEditableMesh::Vertex *vertex = beveled.get_vertex(cap_vertex);
+			if (!vertex) {
+				_modifier_error(r_error, vformat("Bevel cap references missing generated vertex %d.", cap_vertex));
+				return ERR_INVALID_DATA;
+			}
+			const Vector3 direction = vertex->position - center;
 			angular.push_back({ Math::atan2(direction.dot(bitangent), direction.dot(tangent)), cap_vertex });
 		}
 		angular.sort();
@@ -317,7 +379,15 @@ static Error _apply_bevel(SolersEditableMesh &r_mesh, const Dictionary &p_parame
 		for (const _ModelAngleVertex &entry : angular) {
 			cap.push_back(entry.vertex);
 		}
-		beveled.add_face(cap);
+		String cap_error;
+		const int64_t cap_face = beveled.add_face(cap, 0, false, &cap_error);
+		if (cap_face == 0) {
+			_modifier_error(r_error, vformat("Bevel could not create cap at vertex %d: %s", vertex_id, cap_error));
+			return ERR_INVALID_DATA;
+		}
+		if (_modifier_face_normal(beveled, cap_face).dot(normal) < 0.0) {
+			beveled.reverse_face(cap_face);
+		}
 	}
 
 	String validation_error;
@@ -329,7 +399,26 @@ static Error _apply_bevel(SolersEditableMesh &r_mesh, const Dictionary &p_parame
 	return OK;
 }
 
-static Error _editable_to_manifold(const SolersEditableMesh &p_mesh, manifold::Manifold &r_manifold, String *r_error) {
+static const char *_manifold_error_name(manifold::Manifold::Error p_error) {
+	switch (p_error) {
+		case manifold::Manifold::Error::NoError: return "no error";
+		case manifold::Manifold::Error::NonFiniteVertex: return "non-finite vertex";
+		case manifold::Manifold::Error::NotManifold: return "not manifold";
+		case manifold::Manifold::Error::VertexOutOfBounds: return "vertex out of bounds";
+		case manifold::Manifold::Error::PropertiesWrongLength: return "properties wrong length";
+		case manifold::Manifold::Error::MissingPositionProperties: return "missing position properties";
+		case manifold::Manifold::Error::MergeVectorsDifferentLengths: return "merge vectors differ in length";
+		case manifold::Manifold::Error::MergeIndexOutOfBounds: return "merge index out of bounds";
+		case manifold::Manifold::Error::TransformWrongLength: return "transform wrong length";
+		case manifold::Manifold::Error::RunIndexWrongLength: return "run index wrong length";
+		case manifold::Manifold::Error::FaceIDWrongLength: return "face ID wrong length";
+		case manifold::Manifold::Error::InvalidConstruction: return "invalid construction";
+		case manifold::Manifold::Error::ResultTooLarge: return "result too large";
+	}
+	return "unknown error";
+}
+
+static Error _editable_to_manifold(const SolersEditableMesh &p_mesh, const String &p_label, manifold::Manifold &r_manifold, String *r_error) {
 	manifold::MeshGL64 mesh;
 	mesh.numProp = 3;
 	HashMap<int64_t, uint64_t> vertex_index;
@@ -354,7 +443,7 @@ static Error _editable_to_manifold(const SolersEditableMesh &p_mesh, manifold::M
 	mesh.Merge();
 	r_manifold = manifold::Manifold(mesh);
 	if (r_manifold.Status() != manifold::Manifold::Error::NoError) {
-		_modifier_error(r_error, "Boolean input must be a closed, consistently oriented manifold mesh.");
+		_modifier_error(r_error, vformat("Boolean %s is invalid: %s. It must be closed and consistently oriented.", p_label, _manifold_error_name(r_manifold.Status())));
 		return ERR_INVALID_DATA;
 	}
 	return OK;
@@ -398,20 +487,28 @@ static Error _apply_boolean(SolersEditableMesh &r_mesh, const Dictionary &p_para
 	operand.get_modifiers().clear();
 	manifold::Manifold first;
 	manifold::Manifold second;
-	Error error = _editable_to_manifold(r_mesh, first, r_error);
+	Error error = _editable_to_manifold(r_mesh, "base model", first, r_error);
 	if (error != OK) {
 		return error;
 	}
-	error = _editable_to_manifold(operand, second, r_error);
+	error = _editable_to_manifold(operand, vformat("operand %s", operand_path), second, r_error);
 	if (error != OK) {
 		return error;
 	}
 	const Vector3 translation = _modifier_vector3(p_parameters.get("translation", Variant()));
 	const Vector3 rotation = _modifier_vector3(p_parameters.get("rotation_degrees", Variant()));
 	const Vector3 scale = _modifier_vector3(p_parameters.get("scale", Variant()), Vector3(1, 1, 1));
+	const String operation = String(p_parameters.get("operation", String())).to_lower();
+	if (operation != "union" && operation != "subtract" && operation != "intersect") {
+		_modifier_error(r_error, "Boolean operation must be union, subtract, or intersect.");
+		return ERR_INVALID_PARAMETER;
+	}
+	if (!translation.is_finite() || !rotation.is_finite() || !scale.is_finite() || Math::is_zero_approx(scale.x) || Math::is_zero_approx(scale.y) || Math::is_zero_approx(scale.z)) {
+		_modifier_error(r_error, "Boolean transform must be finite and its scale must be non-zero on every axis.");
+		return ERR_INVALID_PARAMETER;
+	}
 	second = second.Scale({ scale.x, scale.y, scale.z }).Rotate(rotation.x, rotation.y, rotation.z).Translate({ translation.x, translation.y, translation.z });
-	const String operation = String(p_parameters.get("operation", "union")).to_lower();
-	const manifold::OpType type = operation == "subtract" ? manifold::OpType::Subtract : (operation == "intersect" ? manifold::OpType::Intersect : manifold::OpType::Add);
+	const manifold::OpType type = operation == "union" ? manifold::OpType::Add : (operation == "subtract" ? manifold::OpType::Subtract : manifold::OpType::Intersect);
 	return _manifold_to_editable(first.Boolean(second, type), r_mesh, r_error);
 }
 

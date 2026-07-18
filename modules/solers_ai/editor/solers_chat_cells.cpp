@@ -727,6 +727,8 @@ SolersToolCell::SolersToolCell() {
 	tool_glyph = SNAME("sparkle");
 	error_paragraph.instantiate();
 	error_paragraph->set_break_flags(TextServer::BREAK_MANDATORY | TextServer::BREAK_WORD_BOUND | TextServer::BREAK_ADAPTIVE);
+	details_paragraph.instantiate();
+	details_paragraph->set_break_flags(TextServer::BREAK_MANDATORY | TextServer::BREAK_WORD_BOUND | TextServer::BREAK_ADAPTIVE);
 }
 
 void SolersToolCell::start(const String &p_tool_name, const String &p_arguments_json, const StringName &p_tool_glyph) {
@@ -757,14 +759,35 @@ void SolersToolCell::update(const String &p_tool_name, const String &p_arguments
 	queue_redraw();
 }
 
-void SolersToolCell::finish(bool p_ok, const String &p_error_message, int p_duration_msec) {
+void SolersToolCell::finish(bool p_ok, const String &p_error_message, int p_duration_msec, const Dictionary &p_result) {
 	status = p_ok ? STATUS_OK : STATUS_ERROR;
 	error_text = p_ok ? String() : p_error_message.strip_edges();
 	duration_msec = p_duration_msec;
+	details_text = String();
+	if (p_ok && tool_name == "model.batch") {
+		const Dictionary formatted = format_model_batch_result(p_result);
+		args_summary = formatted.get("summary", String());
+		details_text = formatted.get("details", String());
+	}
 	set_process_internal(false);
 	shaped_for_width = -1.0f;
 	_shape(get_size().x);
 	queue_redraw();
+}
+
+Dictionary SolersToolCell::format_model_batch_result(const Dictionary &p_result) {
+	const Dictionary result_data = p_result.get("data", Dictionary());
+	const Array steps = result_data.get("steps", Array());
+	String details;
+	for (int i = 0; i < steps.size(); i++) {
+		const Dictionary step = steps[i];
+		const String result_id = step.get("id", String());
+		details += vformat("%d. %s%s\n", i + 1, step.get("operation", String()), result_id.is_empty() ? String() : " [" + result_id + "]");
+	}
+	Dictionary formatted;
+	formatted["summary"] = vformat("%d steps · rev %d · %s", steps.size(), (int64_t)result_data.get("revision", 0), result_data.get("path", String()));
+	formatted["details"] = details.strip_edges();
+	return formatted;
 }
 
 void SolersToolCell::_shape(float p_cell_width) {
@@ -777,6 +800,7 @@ void SolersToolCell::_shape(float p_cell_width) {
 
 	float height = 28.0f * ed; // Header row.
 	error_paragraph->clear();
+	details_paragraph->clear();
 	if (!error_text.is_empty()) {
 		const Ref<Font> font = solers_cell_font(this);
 		if (font.is_valid()) {
@@ -784,6 +808,15 @@ void SolersToolCell::_shape(float p_cell_width) {
 			error_paragraph->set_width(cell_width - 30.0f * ed);
 			error_paragraph->add_string(error_text, font, int(11 * ed));
 			height += error_paragraph->get_size().y + 6.0f * ed;
+		}
+	}
+	if (!details_text.is_empty()) {
+		const Ref<Font> font = solers_cell_font(this);
+		if (font.is_valid()) {
+			details_paragraph->set_line_spacing(2.0f * ed);
+			details_paragraph->set_width(cell_width - 30.0f * ed);
+			details_paragraph->add_string(details_text, font, int(11 * ed));
+			height += details_paragraph->get_size().y + 6.0f * ed;
 		}
 	}
 
@@ -799,6 +832,17 @@ void SolersToolCell::_shape(float p_cell_width) {
 
 Size2 SolersToolCell::get_minimum_size() const {
 	return Size2(0, cell_height);
+}
+
+String SolersToolCell::get_compact_label() const {
+	String label = tool_name;
+	if (!args_summary.is_empty()) {
+		label += " · " + args_summary;
+	}
+	if (status != STATUS_RUNNING && duration_msec >= 0) {
+		label += duration_msec >= 1000 ? vformat(" · %s s", String::num(double(duration_msec) / 1000.0, 1)) : vformat(" · %d ms", duration_msec);
+	}
+	return label;
 }
 
 void SolersToolCell::_notification(int p_what) {
@@ -874,6 +918,8 @@ void SolersToolCell::_notification(int p_what) {
 			// Error detail block.
 			if (status == STATUS_ERROR && error_paragraph->get_line_count() > 0) {
 				error_paragraph->draw(get_canvas_item(), Point2(28.0f * ed, header_h + 2.0f * ed), Color(SOLERS_CELL_ERROR, 0.92f));
+			} else if (details_paragraph->get_line_count() > 0) {
+				details_paragraph->draw(get_canvas_item(), Point2(28.0f * ed, header_h + 2.0f * ed), SOLERS_CELL_TEXT_DIM);
 			}
 		} break;
 	}
@@ -1024,8 +1070,18 @@ void SolersToolGroupCell::_notification(int p_what) {
 					x += icon_step;
 				}
 			}
-			const String label = vformat(String::utf8("已运行 %d 条命令"), total);
+			String label = vformat(String::utf8("已运行 %d 条命令"), total);
+			if (total == 1) {
+				SolersToolCell *only = Object::cast_to<SolersToolCell>(body->get_child(0));
+				if (only) {
+					label = only->get_compact_label();
+				}
+			}
 			x += 4.0f * ed;
+			const float label_limit = MAX(24.0f * ed, get_size().x - x - 24.0f * ed);
+			while (label.length() > 4 && font->get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x > label_limit) {
+				label = label.left(label.length() - 4) + "...";
+			}
 			const float phase = Math::fmod(float(OS::get_singleton()->get_ticks_msec()) / (SOLERS_SHIMMER_PERIOD * 1000.0f), 1.0f);
 			const float label_w = running > 0 ?
 					solers_draw_shimmer_text(this, Point2(x, baseline).floor(), label, font, font_size, phase, SOLERS_CELL_TEXT_FAINT, Color(0.95f, 0.96f, 0.98f)) :

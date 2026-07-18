@@ -1809,7 +1809,7 @@ void SolersDock::_on_agent_tool_finished(const String &p_id, const String &p_nam
 	chat_log += vformat("%s %s%s\n", ok ? "[ok]" : "[error]", p_name, error_message.is_empty() ? String() : " - " + error_message);
 
 	if (cell) {
-		cell->finish(ok, error_message, p_duration_msec);
+		cell->finish(ok, error_message, p_duration_msec, p_result);
 	}
 	_remove_status_cell();
 	if (active_tool_group) {
@@ -1839,7 +1839,8 @@ void SolersDock::_on_agent_turn_retrying(int p_attempt, const String &p_message)
 	// A transient provider/connection failure is being retried with backoff;
 	// keep the turn alive and show a shimmer status instead of an error row.
 	_settle_thinking_cell();
-	_ensure_status_cell(vformat(TTR("Reconnecting (attempt %d)..."), p_attempt));
+	const String detail = p_message.strip_edges();
+	_ensure_status_cell(detail.is_empty() ? vformat(TTR("Reconnecting (attempt %d)..."), p_attempt) : vformat(TTR("Provider retry %d: %s"), p_attempt, detail));
 	_update_send_enabled();
 }
 

@@ -370,8 +370,7 @@ TEST_CASE("[SolersToolRegistry] registers tools by lookup, not a hardcoded catal
 	CHECK(tool.get("model_name", String()) == "synthetic_echo");
 	CHECK_FALSE((bool)tool.get("requires_approval", true));
 	CHECK(tool.get("execution", String()) == "worker");
-	const Dictionary retry_of = Dictionary(Dictionary(tool.get("input_schema", Dictionary())).get("properties", Dictionary())).get("retry_of", Dictionary());
-	CHECK(String(retry_of.get("description", String())).contains("error.failure_id"));
+	CHECK_FALSE(Dictionary(Dictionary(tool.get("input_schema", Dictionary())).get("properties", Dictionary())).has("retry_of"));
 	CHECK(registry.get_model_tool_name("synthetic.echo") == "synthetic_echo");
 	CHECK(registry.resolve_model_tool_name("synthetic_echo") == StringName("synthetic.echo"));
 
@@ -393,7 +392,112 @@ TEST_CASE("[SolersToolRegistry] registers tools by lookup, not a hardcoded catal
 	CHECK((bool)data.get("has_unknown_empty", false));
 }
 
-TEST_CASE("[SolersToolRegistry][SolersModeling][SceneTree] projects every native operation without a second catalog") {
+TEST_CASE("[SolersToolRegistry] schema preflight runs before approval or handler side effects") {
+	SolersPermissionManager permissions;
+	SolersToolRegistry registry;
+	registry.set_permission_manager(&permissions);
+	int calls = 0;
+	SolersToolCapability cap;
+	cap.permission = SolersPermissionManager::PERMISSION_EDIT_FILES;
+	cap.mutation_kind = "file_write";
+	cap.requires_approval = true;
+	Dictionary amount;
+	amount["type"] = "number";
+	amount["exclusiveMinimum"] = 0;
+	Dictionary properties;
+	properties["amount"] = amount;
+	Dictionary schema;
+	schema["type"] = "object";
+	schema["properties"] = properties;
+	Array required;
+	required.push_back("amount");
+	schema["required"] = required;
+	schema["additionalProperties"] = false;
+	registry.register_tool(memnew(SolersFunctionTool(
+			SNAME("synthetic.write"), "Synthetic write fixture.", schema, SolersToolExposure::DIRECT, cap,
+			[&calls](const SolersToolContext &, const Dictionary &) {
+				calls++;
+				Dictionary result;
+				result["ok"] = true;
+				result["data"] = Dictionary();
+				return result;
+			})));
+
+	Dictionary invalid_args;
+	invalid_args["amount"] = -1.0;
+	const Dictionary invalid = registry.call_tool(SNAME("synthetic.write"), invalid_args);
+	CHECK_FALSE((bool)invalid.get("ok", true));
+	CHECK(Dictionary(invalid.get("error", Dictionary())).get("code", String()) == "TOOL_ARGUMENT_INVALID");
+	CHECK(calls == 0);
+	CHECK(permissions.get_pending_request_count() == 0);
+
+	Dictionary valid_args;
+	valid_args["amount"] = 1.0;
+	const Dictionary awaiting = registry.call_tool(SNAME("synthetic.write"), valid_args);
+	CHECK_FALSE((bool)awaiting.get("ok", true));
+	CHECK(Dictionary(awaiting.get("error", Dictionary())).get("code", String()) == "USER_APPROVAL_REQUIRED");
+	CHECK(calls == 0);
+	CHECK(permissions.get_pending_request_count() == 1);
+}
+
+TEST_CASE("[SolersToolRegistry] unchanged failures are deduplicated by task and revision") {
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
+	SolersToolRegistry registry;
+	registry.set_permission_manager(&permissions);
+	int calls = 0;
+	SolersToolCapability cap;
+	cap.permission = SolersPermissionManager::PERMISSION_OBSERVE;
+	cap.mutation_kind = "none";
+	Dictionary value;
+	value["type"] = "integer";
+	Dictionary properties;
+	properties["value"] = value;
+	Dictionary schema;
+	schema["type"] = "object";
+	schema["properties"] = properties;
+	schema["additionalProperties"] = false;
+	registry.register_tool(memnew(SolersFunctionTool(
+			SNAME("synthetic.failure"), "Synthetic failure fixture.", schema, SolersToolExposure::DIRECT, cap,
+			[&calls](const SolersToolContext &, const Dictionary &) {
+				calls++;
+				Dictionary error;
+				error["code"] = "SYNTHETIC_FAILURE";
+				error["message"] = "Stable failure.";
+				error["recoverable"] = true;
+				Dictionary result;
+				result["ok"] = false;
+				result["error"] = error;
+				return result;
+			})));
+	SolersToolContext context;
+	context.session_id = "dedup-task";
+	context.authored_revision = 7;
+	Dictionary args;
+	args["value"] = "invalid";
+	CHECK_FALSE((bool)registry.call_tool_with_context(SNAME("synthetic.failure"), args, context).get("ok", true));
+	const Dictionary rejected_duplicate = registry.call_tool_with_context(SNAME("synthetic.failure"), args, context);
+	CHECK(rejected_duplicate.get("deduplicated", false));
+	CHECK(calls == 0);
+	args["value"] = 1.0;
+	CHECK_FALSE((bool)registry.call_tool_with_context(SNAME("synthetic.failure"), args, context).get("ok", true));
+	const Dictionary duplicate = registry.call_tool_with_context(SNAME("synthetic.failure"), args, context);
+	CHECK_FALSE((bool)duplicate.get("ok", true));
+	CHECK(duplicate.get("deduplicated", false));
+	CHECK(calls == 1);
+	args["value"] = 2;
+	registry.call_tool_with_context(SNAME("synthetic.failure"), args, context);
+	CHECK(calls == 2);
+	args["value"] = 1;
+	context.authored_revision++;
+	registry.call_tool_with_context(SNAME("synthetic.failure"), args, context);
+	CHECK(calls == 3);
+	registry.clear_task_state(context.session_id);
+	registry.call_tool_with_context(SNAME("synthetic.failure"), args, context);
+	CHECK(calls == 4);
+}
+
+TEST_CASE("[SolersToolRegistry][SolersModeling][SceneTree] projects every native operation into one typed batch") {
 	SolersPermissionManager permissions;
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_FILES, true);
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
@@ -401,29 +505,35 @@ TEST_CASE("[SolersToolRegistry][SolersModeling][SceneTree] projects every native
 	registry.set_permission_manager(&permissions);
 	registry.register_default_tools();
 
-	HashMap<StringName, Dictionary> tools;
-	for (const Variant &value : registry.list_tools()) {
-		const Dictionary tool = value;
-		tools[StringName(tool.get("name", String()))] = tool;
-	}
+	const Array tools = registry.list_tools();
+	const Dictionary batch_tool = find_tool_def(tools, "model.batch");
+	REQUIRE_FALSE(batch_tool.is_empty());
+	CHECK(batch_tool.get("exposure", String()) == "direct");
+	CHECK(batch_tool.get("undoable", false));
+	const Dictionary batch_schema = batch_tool.get("input_schema", Dictionary());
+	CHECK(Array(batch_schema.get("required", Array())).has("expected_revision"));
+	const Dictionary operation_items = Dictionary(Dictionary(batch_schema.get("properties", Dictionary())).get("operations", Dictionary())).get("items", Dictionary());
+	const Array branches = operation_items.get("oneOf", Array());
+	CHECK(branches.size() == SolersModelOperationRegistry::get_singleton()->get_operations().size());
 	for (const SolersModelOperationDefinition &operation : SolersModelOperationRegistry::get_singleton()->get_operations()) {
-		const StringName tool_name = StringName("model." + String(operation.id));
-		INFO(tool_name);
-		REQUIRE(tools.has(tool_name));
-		const Dictionary tool = tools[tool_name];
-		CHECK(tool.get("exposure", String()) == "deferred");
-		CHECK(tool.get("undoable", false));
-		const Dictionary schema = tool.get("input_schema", Dictionary());
-		const Dictionary properties = schema.get("properties", Dictionary());
-		const Dictionary operation_properties = operation.parameters_schema.get("properties", Dictionary());
-		const Variant *key = nullptr;
-		while ((key = operation_properties.next(key))) {
-			CHECK(properties.get(*key, Variant()) == operation_properties[*key]);
+		bool found = false;
+		for (const Variant &branch_value : branches) {
+			const Dictionary branch = branch_value;
+			const Dictionary properties = branch.get("properties", Dictionary());
+			if (String(Dictionary(properties.get("operation", Dictionary())).get("const", String())) != String(operation.id)) {
+				continue;
+			}
+			found = true;
+			CHECK(Dictionary(properties.get("parameters", Dictionary())).get("properties", Dictionary()) == operation.parameters_schema.get("properties", Dictionary()));
+			break;
 		}
-		CHECK(properties.has("path"));
-		CHECK(properties.has("expected_revision"));
-		CHECK(Array(schema.get("required", Array())).has("path"));
+		INFO(operation.id);
+		CHECK(found);
 	}
+	CHECK(find_tool_def(tools, "model.add_box").is_empty());
+	CHECK(find_tool_def(tools, "model.add_boolean_modifier").is_empty());
+	CHECK(find_tool_def(tools, "model.add_modifier").is_empty());
+	CHECK(find_tool_def(tools, "tool.search").is_empty());
 
 	const String path = "res://.godot/solers_modeling_tool_contract.smodel";
 	const String copy_path = "res://.godot/solers_modeling_tool_contract_copy.smodel";
@@ -432,67 +542,77 @@ TEST_CASE("[SolersToolRegistry][SolersModeling][SceneTree] projects every native
 	cleanup.add(copy_path);
 	Dictionary create;
 	create["path"] = path;
-	create["primitive"] = "box";
 	REQUIRE((bool)registry.call_tool(SNAME("model.create"), create).get("ok", false));
 	Dictionary inspect_args;
 	inspect_args["path"] = path;
 	const Dictionary inspected = registry.call_tool(SNAME("model.inspect"), inspect_args);
 	REQUIRE((bool)inspected.get("ok", false));
 	const int64_t revision = Dictionary(inspected.get("data", Dictionary())).get("revision", -1);
-	Dictionary transform;
-	transform["path"] = path;
-	transform["expected_revision"] = revision;
-	transform["translation"] = Vector3(1, 2, 3);
-	REQUIRE((bool)registry.call_tool(SNAME("model.transform"), transform).get("ok", false));
-	const Dictionary stale = registry.call_tool(SNAME("model.transform"), transform);
-	CHECK_FALSE((bool)stale.get("ok", true));
-	CHECK(Dictionary(stale.get("error", Dictionary())).get("code", String()) == "MODEL_REVISION_CONFLICT");
-
-	const Dictionary after_transform = registry.call_tool(SNAME("model.inspect"), inspect_args);
-	const int64_t transformed_revision = Dictionary(after_transform.get("data", Dictionary())).get("revision", -1);
+	Dictionary batch;
+	batch["path"] = path;
+	batch["expected_revision"] = (double)revision;
+	Array operations;
+	Dictionary body;
+	body["id"] = "body";
+	body["operation"] = "add_box";
+	Dictionary body_parameters;
+	body_parameters["size"] = Vector3(2, 1, 1);
+	body_parameters["center"] = Vector3(0, 0.5, 0);
+	body["parameters"] = body_parameters;
+	operations.push_back(body);
+	Dictionary move;
+	move["operation"] = "transform";
+	Dictionary move_parameters;
+	move_parameters["translation"] = Vector3(1, 2, 3);
+	move["parameters"] = move_parameters;
+	Dictionary vertex_binding;
+	vertex_binding["result"] = "body";
+	vertex_binding["field"] = "created_vertices";
+	Dictionary bindings;
+	bindings["vertex_ids"] = vertex_binding;
+	move["bindings"] = bindings;
+	operations.push_back(move);
+	Dictionary bevel;
+	bevel["operation"] = "bevel";
+	Dictionary bevel_parameters;
+	bevel_parameters["width"] = 0.04;
+	bevel_parameters["segments"] = 2.0;
+	bevel["parameters"] = bevel_parameters;
+	operations.push_back(bevel);
 	Dictionary configure;
-	configure["path"] = path;
-	configure["expected_revision"] = transformed_revision;
-	configure["collision"] = "trimesh";
-	REQUIRE((bool)registry.call_tool(SNAME("model.configure_build"), configure).get("ok", false));
+	configure["operation"] = "configure_build";
+	Dictionary build_parameters;
+	build_parameters["collision"] = "convex";
+	configure["parameters"] = build_parameters;
+	operations.push_back(configure);
+	batch["operations"] = operations;
+	const Dictionary batch_result = registry.call_tool(SNAME("model.batch"), batch);
+	REQUIRE((bool)batch_result.get("ok", false));
+	CHECK((int)Dictionary(batch_result.get("data", Dictionary())).get("step_count", 0) == 4);
 	const Dictionary configured_data = Dictionary(registry.call_tool(SNAME("model.inspect"), inspect_args)).get("data", Dictionary());
 	const int64_t configured_revision = configured_data.get("revision", -1);
+	CHECK(configured_revision == revision + 1);
 	Dictionary failed_batch;
 	failed_batch["path"] = path;
 	failed_batch["expected_revision"] = configured_revision;
 	Array failed_operations;
-	Dictionary partial_transform;
-	partial_transform["translation"] = Vector3(99, 0, 0);
-	Dictionary partial_item;
-	partial_item["operation"] = "transform";
-	partial_item["parameters"] = partial_transform;
-	failed_operations.push_back(partial_item);
 	Dictionary invalid_item;
 	invalid_item["operation"] = "not_an_operation";
 	failed_operations.push_back(invalid_item);
 	failed_batch["operations"] = failed_operations;
-	CHECK_FALSE((bool)registry.call_tool(SNAME("model.batch"), failed_batch).get("ok", true));
+	const Dictionary invalid_batch = registry.call_tool(SNAME("model.batch"), failed_batch);
+	CHECK_FALSE((bool)invalid_batch.get("ok", true));
+	CHECK(Dictionary(invalid_batch.get("error", Dictionary())).get("code", String()) == "TOOL_ARGUMENT_INVALID");
 	const Dictionary after_failed_batch = Dictionary(registry.call_tool(SNAME("model.inspect"), inspect_args)).get("data", Dictionary());
 	const int64_t after_failed_revision = after_failed_batch.get("revision", -1);
 	const String after_failed_hash = after_failed_batch.get("source_hash", String());
 	const String configured_hash = configured_data.get("source_hash", String());
 	CHECK(after_failed_revision == configured_revision);
 	CHECK(after_failed_hash == configured_hash);
-	Dictionary batch;
-	batch["path"] = path;
-	batch["expected_revision"] = configured_revision;
-	Array operations;
-	for (const Vector3 &offset : { Vector3(0.25, 0, 0), Vector3(0, 0.5, 0) }) {
-		Dictionary item;
-		item["operation"] = "transform";
-		Dictionary parameters;
-		parameters["translation"] = offset;
-		item["parameters"] = parameters;
-		operations.push_back(item);
-	}
-	batch["operations"] = operations;
-	REQUIRE((bool)registry.call_tool(SNAME("model.batch"), batch).get("ok", false));
-	CHECK((bool)registry.call_tool(SNAME("model.validate"), inspect_args).get("ok", false));
+	const Dictionary validated = registry.call_tool(SNAME("model.validate"), inspect_args);
+	CHECK((bool)validated.get("ok", false));
+	CHECK(Dictionary(validated.get("data", Dictionary())).get("path", String()) == path);
+	CHECK_FALSE(String(Dictionary(validated.get("data", Dictionary())).get("source_hash", String())).is_empty());
 
 	Dictionary save;
 	save["source_path"] = path;
@@ -511,7 +631,7 @@ TEST_CASE("[SolersToolRegistry][SolersModeling][SceneTree] projects every native
 	CHECK(runtime_mesh->has_meta("solers_collision_shape"));
 }
 
-TEST_CASE("[SolersToolRegistry][SolersModeling][SceneTree] builds product-ready room and hard-surface prop") {
+TEST_CASE("[SolersToolRegistry][SolersModeling][SceneTree][Regression] t-3 workflow builds a Boolean hard-surface prop in planned batches") {
 	SolersPermissionManager permissions;
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_FILES, true);
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
@@ -521,8 +641,10 @@ TEST_CASE("[SolersToolRegistry][SolersModeling][SceneTree] builds product-ready 
 	ModelingTestFiles cleanup;
 	const String room_path = "res://.godot/solers_modeling_room_acceptance.smodel";
 	const String prop_path = "res://.godot/solers_modeling_prop_acceptance.smodel";
+	const String cutter_path = "res://.godot/solers_modeling_prop_cutter.smodel";
 	cleanup.add(room_path);
 	cleanup.add(prop_path);
+	cleanup.add(cutter_path);
 
 	auto operation = [](const StringName &p_name, const Dictionary &p_parameters = Dictionary()) {
 		Dictionary item;
@@ -534,18 +656,17 @@ TEST_CASE("[SolersToolRegistry][SolersModeling][SceneTree] builds product-ready 
 		Dictionary parameters;
 		parameters["size"] = p_size;
 		parameters["center"] = p_center;
-		return operation(SNAME("create_box"), parameters);
+		return operation(SNAME("add_box"), parameters);
 	};
 
 	Dictionary create_room;
 	create_room["path"] = room_path;
-	create_room["primitive"] = "box";
 	Dictionary floor;
 	floor["size"] = Vector3(8, 0.2, 6);
 	floor["center"] = Vector3(0, -0.1, 0);
-	create_room["parameters"] = floor;
 	REQUIRE((bool)registry.call_tool(SNAME("model.create"), create_room).get("ok", false));
 	Array room_operations;
+	room_operations.push_back(operation(SNAME("add_box"), floor));
 	room_operations.push_back(box(Vector3(8, 0.2, 6), Vector3(0, 3.1, 0)));
 	room_operations.push_back(box(Vector3(0.2, 3, 6), Vector3(-3.9, 1.5, 0)));
 	room_operations.push_back(box(Vector3(0.2, 3, 6), Vector3(3.9, 1.5, 0)));
@@ -582,6 +703,7 @@ TEST_CASE("[SolersToolRegistry][SolersModeling][SceneTree] builds product-ready 
 	room_operations.push_back(operation(SNAME("configure_build"), room_build));
 	Dictionary room_batch;
 	room_batch["path"] = room_path;
+	room_batch["expected_revision"] = 1;
 	room_batch["operations"] = room_operations;
 	REQUIRE((bool)registry.call_tool(SNAME("model.batch"), room_batch).get("ok", false));
 	Dictionary room_args;
@@ -594,43 +716,50 @@ TEST_CASE("[SolersToolRegistry][SolersModeling][SceneTree] builds product-ready 
 
 	Dictionary create_prop;
 	create_prop["path"] = prop_path;
-	create_prop["primitive"] = "box";
 	Dictionary prop_body;
 	prop_body["size"] = Vector3(1.2, 0.45, 0.65);
 	prop_body["center"] = Vector3(0.8, 0, 0);
-	create_prop["parameters"] = prop_body;
 	REQUIRE((bool)registry.call_tool(SNAME("model.create"), create_prop).get("ok", false));
+	Dictionary create_cutter;
+	create_cutter["path"] = cutter_path;
+	Dictionary cutter_body;
+	cutter_body["size"] = Vector3(0.35, 0.28, 0.9);
+	REQUIRE((bool)registry.call_tool(SNAME("model.create"), create_cutter).get("ok", false));
+	Dictionary add_cutter;
+	add_cutter["path"] = cutter_path;
+	add_cutter["expected_revision"] = 1;
+	Array cutter_operations;
+	cutter_operations.push_back(operation(SNAME("add_box"), cutter_body));
+	add_cutter["operations"] = cutter_operations;
+	REQUIRE((bool)registry.call_tool(SNAME("model.batch"), add_cutter).get("ok", false));
 	Array prop_operations;
+	prop_operations.push_back(operation(SNAME("add_box"), prop_body));
 	Dictionary cylinder;
 	cylinder["segments"] = 24;
 	cylinder["radius"] = 0.14;
 	cylinder["depth"] = 0.8;
 	cylinder["center"] = Vector3(0.8, 0.35, 0);
-	prop_operations.push_back(operation(SNAME("create_cylinder"), cylinder));
+	prop_operations.push_back(operation(SNAME("add_cylinder"), cylinder));
 	Dictionary accent_material;
 	accent_material["material_index"] = 1;
 	prop_operations.push_back(operation(SNAME("set_material"), accent_material));
 	Dictionary mirror;
-	mirror["type"] = "mirror";
-	Dictionary mirror_parameters;
-	mirror_parameters["axis"] = "x";
-	mirror_parameters["origin"] = Vector3();
-	mirror["parameters"] = mirror_parameters;
-	prop_operations.push_back(operation(SNAME("add_modifier"), mirror));
+	mirror["axis"] = "x";
+	mirror["origin"] = Vector3();
+	prop_operations.push_back(operation(SNAME("add_mirror_modifier"), mirror));
 	Dictionary array;
-	array["type"] = "array";
-	Dictionary array_parameters;
-	array_parameters["count"] = 3;
-	array_parameters["offset"] = Vector3(0, 0, 1.0);
-	array["parameters"] = array_parameters;
-	prop_operations.push_back(operation(SNAME("add_modifier"), array));
+	array["count"] = 3;
+	array["offset"] = Vector3(0, 0, 1.0);
+	prop_operations.push_back(operation(SNAME("add_array_modifier"), array));
 	Dictionary bevel;
-	bevel["type"] = "bevel";
-	Dictionary bevel_parameters;
-	bevel_parameters["width"] = 0.035;
-	bevel_parameters["segments"] = 2;
-	bevel["parameters"] = bevel_parameters;
-	prop_operations.push_back(operation(SNAME("add_modifier"), bevel));
+	bevel["width"] = 0.035;
+	bevel["segments"] = 2;
+	prop_operations.push_back(operation(SNAME("add_bevel_modifier"), bevel));
+	Dictionary boolean;
+	boolean["operand"] = cutter_path;
+	boolean["operation"] = "subtract";
+	boolean["translation"] = Vector3(0.8, 0, 0);
+	prop_operations.push_back(operation(SNAME("add_boolean_modifier"), boolean));
 	prop_operations.push_back(operation(SNAME("apply_modifiers")));
 	Dictionary prop_uv;
 	prop_uv["resolution"] = 512;
@@ -653,6 +782,7 @@ TEST_CASE("[SolersToolRegistry][SolersModeling][SceneTree] builds product-ready 
 	prop_operations.push_back(operation(SNAME("configure_build"), prop_build));
 	Dictionary prop_batch;
 	prop_batch["path"] = prop_path;
+	prop_batch["expected_revision"] = 1;
 	prop_batch["operations"] = prop_operations;
 	REQUIRE((bool)registry.call_tool(SNAME("model.batch"), prop_batch).get("ok", false));
 	Dictionary prop_args;
@@ -662,6 +792,9 @@ TEST_CASE("[SolersToolRegistry][SolersModeling][SceneTree] builds product-ready 
 	CHECK((int)prop_data.get("face_count", 0) > 100);
 	CHECK((int)prop_data.get("boundary_edge_count", -1) == 0);
 	CHECK((int)prop_data.get("non_manifold_edge_count", -1) == 0);
+	CHECK(Array(Dictionary(prop_data.get("document", Dictionary())).get("modifiers", Array())).is_empty());
+	CHECK(Dictionary(prop_data.get("build_settings", Dictionary())).get("collision", String()) == "convex");
+	CHECK(Array(Dictionary(prop_data.get("build_settings", Dictionary())).get("lod_levels", Array())).size() == 2);
 }
 
 TEST_CASE("[SolersToolRegistry] preserves internal session context without changing the bound API") {
@@ -759,11 +892,7 @@ TEST_CASE("[SolersToolRegistry] skill.read serves compiled builtin skills") {
 	CHECK(data.get("name", String()) == "godot-3d-scene-building");
 	CHECK(!String(data.get("content", String())).is_empty());
 	CHECK(String(data.get("content", String())).contains("Prove one unfamiliar operation before repeating it"));
-	const Array required_tools = data.get("required_tools", Array());
-	CHECK(required_tools.has("resource.get_info"));
-	CHECK(required_tools.has("resource.create"));
-	CHECK(required_tools.has("resource.set_property"));
-	CHECK(required_tools.has("editor.invoke"));
+	CHECK_FALSE(data.has("required_tools"));
 }
 
 TEST_CASE("[SolersToolRegistry] skill.read rejects unknown builtin skills") {
@@ -779,32 +908,6 @@ TEST_CASE("[SolersToolRegistry] skill.read rejects unknown builtin skills") {
 	CHECK_FALSE((bool)result.get("ok", true));
 	const Dictionary error = result.get("error", Dictionary());
 	CHECK(error.get("code", String()) == "UNKNOWN_SKILL");
-}
-
-TEST_CASE("[SolersToolRegistry] validate_builtin_skills passes when required tools are registered") {
-	SolersAssetService asset_service;
-	SolersObservationService observation_service;
-	SolersPermissionManager permissions;
-	SolersReflectionService reflection_service;
-	SolersResourceService resource_service;
-	SolersScriptService script_service;
-	SolersToolRegistry registry;
-	registry.set_asset_service(&asset_service);
-	registry.set_observation_service(&observation_service);
-	registry.set_permission_manager(&permissions);
-	registry.set_reflection_service(&reflection_service);
-	registry.set_resource_service(&resource_service);
-	registry.set_script_service(&script_service);
-	registry.register_default_tools();
-	registry.validate_builtin_skills();
-
-	HashSet<StringName> registered_tools;
-	const Array definitions = registry.list_tools();
-	for (int i = 0; i < definitions.size(); i++) {
-		const Dictionary definition = definitions[i];
-		registered_tools.insert(StringName(definition.get("name", String())));
-	}
-	CHECK(SolersBuiltinSkills::validate_required_tools(registered_tools).is_empty());
 }
 
 TEST_CASE("[SolersToolRegistry] default model surface is primitive-first") {
@@ -854,15 +957,7 @@ TEST_CASE("[SolersToolRegistry] default model surface is primitive-first") {
 		"object.call_method",
 		"editor.invoke",
 		"runtime.control",
-		"tool.search",
 		"skill.read",
-	};
-	for (const char *name : required_direct) {
-		Dictionary tool = find_tool_def(tools, name);
-		REQUIRE_FALSE(tool.is_empty());
-		CHECK(tool.get("exposure", String()) == "direct");
-	}
-	const char *required_deferred[] = {
 		"scene.validate_spatial",
 		"scene.validate_structure",
 		"scene.bake_csg",
@@ -877,12 +972,18 @@ TEST_CASE("[SolersToolRegistry] default model surface is primitive-first") {
 		"asset.import_to_project",
 		"asset.generate",
 		"asset.status",
+		"model.create",
+		"model.inspect",
+		"model.batch",
+		"model.validate",
+		"model.save",
 	};
-	for (const char *name : required_deferred) {
+	for (const char *name : required_direct) {
 		Dictionary tool = find_tool_def(tools, name);
 		REQUIRE_FALSE(tool.is_empty());
-		CHECK(tool.get("exposure", String()) == "deferred");
+		CHECK(tool.get("exposure", String()) == "direct");
 	}
+	CHECK(find_tool_def(tools, "tool.search").is_empty());
 	CHECK(find_tool_def(tools, "asset.refine_to_ready").is_empty());
 	CHECK(find_tool_def(tools, "asset.optimize_geometry").is_empty());
 	CHECK(find_tool_def(tools, "asset.restyle_material").is_empty());
@@ -993,7 +1094,7 @@ TEST_CASE("[SolersToolRegistry] default model surface is primitive-first") {
 	CHECK(editor_invoke.get("exposure", String()) == "direct");
 	Dictionary export_run = find_tool_def(tools, "export.run_preset");
 	REQUIRE_FALSE(export_run.is_empty());
-	CHECK(export_run.get("exposure", String()) == "deferred");
+	CHECK(export_run.get("exposure", String()) == "direct");
 	CHECK(find_tool_def(tools, "runtime.get_logs").is_empty());
 	CHECK(find_tool_def(tools, "script.open_in_editor").is_empty());
 	CHECK(find_tool_def(tools, "validation.assert_no_errors").is_empty());
@@ -1198,61 +1299,57 @@ TEST_CASE("[SolersToolRegistry] batch failure summaries expose failed operation"
 	CHECK(summary.contains("error=NODE_NOT_FOUND"));
 }
 
-TEST_CASE("[SolersToolRegistry] tool.search token match finds deferred tools") {
-	SolersObservationService observation_service;
+TEST_CASE("[SolersToolRegistry] tool.search is absent without external deferred tools") {
 	SolersPermissionManager permissions;
-	SolersReflectionService reflection_service;
-	SolersResourceService resource_service;
-	SolersScriptService script_service;
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
-
 	SolersToolRegistry registry;
-	registry.set_observation_service(&observation_service);
 	registry.set_permission_manager(&permissions);
-	registry.set_reflection_service(&reflection_service);
-	registry.set_resource_service(&resource_service);
-	registry.set_script_service(&script_service);
 	registry.register_default_tools();
-
-	Dictionary export_query = search_deferred_tools(registry, "export preset", 10);
-	REQUIRE((bool)export_query.get("ok", false));
-	const bool found_export_tool = search_result_has_tool(export_query, "export.list_presets") ||
-			search_result_has_tool(export_query, "export.run_preset") ||
-			search_result_has_tool(export_query, "export.validate_presets");
-	CHECK(found_export_tool);
+	CHECK(find_tool_def(registry.list_tools(), "tool.search").is_empty());
+	const Dictionary result = search_deferred_tools(registry, "anything", 10);
+	CHECK_FALSE((bool)result.get("ok", true));
+	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "TOOL_NOT_FOUND");
 }
 
-TEST_CASE("[SolersToolRegistry] tool.search never returns direct tools") {
-	SolersObservationService observation_service;
+TEST_CASE("[SolersToolRegistry] external search prioritizes exact ids and never returns direct tools") {
 	SolersPermissionManager permissions;
-	SolersReflectionService reflection_service;
-	SolersResourceService resource_service;
-	SolersScriptService script_service;
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
-
 	SolersToolRegistry registry;
-	registry.set_observation_service(&observation_service);
 	registry.set_permission_manager(&permissions);
-	registry.set_reflection_service(&reflection_service);
-	registry.set_resource_service(&resource_service);
-	registry.set_script_service(&script_service);
 	registry.register_default_tools();
+	SolersToolCapability cap;
+	cap.permission = SolersPermissionManager::PERMISSION_OBSERVE;
+	cap.mutation_kind = "none";
+	auto add_external = [&](const StringName &p_name, const String &p_description) {
+		registry.register_tool(memnew(SolersFunctionTool(
+				p_name, p_description, Dictionary(), SolersToolExposure::DEFERRED, cap,
+				[](const SolersToolContext &, const Dictionary &) {
+					Dictionary result;
+					result["ok"] = true;
+					return result;
+				})));
+	};
+	add_external(SNAME("plugin.mesh.inspect"), "Inspect an external plugin mesh.");
+	add_external(SNAME("plugin.mesh.repair"), "Repair an external plugin mesh.");
 
-	Dictionary result = search_deferred_tools(registry, "property", 20);
+	Dictionary result = search_deferred_tools(registry, "plugin.mesh.inspect", 1);
 	REQUIRE((bool)result.get("ok", false));
 	Dictionary data = result.get("data", Dictionary());
 	Array matches = data.get("tools", Array());
+	REQUIRE(matches.size() == 1);
+	CHECK(Dictionary(matches[0]).get("name", String()) == "plugin.mesh.inspect");
+
+	result = search_deferred_tools(registry, "property", 20);
+	REQUIRE((bool)result.get("ok", false));
+	matches = Dictionary(result.get("data", Dictionary())).get("tools", Array());
 	for (int i = 0; i < matches.size(); i++) {
 		const Dictionary tool = matches[i];
 		CHECK(tool.get("exposure", String()) == "deferred");
 	}
-
-	Dictionary editor_result = search_deferred_tools(registry, "editor invoke", 20);
-	REQUIRE((bool)editor_result.get("ok", false));
-	CHECK_FALSE(search_result_has_tool(editor_result, "editor.invoke"));
+	CHECK_FALSE(search_result_has_tool(result, "editor.invoke"));
 }
 
-TEST_CASE("[SolersToolRegistry] tool.search uses broad OR matching and prioritizes names") {
+TEST_CASE("[SolersToolRegistry] tool.search uses Godot fuzzy fallback for external metadata") {
 	SolersObservationService observation_service;
 	SolersPermissionManager permissions;
 	SolersReflectionService reflection_service;
@@ -1299,12 +1396,13 @@ TEST_CASE("[SolersToolRegistry] tool.search uses broad OR matching and prioritiz
 				return result;
 			})));
 
-	Dictionary result = search_deferred_tools(registry, "needle metadataquartz", 5);
+	Dictionary result = search_deferred_tools(registry, "metadataquartz", 5);
 	REQUIRE((bool)result.get("ok", false));
 	CHECK(search_result_has_tool(result, "synthetic.opaque"));
-	CHECK(search_result_has_tool(result, "synthetic.needle"));
+	result = search_deferred_tools(registry, "synthetic.needle", 1);
+	REQUIRE((bool)result.get("ok", false));
 	const Array matches = Dictionary(result.get("data", Dictionary())).get("tools", Array());
-	REQUIRE(matches.size() >= 2);
+	REQUIRE(matches.size() == 1);
 	CHECK(Dictionary(matches[0]).get("name", String()) == "synthetic.needle");
 }
 
@@ -2678,7 +2776,7 @@ TEST_CASE("[SolersAgentSession] leaves model request limits to the caller") {
 
 	const Array tools = registry.list_tools();
 	CHECK_FALSE(find_tool_def(tools, "update_plan").is_empty());
-	CHECK_FALSE(find_tool_def(tools, "done").is_empty());
+	CHECK(find_tool_def(tools, "done").is_empty());
 	const Dictionary status = session.get_status();
 	CHECK_FALSE(status.has("tool_iterations"));
 	CHECK_FALSE(status.has("max_tool_iterations"));
@@ -2722,126 +2820,7 @@ TEST_CASE("[SolersAgentSession] validates the Codex update_plan contract") {
 	first["status"] = "completed";
 	valid_steps[0] = first;
 	args["plan"] = valid_steps;
-	args["reference_attachment_id"] = "synthetic_reference";
-	Dictionary missing_camera = SolersAgentSession::validate_plan(args);
-	CHECK_FALSE((bool)missing_camera.get("ok", true));
-	CHECK(Dictionary(missing_camera.get("error", Dictionary())).get("code", String()) == "INVALID_PLAN");
-	args["reference_camera_path"] = "ReferenceCamera";
 	CHECK(SolersAgentSession::validate_plan(args).get("ok", false));
-
-	first["evidence_required"] = true;
-	valid_steps[0] = first;
-	args["plan"] = valid_steps;
-	Dictionary missing_evidence = SolersAgentSession::validate_plan(args);
-	CHECK_FALSE((bool)missing_evidence.get("ok", true));
-	CHECK(Dictionary(missing_evidence.get("error", Dictionary())).get("code", String()) == "INVALID_PLAN");
-	Dictionary proof;
-	proof["call_id"] = "synthetic_call";
-	proof["tool"] = "asset.catalog.search";
-	Array evidence;
-	evidence.push_back(proof);
-	first["evidence"] = evidence;
-	valid_steps[0] = first;
-	args["plan"] = valid_steps;
-	CHECK(SolersAgentSession::validate_plan(args).get("ok", false));
-}
-
-TEST_CASE("[SolersAgentSession] completion requires verification after Godot errors") {
-	Dictionary args;
-	args["message"] = "Finished.";
-	Dictionary state;
-	state["authored_revision"] = 2;
-	state["runtime_epoch"] = 7;
-	state["observed_revision"] = 2;
-	state["runtime_capture_revision"] = 2;
-	state["scene_validation_revision"] = 2;
-	state["geometry_revision"] = 2;
-	CHECK(SolersAgentSession::validate_done(args, state).get("ok", false));
-
-	state["plan_incomplete"] = true;
-	CHECK(SolersAgentSession::validate_done(args, state).get("ok", false));
-	state["plan_incomplete"] = false;
-
-	state["unresolved_errors"] = 1;
-	Dictionary failure_error;
-	failure_error["code"] = "SPATIAL_VALIDATION_FAILED";
-	failure_error["message"] = "Synthetic failure";
-	Dictionary failure;
-	failure["failure_id"] = "synthetic_failure";
-	failure["tool"] = "scene.validate_structure";
-	failure["error"] = failure_error;
-	Dictionary failures;
-	failures["synthetic_failure"] = failure;
-	state["unresolved_tool_errors"] = failures;
-	Dictionary blocked = SolersAgentSession::validate_done(args, state);
-	CHECK_FALSE((bool)blocked.get("ok", true));
-	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "UNRESOLVED_TOOL_ERRORS");
-	CHECK(Array(Dictionary(blocked.get("error", Dictionary())).get("failures", Array())).size() == 1);
-
-	state["unresolved_errors"] = 0;
-	state["plan_evidence_invalid"] = true;
-	state["plan_evidence_error"] = "Synthetic evidence failure";
-	CHECK(SolersAgentSession::validate_done(args, state).get("ok", false));
-	state["plan_evidence_invalid"] = false;
-	state["observed_revision"] = 1;
-	blocked = SolersAgentSession::validate_done(args, state);
-	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "STALE_COMPLETION_EVIDENCE");
-
-	state["observed_revision"] = 2;
-	state["dirty"] = true;
-	blocked = SolersAgentSession::validate_done(args, state);
-	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "UNSAVED_SCENE");
-
-	state["dirty"] = false;
-	state["pending_jobs"] = true;
-	blocked = SolersAgentSession::validate_done(args, state);
-	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "PENDING_BACKGROUND_JOBS");
-
-	state["pending_jobs"] = false;
-	state["scene_validation_required"] = true;
-	state["scene_validation_revision"] = 1;
-	blocked = SolersAgentSession::validate_done(args, state);
-	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "STALE_SCENE_VALIDATION");
-
-	state["scene_validation_revision"] = 2;
-	state["scene_revision"] = 3;
-	state["geometry_revision"] = 2;
-	CHECK(SolersAgentSession::validate_done(args, state).get("ok", false));
-	state["geometry_revision"] = 3;
-	blocked = SolersAgentSession::validate_done(args, state);
-	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "STALE_SCENE_VALIDATION");
-	state["scene_validation_revision"] = 3;
-	state["render_pipeline_required"] = true;
-	state["render_pipeline_valid"] = false;
-	blocked = SolersAgentSession::validate_done(args, state);
-	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "INVALID_RENDER_PIPELINE");
-	state["render_pipeline_valid"] = true;
-	state["editor_capture_required"] = true;
-	state["editor_capture_revision"] = 1;
-	blocked = SolersAgentSession::validate_done(args, state);
-	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "STALE_EDITOR_EVIDENCE");
-
-	state["editor_capture_revision"] = 2;
-	state["runtime_required"] = true;
-	state["runtime_capture_revision"] = 1;
-	blocked = SolersAgentSession::validate_done(args, state);
-	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "STALE_RUNTIME_EVIDENCE");
-
-	state["runtime_capture_revision"] = 2;
-	state["visual_reference_required"] = true;
-	state["visual_reference_attachment_valid"] = true;
-	blocked = SolersAgentSession::validate_done(args, state);
-	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "INVALID_REFERENCE_LAYOUT_EVIDENCE");
-	state["reference_layout_valid"] = true;
-	blocked = SolersAgentSession::validate_done(args, state);
-	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "MISSING_VISUAL_EVIDENCE");
-	state["visual_evidence_declared"] = true;
-	state["visual_evidence_valid"] = false;
-	state["visual_evidence_error"] = "Synthetic stale capture.";
-	blocked = SolersAgentSession::validate_done(args, state);
-	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "INVALID_VISUAL_EVIDENCE");
-	state["visual_evidence_valid"] = true;
-	CHECK(SolersAgentSession::validate_done(args, state).get("ok", false));
 }
 
 TEST_CASE("[SolersToolRegistry] runtime lifecycle does not mutate authored project state") {
@@ -3147,6 +3126,29 @@ TEST_CASE("[SolersPlanCell] replaces its plan snapshot in place") {
 	CHECK(second_text.contains("Geometry verified"));
 	CHECK(second_text.contains(String::utf8("✓ Whitebox")));
 	CHECK_FALSE(second_text.contains("Starting geometry"));
+}
+
+TEST_CASE("[SolersToolCell] summarizes an expandable modeling transaction") {
+	Dictionary first;
+	first["operation"] = "add_box";
+	first["id"] = "body";
+	Dictionary second;
+	second["operation"] = "bevel";
+	Array steps;
+	steps.push_back(first);
+	steps.push_back(second);
+	Dictionary data;
+	data["path"] = "res://models/power_unit.smodel";
+	data["revision"] = 2;
+	data["steps"] = steps;
+	Dictionary result;
+	result["ok"] = true;
+	result["data"] = data;
+	const Dictionary formatted = SolersToolCell::format_model_batch_result(result);
+	CHECK(String(formatted.get("summary", String())).contains("2 steps"));
+	CHECK(String(formatted.get("summary", String())).contains("rev 2"));
+	CHECK(String(formatted.get("details", String())).contains("add_box [body]"));
+	CHECK(String(formatted.get("details", String())).contains("bevel"));
 }
 
 TEST_CASE("[SolersProviderRegistry] is the single transport profile source") {

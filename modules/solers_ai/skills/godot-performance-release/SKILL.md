@@ -1,19 +1,6 @@
 ---
 name: godot-performance-release
 description: Measure, optimize, and release Godot projects using profiler evidence, native scalability features, export preset validation, and packaged-build acceptance checks.
-requires_tools:
-  - editor.get_snapshot
-  - project.search_files
-  - project.read_file
-  - class.search
-  - class.introspect
-  - objects.batch
-  - script.validate
-  - runtime.control
-  - viewport.capture
-  - export.list_presets
-  - export.validate_presets
-  - export.run_preset
 ---
 
 # Godot Performance and Release

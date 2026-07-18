@@ -118,7 +118,7 @@ String SolersModelSource::hash(const PackedByteArray &p_bytes) {
 void SolersModelingService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_write_source_bytes", "path", "bytes"), &SolersModelingService::_write_source_bytes);
 	ClassDB::bind_method(D_METHOD("_delete_source", "path"), &SolersModelingService::_delete_source);
-	ClassDB::bind_method(D_METHOD("create", "path", "primitive", "parameters", "undoable"), &SolersModelingService::create, DEFVAL(Dictionary()), DEFVAL(true));
+	ClassDB::bind_method(D_METHOD("create", "path", "undoable"), &SolersModelingService::create, DEFVAL(true));
 	ClassDB::bind_method(D_METHOD("inspect", "path"), &SolersModelingService::inspect);
 	ClassDB::bind_method(D_METHOD("validate_source", "path"), &SolersModelingService::validate_source);
 	ClassDB::bind_method(D_METHOD("apply", "path", "operation", "parameters", "expected_revision", "undoable"), &SolersModelingService::apply, DEFVAL(Dictionary()), DEFVAL(-1), DEFVAL(true));
@@ -165,10 +165,10 @@ void SolersModelingService::_write_source_bytes(const String &p_path, const Pack
 	Ref<FileAccess> file = FileAccess::open(p_path, FileAccess::WRITE);
 	ERR_FAIL_COND_MSG(file.is_null(), vformat("Could not write Solers model source: %s", p_path));
 	file->store_buffer(p_bytes);
+	ERR_FAIL_COND_MSG(file->get_error() != OK, vformat("Could not finish writing Solers model source: %s", p_path));
 	file.unref();
 	if (EditorFileSystem::get_singleton()) {
-		EditorFileSystem::get_singleton()->update_file(p_path);
-		EditorFileSystem::get_singleton()->reimport_files({ p_path });
+		EditorFileSystem::get_singleton()->scan_changes();
 	}
 }
 
@@ -211,13 +211,17 @@ Dictionary SolersModelingService::_commit(const String &p_path, const SolersEdit
 	} else {
 		_write_source_bytes(p_path, new_bytes);
 	}
+	if (!FileAccess::exists(p_path) || _read_source_bytes(p_path) != new_bytes) {
+		return _error("MODEL_WRITE_FAILED", vformat("The model source was not written completely: %s", p_path), true);
+	}
 	Dictionary data = p_mesh.inspect();
 	data["path"] = p_path;
 	data["source_hash"] = SolersModelSource::hash(new_bytes);
+	data["import_status"] = "scan_requested";
 	return _ok(data);
 }
 
-Dictionary SolersModelingService::create(const String &p_path, const StringName &p_primitive, const Dictionary &p_parameters, bool p_undoable) {
+Dictionary SolersModelingService::create(const String &p_path, bool p_undoable) {
 	if (!_valid_source_path(p_path)) {
 		return _error("MODEL_PATH_INVALID", MODEL_PATH_ERROR, false);
 	}
@@ -225,13 +229,8 @@ Dictionary SolersModelingService::create(const String &p_path, const StringName 
 		return _error("MODEL_ALREADY_EXISTS", vformat("A model source already exists at %s.", p_path), true);
 	}
 	SolersEditableMesh mesh;
-	const StringName operation = StringName("create_" + String(p_primitive).to_lower());
-	Dictionary result = SolersModelOperationRegistry::get_singleton()->execute(mesh, operation, p_parameters);
-	if (!(bool)result.get("ok", false)) {
-		return result;
-	}
 	mesh.increment_revision();
-	return _commit(p_path, mesh, vformat("Solers Modeling: Create %s", String(p_primitive).capitalize()), p_undoable);
+	return _commit(p_path, mesh, "Solers Modeling: Create Source", p_undoable);
 }
 
 Dictionary SolersModelingService::inspect(const String &p_path) const {
@@ -267,6 +266,8 @@ Dictionary SolersModelingService::validate_source(const String &p_path) const {
 	}
 	Dictionary data = mesh.inspect();
 	data["valid"] = true;
+	data["path"] = p_path;
+	data["source_hash"] = FileAccess::get_sha256(p_path);
 	return _ok(data);
 }
 
@@ -309,15 +310,80 @@ Dictionary SolersModelingService::batch(const String &p_path, const Array &p_ope
 	if (p_expected_revision >= 0 && mesh.get_revision() != p_expected_revision) {
 		return _error("MODEL_REVISION_CONFLICT", vformat("Expected model revision %d, found %d.", p_expected_revision, mesh.get_revision()), true);
 	}
-	Array results;
+	SolersModelOperationRegistry *registry = SolersModelOperationRegistry::get_singleton();
+	HashSet<String> declared_results;
 	for (int i = 0; i < p_operations.size(); i++) {
 		if (p_operations[i].get_type() != Variant::DICTIONARY) {
 			return _error("MODEL_BATCH_INVALID", vformat("Batch item %d must be an object.", i), false);
 		}
 		const Dictionary item = p_operations[i];
+		for (const Variant &key : item.keys()) {
+			const String field = key;
+			if (field != "id" && field != "operation" && field != "parameters" && field != "bindings") {
+				return _error("MODEL_BATCH_INVALID", vformat("Batch item %d contains unsupported field %s.", i, field), true);
+			}
+		}
 		const StringName operation = StringName(item.get("operation", String()));
+		const SolersModelOperationDefinition *definition = registry->get_operation(operation);
+		if (!definition) {
+			return _error("MODEL_OPERATION_NOT_FOUND", vformat("Unknown modeling operation at batch item %d: %s", i, operation), true);
+		}
+		if (item.get("parameters", Dictionary()).get_type() != Variant::DICTIONARY || item.get("bindings", Dictionary()).get_type() != Variant::DICTIONARY) {
+			return _error("MODEL_BATCH_INVALID", vformat("Batch item %d parameters and bindings must be objects.", i), true);
+		}
 		const Dictionary parameters = item.get("parameters", Dictionary());
-		Dictionary result = SolersModelOperationRegistry::get_singleton()->execute(mesh, operation, parameters);
+		const Dictionary static_validation = registry->validate_parameters(operation, parameters, true);
+		if (!(bool)static_validation.get("ok", false)) {
+			Dictionary failed = static_validation;
+			Dictionary failure = failed.get("error", Dictionary());
+			failure["batch_index"] = i;
+			failure["operation"] = operation;
+			failed["error"] = failure;
+			return failed;
+		}
+		const Dictionary parameter_properties = definition->parameters_schema.get("properties", Dictionary());
+		const Dictionary bindings = item.get("bindings", Dictionary());
+		for (const Variant &parameter_key : bindings.keys()) {
+			if (!parameter_properties.has(parameter_key) || bindings[parameter_key].get_type() != Variant::DICTIONARY) {
+				return _error("MODEL_BINDING_INVALID", vformat("Batch item %d has an invalid binding for %s.", i, parameter_key), true);
+			}
+			const Dictionary binding = bindings[parameter_key];
+			if (binding.size() != 2 || String(binding.get("result", String())).is_empty() || String(binding.get("field", String())).is_empty()) {
+				return _error("MODEL_BINDING_INVALID", vformat("Batch item %d binding %s requires only result and field.", i, parameter_key), true);
+			}
+			if (!declared_results.has(String(binding["result"]))) {
+				return _error("MODEL_BINDING_INVALID", vformat("Batch item %d binding %s must reference an earlier named result.", i, parameter_key), true);
+			}
+		}
+		const String result_id = String(item.get("id", String())).strip_edges();
+		if (item.has("id") && result_id.is_empty()) {
+			return _error("MODEL_BATCH_INVALID", vformat("Batch item %d id must be a non-empty string.", i), true);
+		}
+		if (!result_id.is_empty() && declared_results.has(result_id)) {
+			return _error("MODEL_BATCH_INVALID", vformat("Batch result id is duplicated: %s", result_id), true);
+		}
+		if (!result_id.is_empty()) {
+			declared_results.insert(result_id);
+		}
+	}
+
+	Dictionary named_results;
+	Array steps;
+	for (int i = 0; i < p_operations.size(); i++) {
+		const Dictionary item = p_operations[i];
+		const StringName operation = StringName(item.get("operation", String()));
+		Dictionary parameters = Dictionary(item.get("parameters", Dictionary())).duplicate(true);
+		const Dictionary bindings = item.get("bindings", Dictionary());
+		for (const Variant &parameter_key : bindings.keys()) {
+			const Dictionary binding = bindings[parameter_key];
+			const Dictionary prior = named_results.get(binding.get("result", String()), Dictionary());
+			const String field = binding.get("field", String());
+			if (!prior.has(field)) {
+				return _error("MODEL_BINDING_FIELD_MISSING", vformat("Batch item %d expected field %s in result %s.", i, field, binding.get("result", String())), true);
+			}
+			parameters[parameter_key] = prior[field];
+		}
+		Dictionary result = registry->execute(mesh, operation, parameters);
 		if (!(bool)result.get("ok", false)) {
 			Dictionary failed = result;
 			Dictionary failure = failed.get("error", Dictionary());
@@ -326,13 +392,25 @@ Dictionary SolersModelingService::batch(const String &p_path, const Array &p_ope
 			failed["error"] = failure;
 			return failed;
 		}
-		results.push_back(result.get("data", Dictionary()));
+		const Dictionary result_data = result.get("data", Dictionary());
+		const String result_id = String(item.get("id", String())).strip_edges();
+		if (!result_id.is_empty()) {
+			named_results[result_id] = result_data;
+		}
+		Dictionary step;
+		step["operation"] = operation;
+		if (!result_id.is_empty()) {
+			step["id"] = result_id;
+		}
+		step["result"] = result_data;
+		steps.push_back(step);
 	}
 	mesh.increment_revision();
 	Dictionary commit = _commit(p_path, mesh, "Solers Modeling: Batch", p_undoable);
 	if ((bool)commit.get("ok", false)) {
 		Dictionary data = commit["data"];
-		data["results"] = results;
+		data["steps"] = steps;
+		data["step_count"] = steps.size();
 		commit["data"] = data;
 	}
 	return commit;

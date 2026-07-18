@@ -1,17 +1,6 @@
 ---
 name: godot-character-animation
 description: Import, retarget, assemble, drive, and verify Godot 3D character animation with reimport-safe rigs, AnimationPlayer libraries, and AnimationTree graphs.
-requires_tools:
-  - editor.get_snapshot
-  - project.search_files
-  - project.read_file
-  - resource.get_info
-  - class.search
-  - class.introspect
-  - objects.batch
-  - script.validate
-  - runtime.control
-  - viewport.capture
 ---
 
 # Godot Character Animation

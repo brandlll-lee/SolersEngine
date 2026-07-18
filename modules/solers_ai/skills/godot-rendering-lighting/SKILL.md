@@ -1,15 +1,6 @@
 ---
 name: godot-rendering-lighting
 description: Native Godot 4 rendering, PBR material, camera, exposure, GI, shadow, fog, reflection, and final-capture workflow for believable interior and exterior scenes.
-requires_tools:
-  - class.introspect
-  - resource.get_info
-  - object.get_property
-  - object.set_property
-  - viewport.capture
-  - runtime.control
-  - editor.get_snapshot
-  - project.search_files
 ---
 
 # Godot Rendering and Lighting

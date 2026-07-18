@@ -264,10 +264,12 @@ bool SolersEditableMesh::reverse_face(int64_t p_face_id, String *r_error) {
 	}
 	Vector<int64_t> reversed_vertices;
 	Vector<Vector2> reversed_uvs;
+	HashSet<int64_t> previous_edges;
 	for (int i = face->loops.size() - 1; i >= 0; i--) {
 		const Loop &loop = loops[face->loops[i]];
 		reversed_vertices.push_back(loop.vertex);
 		reversed_uvs.push_back(loop.uv);
+		previous_edges.insert(loop.edge);
 	}
 	for (int64_t loop_id : face->loops) {
 		_remove_loop_from_edge(loops[loop_id].edge, loop_id);
@@ -281,7 +283,17 @@ bool SolersEditableMesh::reverse_face(int64_t p_face_id, String *r_error) {
 		loop.next = face->loops[(i + 1) % face->loops.size()];
 		edges[loop.edge].loops.push_back(loop.id);
 	}
-	_remove_orphan_elements();
+	// Reversing one face may replace some of its boundary edges. Remove only
+	// those local orphan edges: a global orphan sweep would also delete
+	// vertices preallocated by a larger topology operation (for example a
+	// segmented bevel) before they are connected.
+	for (int64_t edge_id : previous_edges) {
+		const Edge *edge = edges.getptr(edge_id);
+		if (edge && edge->loops.is_empty()) {
+			edge_lookup.erase(EdgeKey(edge->vertex_a, edge->vertex_b));
+			edges.erase(edge_id);
+		}
+	}
 	return true;
 }
 
@@ -943,7 +955,21 @@ PackedInt32Array SolersEditableMesh::triangulate_face(int64_t p_face_id) const {
 		return PackedInt32Array();
 	}
 	const Vector3 normal = _face_weighted_normal(*this, *face).normalized();
-	return normal.is_zero_approx() ? PackedInt32Array() : Geometry2D::triangulate_polygon(_project_face(*this, *face, normal));
+	if (normal.is_zero_approx()) {
+		return PackedInt32Array();
+	}
+	PackedInt32Array triangles = Geometry2D::triangulate_polygon(_project_face(*this, *face, normal));
+	for (int i = 0; i + 2 < triangles.size(); i += 3) {
+		const Vector3 a = get_vertex(get_loop(face->loops[triangles[i]])->vertex)->position;
+		const Vector3 b = get_vertex(get_loop(face->loops[triangles[i + 1]])->vertex)->position;
+		const Vector3 c = get_vertex(get_loop(face->loops[triangles[i + 2]])->vertex)->position;
+		if ((b - a).cross(c - a).dot(normal) < 0.0) {
+			const int32_t index = triangles[i + 1];
+			triangles.set(i + 1, triangles[i + 2]);
+			triangles.set(i + 2, index);
+		}
+	}
+	return triangles;
 }
 
 static PackedInt32Array _generate_lod(const Array &p_arrays, double p_ratio) {

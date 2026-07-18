@@ -13,10 +13,141 @@
 #include "modules/solers_modeling/core/solers_model_modifier.h"
 #include "modules/solers_modeling/core/solers_model_uv.h"
 
+static void _expand_vector_schemas(Dictionary &r_schema) {
+	const String type = r_schema.get("type", String());
+	if (type == "object") {
+		if (!r_schema.has("properties")) {
+			Dictionary component;
+			component["type"] = "number";
+			Dictionary properties;
+			properties["x"] = component;
+			properties["y"] = component;
+			properties["z"] = component;
+			r_schema["properties"] = properties;
+			r_schema["additionalProperties"] = false;
+			return;
+		}
+		Dictionary properties = r_schema["properties"];
+		for (const Variant &key : properties.keys()) {
+			Dictionary property = properties[key];
+			_expand_vector_schemas(property);
+			properties[key] = property;
+		}
+		r_schema["properties"] = properties;
+	} else if (type == "array" && r_schema.has("items")) {
+		Dictionary items = r_schema["items"];
+		_expand_vector_schemas(items);
+		r_schema["items"] = items;
+	}
+}
+
 static Dictionary _operation_schema(const char *p_json) {
 	const Variant parsed = JSON::parse_string(p_json);
 	ERR_FAIL_COND_V_MSG(parsed.get_type() != Variant::DICTIONARY, Dictionary(), "Invalid Solers modeling operation schema.");
-	return parsed;
+	Dictionary schema = parsed;
+	_expand_vector_schemas(schema);
+	return schema;
+}
+
+static bool _schema_type_matches(const Variant &p_value, const String &p_type) {
+	if (p_type == "object") {
+		return p_value.get_type() == Variant::DICTIONARY || p_value.get_type() == Variant::VECTOR2 || p_value.get_type() == Variant::VECTOR3;
+	}
+	if (p_type == "array") {
+		return p_value.get_type() == Variant::ARRAY;
+	}
+	if (p_type == "string") {
+		return p_value.get_type() == Variant::STRING || p_value.get_type() == Variant::STRING_NAME;
+	}
+	if (p_type == "integer") {
+		return p_value.get_type() == Variant::INT || (p_value.get_type() == Variant::FLOAT && Math::is_equal_approx((double)p_value, Math::round((double)p_value)));
+	}
+	if (p_type == "number") {
+		return p_value.get_type() == Variant::INT || p_value.get_type() == Variant::FLOAT;
+	}
+	if (p_type == "boolean") {
+		return p_value.get_type() == Variant::BOOL;
+	}
+	return true;
+}
+
+static bool _validate_schema_value(const Variant &p_value, const Dictionary &p_schema, const String &p_path, String &r_error) {
+	const String type = p_schema.get("type", String());
+	if (!type.is_empty() && !_schema_type_matches(p_value, type)) {
+		r_error = vformat("%s must be %s.", p_path, type);
+		return false;
+	}
+	const Array allowed = p_schema.get("enum", Array());
+	if (!allowed.is_empty() && !allowed.has(p_value)) {
+		r_error = vformat("%s must be one of %s.", p_path, JSON::stringify(allowed));
+		return false;
+	}
+	if (type == "number" || type == "integer") {
+		const double value = p_value;
+		if (!Math::is_finite(value)) {
+			r_error = vformat("%s must be finite.", p_path);
+			return false;
+		}
+		if (p_schema.has("minimum") && value < (double)p_schema["minimum"]) {
+			r_error = vformat("%s must be at least %s.", p_path, p_schema["minimum"]);
+			return false;
+		}
+		if (p_schema.has("maximum") && value > (double)p_schema["maximum"]) {
+			r_error = vformat("%s must be at most %s.", p_path, p_schema["maximum"]);
+			return false;
+		}
+		if (p_schema.has("exclusiveMinimum") && value <= (double)p_schema["exclusiveMinimum"]) {
+			r_error = vformat("%s must be greater than %s.", p_path, p_schema["exclusiveMinimum"]);
+			return false;
+		}
+		if (p_schema.has("exclusiveMaximum") && value >= (double)p_schema["exclusiveMaximum"]) {
+			r_error = vformat("%s must be less than %s.", p_path, p_schema["exclusiveMaximum"]);
+			return false;
+		}
+	}
+	if (type == "array") {
+		const Array values = p_value;
+		if (p_schema.has("minItems") && values.size() < (int)p_schema["minItems"]) {
+			r_error = vformat("%s requires at least %d item(s).", p_path, (int)p_schema["minItems"]);
+			return false;
+		}
+		if (p_schema.has("maxItems") && values.size() > (int)p_schema["maxItems"]) {
+			r_error = vformat("%s allows at most %d item(s).", p_path, (int)p_schema["maxItems"]);
+			return false;
+		}
+		const Dictionary item_schema = p_schema.get("items", Dictionary());
+		for (int i = 0; i < values.size() && !item_schema.is_empty(); i++) {
+			if (!_validate_schema_value(values[i], item_schema, vformat("%s[%d]", p_path, i), r_error)) {
+				return false;
+			}
+		}
+	}
+	if (type == "object" && p_value.get_type() == Variant::DICTIONARY) {
+		const Dictionary value = p_value;
+		const Dictionary properties = p_schema.get("properties", Dictionary());
+		const Array required = p_schema.get("required", Array());
+		for (const Variant &key : required) {
+			if (!value.has(key)) {
+				r_error = vformat("%s.%s is required.", p_path, key);
+				return false;
+			}
+		}
+		const bool allow_additional = p_schema.get("additionalProperties", true);
+		const Variant *key = nullptr;
+		while ((key = value.next(key))) {
+			if (!properties.has(*key)) {
+				if (!allow_additional) {
+					r_error = vformat("%s.%s is not a supported parameter.", p_path, *key);
+					return false;
+				}
+				continue;
+			}
+			if (!_validate_schema_value(value[*key], properties[*key], vformat("%s.%s", p_path, *key), r_error)) {
+				return false;
+			}
+		}
+	}
+	return true;
 }
 
 static Vector3 _vector3_arg(const Variant &p_value, const Vector3 &p_default = Vector3()) {
@@ -138,7 +269,29 @@ static Dictionary _created_result(const Vector<int64_t> &p_vertices, const Vecto
 	return result;
 }
 
-static Dictionary _create_box(SolersEditableMesh &r_mesh, const Dictionary &p_args) {
+static Vector<int64_t> _face_edges(const SolersEditableMesh &p_mesh, const Vector<int64_t> &p_faces) {
+	HashSet<int64_t> unique;
+	for (int64_t face_id : p_faces) {
+		const SolersEditableMesh::Face *face = p_mesh.get_face(face_id);
+		if (!face) {
+			continue;
+		}
+		for (int64_t loop_id : face->loops) {
+			const SolersEditableMesh::Loop *loop = p_mesh.get_loop(loop_id);
+			if (loop) {
+				unique.insert(loop->edge);
+			}
+		}
+	}
+	Vector<int64_t> result;
+	for (int64_t edge_id : unique) {
+		result.push_back(edge_id);
+	}
+	result.sort();
+	return result;
+}
+
+static Dictionary _add_box(SolersEditableMesh &r_mesh, const Dictionary &p_args) {
 	const Vector3 size = _vector3_arg(p_args.get("size", Variant()), Vector3(1, 1, 1));
 	const Vector3 center = _vector3_arg(p_args.get("center", Variant()));
 	if (!size.is_finite() || size.x <= 0 || size.y <= 0 || size.z <= 0 || !center.is_finite()) {
@@ -178,10 +331,10 @@ static Dictionary _create_box(SolersEditableMesh &r_mesh, const Dictionary &p_ar
 		}
 	}
 	r_mesh.select_faces(faces);
-	return _created_result(vertices, r_mesh.get_edge_ids(), faces);
+	return _created_result(vertices, _face_edges(r_mesh, faces), faces);
 }
 
-static Dictionary _create_plane(SolersEditableMesh &r_mesh, const Dictionary &p_args) {
+static Dictionary _add_plane(SolersEditableMesh &r_mesh, const Dictionary &p_args) {
 	const Vector2 size = _vector2_arg(p_args.get("size", Variant()), Vector2(1, 1));
 	const Vector3 center = _vector3_arg(p_args.get("center", Variant()));
 	if (!size.is_finite() || size.x <= 0 || size.y <= 0 || !center.is_finite()) {
@@ -206,10 +359,10 @@ static Dictionary _create_plane(SolersEditableMesh &r_mesh, const Dictionary &p_
 	Vector<int64_t> faces;
 	faces.push_back(face_id);
 	r_mesh.select_faces(faces);
-	return _created_result(vertices, r_mesh.get_edge_ids(), faces);
+	return _created_result(vertices, _face_edges(r_mesh, faces), faces);
 }
 
-static Dictionary _create_cylinder(SolersEditableMesh &r_mesh, const Dictionary &p_args) {
+static Dictionary _add_cylinder(SolersEditableMesh &r_mesh, const Dictionary &p_args) {
 	const int segments = CLAMP((int)p_args.get("segments", 32), 3, 256);
 	const double radius = p_args.get("radius", 0.5);
 	const double depth = p_args.get("depth", 1.0);
@@ -258,7 +411,7 @@ static Dictionary _create_cylinder(SolersEditableMesh &r_mesh, const Dictionary 
 		r_mesh.set_loop_uv(face->loops[3], Vector2(u0, 1));
 	}
 	r_mesh.select_faces(created_faces);
-	return _created_result(created_vertices, r_mesh.get_edge_ids(), created_faces);
+	return _created_result(created_vertices, _face_edges(r_mesh, created_faces), created_faces);
 }
 
 static Vector<int64_t> _domain_selection(const SolersEditableMesh &p_mesh, const String &p_domain) {
@@ -1486,22 +1639,11 @@ static Dictionary _bisect(SolersEditableMesh &r_mesh, const Dictionary &p_args) 
 	return _operation_ok(data);
 }
 
-static Dictionary _add_modifier(SolersEditableMesh &r_mesh, const Dictionary &p_args) {
-	const StringName type = StringName(String(p_args.get("type", String())).to_lower());
-	static const HashSet<StringName> allowed = { SNAME("mirror"), SNAME("array"), SNAME("solidify"), SNAME("bevel"), SNAME("boolean") };
-	if (!allowed.has(type)) {
-		Dictionary error;
-		error["code"] = "MODEL_MODIFIER_UNSUPPORTED";
-		error["message"] = "Modifier type must be mirror, array, solidify, bevel, or boolean.";
-		Dictionary result;
-		result["ok"] = false;
-		result["error"] = error;
-		return result;
-	}
-	const int64_t id = r_mesh.add_modifier(type, p_args.get("parameters", Dictionary()));
+static Dictionary _add_modifier(SolersEditableMesh &r_mesh, const Dictionary &p_args, const StringName &p_type) {
+	const int64_t id = r_mesh.add_modifier(p_type, p_args);
 	Dictionary data;
 	data["modifier_id"] = id;
-	data["type"] = type;
+	data["type"] = p_type;
 	Dictionary result;
 	result["ok"] = true;
 	result["data"] = data;
@@ -1527,20 +1669,16 @@ static Dictionary _remove_modifier(SolersEditableMesh &r_mesh, const Dictionary 
 	return result;
 }
 
-static Dictionary _update_modifier(SolersEditableMesh &r_mesh, const Dictionary &p_args) {
+static Dictionary _set_modifier_enabled(SolersEditableMesh &r_mesh, const Dictionary &p_args) {
 	const int64_t id = p_args.get("modifier_id", 0);
 	for (SolersEditableMesh::Modifier &modifier : r_mesh.get_modifiers()) {
 		if (modifier.id != id) {
 			continue;
 		}
-		if (p_args.has("parameters")) {
-			modifier.parameters = ((Dictionary)p_args.get("parameters", Dictionary())).duplicate(true);
-		}
-		if (p_args.has("enabled")) {
-			modifier.enabled = p_args.get("enabled", true);
-		}
+		modifier.enabled = p_args.get("enabled", true);
 		Dictionary data;
 		data["modifier_id"] = id;
+		data["enabled"] = modifier.enabled;
 		Dictionary result;
 		result["ok"] = true;
 		result["data"] = data;
@@ -1696,9 +1834,9 @@ Dictionary SolersModelOperationRegistry::_error(const String &p_code, const Stri
 
 SolersModelOperationRegistry::SolersModelOperationRegistry() {
 	const Dictionary empty = _operation_schema(R"({"type":"object","properties":{},"additionalProperties":false})");
-	_add(SNAME("create_box"), "Create a dimensionally exact box primitive.", _operation_schema(R"({"type":"object","properties":{"size":{"description":"Box dimensions in meters.","type":"object"},"center":{"description":"Primitive center.","type":"object"}},"additionalProperties":false})"), true, false, _create_box);
-	_add(SNAME("create_plane"), "Create a planar quad primitive.", _operation_schema(R"({"type":"object","properties":{"size":{"description":"Plane width and depth.","type":"object"},"center":{"type":"object"}},"additionalProperties":false})"), true, false, _create_plane);
-	_add(SNAME("create_cylinder"), "Create a capped cylinder with controlled radial topology.", _operation_schema(R"({"type":"object","properties":{"segments":{"type":"integer","minimum":3,"maximum":256},"radius":{"type":"number","exclusiveMinimum":0},"depth":{"type":"number","exclusiveMinimum":0},"center":{"type":"object"}},"additionalProperties":false})"), true, false, _create_cylinder);
+	_add(SNAME("add_box"), "Add a dimensionally exact box primitive to the current model.", _operation_schema(R"({"type":"object","properties":{"size":{"description":"Box dimensions in meters.","type":"object"},"center":{"description":"Primitive center.","type":"object"}},"additionalProperties":false})"), true, false, _add_box);
+	_add(SNAME("add_plane"), "Add a planar quad primitive to the current model.", _operation_schema(R"({"type":"object","properties":{"size":{"description":"Plane width and depth.","type":"object"},"center":{"type":"object"}},"additionalProperties":false})"), true, false, _add_plane);
+	_add(SNAME("add_cylinder"), "Add a capped cylinder with controlled radial topology to the current model.", _operation_schema(R"({"type":"object","properties":{"segments":{"type":"integer","minimum":3,"maximum":256},"radius":{"type":"number","exclusiveMinimum":0},"depth":{"type":"number","exclusiveMinimum":0},"center":{"type":"object"}},"additionalProperties":false})"), true, false, _add_cylinder);
 	_add(SNAME("select"), "Select persistent topology IDs, connected regions, quad edge loops, boundaries, or spatial matches.", _operation_schema(R"({"type":"object","properties":{"domain":{"type":"string","enum":["vertex","edge","face"]},"ids":{"type":"array","items":{"type":"integer"}},"mode":{"type":"string","enum":["replace","add","subtract"]},"all":{"type":"boolean"},"boundary":{"type":"boolean"},"connected":{"type":"boolean"},"edge_loop":{"type":"boolean"},"spatial":{"type":"object","properties":{"center":{"type":"object"},"radius":{"type":"number","minimum":0},"min":{"type":"object"},"max":{"type":"object"}},"additionalProperties":false}},"required":["domain"],"additionalProperties":false})"), false, false, _select_elements);
 	_add(SNAME("transform"), "Move, rotate, and scale selected topology with exact numeric values, axis constraints, and snapping.", _operation_schema(R"({"type":"object","properties":{"vertex_ids":{"type":"array","items":{"type":"integer"}},"translation":{"type":"object"},"rotation_degrees":{"type":"object"},"scale":{"type":"object"},"pivot":{"type":"object"},"axis":{"type":"string","enum":["all","x","y","z"]},"snap":{"type":"number","minimum":0}},"additionalProperties":false})"), false, false, _transform_selection);
 	_add(SNAME("extrude_faces"), "Extrude a connected face region while preserving boundary adjacency.", _operation_schema(R"({"type":"object","properties":{"face_ids":{"type":"array","items":{"type":"integer"}},"distance":{"type":"number"},"offset":{"type":"object"}},"additionalProperties":false})"), true, false, _extrude_faces);
@@ -1725,9 +1863,13 @@ SolersModelOperationRegistry::SolersModelOperationRegistry() {
 	_add(SNAME("bisect"), "Cut all intersected faces with an exact plane and optionally remove one side.", bisect_schema, true, false, _bisect);
 	_add(SNAME("knife_plane"), "Perform a deterministic knife cut defined by an exact plane.", bisect_schema, true, false, _bisect);
 	_add(SNAME("bevel"), "Destructively bevel every edge of a closed manifold hard-surface mesh.", _operation_schema(R"({"type":"object","properties":{"width":{"type":"number","exclusiveMinimum":0},"segments":{"type":"integer","minimum":1,"maximum":12}},"additionalProperties":false})"), true, false, _bevel_geometry);
-	_add(SNAME("add_modifier"), "Add a non-destructive Mirror, Array, Solidify, Bevel, or Boolean modifier.", _operation_schema(R"({"type":"object","properties":{"type":{"type":"string","enum":["mirror","array","solidify","bevel","boolean"]},"parameters":{"type":"object"}},"required":["type"],"additionalProperties":false})"), false, true, _add_modifier);
+	_add(SNAME("add_mirror_modifier"), "Add a non-destructive mirror modifier.", _operation_schema(R"({"type":"object","properties":{"axis":{"type":"string","enum":["x","y","z"]},"origin":{"type":"object"},"merge":{"type":"boolean"},"merge_distance":{"type":"number","minimum":0}},"additionalProperties":false})"), false, true, [](SolersEditableMesh &r_mesh, const Dictionary &p_args) { return _add_modifier(r_mesh, p_args, SNAME("mirror")); });
+	_add(SNAME("add_array_modifier"), "Add a non-destructive linear array modifier.", _operation_schema(R"({"type":"object","properties":{"count":{"type":"integer","minimum":1,"maximum":10000},"offset":{"type":"object"}},"additionalProperties":false})"), false, true, [](SolersEditableMesh &r_mesh, const Dictionary &p_args) { return _add_modifier(r_mesh, p_args, SNAME("array")); });
+	_add(SNAME("add_solidify_modifier"), "Add a non-destructive solidify modifier to an open surface.", _operation_schema(R"({"type":"object","properties":{"thickness":{"type":"number"}},"additionalProperties":false})"), false, true, [](SolersEditableMesh &r_mesh, const Dictionary &p_args) { return _add_modifier(r_mesh, p_args, SNAME("solidify")); });
+	_add(SNAME("add_bevel_modifier"), "Add a non-destructive hard-surface bevel modifier.", _operation_schema(R"({"type":"object","properties":{"width":{"type":"number","exclusiveMinimum":0},"segments":{"type":"integer","minimum":1,"maximum":12}},"additionalProperties":false})"), false, true, [](SolersEditableMesh &r_mesh, const Dictionary &p_args) { return _add_modifier(r_mesh, p_args, SNAME("bevel")); });
+	_add(SNAME("add_boolean_modifier"), "Add a non-destructive Boolean modifier using another .smodel source.", _operation_schema(R"({"type":"object","properties":{"operand":{"type":"string"},"operation":{"type":"string","enum":["union","subtract","intersect"]},"translation":{"type":"object"},"rotation_degrees":{"type":"object"},"scale":{"type":"object"}},"required":["operand","operation"],"additionalProperties":false})"), false, true, [](SolersEditableMesh &r_mesh, const Dictionary &p_args) { return _add_modifier(r_mesh, p_args, SNAME("boolean")); });
 	_add(SNAME("remove_modifier"), "Remove a modifier by persistent ID.", _operation_schema(R"({"type":"object","properties":{"modifier_id":{"type":"integer"}},"required":["modifier_id"],"additionalProperties":false})"), false, true, _remove_modifier);
-	_add(SNAME("update_modifier"), "Replace a modifier's parameters or enabled state by persistent ID.", _operation_schema(R"({"type":"object","properties":{"modifier_id":{"type":"integer"},"parameters":{"type":"object"},"enabled":{"type":"boolean"}},"required":["modifier_id"],"additionalProperties":false})"), false, true, _update_modifier);
+	_add(SNAME("set_modifier_enabled"), "Enable or disable a modifier by persistent ID.", _operation_schema(R"({"type":"object","properties":{"modifier_id":{"type":"integer"},"enabled":{"type":"boolean"}},"required":["modifier_id","enabled"],"additionalProperties":false})"), false, true, _set_modifier_enabled);
 	_add(SNAME("apply_modifiers"), "Bake the current modifier stack into editable base topology.", empty, true, true, _apply_modifiers);
 	_add(SNAME("weighted_normals"), "Enable or disable area-weighted smooth normals while respecting hard edges.", _operation_schema(R"({"type":"object","properties":{"enabled":{"type":"boolean"}},"additionalProperties":false})"), false, false, _set_weighted_normals);
 	_add(SNAME("configure_build"), "Configure tangents, UV2, LOD, static collision, and Lightmap preparation for the imported runtime mesh.", _operation_schema(R"({"type":"object","properties":{"weighted_normals":{"type":"boolean"},"generate_tangents":{"type":"boolean"},"generate_uv2":{"type":"boolean"},"lightmap_texel_size":{"type":"number","exclusiveMinimum":0},"lod_levels":{"type":"array","items":{"type":"object","properties":{"ratio":{"type":"number","exclusiveMinimum":0,"exclusiveMaximum":1},"distance":{"type":"number","exclusiveMinimum":0}},"required":["ratio","distance"],"additionalProperties":false}},"collision":{"type":"string","enum":["none","trimesh","convex"]}},"additionalProperties":false})"), false, false, _configure_build);
@@ -1743,11 +1885,80 @@ const SolersModelOperationDefinition *SolersModelOperationRegistry::get_operatio
 	return index ? &operations[*index] : nullptr;
 }
 
-Dictionary SolersModelOperationRegistry::execute(SolersEditableMesh &r_mesh, const StringName &p_id, const Dictionary &p_parameters) const {
+Dictionary SolersModelOperationRegistry::get_batch_item_schema() const {
+	Dictionary binding_properties;
+	Dictionary string;
+	string["type"] = "string";
+	binding_properties["result"] = string;
+	binding_properties["field"] = string;
+	Dictionary binding;
+	binding["type"] = "object";
+	binding["properties"] = binding_properties;
+	Array binding_required;
+	binding_required.push_back("result");
+	binding_required.push_back("field");
+	binding["required"] = binding_required;
+	binding["additionalProperties"] = false;
+
+	Array branches;
+	for (const SolersModelOperationDefinition &operation : operations) {
+		Dictionary parameters = operation.parameters_schema.duplicate(true);
+		parameters.erase("required");
+		Dictionary operation_bindings;
+		operation_bindings["type"] = "object";
+		Dictionary per_parameter;
+		const Dictionary parameter_properties = operation.parameters_schema.get("properties", Dictionary());
+		for (const Variant &key : parameter_properties.keys()) {
+			per_parameter[key] = binding;
+		}
+		operation_bindings["properties"] = per_parameter;
+		operation_bindings["additionalProperties"] = false;
+
+		Dictionary operation_name;
+		operation_name["const"] = String(operation.id);
+		Dictionary properties;
+		properties["id"] = string;
+		properties["operation"] = operation_name;
+		properties["parameters"] = parameters;
+		properties["bindings"] = operation_bindings;
+		Dictionary branch;
+		branch["type"] = "object";
+		branch["description"] = operation.description;
+		branch["properties"] = properties;
+		Array required;
+		required.push_back("operation");
+		branch["required"] = required;
+		branch["additionalProperties"] = false;
+		branches.push_back(branch);
+	}
+	Dictionary schema;
+	schema["oneOf"] = branches;
+	return schema;
+}
+
+Dictionary SolersModelOperationRegistry::validate_parameters(const StringName &p_id, const Dictionary &p_parameters, bool p_allow_missing_required) const {
 	const SolersModelOperationDefinition *operation = get_operation(p_id);
 	if (!operation) {
 		return _error("MODEL_OPERATION_NOT_FOUND", vformat("Unknown modeling operation: %s", p_id), true);
 	}
+	Dictionary schema = operation->parameters_schema;
+	if (p_allow_missing_required) {
+		schema = schema.duplicate(true);
+		schema.erase("required");
+	}
+	String argument_error;
+	if (!_validate_schema_value(p_parameters, schema, "parameters", argument_error)) {
+		return _error("MODEL_ARGUMENT_INVALID", argument_error, true);
+	}
+	return _ok();
+}
+
+Dictionary SolersModelOperationRegistry::execute(SolersEditableMesh &r_mesh, const StringName &p_id, const Dictionary &p_parameters) const {
+	const Dictionary parameter_validation = validate_parameters(p_id, p_parameters);
+	if (!(bool)parameter_validation.get("ok", false)) {
+		return parameter_validation;
+	}
+	const SolersModelOperationDefinition *operation = get_operation(p_id);
 	Dictionary result = operation->handler(r_mesh, p_parameters);
 	if (!(bool)result.get("ok", false)) {
 		return result;

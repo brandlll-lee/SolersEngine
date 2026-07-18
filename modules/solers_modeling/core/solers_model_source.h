@@ -39,7 +39,7 @@ public:
 	void _write_source_bytes(const String &p_path, const PackedByteArray &p_bytes);
 	void _delete_source(const String &p_path);
 
-	Dictionary create(const String &p_path, const StringName &p_primitive, const Dictionary &p_parameters = Dictionary(), bool p_undoable = true);
+	Dictionary create(const String &p_path, bool p_undoable = true);
 	Dictionary inspect(const String &p_path) const;
 	Dictionary validate_source(const String &p_path) const;
 	Dictionary apply(const String &p_path, const StringName &p_operation, const Dictionary &p_parameters = Dictionary(), int64_t p_expected_revision = -1, bool p_undoable = true);
@@ -51,4 +51,3 @@ public:
 	SolersModelingService();
 	~SolersModelingService();
 };
-

@@ -595,7 +595,7 @@ void SolersModelingEditorPlugin::_quick_uv(int p_id) {
 }
 
 void SolersModelingEditorPlugin::_add_modifier(int p_id) {
-	static const char *types[] = { "mirror", "array", "solidify", "bevel", "boolean" };
+	static const char *operations[] = { "add_mirror_modifier", "add_array_modifier", "add_solidify_modifier", "add_bevel_modifier", "add_boolean_modifier" };
 	ERR_FAIL_INDEX(p_id, 5);
 	Dictionary parameters;
 	if (p_id == 1) {
@@ -607,13 +607,10 @@ void SolersModelingEditorPlugin::_add_modifier(int p_id) {
 		parameters["width"] = 0.05;
 		parameters["segments"] = 2;
 	} else if (p_id == 4) {
-		_show_operation(SNAME("add_modifier"), R"({"type":"boolean","parameters":{"operand":"res://operand.smodel","operation":"subtract"}})");
+		_show_operation(SNAME("add_boolean_modifier"), R"({"operand":"res://operand.smodel","operation":"subtract"})");
 		return;
 	}
-	Dictionary operation;
-	operation["type"] = types[p_id];
-	operation["parameters"] = parameters;
-	_apply(SNAME("add_modifier"), operation);
+	_apply(StringName(operations[p_id]), parameters);
 }
 
 void SolersModelingEditorPlugin::_remove_modifier() {

@@ -12,6 +12,8 @@
 
 #include "core/io/json.h"
 #include "core/object/class_db.h"
+#include "core/string/fuzzy_search.h"
+#include "core/templates/hash_set.h"
 #include "editor/editor_interface.h"
 #include "modules/solers_ai/core/solers_action_timeline.h"
 #include "modules/solers_ai/core/solers_asset_service.h"
@@ -48,8 +50,6 @@ static const char *_exposure_name(SolersToolExposure p_exposure) {
 			return "direct";
 		case SolersToolExposure::DEFERRED:
 			return "deferred";
-		case SolersToolExposure::DIRECT_MODEL_ONLY:
-			return "direct_model_only";
 		case SolersToolExposure::HIDDEN:
 			return "hidden";
 	}
@@ -112,10 +112,214 @@ Dictionary SolersToolRegistry::_schema(const char *p_json) {
 	}
 	const Variant parsed = JSON::parse_string(String::utf8(p_json));
 	if (parsed.get_type() == Variant::DICTIONARY) {
-		return parsed;
+		Dictionary schema = parsed;
+		if (String(schema.get("type", String())) == "object" && !schema.has("additionalProperties")) {
+			schema["additionalProperties"] = false;
+		}
+		return schema;
 	}
 	ERR_PRINT("Solers tool registered with an invalid params schema; falling back to a generic object.");
 	return generic;
+}
+
+static bool _tool_schema_type_matches(const Variant &p_value, const String &p_type) {
+	if (p_type == "object") {
+		switch (p_value.get_type()) {
+			case Variant::DICTIONARY:
+			case Variant::VECTOR2:
+			case Variant::VECTOR2I:
+			case Variant::RECT2:
+			case Variant::RECT2I:
+			case Variant::VECTOR3:
+			case Variant::VECTOR3I:
+			case Variant::TRANSFORM2D:
+			case Variant::VECTOR4:
+			case Variant::VECTOR4I:
+			case Variant::PLANE:
+			case Variant::QUATERNION:
+			case Variant::AABB:
+			case Variant::BASIS:
+			case Variant::TRANSFORM3D:
+			case Variant::COLOR:
+				return true;
+			default:
+				return false;
+		}
+	}
+	if (p_type == "array") {
+		return p_value.get_type() == Variant::ARRAY;
+	}
+	if (p_type == "string") {
+		return p_value.get_type() == Variant::STRING || p_value.get_type() == Variant::STRING_NAME;
+	}
+	if (p_type == "integer") {
+		return p_value.get_type() == Variant::INT;
+	}
+	if (p_type == "number") {
+		return p_value.get_type() == Variant::INT || p_value.get_type() == Variant::FLOAT;
+	}
+	if (p_type == "boolean") {
+		return p_value.get_type() == Variant::BOOL;
+	}
+	return true;
+}
+
+static Dictionary _tool_result_envelope(const Dictionary &p_result, const String &p_call_id) {
+	Dictionary result = p_result.duplicate(true);
+	const Variant ok_value = result.get("ok", Variant());
+	if (ok_value.get_type() != Variant::BOOL) {
+		Dictionary error;
+		error["code"] = "TOOL_RESULT_INVALID";
+		error["message"] = "The tool handler returned an invalid result envelope.";
+		error["recoverable"] = false;
+		result.clear();
+		result["ok"] = false;
+		result["error"] = error;
+	} else if ((bool)ok_value) {
+		if (!result.has("data")) {
+			result["data"] = Dictionary();
+		}
+	} else {
+		Dictionary error = result.get("error", Dictionary());
+		if (String(error.get("code", String())).is_empty() || String(error.get("message", String())).is_empty()) {
+			error.clear();
+			error["code"] = "TOOL_RESULT_INVALID";
+			error["message"] = "The tool handler returned an invalid error envelope.";
+			error["recoverable"] = false;
+		} else if (!error.has("recoverable")) {
+			error["recoverable"] = true;
+		}
+		result["error"] = error;
+	}
+	if (!p_call_id.is_empty()) {
+		result["call_id"] = p_call_id;
+	}
+	return result;
+}
+
+static bool _validate_tool_schema_value(const Variant &p_value, const Dictionary &p_schema, const String &p_path, String &r_error) {
+	const Variant const_value = p_schema.get("const", Variant());
+	const bool comparable_strings = (p_value.get_type() == Variant::STRING || p_value.get_type() == Variant::STRING_NAME) &&
+			(const_value.get_type() == Variant::STRING || const_value.get_type() == Variant::STRING_NAME);
+	if (p_schema.has("const") && (comparable_strings ? String(p_value) != String(const_value) : p_value != const_value)) {
+		r_error = vformat("%s must equal %s.", p_path, JSON::stringify(p_schema["const"]));
+		return false;
+	}
+	const Array one_of = p_schema.get("oneOf", Array());
+	if (!one_of.is_empty()) {
+		int matches = 0;
+		String first_error;
+		for (int i = 0; i < one_of.size(); i++) {
+			if (one_of[i].get_type() != Variant::DICTIONARY) {
+				continue;
+			}
+			String branch_error;
+			if (_validate_tool_schema_value(p_value, one_of[i], p_path, branch_error)) {
+				matches++;
+			} else if (first_error.is_empty()) {
+				first_error = branch_error;
+			}
+		}
+		if (matches != 1) {
+			r_error = matches == 0 ? first_error : vformat("%s matches more than one schema branch.", p_path);
+			return false;
+		}
+		return true;
+	}
+
+	const String type = p_schema.get("type", String());
+	if (!type.is_empty() && !_tool_schema_type_matches(p_value, type)) {
+		r_error = vformat("%s must be %s.", p_path, type);
+		return false;
+	}
+	const Array allowed = p_schema.get("enum", Array());
+	if (!allowed.is_empty() && !allowed.has(p_value)) {
+		r_error = vformat("%s must be one of %s.", p_path, JSON::stringify(allowed));
+		return false;
+	}
+	if (type == "number" || type == "integer") {
+		const double value = p_value;
+		if (!Math::is_finite(value)) {
+			r_error = vformat("%s must be finite.", p_path);
+			return false;
+		}
+		if (p_schema.has("minimum") && value < (double)p_schema["minimum"]) {
+			r_error = vformat("%s must be at least %s.", p_path, p_schema["minimum"]);
+			return false;
+		}
+		if (p_schema.has("maximum") && value > (double)p_schema["maximum"]) {
+			r_error = vformat("%s must be at most %s.", p_path, p_schema["maximum"]);
+			return false;
+		}
+		if (p_schema.has("exclusiveMinimum") && value <= (double)p_schema["exclusiveMinimum"]) {
+			r_error = vformat("%s must be greater than %s.", p_path, p_schema["exclusiveMinimum"]);
+			return false;
+		}
+		if (p_schema.has("exclusiveMaximum") && value >= (double)p_schema["exclusiveMaximum"]) {
+			r_error = vformat("%s must be less than %s.", p_path, p_schema["exclusiveMaximum"]);
+			return false;
+		}
+	}
+	if (type == "string" && p_schema.has("minLength") && String(p_value).length() < (int)p_schema["minLength"]) {
+		r_error = vformat("%s is too short.", p_path);
+		return false;
+	}
+	if (type == "array") {
+		const Array values = p_value;
+		if (p_schema.has("minItems") && values.size() < (int)p_schema["minItems"]) {
+			r_error = vformat("%s requires at least %d item(s).", p_path, (int)p_schema["minItems"]);
+			return false;
+		}
+		if (p_schema.has("maxItems") && values.size() > (int)p_schema["maxItems"]) {
+			r_error = vformat("%s allows at most %d item(s).", p_path, (int)p_schema["maxItems"]);
+			return false;
+		}
+		const Dictionary items = p_schema.get("items", Dictionary());
+		for (int i = 0; i < values.size() && !items.is_empty(); i++) {
+			if (!_validate_tool_schema_value(values[i], items, vformat("%s[%d]", p_path, i), r_error)) {
+				return false;
+			}
+		}
+	}
+	if (type == "object") {
+		const Dictionary properties = p_schema.get("properties", Dictionary());
+		const Array required = p_schema.get("required", Array());
+		Dictionary value;
+		if (p_value.get_type() == Variant::DICTIONARY) {
+			value = p_value;
+		} else {
+			for (const Variant &key : properties.keys()) {
+				bool valid = false;
+				const Variant component = p_value.get_named(StringName(key), valid);
+				if (!valid) {
+					r_error = vformat("%s must be an object with named properties.", p_path);
+					return false;
+				}
+				value[key] = component;
+			}
+		}
+		for (const Variant &key : required) {
+			if (!value.has(key)) {
+				r_error = vformat("%s.%s is required.", p_path, key);
+				return false;
+			}
+		}
+		const bool additional = p_schema.get("additionalProperties", true);
+		const Variant *key = nullptr;
+		while ((key = value.next(key))) {
+			if (!properties.has(*key)) {
+				if (!additional) {
+					r_error = vformat("%s.%s is not supported.", p_path, *key);
+					return false;
+				}
+				continue;
+			}
+			if (!_validate_tool_schema_value(value[*key], properties[*key], vformat("%s.%s", p_path, *key), r_error)) {
+				return false;
+			}
+		}
+	}
+	return true;
 }
 
 #include "modules/solers_ai/core/solers_builtin_skills.h"
@@ -209,27 +413,6 @@ static std::function<Array(const Dictionary &)> _access_by_arg(const char *p_mod
 	};
 }
 
-static Dictionary _modeling_operation_schema(const Dictionary &p_operation_schema) {
-	Dictionary schema = p_operation_schema.duplicate(true);
-	Dictionary properties = schema.get("properties", Dictionary());
-	Dictionary path;
-	path["type"] = "string";
-	path["description"] = "Normalized res:// path of the editable .smodel source.";
-	properties["path"] = path;
-	Dictionary revision;
-	revision["type"] = "integer";
-	revision["minimum"] = 0;
-	revision["description"] = "Optional revision from model.inspect; rejects stale concurrent edits.";
-	properties["expected_revision"] = revision;
-	schema["properties"] = properties;
-	Array required = schema.get("required", Array()).duplicate();
-	if (!required.has("path")) {
-		required.push_back("path");
-	}
-	schema["required"] = required;
-	return schema;
-}
-
 static String _trace_result(const Dictionary &p_result) {
 	const bool ok = p_result.get("ok", false);
 	String out = vformat("ok=%d", (int)ok);
@@ -296,6 +479,32 @@ static Dictionary _schema_for_key(const Dictionary &p_schema, const Variant &p_k
 }
 
 static Variant _normalize_tool_arg_value(const Variant &p_value, const Dictionary &p_schema) {
+	const Array one_of = p_schema.get("oneOf", Array());
+	if (!one_of.is_empty()) {
+		Variant match;
+		int matches = 0;
+		for (int i = 0; i < one_of.size(); i++) {
+			if (one_of[i].get_type() != Variant::DICTIONARY) {
+				continue;
+			}
+			const Dictionary branch = one_of[i];
+			const Variant candidate = _normalize_tool_arg_value(p_value, branch);
+			String error;
+			if (_validate_tool_schema_value(candidate, branch, "parameters", error)) {
+				match = candidate;
+				matches++;
+			}
+		}
+		if (matches == 1) {
+			return match;
+		}
+	}
+	if (String(p_schema.get("type", String())) == "integer" && p_value.get_type() == Variant::FLOAT) {
+		const double value = p_value;
+		if (Math::is_finite(value) && Math::floor(value) == value && value >= (double)INT64_MIN && value < (double)INT64_MAX) {
+			return (int64_t)value;
+		}
+	}
 	if (p_value.get_type() == Variant::DICTIONARY) {
 		Dictionary in = p_value;
 		Dictionary out;
@@ -333,37 +542,6 @@ static Dictionary _normalize_tool_args(const Dictionary &p_args, const Dictionar
 		return p_args;
 	}
 	return normalized;
-}
-
-static void _add_unique_search_token(Vector<String> &r_tokens, const String &p_token) {
-	const String token = p_token.strip_edges();
-	if (token.is_empty()) {
-		return;
-	}
-	for (int i = 0; i < r_tokens.size(); i++) {
-		if (r_tokens[i] == token) {
-			return;
-		}
-	}
-	r_tokens.push_back(token);
-}
-
-static Vector<String> _search_tokens(const String &p_text) {
-	Vector<String> tokens;
-	const String text = p_text.to_lower();
-	String token;
-	for (int i = 0; i < text.length(); i++) {
-		const char32_t c = text[i];
-		const bool is_token_char = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
-		if (is_token_char) {
-			token += String::chr(c);
-		} else {
-			_add_unique_search_token(tokens, token);
-			token.clear();
-		}
-	}
-	_add_unique_search_token(tokens, token);
-	return tokens;
 }
 
 static void _append_search_text(String &r_corpus, const String &p_text) {
@@ -410,24 +588,13 @@ static String _tool_search_corpus(const SolersTool *p_tool) {
 	return corpus;
 }
 
-static bool _tool_text_matches_any_token(const String &p_text, const Vector<String> &p_tokens) {
-	if (p_tokens.is_empty()) {
-		return false;
-	}
-	for (int i = 0; i < p_tokens.size(); i++) {
-		if (p_text.contains(p_tokens[i])) {
-			return true;
-		}
-	}
-	return false;
-}
-
 void SolersToolRegistry::_clear_tools() {
 	for (KeyValue<StringName, SolersTool *> &E : tools) {
 		memdelete(E.value);
 	}
 	tools.clear();
 	model_name_index.clear();
+	failed_calls.clear();
 }
 
 void SolersToolRegistry::_register(SolersTool *p_tool) {
@@ -562,7 +729,7 @@ void SolersToolRegistry::_register_observation_tools() {
 			[this, obs](const SolersToolContext &, const Dictionary &a) { return _ok(obs->get_editor_snapshot((int)a.get("max_scene_depth", 4), (int)a.get("max_children_per_node", 64), (bool)a.get("include_remote_scene", false))); });
 	_add_observe_exposed("viewport.capture", "Capture explicit visual evidence. orthographic and top_down use a transient Camera3D/SubViewport sharing the live World3D; focus_paths frames exact scene subtrees and section_position places an explicit world-space cut plane without hiding or mutating nodes. Captures are frame-gated and content-addressed.",
 			R"({"type":"object","properties":{"target":{"type":"string","enum":["editor","camera","top_down","orthographic","runtime"],"description":"Viewport source to capture."},"node_path":{"type":"string","description":"For target=camera: path of the Camera3D to render through. Defaults to the first camera in the scene."},"axis":{"type":"string","enum":["x","y","z"],"description":"For target=orthographic: world view axis."},"direction":{"type":"string","enum":["positive","negative"],"description":"For target=orthographic: side of the world axis from which the camera looks."},"focus_paths":{"type":"array","items":{"type":"string"},"description":"Optional edited-scene subtrees whose visible geometry defines framing."},"section_position":{"type":"number","description":"Optional world-space camera cut position on the view axis, useful for looking inside enclosed rooms."}},"required":["target"]})",
-			SolersToolExposure::DEFERRED,
+			SolersToolExposure::DIRECT,
 			[obs](const SolersToolContext &, const Dictionary &a) { return obs->capture_viewport(a); }, true, {}, false,
 			[obs](const SolersToolContext &, const Dictionary &a) { return obs->poll_viewport_capture(a); },
 			[obs](const SolersToolContext &, const Dictionary &a) { return obs->is_viewport_capture_ready(a); });
@@ -628,15 +795,15 @@ void SolersToolRegistry::_register_observation_tools() {
 				[svc](const SolersToolContext &, const Dictionary &a) { return svc->native_free(a); });
 		_add_observe_exposed("export.list_presets", "List Godot export platforms and export presets from the current project.",
 				R"({"type":"object","properties":{"include_platforms":{"type":"boolean","description":"Include available export platforms. Default true."}}})",
-				SolersToolExposure::DEFERRED,
+				SolersToolExposure::DIRECT,
 				[svc](const SolersToolContext &, const Dictionary &a) { return svc->list_export_presets(a); });
 		_add_observe_exposed("export.validate_presets", "Validate configured export presets without exporting build artifacts.",
 				R"({"type":"object","properties":{"debug":{"type":"boolean","description":"Validate against the debug export template. Default false."}}})",
-				SolersToolExposure::DEFERRED,
+				SolersToolExposure::DIRECT,
 				[svc](const SolersToolContext &, const Dictionary &a) { return svc->validate_export_presets(a); });
 		_add("export.run_preset", "Run Godot's native EditorExportPlatform::export_project for one export preset.",
 				R"({"type":"object","properties":{"preset_index":{"type":"integer","description":"Export preset index from export.list_presets."},"preset_name":{"type":"string","description":"Export preset name when index is unknown."},"debug":{"type":"boolean","description":"Export debug build. Default false."},"export_path":{"type":"string","description":"Optional output path override; defaults to the preset export_path."}}})",
-				SolersPermissionManager::PERMISSION_EXPORT_BUILD, "export_build", true, false, Vector<String>(), SolersToolExposure::DEFERRED,
+				SolersPermissionManager::PERMISSION_EXPORT_BUILD, "export_build", true, false, Vector<String>(), SolersToolExposure::DIRECT,
 				[svc](const SolersToolContext &, const Dictionary &a) { return svc->run_export_preset(a); });
 	}
 }
@@ -694,7 +861,7 @@ void SolersToolRegistry::_register_asset_tools() {
 	SolersAssetService *svc = asset_service;
 	_add("asset.catalog.search", "Search cached lightweight metadata from one official CC0 catalog. ambientCG and Poly Haven both support materials, HDRIs, and 3D models. Terms use coverage matching instead of strict AND; results explain matched_terms and matched_fields. Search never resolves files or downloads previews. Inspect one selected result before acquire.",
 			R"({"type":"object","properties":{"provider":{"type":"string","enum":["ambientcg","polyhaven"],"description":"Official catalog to search."},"query":{"type":"string","description":"Material, HDRI, or 3D model search terms. Multiple terms broaden candidate coverage and improve ranking; they do not all have to match."},"kind":{"type":"string","enum":["material","hdri","3d"],"description":"Asset kind supported by both catalogs."},"limit":{"type":"integer","description":"Maximum returned results; default 20, maximum 50."},"offset":{"type":"integer","description":"Zero-based result offset."},"refresh":{"type":"boolean","description":"Explicitly refresh the provider's cached lightweight directory."}},"required":["provider","query","kind"]})",
-			SolersPermissionManager::PERMISSION_NETWORK, "asset_catalog_search", true, false, Vector<String>(), SolersToolExposure::DEFERRED,
+			SolersPermissionManager::PERMISSION_NETWORK, "asset_catalog_search", true, false, Vector<String>(), SolersToolExposure::DIRECT,
 			[svc](const SolersToolContext &ctx, const Dictionary &a) { return svc->catalog_search(a, ctx.cancel_requested); }, false, SolersToolExecution::WORKER_THREAD,
 			[](const Dictionary &a) {
 				Array accesses;
@@ -706,7 +873,7 @@ void SolersToolRegistry::_register_asset_tools() {
 			});
 	_add("asset.catalog.inspect", "Resolve one exact search result against the provider's current official detail/files metadata. Returns versioned variants, dependencies and available checksums. This is the only source of arguments accepted by asset.catalog.acquire.",
 			R"({"type":"object","properties":{"provider":{"type":"string","enum":["ambientcg","polyhaven"]},"kind":{"type":"string","enum":["material","hdri","3d"]},"asset_id":{"type":"string","description":"Exact asset_id returned by asset.catalog.search."},"refresh":{"type":"boolean","description":"Explicitly refresh this asset's cached official detail metadata."}},"required":["provider","kind","asset_id"]})",
-			SolersPermissionManager::PERMISSION_NETWORK, "asset_catalog_inspect", true, false, Vector<String>(), SolersToolExposure::DEFERRED,
+			SolersPermissionManager::PERMISSION_NETWORK, "asset_catalog_inspect", true, false, Vector<String>(), SolersToolExposure::DIRECT,
 			[svc](const SolersToolContext &ctx, const Dictionary &a) { return svc->catalog_inspect(a, ctx.cancel_requested); }, false, SolersToolExecution::WORKER_THREAD,
 			[](const Dictionary &a) {
 				Array accesses;
@@ -718,11 +885,11 @@ void SolersToolRegistry::_register_asset_tools() {
 			});
 	_add("asset.generate", "Queue one reusable local asset generation job and return its manifest immediately. Solers observes progress and resumes this Agent session when the job reaches a terminal state. kind=3d uses Meshy by default; music/sfx use ElevenLabs by default. For 3D props, call only when the user authorized generation, after project, local Library, and catalog reuse were considered and the architectural shell was visually verified. One prop per job; after terminal resume, import_to_project and place the asset — do not re-generate on missing feel. Keep 3D prompts faithful and concise: describe only the isolated object's identity, shape, material, and requested style. Omit input_attachments for Text-to-3D. Pass input_attachments only when the user explicitly supplied isolated-object reference images for this exact asset; never pass a room, scene, composition, or general mood reference. Put generation controls in provider_options, not in the prompt. For a game-scene prop, explicitly request should_remesh=true, topology, and an integer target_polycount; import validates the real result rather than trusting the request. Provider-native options pass through provider_options.",
 			R"({"type":"object","properties":{"kind":{"type":"string","description":"3d, music, or sfx."},"prompt":{"type":"string","description":"Asset generation prompt. Required unless input_attachments supplies explicit isolated-object references."},"input_attachments":{"type":"array","items":{"type":"string"},"description":"Explicit isolated-object image attachment ids only. Omit for Text-to-3D. One id uses Image-to-3D; two to four use Multi-Image-to-3D. Never pass a room or scene reference."},"name":{"type":"string","description":"Optional local asset display name."},"profile":{"type":"string","description":"game_default, high_quality, or custom. game_default uses standard 3D generation; set provider_options.model_type=\"lowpoly\" only when the user explicitly asks for low-poly."},"provider":{"type":"string","description":"Optional provider id. Defaults by kind."},"provider_options":{"type":"object","description":"Provider-native generation parameters. Meshy Image-to-3D supports image/texturing/remesh controls here.","properties":{"model_type":{"type":"string","enum":["standard","lowpoly"],"description":"Meshy model type. Default is standard; use lowpoly only if user asks for low-poly."},"ai_model":{"type":"string","enum":["meshy-5","meshy-6","latest"],"description":"Meshy model id. Defaults to meshy-6."},"pose_mode":{"type":"string","enum":["a-pose","t-pose"],"description":"Humanoid pose control when supported by the provider."},"should_texture":{"type":"boolean","description":"Generate textures. Meshy default is true."},"enable_pbr":{"type":"boolean","description":"Generate PBR maps. Requires should_texture=true."},"hd_texture":{"type":"boolean","description":"Request higher quality textures when Meshy supports it."},"texture_prompt":{"type":"string","description":"Guide Meshy texturing with text. Do not use together with texture_image_url."},"texture_image_url":{"type":"string","description":"Guide Meshy texturing with an image URL or data URI. Do not use together with texture_prompt."},"should_remesh":{"type":"boolean","description":"Enable Meshy remesh phase."},"topology":{"type":"string","enum":["triangle","quad"],"description":"Mesh topology when remeshing."},"target_polycount":{"type":"integer","description":"Target polygon count when remeshing."},"image_enhancement":{"type":"boolean","description":"Ask Meshy to enhance the input image before generation."},"remove_lighting":{"type":"boolean","description":"Ask Meshy to reduce baked lighting in generated textures when supported."},"moderation":{"type":"boolean","description":"Ask Meshy to screen input content before generation."},"auto_size":{"type":"boolean","description":"Ask Meshy to estimate physical size when supported."},"origin_at":{"type":"string","enum":["bottom","center"],"description":"Generated model origin placement when supported."},"save_pre_remeshed_model":{"type":"boolean","description":"Ask Meshy to keep the pre-remesh output when supported."},"alpha_thumbnail":{"type":"boolean","description":"Ask Meshy for transparent thumbnail when supported."},"target_formats":{"type":"array","items":{"type":"string","enum":["glb","obj","fbx","stl","usdz","3mf"]},"description":"Output formats to generate. Solers imports GLB best."}}}},"required":["kind"]})",
-			SolersPermissionManager::PERMISSION_NETWORK, "asset_generate", true, false, Vector<String>(), SolersToolExposure::DEFERRED,
+			SolersPermissionManager::PERMISSION_NETWORK, "asset_generate", true, false, Vector<String>(), SolersToolExposure::DIRECT,
 			[svc](const SolersToolContext &ctx, const Dictionary &a) { return svc->generate_for_session(a, ctx.session_id); });
 	_add("asset.catalog.acquire", "Queue one exact variant returned by asset.catalog.inspect. The task revalidates official metadata, downloads the selected package, verifies available checksums, and stores licensing and attribution under one stable job id.",
 			R"({"type":"object","properties":{"provider":{"type":"string","enum":["ambientcg","polyhaven"],"description":"Provider returned by asset.catalog.inspect."},"kind":{"type":"string","enum":["material","hdri","3d"],"description":"Kind returned by asset.catalog.inspect."},"asset_id":{"type":"string","description":"Exact official provider asset id."},"variant":{"type":"string","description":"Exact variants[].id returned by asset.catalog.inspect; never guess a format."},"source_version":{"type":"string","description":"Exact source_version returned by asset.catalog.inspect."},"name":{"type":"string","description":"Optional local display name."}},"required":["provider","kind","asset_id","variant","source_version"]})",
-			SolersPermissionManager::PERMISSION_NETWORK, "asset_catalog_acquire", true, false, Vector<String>(), SolersToolExposure::DEFERRED,
+			SolersPermissionManager::PERMISSION_NETWORK, "asset_catalog_acquire", true, false, Vector<String>(), SolersToolExposure::DIRECT,
 			[svc](const SolersToolContext &ctx, const Dictionary &a) { return svc->catalog_acquire(a, ctx.session_id); }, false,
 			SolersToolExecution::MAIN_THREAD, [](const Dictionary &a) {
 				Array accesses;
@@ -734,20 +901,20 @@ void SolersToolRegistry::_register_asset_tools() {
 			});
 	_add_observe_exposed("asset.capabilities", "List the operations currently available for a Solers Library asset, including option schemas, provider documentation links, and provider action catalogs such as Meshy animation_actions.",
 			R"({"type":"object","properties":{"asset_id":{"type":"string","description":"Local Solers asset id."}},"required":["asset_id"]})",
-			SolersToolExposure::DEFERRED,
+			SolersToolExposure::DIRECT,
 			[svc](const SolersToolContext &, const Dictionary &a) { return svc->capabilities(a); });
 	_add("asset.run_operation", "Queue one available operation on an existing Solers Library asset. The operation creates a new derived asset, never overwrites the source, and Solers resumes this Agent session when it reaches a terminal state.",
 			R"({"type":"object","properties":{"asset_id":{"type":"string","description":"Local Solers asset id."},"operation_id":{"type":"string","description":"Operation id returned by asset.capabilities."},"options":{"type":"object","description":"Operation options that match the schema returned by asset.capabilities."},"raw_provider_options":{"type":"object","description":"Advanced provider-native options. Requires raw_confirmed=true."},"raw_confirmed":{"type":"boolean","description":"Set true only after the user explicitly confirms raw provider options."}},"required":["asset_id","operation_id"]})",
-			SolersPermissionManager::PERMISSION_NETWORK, "asset_operation", true, false, Vector<String>(), SolersToolExposure::DEFERRED,
+			SolersPermissionManager::PERMISSION_NETWORK, "asset_operation", true, false, Vector<String>(), SolersToolExposure::DIRECT,
 			[svc](const SolersToolContext &ctx, const Dictionary &a) { return svc->run_operation_for_session(a, ctx.session_id); });
 	_add_observe_exposed("asset.status", "Read a local asset generation task or generated asset manifest by asset_id.",
 			R"({"type":"object","properties":{"asset_id":{"type":"string","description":"Local Solers asset id returned by asset.generate or asset.list_local."}},"required":["asset_id"]})",
-			SolersToolExposure::DEFERRED,
+			SolersToolExposure::DIRECT,
 			[svc](const SolersToolContext &, const Dictionary &a) { return svc->status(a); }, true,
 			_access_by_arg("read", "asset:", "asset_id"));
 	_add_observe_exposed("job.wait", "Declare the background asset job ids needed before the Agent can continue. This returns their current terminal or pending states immediately. Keep doing conflict-free work when possible; when nothing remains, call this once and stop issuing tools so the same Agent turn waits until any requested job reaches a terminal state.",
 			R"({"type":"object","properties":{"ids":{"type":"array","items":{"type":"string"},"description":"Stable job ids returned by asset.generate, asset.catalog.acquire, or asset.run_operation."}},"required":["ids"]})",
-			SolersToolExposure::DEFERRED,
+			SolersToolExposure::DIRECT,
 			[svc](const SolersToolContext &ctx, const Dictionary &a) { return svc->wait_jobs(a, ctx.session_id); }, false,
 			[](const Dictionary &a) {
 				Array accesses;
@@ -762,7 +929,7 @@ void SolersToolRegistry::_register_asset_tools() {
 			});
 	_add_observe_exposed("asset.list_local", "List reusable assets in the local Solers Library. Optional kind/query filters search manifests only.",
 			R"({"type":"object","properties":{"kind":{"type":"string","description":"Optional 3d, material, hdri, music, or sfx."},"query":{"type":"string","description":"Optional text search over name and prompt."},"limit":{"type":"integer","description":"Maximum assets to return. Default 128."}}})",
-			SolersToolExposure::DEFERRED,
+			SolersToolExposure::DIRECT,
 			[svc](const SolersToolContext &, const Dictionary &a) { return svc->list_local(a); }, true,
 			[](const Dictionary &) {
 				Array accesses;
@@ -774,7 +941,7 @@ void SolersToolRegistry::_register_asset_tools() {
 			});
 	_add("asset.import_to_project", "Copy a ready Solers Library asset into res://, then wait until Godot finishes importing every selected dependency and the resources can actually be loaded. Static 3D models use Godot's native Static Lightmaps importer mode and report actual mesh/triangle/UV2 statistics; generated assets that exceed their requested topology budget are rejected before placement. Texture-set materials require map_types chosen from the manifest's exact map roles, so unused alternatives are not imported.",
 			R"({"type":"object","properties":{"asset_id":{"type":"string","description":"Local Solers asset id."},"target_dir":{"type":"string","description":"Optional res:// destination directory. Defaults to res://solers_assets/<kind>/<name>."},"map_types":{"type":"array","items":{"type":"string"},"description":"For texture-set materials, exact map role names from manifest.map_files that the final material will reference. Omit for native materials, HDRIs, and 3D assets."}},"required":["asset_id"]})",
-			SolersPermissionManager::PERMISSION_EDIT_FILES, "asset_import", true, false, Vector<String>(), SolersToolExposure::DEFERRED,
+			SolersPermissionManager::PERMISSION_EDIT_FILES, "asset_import", true, false, Vector<String>(), SolersToolExposure::DIRECT,
 			[svc](const SolersToolContext &, const Dictionary &a) { return svc->import_to_project(a); }, false,
 			SolersToolExecution::WORKER_THREAD, [](const Dictionary &a) {
 				Array accesses;
@@ -813,11 +980,6 @@ void SolersToolRegistry::_register_skill_tools() {
 				data["name"] = skill.name;
 				data["description"] = skill.description;
 				data["content"] = skill.content;
-				Array required_tools;
-				for (const String &tool : skill.required_tools) {
-					required_tools.push_back(tool);
-				}
-				data["required_tools"] = required_tools;
 				return _ok(data);
 			}, false);
 }
@@ -827,10 +989,10 @@ void SolersToolRegistry::_register_modeling_tools() {
 	ERR_FAIL_NULL(service);
 	const auto model_access = _access_by_arg("write", "project:", "path");
 
-	_add("model.create", "Create a new editable Solers model source from an exact native primitive.",
-			R"({"type":"object","properties":{"path":{"type":"string","description":"Normalized res:// destination ending in .smodel."},"primitive":{"type":"string","enum":["box","plane","cylinder"]},"parameters":{"type":"object","description":"Primitive dimensions and center, using the matching create operation schema."}},"required":["path","primitive"]})",
+	_add("model.create", "Create one empty editable .smodel source. Add its geometry through one planned model.batch transaction.",
+			R"({"type":"object","properties":{"path":{"type":"string","description":"Normalized res:// destination ending in .smodel."}},"required":["path"],"additionalProperties":false})",
 			SolersPermissionManager::PERMISSION_EDIT_FILES, "editor_undo_redo", true, true, Vector<String>(), SolersToolExposure::DIRECT,
-			[service](const SolersToolContext &, const Dictionary &a) { return service->create(a.get("path", String()), StringName(a.get("primitive", String())), a.get("parameters", Dictionary())); }, false,
+			[service](const SolersToolContext &, const Dictionary &a) { return service->create(a.get("path", String())); }, false,
 			SolersToolExecution::MAIN_THREAD, model_access);
 	_add_observe_exposed("model.inspect", "Inspect editable topology, persistent IDs, selection, modifiers, build settings, revision, and source hash.",
 			R"({"type":"object","properties":{"path":{"type":"string","description":"Normalized res:// path of the editable .smodel source."}},"required":["path"]})",
@@ -856,37 +1018,44 @@ void SolersToolRegistry::_register_modeling_tools() {
 				}
 				return accesses;
 			});
-	_add("model.batch", "Apply an ordered native modeling transaction to one working copy; every operation must succeed before one undoable commit.",
-			R"({"type":"object","properties":{"path":{"type":"string","description":"Normalized res:// path of the editable .smodel source."},"operations":{"type":"array","minItems":1,"items":{"type":"object","properties":{"operation":{"type":"string"},"parameters":{"type":"object"}},"required":["operation"],"additionalProperties":false}},"expected_revision":{"type":"integer","minimum":0}},"required":["path","operations"]})",
-			SolersPermissionManager::PERMISSION_EDIT_FILES, "editor_undo_redo", true, true, Vector<String>(), SolersToolExposure::DIRECT,
-			[service](const SolersToolContext &, const Dictionary &a) { return service->batch(a.get("path", String()), a.get("operations", Array()), a.get("expected_revision", -1)); }, false,
-			SolersToolExecution::MAIN_THREAD, model_access);
+	Dictionary path;
+	path["type"] = "string";
+	path["description"] = "Normalized res:// path of the editable .smodel source.";
+	Dictionary operations;
+	operations["type"] = "array";
+	operations["minItems"] = 1;
+	operations["items"] = SolersModelOperationRegistry::get_singleton()->get_batch_item_schema();
+	Dictionary revision;
+	revision["type"] = "integer";
+	revision["minimum"] = 0;
+	revision["description"] = "Required revision returned by model.create, model.inspect, or the previous model.batch.";
+	Dictionary properties;
+	properties["path"] = path;
+	properties["operations"] = operations;
+	properties["expected_revision"] = revision;
+	Dictionary batch_schema;
+	batch_schema["type"] = "object";
+	batch_schema["properties"] = properties;
+	Array required;
+	required.push_back("path");
+	required.push_back("operations");
+	required.push_back("expected_revision");
+	batch_schema["required"] = required;
+	batch_schema["additionalProperties"] = false;
+	SolersToolCapability batch_capability;
+	batch_capability.permission = SolersPermissionManager::PERMISSION_EDIT_FILES;
+	batch_capability.mutation_kind = "editor_undo_redo";
+	batch_capability.requires_approval = true;
+	batch_capability.undoable = true;
+	batch_capability.resource_access = model_access;
+	_register(memnew(SolersFunctionTool(
+			SNAME("model.batch"),
+			"Apply one typed, atomic modeling transaction. Each step uses an operation schema from the native registry and may bind parameters to an earlier named step result.",
+			batch_schema,
+			SolersToolExposure::DIRECT,
+			batch_capability,
+			[service](const SolersToolContext &, const Dictionary &a) { return service->batch(a.get("path", String()), a.get("operations", Array()), a.get("expected_revision", -1)); })));
 
-	SolersToolCapability capability;
-	capability.permission = SolersPermissionManager::PERMISSION_EDIT_FILES;
-	capability.mutation_kind = "editor_undo_redo";
-	capability.requires_approval = true;
-	capability.undoable = true;
-	capability.resource_access = model_access;
-	for (const SolersModelOperationDefinition &operation : SolersModelOperationRegistry::get_singleton()->get_operations()) {
-		const StringName operation_id = operation.id;
-		const Dictionary operation_schema = operation.parameters_schema;
-		_register(memnew(SolersFunctionTool(
-				StringName("model." + String(operation_id)),
-				operation.description,
-				_modeling_operation_schema(operation_schema), SolersToolExposure::DEFERRED, capability,
-				[service, operation_id, operation_schema](const SolersToolContext &, const Dictionary &a) {
-					Dictionary parameters;
-					const Dictionary properties = operation_schema.get("properties", Dictionary());
-					const Variant *key = nullptr;
-					while ((key = properties.next(key))) {
-						if (a.has(*key)) {
-							parameters[*key] = a[*key];
-						}
-					}
-					return service->apply(a.get("path", String()), operation_id, parameters, a.get("expected_revision", -1));
-				})));
-	}
 }
 
 void SolersToolRegistry::_register_reflection_tools() {
@@ -911,22 +1080,22 @@ void SolersToolRegistry::_register_reflection_tools() {
 				accesses.push_back(scene);
 				return accesses;
 			});
-	_add("scene.validate_spatial", "Diagnose declared world-space contacts, projection coverage, shared datums, and forbidden overlaps against live Godot AABBs. This checks only the supplied relations and does not satisfy the structural completion gate.",
+	_add("scene.validate_spatial", "Diagnose declared world-space contacts, projection coverage, shared datums, and forbidden overlaps against live Godot AABBs. This checks only the supplied relations and returns measured facts.",
 			R"({"type":"object","properties":{"relations":{"type":"array","description":"Spatial contracts to measure.","items":{"type":"object","properties":{"a":{"type":"string","description":"First GeometryInstance3D node path."},"b":{"type":"string","description":"Second GeometryInstance3D node path."},"kind":{"type":"string","enum":["max_gap","contains","align","no_overlap"]},"axes":{"type":"array","items":{"type":"string","enum":["x","y","z"]},"description":"Axes for max_gap, contains, or no_overlap; omit for all axes."},"axis":{"type":"string","enum":["x","y","z"],"description":"Single datum axis required by align."},"a_anchor":{"type":"string","enum":["min","center","max"],"description":"First bounds anchor for align; default center."},"b_anchor":{"type":"string","enum":["min","center","max"],"description":"Second bounds anchor for align; default center."},"tolerance":{"type":"number","description":"Explicit non-negative tolerance in project units; for no_overlap this is the maximum allowed penetration."}},"required":["a","b","kind","tolerance"]}}},"required":["relations"]})",
-			SolersPermissionManager::PERMISSION_OBSERVE, "none", false, false, Vector<String>(), SolersToolExposure::DEFERRED,
+			SolersPermissionManager::PERMISSION_OBSERVE, "none", false, false, Vector<String>(), SolersToolExposure::DIRECT,
 			[ref](const SolersToolContext &, const Dictionary &a) { return ref->validate_spatial_relations(a); }, true);
 	_add("scene.validate_structure", "Validate complete architecture and optional physical support/reference-image layout using live Godot Mesh/CSG geometry in meters. Omit placement_roots and placements when support validation is not requested. reference_layout records explicit measurable constraints and returns the exact orthographic evidence views required.",
 			R"({"type":"object","properties":{"structure_roots":{"type":"array","minItems":1,"items":{"type":"string"},"description":"Every non-overlapping root containing architectural structure or fixed finish geometry."},"relations":{"type":"array","items":{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"},"kind":{"type":"string","enum":["max_gap","contains","align","no_overlap"]},"axes":{"type":"array","items":{"type":"string","enum":["x","y","z"]}},"axis":{"type":"string","enum":["x","y","z"]},"a_anchor":{"type":"string","enum":["min","center","max"]},"b_anchor":{"type":"string","enum":["min","center","max"]}},"required":["a","b","kind"]}},"placement_roots":{"type":"array","items":{"type":"string"},"description":"Optional roots containing physical props/fixtures. Must be supplied together with placements."},"placements":{"type":"array","description":"Optional support relations. Must be supplied together with placement_roots.","items":{"type":"object","properties":{"member":{"type":"string"},"supported_by":{"type":"string"},"axis":{"type":"string","enum":["x","y","z"]},"direction":{"type":"string","enum":["positive","negative"]},"tolerance":{"type":"number"}},"required":["member","supported_by","axis","direction","tolerance"]}},"reference_layout":{"type":"object","description":"Required for reference-image tasks. Measurements are in meters and bind to the exact attachment.","properties":{"attachment_id":{"type":"string"},"constraints":{"type":"array","minItems":1,"items":{"type":"object","properties":{"kind":{"type":"string","enum":["extent","anchor_distance","axis_alignment"]},"member":{"type":"string"},"a":{"type":"string"},"b":{"type":"string"},"axis":{"type":"string","enum":["x","y","z"]},"a_anchor":{"type":"string","enum":["min","center","max"]},"b_anchor":{"type":"string","enum":["min","center","max"]},"min":{"type":"number"},"max":{"type":"number"},"local_axis":{"type":"string","enum":["x","y","z"]},"world_axis":{"type":"string","enum":["x","y","z"]},"direction":{"type":"integer","enum":[-1,1]},"max_angle_degrees":{"type":"number"}},"required":["kind"]}}},"required":["attachment_id","constraints"]}},"required":["structure_roots","relations"]})",
-			SolersPermissionManager::PERMISSION_OBSERVE, "none", false, false, Vector<String>(), SolersToolExposure::DEFERRED,
+			SolersPermissionManager::PERMISSION_OBSERVE, "none", false, false, Vector<String>(), SolersToolExposure::DIRECT,
 			[ref](const SolersToolContext &, const Dictionary &a) { return ref->validate_structure(a); }, true,
 			SolersToolExecution::MAIN_THREAD, {}, false, {}, true);
 	_add("scene.bake_csg", "Bake exact CSG root node paths directly through Godot's CSG API into static MeshInstance3D artifacts. This operation does not depend on editor selection.",
 			R"({"type":"object","properties":{"node_paths":{"type":"array","minItems":1,"items":{"type":"string"}},"hide_sources":{"type":"boolean","description":"Hide source CSG roots after a successful atomic bake. Default true."}},"required":["node_paths"]})",
-			edit_scene, "editor_undo_redo", true, true, Vector<String>(), SolersToolExposure::DEFERRED,
+			edit_scene, "editor_undo_redo", true, true, Vector<String>(), SolersToolExposure::DIRECT,
 			[ref](const SolersToolContext &, const Dictionary &a) { return ref->bake_csg(a); });
 	_add("mesh.unwrap_uv2", "Prepare UV2 for exact MeshInstance3D paths through Godot's native mesh API. ArrayMesh work runs one mesh at a time off the editor thread, reports progress, and commits one atomic UndoRedo action only after every surface verifies ARRAY_FORMAT_TEX_UV2. Imported static models should normally arrive with UV2 from Godot's Static Lightmaps importer mode.",
 			R"({"type":"object","properties":{"node_paths":{"type":"array","minItems":1,"items":{"type":"string"}}},"required":["node_paths"]})",
-			edit_scene, "editor_undo_redo", true, true, Vector<String>(), SolersToolExposure::DEFERRED,
+			edit_scene, "editor_undo_redo", true, true, Vector<String>(), SolersToolExposure::DIRECT,
 			[ref](const SolersToolContext &ctx, const Dictionary &a) { return ref->unwrap_uv2(a, ctx.call_id); }, false,
 			SolersToolExecution::MAIN_THREAD, {}, false,
 			[ref](const SolersToolContext &, const Dictionary &a) { return ref->poll_uv2_unwrap(a); }, false,
@@ -938,7 +1107,7 @@ void SolersToolRegistry::_register_reflection_tools() {
 			});
 	_add("lightmap.bake", "Bake one exact LightmapGI through Godot's native API. Before starting, reports every eligible or excluded MeshInstance3D in the LightmapGI parent subtree; an empty native bake scope fails immediately without opening the baker.",
 			R"({"type":"object","properties":{"node_path":{"type":"string"},"data_path":{"type":"string","description":"Optional res://*.lmbake path; defaults from the saved scene."}},"required":["node_path"]})",
-			edit_scene, "lightmap_bake", true, false, Vector<String>(), SolersToolExposure::DEFERRED,
+			edit_scene, "lightmap_bake", true, false, Vector<String>(), SolersToolExposure::DIRECT,
 			[ref](const SolersToolContext &, const Dictionary &a) { return ref->bake_lightmap(a); });
 
 	_add_observe_exposed("class.search", "Search Godot ClassDB by class name and optional inheritance before introspection. Returns real class names and whether each is a Node or Resource.",
@@ -973,6 +1142,9 @@ void SolersToolRegistry::_register_reflection_tools() {
 }
 
 void SolersToolRegistry::_register_search_tools() {
+	if (tools.has(SNAME("tool.search"))) {
+		return;
+	}
 	bool has_deferred = false;
 	for (const KeyValue<StringName, SolersTool *> &E : tools) {
 		if (E.value->exposure() == SolersToolExposure::DEFERRED) {
@@ -983,32 +1155,39 @@ void SolersToolRegistry::_register_search_tools() {
 	if (!has_deferred) {
 		return;
 	}
-	_add_observe_exposed("tool.search", "Search additional deferred tools with broad token matching over registered tool names, descriptions, and schema text. Name matches are returned first; discovered tools remain available for the session.",
-			R"({"type":"object","properties":{"query":{"type":"string","description":"Search terms. Punctuation and underscores split terms; any matching term may return a tool, with tool-name matches first."},"max_results":{"type":"integer","description":"Maximum tools to return. Default 10."}},"required":["query"]})",
+	_add_observe_exposed("tool.search", "Search third-party plugin, Connector, or MCP tools. Built-in Solers capabilities are always directly available.",
+			R"({"type":"object","properties":{"query":{"type":"string","minLength":1,"description":"Exact tool id, namespace, or capability terms."},"max_results":{"type":"integer","minimum":1,"maximum":50,"description":"Maximum tools to return. Default 10."}},"required":["query"],"additionalProperties":false})",
 			SolersToolExposure::DIRECT,
 			[this](const SolersToolContext &, const Dictionary &a) {
-				const Vector<String> tokens = _search_tokens(String(a.get("query", String())));
-				const int max_results = (int)a.get("max_results", 10);
+				const String query = String(a.get("query", String())).strip_edges();
+				const int max_results = CLAMP((int)a.get("max_results", 10), 1, 50);
 				Array matches;
-				Vector<String> name_matches;
-				Vector<String> metadata_matches;
+				PackedStringArray corpora;
+				Vector<StringName> names;
+				HashSet<StringName> selected;
 				for (const KeyValue<StringName, SolersTool *> &E : tools) {
 					if (E.value->exposure() != SolersToolExposure::DEFERRED) {
 						continue;
 					}
-					const String name = String(E.key);
-					if (_tool_text_matches_any_token(name.to_lower(), tokens)) {
-						name_matches.push_back(name);
-					} else if (_tool_text_matches_any_token(_tool_search_corpus(E.value), tokens)) {
-						metadata_matches.push_back(name);
+					if (String(E.key) == query) {
+						matches.push_back(_tool_to_dictionary(E.value));
+						selected.insert(E.key);
+						continue;
 					}
+					names.push_back(E.key);
+					corpora.push_back(String(E.key) + " " + _tool_search_corpus(E.value));
 				}
-				name_matches.sort();
-				metadata_matches.sort();
-				for (int group = 0; group < 2 && matches.size() < max_results; group++) {
-					const Vector<String> &names = group == 0 ? name_matches : metadata_matches;
-					for (int i = 0; i < names.size() && matches.size() < max_results; i++) {
-						SolersTool *const *tool = tools.getptr(StringName(names[i]));
+				if (matches.size() < max_results) {
+					FuzzySearch search;
+					search.max_results = max_results - matches.size();
+					search.set_query(query, false);
+					Vector<FuzzySearchResult> results;
+					search.search_all(corpora, results);
+					for (const FuzzySearchResult &result : results) {
+						if (result.original_index < 0 || result.original_index >= names.size() || selected.has(names[result.original_index])) {
+							continue;
+						}
+						SolersTool *const *tool = tools.getptr(names[result.original_index]);
 						if (tool && *tool) {
 							matches.push_back(_tool_to_dictionary(*tool));
 						}
@@ -1023,7 +1202,11 @@ void SolersToolRegistry::_register_search_tools() {
 
 void SolersToolRegistry::register_tool(SolersTool *p_tool) {
 	ERR_FAIL_NULL(p_tool);
+	const bool deferred = p_tool->exposure() == SolersToolExposure::DEFERRED;
 	_register(p_tool);
+	if (deferred) {
+		_register_search_tools();
+	}
 }
 
 void SolersToolRegistry::register_default_tools() {
@@ -1036,17 +1219,6 @@ void SolersToolRegistry::register_default_tools() {
 	_register_asset_tools();
 	_register_modeling_tools();
 	_register_search_tools();
-}
-
-void SolersToolRegistry::validate_builtin_skills() const {
-	HashSet<StringName> registered_tools;
-	for (const KeyValue<StringName, SolersTool *> &E : tools) {
-		registered_tools.insert(E.key);
-	}
-	const Vector<String> missing = SolersBuiltinSkills::validate_required_tools(registered_tools);
-	for (int i = 0; i < missing.size(); i++) {
-		ERR_PRINT(missing[i]);
-	}
 }
 
 Dictionary SolersToolRegistry::_tool_to_dictionary(const SolersTool *p_tool) const {
@@ -1063,14 +1235,7 @@ Dictionary SolersToolRegistry::_tool_to_dictionary(const SolersTool *p_tool) con
 	tool["produces_scene_validation"] = cap.produces_scene_validation;
 	tool["execution"] = cap.execution == SolersToolExecution::WORKER_THREAD ? "worker" : "main_thread";
 	tool["exposure"] = _exposure_name(p_tool->exposure());
-	Dictionary input_schema = p_tool->parameters_schema().duplicate(true);
-	Dictionary properties = input_schema.get("properties", Dictionary());
-	Dictionary retry_of;
-	retry_of["type"] = "string";
-	retry_of["description"] = "Exact error.failure_id returned by the failed operation this call repairs. Do not invent or transform this value.";
-	properties["retry_of"] = retry_of;
-	input_schema["properties"] = properties;
-	tool["input_schema"] = input_schema;
+	tool["input_schema"] = p_tool->parameters_schema().duplicate(true);
 	Dictionary object_schema;
 	object_schema["type"] = "object";
 	object_schema["properties"] = Dictionary();
@@ -1301,14 +1466,63 @@ Dictionary SolersToolRegistry::call_tool_with_context(const StringName &p_name, 
 	return result;
 }
 
-Dictionary SolersToolRegistry::_prepare_tool_call(const StringName &p_name, const Dictionary &p_args, const SolersToolContext &p_context, SolersPreparedToolCall &r_call) {
+Dictionary SolersToolRegistry::_preflight_tool_call(const StringName &p_name, const Dictionary &p_args, const SolersToolContext &p_context, Dictionary &r_args, String &r_failure_cache_key) {
 	SolersTool *const *tool_ptr = tools.getptr(p_name);
 	if (!tool_ptr || !*tool_ptr) {
-		return _error("TOOL_NOT_FOUND", vformat("Solers tool not found: %s", p_name), true);
+		return _tool_result_envelope(_error("TOOL_NOT_FOUND", vformat("Solers tool not found: %s", p_name), true), p_context.call_id);
 	}
 	SolersTool *tool = *tool_ptr;
-	const SolersToolCapability &cap = tool->capability();
 	const Dictionary args = normalize_tool_args(p_name, p_args);
+	Dictionary schema_args = args.duplicate(true);
+	schema_args.erase("approval_id");
+	Array internal_keys;
+	const Variant *schema_key = nullptr;
+	while ((schema_key = schema_args.next(schema_key))) {
+		if (String(*schema_key).begins_with("_")) {
+			internal_keys.push_back(*schema_key);
+		}
+	}
+	for (const Variant &key : internal_keys) {
+		schema_args.erase(key);
+	}
+	const Array resource_accesses = resolve_resource_access(p_name, args);
+	r_failure_cache_key = p_context.session_id + ":" + String(p_name) + ":" + String::num_uint64(p_context.authored_revision) + ":" + String::num_uint64(schema_args.hash()) + ":" + String::num_uint64(resource_accesses.hash());
+	if (const Dictionary *cached = failed_calls.getptr(r_failure_cache_key)) {
+		Dictionary duplicate = cached->duplicate(true);
+		duplicate["call_id"] = p_context.call_id;
+		duplicate["deduplicated"] = true;
+		return duplicate;
+	}
+	String argument_error;
+	if (!_validate_tool_schema_value(schema_args, tool->parameters_schema(), "parameters", argument_error)) {
+		Dictionary invalid = _error("TOOL_ARGUMENT_INVALID", argument_error, true);
+		SOLERS_TRACE("registry.preflight_rejected", vformat("%s %s", String(p_name), argument_error));
+		if (action_timeline) {
+			Dictionary rejected;
+			rejected["tool"] = p_name;
+			rejected["args"] = redact_tool_args_for_audit(p_name, args);
+			rejected["result"] = invalid;
+			action_timeline->record_event("tool_call_rejected", rejected);
+		}
+		const Dictionary result = _tool_result_envelope(invalid, p_context.call_id);
+		failed_calls[r_failure_cache_key] = result;
+		return result;
+	}
+	r_args = args;
+	return Dictionary();
+}
+
+Dictionary SolersToolRegistry::_prepare_tool_call(const StringName &p_name, const Dictionary &p_args, const SolersToolContext &p_context, SolersPreparedToolCall &r_call) {
+	Dictionary args;
+	String failure_cache_key;
+	const Dictionary preflight_error = _preflight_tool_call(p_name, p_args, p_context, args, failure_cache_key);
+	if (!preflight_error.is_empty()) {
+		return preflight_error;
+	}
+	SolersTool *const *tool_ptr = tools.getptr(p_name);
+	ERR_FAIL_NULL_V(tool_ptr, _tool_result_envelope(_error("TOOL_NOT_FOUND", vformat("Solers tool not found: %s", p_name), true), p_context.call_id));
+	SolersTool *tool = *tool_ptr;
+	const SolersToolCapability &cap = tool->capability();
 	SolersPermissionManager::Permission effective_permission = is_read_only(p_name, args) ? SolersPermissionManager::PERMISSION_OBSERVE : cap.permission;
 
 	const Dictionary timeline_args = redact_tool_args_for_audit(p_name, args);
@@ -1321,7 +1535,7 @@ Dictionary SolersToolRegistry::_prepare_tool_call(const StringName &p_name, cons
 	}
 
 	if (!permission_manager) {
-		return _error("PERMISSION_MANAGER_UNAVAILABLE", "Solers permission manager is not initialized.", false);
+		return _tool_result_envelope(_error("PERMISSION_MANAGER_UNAVAILABLE", "Solers permission manager is not initialized.", false), p_context.call_id);
 	}
 
 	const int approval_id = args.get("approval_id", 0);
@@ -1340,7 +1554,7 @@ Dictionary SolersToolRegistry::_prepare_tool_call(const StringName &p_name, cons
 			denied_payload["approval_request"] = approval_request;
 			action_timeline->record_event("tool_call_blocked", denied_payload);
 		}
-		return denied;
+		return _tool_result_envelope(denied, p_context.call_id);
 	}
 
 	SolersToolContext ctx = p_context;
@@ -1348,14 +1562,14 @@ Dictionary SolersToolRegistry::_prepare_tool_call(const StringName &p_name, cons
 		ctx.call_id = args.get("call_id", String());
 	}
 	ctx.approval_id = approval_id;
-	ctx.retry_of = args.get("retry_of", String());
 	Dictionary handler_args = args;
-	handler_args.erase("retry_of");
+	handler_args.erase("approval_id");
 	r_call.tool = tool;
 	r_call.name = p_name;
 	r_call.args = handler_args;
 	r_call.timeline_payload = timeline_payload;
 	r_call.context = ctx;
+	r_call.failure_cache_key = failure_cache_key;
 	r_call.execution = cap.execution;
 	return Dictionary();
 }
@@ -1363,7 +1577,7 @@ Dictionary SolersToolRegistry::_prepare_tool_call(const StringName &p_name, cons
 Dictionary SolersToolRegistry::_execute_prepared_tool(const SolersPreparedToolCall &p_call) const {
 	ERR_FAIL_NULL_V(p_call.tool, _error("TOOL_NOT_FOUND", "Prepared Solers tool is unavailable.", false));
 	SOLERS_TRACE("registry.execute_begin", vformat("%s args=%s", String(p_call.name), _trace_json(summarize_tool_args_for_audit(p_call.name, p_call.args), 420)));
-	const Dictionary result = p_call.tool->execute(p_call.context, p_call.args);
+	const Dictionary result = _tool_result_envelope(p_call.tool->execute(p_call.context, p_call.args), p_call.context.call_id);
 	SOLERS_TRACE("registry.execute_end", vformat("%s %s", String(p_call.name), summarize_tool_result_for_audit(result)));
 	return result;
 }
@@ -1371,7 +1585,7 @@ Dictionary SolersToolRegistry::_execute_prepared_tool(const SolersPreparedToolCa
 Dictionary SolersToolRegistry::_poll_prepared_tool(const SolersPreparedToolCall &p_call, const Dictionary &p_args) const {
 	ERR_FAIL_NULL_V(p_call.tool, _error("TOOL_NOT_FOUND", "Prepared Solers tool is unavailable.", false));
 	SOLERS_TRACE("registry.poll_begin", vformat("%s args=%s", String(p_call.name), _trace_json(summarize_tool_args_for_audit(p_call.name, p_args), 420)));
-	const Dictionary result = p_call.tool->poll(p_call.context, p_args);
+	const Dictionary result = _tool_result_envelope(p_call.tool->poll(p_call.context, p_args), p_call.context.call_id);
 	SOLERS_TRACE("registry.poll_end", vformat("%s %s", String(p_call.name), summarize_tool_result_for_audit(result)));
 	return result;
 }
@@ -1388,6 +1602,33 @@ void SolersToolRegistry::_complete_prepared_tool(const SolersPreparedToolCall &p
 		Dictionary completed_payload = p_call.timeline_payload;
 		completed_payload["ok"] = p_result.get("ok", false);
 		action_timeline->record_event("tool_call_completed", completed_payload);
+	}
+	if (p_call.failure_cache_key.is_empty()) {
+		return;
+	}
+	if ((bool)p_result.get("ok", false)) {
+		failed_calls.erase(p_call.failure_cache_key);
+		return;
+	}
+	const String code = String(Dictionary(p_result.get("error", Dictionary())).get("code", String()));
+	if (code != "TOOL_CANCELLED" && code != "APPROVAL_EXPIRED" && code != "USER_APPROVAL_REQUIRED") {
+		failed_calls[p_call.failure_cache_key] = p_result.duplicate(true);
+	}
+}
+
+void SolersToolRegistry::clear_task_state(const String &p_session_id) {
+	if (p_session_id.is_empty()) {
+		return;
+	}
+	Vector<String> erase_keys;
+	const String prefix = p_session_id + ":";
+	for (const KeyValue<String, Dictionary> &entry : failed_calls) {
+		if (entry.key.begins_with(prefix)) {
+			erase_keys.push_back(entry.key);
+		}
+	}
+	for (const String &key : erase_keys) {
+		failed_calls.erase(key);
 	}
 }
 

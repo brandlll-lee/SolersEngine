@@ -8,8 +8,11 @@
 
 #pragma once
 
+#include "core/io/dir_access.h"
+#include "core/io/file_access.h"
 #include "core/io/json.h"
 #include "core/math/random_pcg.h"
+#include "core/config/project_settings.h"
 #include "modules/solers_modeling/core/solers_model_operation.h"
 #include "modules/solers_modeling/core/solers_model_modifier.h"
 #include "modules/solers_modeling/core/solers_model_source.h"
@@ -17,11 +20,35 @@
 
 namespace TestSolersModeling {
 
+struct TemporaryModelSource {
+	String path;
+
+	~TemporaryModelSource() {
+		if (FileAccess::exists(path)) {
+			DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(path));
+		}
+	}
+};
+
+static Error write_model_source(const String &p_path, const SolersEditableMesh &p_mesh) {
+	PackedByteArray bytes;
+	Error error = SolersModelSource::encode(p_mesh, bytes);
+	if (error != OK) {
+		return error;
+	}
+	Ref<FileAccess> file = FileAccess::open(p_path, FileAccess::WRITE);
+	if (file.is_null()) {
+		return FileAccess::get_open_error();
+	}
+	file->store_buffer(bytes);
+	return file->get_error();
+}
+
 TEST_CASE("[SolersModeling] editable topology round-trips with stable IDs") {
 	SolersEditableMesh source;
 	Dictionary box;
 	box["size"] = Vector3(4, 3, 2);
-	Dictionary created = SolersModelOperationRegistry::get_singleton()->execute(source, SNAME("create_box"), box);
+	Dictionary created = SolersModelOperationRegistry::get_singleton()->execute(source, SNAME("add_box"), box);
 	INFO(JSON::stringify(created));
 	REQUIRE((bool)created.get("ok", false));
 	CHECK(source.validate() == OK);
@@ -42,7 +69,7 @@ TEST_CASE("[SolersModeling] editable topology round-trips with stable IDs") {
 
 TEST_CASE("[SolersModeling] failed topology operations leave the source copy uncommitted") {
 	SolersEditableMesh mesh;
-	const Dictionary plane = SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("create_plane"), Dictionary());
+	const Dictionary plane = SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("add_plane"), Dictionary());
 	INFO(JSON::stringify(plane));
 	REQUIRE((bool)plane.get("ok", false));
 	const Dictionary before = mesh.to_dictionary();
@@ -63,7 +90,7 @@ TEST_CASE("[SolersModeling] failed topology operations leave the source copy unc
 
 TEST_CASE("[SolersModeling] extrude creates a valid editable region and runtime mesh") {
 	SolersEditableMesh mesh;
-	const Dictionary plane = SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("create_plane"), Dictionary());
+	const Dictionary plane = SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("add_plane"), Dictionary());
 	INFO(JSON::stringify(plane));
 	REQUIRE((bool)plane.get("ok", false));
 	Dictionary extrude;
@@ -88,9 +115,117 @@ TEST_CASE("[SolersModeling] operation definitions own their schemas") {
 	}
 }
 
+TEST_CASE("[SolersModeling] operation schemas reject unknown fields and enum values") {
+	SolersEditableMesh mesh;
+	REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("add_box"), Dictionary()).get("ok", false));
+	const Dictionary before = mesh.to_dictionary();
+
+	Dictionary misspelled;
+	misspelled["cout"] = 3;
+	Dictionary result = SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("add_array_modifier"), misspelled);
+	CHECK_FALSE((bool)result.get("ok", true));
+	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "MODEL_ARGUMENT_INVALID");
+	CHECK(mesh.to_dictionary() == before);
+
+	Dictionary invalid_boolean;
+	invalid_boolean["operand"] = "res://operand.smodel";
+	invalid_boolean["operation"] = "difference";
+	result = SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("add_boolean_modifier"), invalid_boolean);
+	CHECK_FALSE((bool)result.get("ok", true));
+	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "MODEL_ARGUMENT_INVALID");
+	CHECK(mesh.to_dictionary() == before);
+	Dictionary invalid_size;
+	Dictionary size;
+	size["x"] = 1.0;
+	size["why"] = 2.0;
+	invalid_size["size"] = size;
+	result = SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("add_box"), invalid_size);
+	CHECK_FALSE((bool)result.get("ok", true));
+	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "MODEL_ARGUMENT_INVALID");
+	CHECK(mesh.to_dictionary() == before);
+	CHECK(SolersModelOperationRegistry::get_singleton()->get_operation(SNAME("add_modifier")) == nullptr);
+}
+
+TEST_CASE("[SolersModeling] triangulation preserves every source face winding") {
+	SolersEditableMesh mesh;
+	REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("add_box"), Dictionary()).get("ok", false));
+	for (int64_t face_id : mesh.get_face_ids()) {
+		const Vector<int64_t> vertices = mesh.get_face_vertices(face_id);
+		Vector3 normal;
+		for (int i = 0; i < vertices.size(); i++) {
+			const Vector3 a = mesh.get_vertex(vertices[i])->position;
+			const Vector3 b = mesh.get_vertex(vertices[(i + 1) % vertices.size()])->position;
+			normal += a.cross(b);
+		}
+		const PackedInt32Array triangles = mesh.triangulate_face(face_id);
+		REQUIRE(triangles.size() == 6);
+		for (int i = 0; i < triangles.size(); i += 3) {
+			const Vector3 a = mesh.get_vertex(vertices[triangles[i]])->position;
+			const Vector3 b = mesh.get_vertex(vertices[triangles[i + 1]])->position;
+			const Vector3 c = mesh.get_vertex(vertices[triangles[i + 2]])->position;
+			CHECK((b - a).cross(c - a).dot(normal) > 0.0);
+		}
+	}
+}
+
+TEST_CASE("[SolersModeling][SceneTree] Boolean union subtract and intersect produce valid runtime geometry") {
+	TemporaryModelSource operand_file{ "res://.godot/solers_modeling_boolean_operand.smodel" };
+	SolersEditableMesh operand;
+	Dictionary operand_box;
+	operand_box["size"] = Vector3(1, 1, 1);
+	REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(operand, SNAME("add_box"), operand_box).get("ok", false));
+	REQUIRE(write_model_source(operand_file.path, operand) == OK);
+
+	for (const String &operation : { String("union"), String("subtract"), String("intersect") }) {
+		SolersEditableMesh mesh;
+		Dictionary base_box;
+		base_box["size"] = Vector3(2, 2, 2);
+		REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("add_box"), base_box).get("ok", false));
+		Dictionary boolean;
+		boolean["operand"] = operand_file.path;
+		boolean["operation"] = operation;
+		boolean["translation"] = Vector3(0.75, 0, 0);
+		Dictionary added = SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("add_boolean_modifier"), boolean);
+		INFO(vformat("operation=%s add=%s", operation, JSON::stringify(added)));
+		REQUIRE((bool)added.get("ok", false));
+		Dictionary applied = SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("apply_modifiers"), Dictionary());
+		INFO(vformat("operation=%s apply=%s", operation, JSON::stringify(applied)));
+		REQUIRE((bool)applied.get("ok", false));
+		CHECK(mesh.validate() == OK);
+		String compile_error;
+		Ref<ArrayMesh> runtime_mesh = mesh.compile(&compile_error);
+		INFO(vformat("operation=%s compile=%s", operation, compile_error));
+		REQUIRE(runtime_mesh.is_valid());
+		CHECK(runtime_mesh->get_aabb().has_volume());
+	}
+}
+
+TEST_CASE("[SolersModeling][SceneTree] source creation is truthful in a new directory") {
+	const String directory = "res://.godot/solers_modeling_source_test";
+	const String path = directory.path_join("new/model.smodel");
+	const String absolute_directory = ProjectSettings::get_singleton()->globalize_path(directory);
+	if (DirAccess::dir_exists_absolute(absolute_directory)) {
+		DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(path));
+	}
+	SolersModelingService *service = SolersModelingService::get_singleton();
+	REQUIRE(service != nullptr);
+	const Dictionary created = service->create(path, false);
+	INFO(JSON::stringify(created));
+	REQUIRE((bool)created.get("ok", false));
+	CHECK(FileAccess::exists(path));
+	CHECK(Dictionary(created.get("data", Dictionary())).get("import_status", String()) == "scan_requested");
+
+	const Dictionary duplicate = service->create(path, false);
+	CHECK_FALSE((bool)duplicate.get("ok", true));
+	CHECK(Dictionary(duplicate.get("error", Dictionary())).get("code", String()) == "MODEL_ALREADY_EXISTS");
+	CHECK((bool)service->validate_source(path).get("ok", false));
+
+	DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(path));
+}
+
 TEST_CASE("[SolersModeling] core modifier stack evaluates real topology") {
 	SolersEditableMesh source;
-	REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(source, SNAME("create_box"), Dictionary()).get("ok", false));
+	REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(source, SNAME("add_box"), Dictionary()).get("ok", false));
 
 	Dictionary mirror;
 	mirror["axis"] = "x";
@@ -112,7 +247,7 @@ TEST_CASE("[SolersModeling] core modifier stack evaluates real topology") {
 
 TEST_CASE("[SolersModeling] solidify closes an open plane") {
 	SolersEditableMesh source;
-	REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(source, SNAME("create_plane"), Dictionary()).get("ok", false));
+	REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(source, SNAME("add_plane"), Dictionary()).get("ok", false));
 	Dictionary parameters;
 	parameters["thickness"] = 0.2;
 	source.add_modifier(SNAME("solidify"), parameters);
@@ -128,7 +263,7 @@ TEST_CASE("[SolersModeling] solidify closes an open plane") {
 
 TEST_CASE("[SolersModeling] segmented bevel produces valid closed topology") {
 	SolersEditableMesh source;
-	REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(source, SNAME("create_box"), Dictionary()).get("ok", false));
+	REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(source, SNAME("add_box"), Dictionary()).get("ok", false));
 	Dictionary parameters;
 	parameters["width"] = 0.08;
 	parameters["segments"] = 2;
@@ -143,9 +278,51 @@ TEST_CASE("[SolersModeling] segmented bevel produces valid closed topology") {
 	CHECK(evaluated.get_boundary_edges().is_empty());
 }
 
+TEST_CASE("[SolersModeling] disconnected box batch supports every bevel segment count") {
+	for (int segments = 1; segments <= 12; segments++) {
+		SolersEditableMesh source;
+		for (int i = 0; i < 24; i++) {
+			Dictionary box;
+			box["size"] = Vector3(0.8, 0.6, 0.7);
+			box["center"] = Vector3((i % 6) * 1.1, (i / 6) * 0.9, 0);
+			const Dictionary added = SolersModelOperationRegistry::get_singleton()->execute(source, SNAME("add_box"), box);
+			INFO(vformat("segments=%d box=%d result=%s", segments, i, JSON::stringify(added)));
+			REQUIRE((bool)added.get("ok", false));
+		}
+		Dictionary parameters;
+		parameters["width"] = 0.08;
+		parameters["segments"] = segments;
+		source.add_modifier(SNAME("bevel"), parameters);
+
+		SolersEditableMesh evaluated;
+		String error;
+		INFO(vformat("segments=%d error=%s", segments, error));
+		REQUIRE(SolersModelModifierEvaluator::evaluate(source, evaluated, &error) == OK);
+		CHECK(evaluated.validate() == OK);
+		CHECK(evaluated.get_boundary_edges().is_empty());
+	}
+}
+
+TEST_CASE("[SolersModeling] primitives report only geometry created by that operation") {
+	SolersEditableMesh mesh;
+	const Dictionary first = SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("add_box"), Dictionary());
+	REQUIRE((bool)first.get("ok", false));
+	Dictionary second_box;
+	second_box["center"] = Vector3(2, 0, 0);
+	const Dictionary second = SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("add_box"), second_box);
+	REQUIRE((bool)second.get("ok", false));
+	const Dictionary first_data = first.get("data", Dictionary());
+	const Dictionary second_data = second.get("data", Dictionary());
+	CHECK(Array(first_data.get("created_edges", Array())).size() == 12);
+	CHECK(Array(second_data.get("created_edges", Array())).size() == 12);
+	for (const Variant &edge_id : Array(first_data.get("created_edges", Array()))) {
+		CHECK_FALSE(Array(second_data.get("created_edges", Array())).has(edge_id));
+	}
+}
+
 TEST_CASE("[SolersModeling] loop cut and dissolve preserve topology invariants") {
 	SolersEditableMesh mesh;
-	REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("create_box"), Dictionary()).get("ok", false));
+	REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("add_box"), Dictionary()).get("ok", false));
 	Dictionary loop_cut;
 	Array seed;
 	seed.push_back(mesh.get_edge_ids()[0]);
@@ -175,7 +352,7 @@ TEST_CASE("[SolersModeling] loop cut and dissolve preserve topology invariants")
 
 TEST_CASE("[SolersModeling] grid fill closes a four-sided room opening") {
 	SolersEditableMesh mesh;
-	REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("create_box"), Dictionary()).get("ok", false));
+	REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("add_box"), Dictionary()).get("ok", false));
 	const int64_t removed_face = mesh.get_face_ids()[0];
 	const Vector<int64_t> corners = mesh.get_face_vertices(removed_face);
 	Dictionary remove;
@@ -207,11 +384,11 @@ TEST_CASE("[SolersModeling] grid fill closes a four-sided room opening") {
 
 TEST_CASE("[SolersModeling] xatlas unwraps mixed polygon sizes into finite UV1 coordinates") {
 	SolersEditableMesh mesh;
-	REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("create_box"), Dictionary()).get("ok", false));
+	REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("add_box"), Dictionary()).get("ok", false));
 	Dictionary cylinder;
 	cylinder["segments"] = 12;
 	cylinder["center"] = Vector3(2, 0, 0);
-	REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("create_cylinder"), cylinder).get("ok", false));
+	REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("add_cylinder"), cylinder).get("ok", false));
 	Dictionary options;
 	options["resolution"] = 256;
 	options["padding"] = 2;
@@ -233,7 +410,7 @@ TEST_CASE("[SolersModeling] xatlas unwraps mixed polygon sizes into finite UV1 c
 
 TEST_CASE("[SolersModeling] build settings survive modifiers and source round-trip") {
 	SolersEditableMesh mesh;
-	REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("create_box"), Dictionary()).get("ok", false));
+	REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("add_box"), Dictionary()).get("ok", false));
 	Dictionary build;
 	build["weighted_normals"] = true;
 	build["generate_uv2"] = true;
@@ -262,12 +439,12 @@ TEST_CASE("[SolersModeling] build settings survive modifiers and source round-tr
 TEST_CASE("[SolersModeling] deterministic mixed edits preserve topology invariants") {
 	RandomPCG random(0x534F4C455253ULL);
 	SolersEditableMesh mesh;
-	REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("create_box"), Dictionary()).get("ok", false));
+	REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("add_box"), Dictionary()).get("ok", false));
 	for (int step = 0; step < 128; step++) {
 		if (mesh.get_face_ids().is_empty()) {
 			Dictionary primitive;
 			primitive["center"] = Vector3(random.random(-2.0f, 2.0f), 0, random.random(-2.0f, 2.0f));
-			REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("create_box"), primitive).get("ok", false));
+			REQUIRE((bool)SolersModelOperationRegistry::get_singleton()->execute(mesh, SNAME("add_box"), primitive).get("ok", false));
 		}
 		const Vector<int64_t> faces = mesh.get_face_ids();
 		const Vector<int64_t> edges = mesh.get_edge_ids();

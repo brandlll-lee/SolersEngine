@@ -38,5 +38,7 @@ public:
 
 	const Vector<SolersModelOperationDefinition> &get_operations() const { return operations; }
 	const SolersModelOperationDefinition *get_operation(const StringName &p_id) const;
+	Dictionary get_batch_item_schema() const;
+	Dictionary validate_parameters(const StringName &p_id, const Dictionary &p_parameters, bool p_allow_missing_required = false) const;
 	Dictionary execute(SolersEditableMesh &r_mesh, const StringName &p_id, const Dictionary &p_parameters) const;
 };

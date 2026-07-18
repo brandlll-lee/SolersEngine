@@ -55,7 +55,6 @@ SolersAgentRuntime::SolersAgentRuntime() {
 	tool_registry->set_resource_service(resource_service);
 	tool_registry->set_script_service(script_service);
 	tool_registry->register_default_tools();
-	tool_registry->validate_builtin_skills();
 
 	agent_session->set_action_timeline(action_timeline);
 	agent_session->set_settings_service(settings_service);
