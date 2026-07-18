@@ -43,12 +43,12 @@ SolersAgentRuntime::SolersAgentRuntime() {
 
 	file_checkpoint->set_action_timeline(action_timeline);
 	script_service->set_action_timeline(action_timeline);
-	script_service->set_file_checkpoint(file_checkpoint);
 	settings_service->set_provider_registry(provider_registry);
 	reflection_service->set_action_timeline(action_timeline);
 
 	tool_registry->set_action_timeline(action_timeline);
 	tool_registry->set_asset_service(asset_service);
+	tool_registry->set_file_checkpoint(file_checkpoint);
 	tool_registry->set_observation_service(observation_service);
 	tool_registry->set_reflection_service(reflection_service);
 	tool_registry->set_permission_manager(permission_manager);
@@ -89,6 +89,9 @@ void SolersAgentRuntime::poll() {
 		return;
 	}
 	in_poll = true;
+	if (observation_service) {
+		observation_service->poll();
+	}
 	if (settings_service) {
 		settings_service->poll_auth();
 	}

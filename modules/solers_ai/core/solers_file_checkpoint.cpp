@@ -34,14 +34,17 @@
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/json.h"
+#include "core/io/resource_loader.h"
 #include "core/object/class_db.h"
 #include "core/os/time.h"
+#include "editor/file_system/editor_file_system.h"
 #include "modules/solers_ai/core/solers_action_timeline.h"
 
 void SolersFileCheckpoint::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_action_timeline", "action_timeline"), &SolersFileCheckpoint::set_action_timeline);
 	ClassDB::bind_method(D_METHOD("create_checkpoint", "path", "reason"), &SolersFileCheckpoint::create_checkpoint, DEFVAL(String()));
 	ClassDB::bind_method(D_METHOD("restore_checkpoint", "checkpoint_path", "target_path"), &SolersFileCheckpoint::restore_checkpoint);
+	ClassDB::bind_method(D_METHOD("restore_checkpoint_state", "checkpoint"), &SolersFileCheckpoint::restore_checkpoint_state);
 	ClassDB::bind_method(D_METHOD("get_checkpoint_root_info"), &SolersFileCheckpoint::get_checkpoint_root_info);
 }
 
@@ -206,6 +209,43 @@ Dictionary SolersFileCheckpoint::restore_checkpoint(const String &p_checkpoint_p
 	}
 
 	return _ok(data);
+}
+
+Dictionary SolersFileCheckpoint::restore_checkpoint_state(const Dictionary &p_checkpoint) {
+	const String target_path = p_checkpoint.get("path", String());
+	String normalized_path;
+	String path_error;
+	if (!_normalize_project_path(target_path, normalized_path, path_error)) {
+		return _error("INVALID_PATH", path_error);
+	}
+
+	Dictionary result;
+	if ((bool)p_checkpoint.get("existed", false)) {
+		result = restore_checkpoint(p_checkpoint.get("checkpoint_path", String()), normalized_path);
+	} else {
+		if (FileAccess::exists(normalized_path)) {
+			const Error error = DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(normalized_path));
+			if (error != OK) {
+				return _error("RESTORE_DELETE_FAILED", vformat("Failed to remove newly created file, error code %d.", error));
+			}
+		}
+		Dictionary data;
+		data["target_path"] = normalized_path;
+		data["removed_created_file"] = true;
+		result = _ok(data);
+	}
+	if (!(bool)result.get("ok", false)) {
+		return result;
+	}
+
+	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
+	if (filesystem && !filesystem->is_scanning() && filesystem->get_filesystem()) {
+		filesystem->update_file(normalized_path);
+	}
+	if (FileAccess::exists(normalized_path)) {
+		ResourceLoader::load(normalized_path, String(), ResourceFormatLoader::CACHE_MODE_REPLACE);
+	}
+	return result;
 }
 
 Dictionary SolersFileCheckpoint::get_checkpoint_root_info() const {

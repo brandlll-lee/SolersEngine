@@ -52,5 +52,6 @@ public:
 	void set_action_timeline(SolersActionTimeline *p_action_timeline);
 	Dictionary create_checkpoint(const String &p_path, const String &p_reason = String());
 	Dictionary restore_checkpoint(const String &p_checkpoint_path, const String &p_target_path);
+	Dictionary restore_checkpoint_state(const Dictionary &p_checkpoint);
 	Dictionary get_checkpoint_root_info() const;
 };

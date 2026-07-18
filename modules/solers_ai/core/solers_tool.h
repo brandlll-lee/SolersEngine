@@ -45,6 +45,15 @@ enum class SolersToolExecution {
 	WORKER_THREAD,
 };
 
+// How one successful tool mutation can be reversed. This is authoritative:
+// the executor never infers reversibility from a tool name or permission.
+enum class SolersToolMutationPolicy {
+	READ_ONLY,
+	EDITOR_UNDO,
+	FILE_CHECKPOINT,
+	IRREVERSIBLE,
+};
+
 // Authoritative capability metadata. Permission/approval/redaction are decided
 // from these structured facts — never from matching the tool name. Adding a
 // new tool with new risk characteristics needs no change to the orchestrator.
@@ -54,13 +63,8 @@ struct SolersToolCapability {
 	// boundaries (for example, approved third-party code installation) in the
 	// same authoritative tool definition as its schema and handler.
 	std::function<SolersPermissionManager::Permission(const Dictionary &)> permission_resolver;
-	// Free-form mutation classifier surfaced to the timeline/UI (e.g.
-	// "editor_undo_redo", "file_write", "none"). Descriptive only.
-	String mutation_kind = "none";
+	SolersToolMutationPolicy mutation_policy = SolersToolMutationPolicy::READ_ONLY;
 	bool requires_approval = false;
-	// True when the mutation is reversible through EditorUndoRedoManager. The
-	// user can always Ctrl+Z an undoable tool — Solers' native safety net.
-	bool undoable = false;
 	// Observation payloads that are only needed for the next model step.
 	bool ephemeral_result = false;
 	// When true, identical read-only calls reuse the session cache across
@@ -86,6 +90,7 @@ struct SolersToolCapability {
 struct SolersToolContext {
 	String call_id;
 	String session_id;
+	String project_path;
 	uint64_t authored_revision = 0;
 	int approval_id = 0;
 	const SafeFlag *cancel_requested = nullptr;

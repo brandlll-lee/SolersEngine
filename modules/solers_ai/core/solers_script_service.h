@@ -34,13 +34,11 @@
 #include "core/variant/dictionary.h"
 
 class SolersActionTimeline;
-class SolersFileCheckpoint;
 
 class SolersScriptService : public Object {
 	GDCLASS(SolersScriptService, Object);
 
 	SolersActionTimeline *action_timeline = nullptr;
-	SolersFileCheckpoint *file_checkpoint = nullptr;
 
 	bool _normalize_project_path(const String &p_path, String &r_res_path, String &r_error, bool p_allow_project_data = false) const;
 	Dictionary _ok(const Variant &p_data) const;
@@ -52,7 +50,6 @@ protected:
 
 public:
 	void set_action_timeline(SolersActionTimeline *p_action_timeline);
-	void set_file_checkpoint(SolersFileCheckpoint *p_file_checkpoint);
 
 	Dictionary write_file(const Dictionary &p_args);
 	Dictionary patch_file(const Dictionary &p_args);

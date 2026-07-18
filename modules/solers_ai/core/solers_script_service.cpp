@@ -41,12 +41,10 @@
 #include "core/object/script_language.h"
 #include "editor/file_system/editor_file_system.h"
 #include "modules/solers_ai/core/solers_action_timeline.h"
-#include "modules/solers_ai/core/solers_file_checkpoint.h"
 #include "scene/resources/resource_format_text.h"
 
 void SolersScriptService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_action_timeline", "action_timeline"), &SolersScriptService::set_action_timeline);
-	ClassDB::bind_method(D_METHOD("set_file_checkpoint", "file_checkpoint"), &SolersScriptService::set_file_checkpoint);
 	ClassDB::bind_method(D_METHOD("write_file", "args"), &SolersScriptService::write_file);
 	ClassDB::bind_method(D_METHOD("patch_file", "args"), &SolersScriptService::patch_file);
 	ClassDB::bind_method(D_METHOD("validate_script", "args"), &SolersScriptService::validate_script);
@@ -168,10 +166,6 @@ void SolersScriptService::set_action_timeline(SolersActionTimeline *p_action_tim
 	action_timeline = p_action_timeline;
 }
 
-void SolersScriptService::set_file_checkpoint(SolersFileCheckpoint *p_file_checkpoint) {
-	file_checkpoint = p_file_checkpoint;
-}
-
 static bool _solers_is_native_serialized_resource_path(const String &p_path) {
 	List<String> extensions;
 	if (ResourceFormatLoaderText::singleton) {
@@ -220,14 +214,6 @@ Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
 	const bool is_script_text = has_text_content && ScriptServer::get_language_for_extension(res_path.get_extension().to_lower()) != nullptr;
 	if (is_script_text && !validate_if_script) {
 		return _error("SCRIPT_VALIDATION_REQUIRED", "Script writes must use validation.");
-	}
-
-	Dictionary checkpoint_result;
-	if (file_checkpoint && existed_before) {
-		checkpoint_result = file_checkpoint->create_checkpoint(res_path, "Solers file write");
-		if (!checkpoint_result.get("ok", false)) {
-			return checkpoint_result;
-		}
 	}
 
 	Dictionary validation_data;
@@ -281,7 +267,6 @@ Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
 	data["size_bytes"] = has_binary_content ? bytes.size() : content.utf8().length();
 	data["binary"] = has_binary_content;
 	data["import_valid"] = ResourceLoader::is_import_valid(res_path);
-	data["checkpoint"] = checkpoint_result;
 	data["validation"] = validation_data;
 
 	if (action_timeline) {

@@ -349,9 +349,9 @@ static StringName solers_tool_glyph_for_metadata(const Dictionary &p_tool) {
 		return SNAME("tool_shell");
 	}
 
-	const String mutation = String(p_tool.get("mutation_kind", "none"));
-	if (mutation != "none") {
-		return bool(p_tool.get("undoable", false)) ? SNAME("tool_scene") : SNAME("alert");
+	const String mutation = String(p_tool.get("mutation_policy", "read_only"));
+	if (mutation != "read_only") {
+		return mutation == "editor_undo" || mutation == "file_checkpoint" ? SNAME("tool_scene") : SNAME("alert");
 	}
 	return bool(p_tool.get("requires_approval", false)) ? SNAME("shield") : SNAME("sparkle");
 }

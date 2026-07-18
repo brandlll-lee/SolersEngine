@@ -28,6 +28,7 @@ class SolersReflectionService : public Object {
 	GDCLASS(SolersReflectionService, Object);
 
 	SolersActionTimeline *action_timeline = nullptr;
+	bool batch_action_active = false;
 
 	struct UV2UnwrapTask {
 		String operation_id;

@@ -698,10 +698,20 @@ Dictionary SolersReflectionService::set_property(const Dictionary &p_args) {
 		ERR_FAIL_NULL_V(undo_redo, _error("UNDO_REDO_UNAVAILABLE", "EditorUndoRedoManager is not available.", false));
 
 		const NodePath property_path = NodePath(Vector<StringName>(), subnames, false);
-		undo_redo->create_action(vformat("Solers: Set %s.%s", node->get_class(), normalized), UndoRedo::MERGE_DISABLE, node);
+		if (!batch_action_active) {
+			undo_redo->create_action(vformat("Solers: Set %s.%s", node->get_class(), normalized), UndoRedo::MERGE_DISABLE, node);
+		} else {
+			bool set_valid = false;
+			node->set_indexed(subnames, p_args["value"], &set_valid);
+			if (!set_valid) {
+				return _error("PROPERTY_SET_FAILED", vformat("Setting property path '%s' failed on %s.", normalized, node->get_class()));
+			}
+		}
 		undo_redo->add_do_method(node, "set_indexed", property_path, p_args["value"]);
 		undo_redo->add_undo_method(node, "set_indexed", property_path, old_value);
-		undo_redo->commit_action();
+		if (!batch_action_active) {
+			undo_redo->commit_action();
+		}
 
 		String safe_path;
 		_safe_node_path(node, safe_path);
@@ -731,10 +741,14 @@ Dictionary SolersReflectionService::set_property(const Dictionary &p_args) {
 		return _error("PROPERTY_SET_FAILED", vformat("Setting property '%s' failed on %s.", property, node->get_class()));
 	}
 
-	undo_redo->create_action(vformat("Solers: Set %s.%s", node->get_class(), property), UndoRedo::MERGE_DISABLE, node);
+	if (!batch_action_active) {
+		undo_redo->create_action(vformat("Solers: Set %s.%s", node->get_class(), property), UndoRedo::MERGE_DISABLE, node);
+	}
 	undo_redo->add_do_property(node, property_sn, coerced);
 	undo_redo->add_undo_property(node, property_sn, old_value);
-	undo_redo->commit_action(false);
+	if (!batch_action_active) {
+		undo_redo->commit_action(false);
+	}
 
 	if (property == "current" && coerced && Object::cast_to<Camera3D>(node)) {
 		Camera3D *camera = Object::cast_to<Camera3D>(node);
@@ -854,10 +868,22 @@ Dictionary SolersReflectionService::_create_node(const Dictionary &p_args) {
 		return _error("INVALID_PROPERTY_VALUE", error);
 	}
 
+	EditorUndoRedoManager *undo_redo = editor_interface->get_editor_undo_redo();
+	ERR_FAIL_NULL_V(undo_redo, _error("UNDO_REDO_UNAVAILABLE", "EditorUndoRedoManager is not available.", false));
+
 	if (create_root) {
-		editor_interface->add_root_node(node);
+		if (!batch_action_active) {
+			undo_redo->create_action_for_history("Solers: New Scene Root", EditorNode::get_editor_data().get_current_edited_scene_history_id());
+		}
+		undo_redo->add_do_method(editor_node, "set_edited_scene", node);
+		undo_redo->add_do_reference(node);
+		undo_redo->add_undo_method(editor_node, "set_edited_scene", (Object *)nullptr);
+		if (batch_action_active) {
+			editor_node->set_edited_scene(node);
+		} else {
+			undo_redo->commit_action();
+		}
 		if (editor_interface->get_edited_scene_root() != node) {
-			memdelete(node);
 			return _error("SCENE_ROOT_CREATION_FAILED", "Godot did not accept the new edited scene root.", false);
 		}
 		Dictionary data;
@@ -870,15 +896,19 @@ Dictionary SolersReflectionService::_create_node(const Dictionary &p_args) {
 		return _ok(data);
 	}
 
-	EditorUndoRedoManager *undo_redo = editor_interface->get_editor_undo_redo();
-	ERR_FAIL_NULL_V(undo_redo, _error("UNDO_REDO_UNAVAILABLE", "EditorUndoRedoManager is not available.", false));
-
-	undo_redo->create_action(vformat("Solers: Add %s", type), UndoRedo::MERGE_DISABLE, parent);
+	if (!batch_action_active) {
+		undo_redo->create_action(vformat("Solers: Add %s", type), UndoRedo::MERGE_DISABLE, parent);
+	}
 	undo_redo->add_do_method(parent, "add_child", node, true);
 	undo_redo->add_do_method(node, "set_owner", edited_root);
 	undo_redo->add_do_reference(node);
 	undo_redo->add_undo_method(parent, "remove_child", node);
-	undo_redo->commit_action();
+	if (batch_action_active) {
+		parent->add_child(node, true);
+		node->set_owner(edited_root);
+	} else {
+		undo_redo->commit_action();
+	}
 
 	String safe_path;
 	_safe_node_path(node, safe_path);
@@ -1028,18 +1058,39 @@ Dictionary SolersReflectionService::_reparent_node(const Dictionary &p_args) {
 
 	const int old_index = node->get_index(false);
 	const int new_index = position < 0 ? -1 : CLAMP(position, 0, new_parent->get_child_count(false));
-	undo_redo->create_action("Solers: Reparent Node", UndoRedo::MERGE_DISABLE, new_parent);
+	Node *old_owner = node->get_owner();
+	if (!batch_action_active) {
+		undo_redo->create_action("Solers: Reparent Node", UndoRedo::MERGE_DISABLE, new_parent);
+	}
 	undo_redo->add_do_method(old_parent, "remove_child", node);
 	undo_redo->add_do_method(new_parent, "add_child", node, true);
 	if (new_index >= 0) {
 		undo_redo->add_do_method(new_parent, "move_child", node, new_index);
 	}
 	undo_redo->add_do_method(node, "set_owner", edited_root);
-	undo_redo->add_undo_method(new_parent, "remove_child", node);
-	undo_redo->add_undo_method(old_parent, "add_child", node, true);
-	undo_redo->add_undo_method(old_parent, "move_child", node, old_index);
-	undo_redo->add_undo_method(node, "set_owner", node->get_owner());
-	undo_redo->commit_action();
+	if (batch_action_active) {
+		// The batch action reverses operation groups on commit. Register each
+		// group's undo methods backwards so their local order stays intact.
+		undo_redo->add_undo_method(node, "set_owner", old_owner);
+		undo_redo->add_undo_method(old_parent, "move_child", node, old_index);
+		undo_redo->add_undo_method(old_parent, "add_child", node, true);
+		undo_redo->add_undo_method(new_parent, "remove_child", node);
+	} else {
+		undo_redo->add_undo_method(new_parent, "remove_child", node);
+		undo_redo->add_undo_method(old_parent, "add_child", node, true);
+		undo_redo->add_undo_method(old_parent, "move_child", node, old_index);
+		undo_redo->add_undo_method(node, "set_owner", old_owner);
+	}
+	if (batch_action_active) {
+		old_parent->remove_child(node);
+		new_parent->add_child(node, true);
+		if (new_index >= 0) {
+			new_parent->move_child(node, new_index);
+		}
+		node->set_owner(edited_root);
+	} else {
+		undo_redo->commit_action();
+	}
 
 	String node_safe_path;
 	String parent_safe_path;
@@ -1084,10 +1135,19 @@ Dictionary SolersReflectionService::_connect_signal(const Dictionary &p_args) {
 	EditorUndoRedoManager *undo_redo = editor_interface->get_editor_undo_redo();
 	ERR_FAIL_NULL_V(undo_redo, _error("UNDO_REDO_UNAVAILABLE", "EditorUndoRedoManager is not available.", false));
 
-	undo_redo->create_action(vformat("Solers: Connect %s", signal_name), UndoRedo::MERGE_DISABLE, source);
+	if (batch_action_active) {
+		const Error connect_error = source->connect(signal_sn, callable, flags);
+		if (connect_error != OK) {
+			return _error("SIGNAL_CONNECT_FAILED", vformat("Connecting signal '%s' failed with error %d.", signal_name, (int)connect_error));
+		}
+	} else {
+		undo_redo->create_action(vformat("Solers: Connect %s", signal_name), UndoRedo::MERGE_DISABLE, source);
+	}
 	undo_redo->add_do_method(source, "connect", signal_sn, callable, flags);
 	undo_redo->add_undo_method(source, "disconnect", signal_sn, callable);
-	undo_redo->commit_action();
+	if (!batch_action_active) {
+		undo_redo->commit_action();
+	}
 
 	String source_safe_path;
 	String target_safe_path;
@@ -1138,10 +1198,16 @@ Dictionary SolersReflectionService::_attach_script(const Dictionary &p_args) {
 	ERR_FAIL_NULL_V(undo_redo, _error("UNDO_REDO_UNAVAILABLE", "EditorUndoRedoManager is not available.", false));
 
 	Ref<Script> previous_script = node->get_script();
-	undo_redo->create_action("Solers: Attach Script", UndoRedo::MERGE_DISABLE, node);
+	if (!batch_action_active) {
+		undo_redo->create_action("Solers: Attach Script", UndoRedo::MERGE_DISABLE, node);
+	}
 	undo_redo->add_do_method(node, "set_script", script);
 	undo_redo->add_undo_method(node, "set_script", previous_script);
-	undo_redo->commit_action();
+	if (batch_action_active) {
+		node->set_script(script);
+	} else {
+		undo_redo->commit_action();
+	}
 
 	String safe_path;
 	_safe_node_path(node, safe_path);
@@ -1174,12 +1240,24 @@ Dictionary SolersReflectionService::_remove_node(const Dictionary &p_args) {
 	ERR_FAIL_NULL_V(undo_redo, _error("UNDO_REDO_UNAVAILABLE", "EditorUndoRedoManager is not available.", false));
 
 	const int original_index = node->get_index(false);
-	undo_redo->create_action("Solers: Remove Node", UndoRedo::MERGE_DISABLE, parent);
+	if (!batch_action_active) {
+		undo_redo->create_action("Solers: Remove Node", UndoRedo::MERGE_DISABLE, parent);
+	}
 	undo_redo->add_do_method(parent, "remove_child", node);
-	undo_redo->add_undo_method(parent, "add_child", node, true);
-	undo_redo->add_undo_method(parent, "move_child", node, original_index);
-	undo_redo->add_undo_reference(node);
-	undo_redo->commit_action();
+	if (batch_action_active) {
+		undo_redo->add_undo_method(parent, "move_child", node, original_index);
+		undo_redo->add_undo_method(parent, "add_child", node, true);
+		undo_redo->add_undo_reference(node);
+	} else {
+		undo_redo->add_undo_method(parent, "add_child", node, true);
+		undo_redo->add_undo_method(parent, "move_child", node, original_index);
+		undo_redo->add_undo_reference(node);
+	}
+	if (batch_action_active) {
+		parent->remove_child(node);
+	} else {
+		undo_redo->commit_action();
+	}
 
 	String parent_safe_path;
 	_safe_node_path(parent, parent_safe_path);
@@ -1306,6 +1384,20 @@ static bool _solers_spatial_state_equal(const HashMap<ObjectID, AABB> &p_left, c
 	return true;
 }
 
+static bool _solers_batch_operation_mutates(SolersBatchOperationKind p_kind) {
+	switch (p_kind) {
+		case SolersBatchOperationKind::CREATE_NODE:
+		case SolersBatchOperationKind::SET_PROPERTY:
+		case SolersBatchOperationKind::REPARENT:
+		case SolersBatchOperationKind::CONNECT_SIGNAL:
+		case SolersBatchOperationKind::ATTACH_SCRIPT:
+		case SolersBatchOperationKind::REMOVE_NODE:
+			return true;
+		default:
+			return false;
+	}
+}
+
 Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 	const Array operations = p_args.get("operations", Array());
 	if (operations.is_empty()) {
@@ -1316,9 +1408,22 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 	Node *initial_root = has_scene_slot ? editor_node->get_edited_scene() : nullptr;
 	HashMap<ObjectID, AABB> spatial_state_before;
 	_solers_collect_spatial_state(initial_root, spatial_state_before);
-	EditorUndoRedoManager *undo_redo = initial_root && EditorInterface::get_singleton() ? EditorInterface::get_singleton()->get_editor_undo_redo() : nullptr;
-	int history_id = undo_redo && initial_root ? undo_redo->get_history_id_for_object(initial_root) : EditorUndoRedoManager::INVALID_HISTORY;
-	int history_action = undo_redo && history_id != EditorUndoRedoManager::INVALID_HISTORY && undo_redo->has_history(history_id) ? undo_redo->get_history_undo_redo(history_id)->get_current_action() : -1;
+	bool has_mutation = false;
+	for (int i = 0; i < operations.size(); i++) {
+		if (operations[i].get_type() == Variant::DICTIONARY) {
+			has_mutation = has_mutation || _solers_batch_operation_mutates(_solers_batch_operation_kind(Dictionary(operations[i]).get("op", String())));
+		}
+	}
+	EditorUndoRedoManager *undo_redo = has_mutation ? EditorUndoRedoManager::get_singleton() : nullptr;
+	const int history_id = has_scene_slot ? EditorNode::get_editor_data().get_current_edited_scene_history_id() : EditorUndoRedoManager::INVALID_HISTORY;
+	if (has_mutation && (!undo_redo || history_id == EditorUndoRedoManager::INVALID_HISTORY)) {
+		return _error("UNDO_REDO_UNAVAILABLE", "The current edited scene has no UndoRedo history.", false);
+	}
+	if (has_mutation) {
+		undo_redo->create_action_for_history("Solers: Batch", history_id, UndoRedo::MERGE_DISABLE, true);
+		undo_redo->force_fixed_history();
+		batch_action_active = true;
+	}
 
 	Array results;
 	int ok_count = 0;
@@ -1383,11 +1488,6 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 		results.push_back(entry);
 		if ((bool)result.get("ok", false)) {
 			ok_count++;
-			if (!initial_root && !undo_redo && has_scene_slot && editor_node->get_edited_scene()) {
-				undo_redo = EditorInterface::get_singleton()->get_editor_undo_redo();
-				history_id = undo_redo->get_history_id_for_object(editor_node->get_edited_scene());
-				history_action = history_id != EditorUndoRedoManager::INVALID_HISTORY && undo_redo->has_history(history_id) ? undo_redo->get_history_undo_redo(history_id)->get_current_action() : -1;
-			}
 		} else {
 			error_count++;
 			// Stop at the first failure so the model can correct before the
@@ -1397,24 +1497,15 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 	}
 
 	bool rolled_back = false;
-	if (error_count > 0 && undo_redo && history_id != EditorUndoRedoManager::INVALID_HISTORY && undo_redo->has_history(history_id)) {
-		EditorUndoRedoManager::History &history = undo_redo->get_or_create_history(history_id);
-		while (history.undo_redo->get_current_action() > history_action && undo_redo->undo_history(history_id)) {
-			rolled_back = true;
-		}
-		if (rolled_back) {
+	if (has_mutation) {
+		batch_action_active = false;
+		undo_redo->commit_action(false);
+		if (error_count > 0) {
+			rolled_back = undo_redo->undo_history(history_id);
+			EditorUndoRedoManager::History &history = undo_redo->get_or_create_history(history_id);
 			history.redo_stack.clear();
 			history.undo_redo->discard_redo();
 		}
-	}
-	if (error_count > 0 && !initial_root && has_scene_slot && editor_node->get_edited_scene()) {
-		Node *created_root = editor_node->get_edited_scene();
-		editor_node->set_edited_scene(nullptr);
-		memdelete(created_root);
-		if (undo_redo && history_id != EditorUndoRedoManager::INVALID_HISTORY) {
-			undo_redo->clear_history(history_id, false);
-		}
-		rolled_back = true;
 	}
 
 	Dictionary data;
@@ -1426,6 +1517,7 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 	data["error_count"] = error_count;
 	data["completed"] = error_count == 0;
 	data["rolled_back"] = rolled_back;
+	data["authored_state_changed"] = has_mutation && error_count == 0;
 	data["spatial_geometry_changed"] = !_solers_spatial_state_equal(spatial_state_before, spatial_state_after);
 	if (error_count == 0) {
 		const Array affected = _spatial_digest_for_results(results);

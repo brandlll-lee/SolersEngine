@@ -18,6 +18,7 @@
 
 class SolersActionTimeline;
 class SolersAssetService;
+class SolersFileCheckpoint;
 class SolersObservationService;
 class SolersReflectionService;
 class SolersResourceService;
@@ -31,6 +32,8 @@ struct SolersPreparedToolCall {
 	SolersToolContext context;
 	String failure_cache_key;
 	SolersToolExecution execution = SolersToolExecution::MAIN_THREAD;
+	SolersToolMutationPolicy mutation_policy = SolersToolMutationPolicy::READ_ONLY;
+	Dictionary reversal_state;
 };
 
 class SolersToolRegistry : public Object {
@@ -39,9 +42,12 @@ class SolersToolRegistry : public Object {
 	HashMap<StringName, SolersTool *> tools; // owned; freed on clear/destroy
 	HashMap<StringName, StringName> model_name_index;
 	HashMap<String, Dictionary> failed_calls;
+	HashMap<String, Dictionary> reversals;
+	HashMap<String, String> latest_reversal_by_session;
 
 	SolersObservationService *observation_service = nullptr;
 	SolersAssetService *asset_service = nullptr;
+	SolersFileCheckpoint *file_checkpoint = nullptr;
 	SolersReflectionService *reflection_service = nullptr;
 	SolersResourceService *resource_service = nullptr;
 	SolersScriptService *script_service = nullptr;
@@ -54,8 +60,8 @@ class SolersToolRegistry : public Object {
 	void _clear_tools();
 	void _register(SolersTool *p_tool);
 	void _add(const char *p_name, const char *p_description, const char *p_schema_json,
-			SolersPermissionManager::Permission p_permission, const char *p_mutation_kind,
-			bool p_requires_approval, bool p_undoable, const Vector<String> &p_redact,
+			SolersPermissionManager::Permission p_permission, SolersToolMutationPolicy p_mutation_policy,
+			bool p_requires_approval, const Vector<String> &p_redact,
 			SolersToolExposure p_exposure, SolersFunctionTool::Handler p_handler, bool p_ephemeral_result = false,
 			SolersToolExecution p_execution = SolersToolExecution::MAIN_THREAD,
 			std::function<Array(const Dictionary &)> p_resource_access = {},
@@ -85,10 +91,17 @@ class SolersToolRegistry : public Object {
 	void _register_skill_tools();
 	void _register_search_tools();
 	Dictionary _run_control(const Dictionary &p_args) const;
+	Dictionary _poll_runtime_control(const Dictionary &p_args) const;
+	bool _is_runtime_control_ready(const Dictionary &p_args) const;
+	Dictionary _revert_latest(const SolersToolContext &p_context, const Dictionary &p_args);
+	void _persist_reversal_event(const SolersToolContext &p_context, const String &p_event, const Dictionary &p_record = Dictionary()) const;
+	Dictionary _prepare_reversal(SolersPreparedToolCall &r_call);
+	Dictionary _finalize_prepared_result(SolersPreparedToolCall &r_call, const Dictionary &p_result);
+	uint64_t _resource_state_hash(const Array &p_accesses) const;
 	Dictionary _preflight_tool_call(const StringName &p_name, const Dictionary &p_args, const SolersToolContext &p_context, Dictionary &r_args, String &r_failure_cache_key);
 	Dictionary _prepare_tool_call(const StringName &p_name, const Dictionary &p_args, const SolersToolContext &p_context, SolersPreparedToolCall &r_call);
-	Dictionary _execute_prepared_tool(const SolersPreparedToolCall &p_call) const;
-	Dictionary _poll_prepared_tool(const SolersPreparedToolCall &p_call, const Dictionary &p_args) const;
+	Dictionary _execute_prepared_tool(SolersPreparedToolCall &p_call);
+	Dictionary _poll_prepared_tool(SolersPreparedToolCall &p_call, const Dictionary &p_args);
 	bool _is_prepared_tool_ready(const SolersPreparedToolCall &p_call, const Dictionary &p_args) const;
 	void _complete_prepared_tool(const SolersPreparedToolCall &p_call, const Dictionary &p_result);
 
@@ -103,6 +116,7 @@ public:
 	friend class SolersAgentSession;
 	void set_observation_service(SolersObservationService *p_observation_service);
 	void set_asset_service(SolersAssetService *p_asset_service);
+	void set_file_checkpoint(SolersFileCheckpoint *p_file_checkpoint);
 	void set_reflection_service(SolersReflectionService *p_reflection_service);
 	void set_resource_service(SolersResourceService *p_resource_service);
 	void set_script_service(SolersScriptService *p_script_service);
@@ -132,6 +146,7 @@ public:
 	Dictionary call_tool(const StringName &p_name, const Dictionary &p_args);
 	Dictionary call_tool_with_context(const StringName &p_name, const Dictionary &p_args, const SolersToolContext &p_context);
 	void clear_task_state(const String &p_session_id);
+	void restore_session_reversal(const String &p_session_id, const Dictionary &p_record);
 	int get_tool_count() const;
 
 	SolersToolRegistry();
