@@ -50,6 +50,38 @@ static constexpr const char *SOLERS_TERRAIN3D_VERSION = "1.0.2-stable";
 static constexpr const char *SOLERS_TERRAIN3D_SHA256 = "a071850250ec5e596aa54da61c01d75768774eb379ee997584d426a45f4884a2";
 static constexpr const char *SOLERS_TERRAIN3D_ARCHIVE = "Terrain3D_v1.0.2-stable.zip";
 
+static Dictionary _solers_terrain3d_agent_contract() {
+	Dictionary contract;
+	contract["schema_version"] = 1;
+	contract["plugin_id"] = SOLERS_TERRAIN3D_ID;
+	contract["version"] = SOLERS_TERRAIN3D_VERSION;
+	contract["summary"] = "Terrain3D owns terrain data, regions, materials, assets, instancing, collision, and clipmap rendering. A terrain is not ready until data_directory is set and its managed Terrain3DData contains at least one region.";
+	Array entry_classes;
+	entry_classes.push_back("Terrain3D");
+	entry_classes.push_back("Terrain3DData");
+	entry_classes.push_back("Terrain3DRegion");
+	entry_classes.push_back("Terrain3DMaterial");
+	entry_classes.push_back("Terrain3DAssets");
+	contract["entry_classes"] = entry_classes;
+	Array capabilities;
+	Dictionary terrain;
+	terrain["name"] = "editable_terrain";
+	terrain["description"] = "Region-based height, control, color, material, foliage, collision, and LOD data.";
+	capabilities.push_back(terrain);
+	contract["capabilities"] = capabilities;
+	Array workflow;
+	workflow.push_back("Create a Terrain3D node, set an empty data_directory and region_size, then use the node-owned data, material, and instancer objects; do not construct or save Terrain3DData as a standalone resource.");
+	workflow.push_back("Import a 16/32-bit height Image through Terrain3DData.import_images, persist regions with save_directory(data_directory), then verify get_region_count is positive and region files reload before adding materials or foliage.");
+	workflow.push_back("Only after the data stage passes, configure material layers, collision, navigation, instancing, camera, lighting, and runtime validation.");
+	contract["workflow"] = workflow;
+	Array validation;
+	validation.push_back("All declared entry classes are registered and the editor plugin is enabled.");
+	validation.push_back("Terrain3DData reports at least one region and the per-region resources reload from data_directory.");
+	validation.push_back("The terrain scene reloads, shaders compile, and EngineDebugger starts without Terrain3D errors.");
+	contract["validation"] = validation;
+	return contract;
+}
+
 static Dictionary _solers_terrain3d_package() {
 	Dictionary package;
 	package["source"] = "bundled";
@@ -65,6 +97,7 @@ static Dictionary _solers_terrain3d_package() {
 	package["documentation_url"] = "https://terrain3d.readthedocs.io/en/stable/";
 	package["description"] = "Verified first-party Terrain3D package for large editable terrain, LOD, material painting, holes, foliage, collisions, and heightmap import.";
 	package["trusted"] = true;
+	package["_agent_contract"] = _solers_terrain3d_agent_contract();
 	return package;
 }
 
@@ -201,16 +234,159 @@ static Dictionary _solers_inspect_plugin_archive(const String &p_archive_path, b
 	return result;
 }
 
+static bool _solers_validate_agent_contract(const Dictionary &p_contract, const String &p_plugin_id, const String &p_version, const String &p_sha256, Dictionary &r_contract, String &r_error) {
+	static const char *allowed_keys[] = { "schema_version", "plugin_id", "version", "summary", "entry_classes", "capabilities", "workflow", "validation" };
+	for (const Variant *key = p_contract.next(nullptr); key; key = p_contract.next(key)) {
+		bool allowed = false;
+		for (const char *allowed_key : allowed_keys) {
+			if (String(*key) == allowed_key) {
+				allowed = true;
+				break;
+			}
+		}
+		if (!allowed) {
+			r_error = vformat("Unknown Agent Contract field '%s'. Contracts are data only and cannot declare tools or executable actions.", String(*key));
+			return false;
+		}
+	}
+	if ((int)p_contract.get("schema_version", 0) != 1 || String(p_contract.get("plugin_id", String())).to_lower() != p_plugin_id.to_lower() || String(p_contract.get("version", String())) != p_version) {
+		r_error = "Agent Contract identity or schema version does not match the inspected plugin package.";
+		return false;
+	}
+	const String summary = p_contract.get("summary", String());
+	const Array entry_classes = p_contract.get("entry_classes", Array());
+	const Array workflow = p_contract.get("workflow", Array());
+	const Array validation = p_contract.get("validation", Array());
+	if (summary.is_empty() || summary.length() > 4096 || entry_classes.is_empty() || entry_classes.size() > 64 || workflow.is_empty() || workflow.size() > 32 || validation.is_empty() || validation.size() > 32) {
+		r_error = "Agent Contract summary, entry_classes, workflow, or validation is missing or exceeds its bounded size.";
+		return false;
+	}
+	auto validate_strings = [&r_error](const Array &p_values, int p_max_length, const String &p_field) {
+		for (const Variant &value : p_values) {
+			if (value.get_type() != Variant::STRING || String(value).strip_edges().is_empty() || String(value).length() > p_max_length) {
+				r_error = vformat("Agent Contract %s must contain bounded non-empty strings.", p_field);
+				return false;
+			}
+		}
+		return true;
+	};
+	if (!validate_strings(entry_classes, 128, "entry_classes") || !validate_strings(workflow, 2048, "workflow") || !validate_strings(validation, 2048, "validation")) {
+		return false;
+	}
+	const Array capabilities = p_contract.get("capabilities", Array());
+	if (capabilities.size() > 64) {
+		r_error = "Agent Contract capabilities exceeds 64 entries.";
+		return false;
+	}
+	for (const Variant &value : capabilities) {
+		if (value.get_type() != Variant::DICTIONARY) {
+			r_error = "Agent Contract capabilities must be objects.";
+			return false;
+		}
+		const Dictionary capability = value;
+		for (const Variant *key = capability.next(nullptr); key; key = capability.next(key)) {
+			if (String(*key) != "name" && String(*key) != "description") {
+				r_error = "Agent Contract capabilities may contain only name and description.";
+				return false;
+			}
+		}
+		const String name = capability.get("name", String());
+		const String description = capability.get("description", String());
+		if (name.is_empty() || name.length() > 128 || description.is_empty() || description.length() > 2048) {
+			r_error = "Agent Contract capability name and description must be bounded non-empty strings.";
+			return false;
+		}
+	}
+	r_contract = p_contract.duplicate(true);
+	r_contract["contract_id"] = (p_plugin_id.to_lower() + ":" + p_version + ":" + p_sha256.to_lower() + ":" + JSON::stringify(p_contract)).sha256_text();
+	return true;
+}
+
+static bool _solers_read_archive_text(const String &p_archive_path, const String &p_source_path, String &r_text) {
+	ZIPReader reader;
+	if (reader.open(p_archive_path) != OK) {
+		return false;
+	}
+	const PackedByteArray bytes = reader.read_file(p_source_path, true);
+	reader.close();
+	if (bytes.is_empty()) {
+		return false;
+	}
+	r_text = String::utf8((const char *)bytes.ptr(), bytes.size());
+	return true;
+}
+
+static bool _solers_agent_contract_from_archive(const Dictionary &p_inspection, Dictionary &r_contract, String &r_error) {
+	const String archive_path = p_inspection.get("_archive_path", String());
+	const Array files = p_inspection.get("files", Array());
+	for (const Variant &file_value : files) {
+		const Dictionary file = file_value;
+		const String config_target = file.get("target_path", String());
+		if (!config_target.ends_with("/plugin.cfg")) {
+			continue;
+		}
+		String config_text;
+		if (!_solers_read_archive_text(archive_path, file.get("source_path", String()), config_text)) {
+			r_error = vformat("Unable to read %s from the plugin archive.", config_target);
+			return false;
+		}
+		Ref<ConfigFile> config;
+		config.instantiate();
+		if (config->parse(config_text) != OK) {
+			r_error = vformat("Unable to parse %s.", config_target);
+			return false;
+		}
+		String declared = String(config->get_value("plugin", "agent_contract", String())).strip_edges();
+		if (declared.is_empty()) {
+			continue;
+		}
+		if (!declared.begins_with("res://")) {
+			declared = config_target.get_base_dir().path_join(declared);
+		}
+		declared = declared.simplify_path();
+		if (!declared.begins_with(config_target.get_base_dir() + "/") || declared.get_extension().to_lower() != "json") {
+			r_error = "plugin.cfg agent_contract must be a JSON file inside the same plugin directory.";
+			return false;
+		}
+		String contract_source;
+		for (const Variant &candidate_value : files) {
+			const Dictionary candidate = candidate_value;
+			if (String(candidate.get("target_path", String())) == declared) {
+				contract_source = candidate.get("source_path", String());
+				break;
+			}
+		}
+		String contract_text;
+		if (contract_source.is_empty() || !_solers_read_archive_text(archive_path, contract_source, contract_text)) {
+			r_error = "Declared Agent Contract is missing from the inspected package.";
+			return false;
+		}
+		const Variant parsed = JSON::parse_string(contract_text);
+		if (parsed.get_type() != Variant::DICTIONARY) {
+			r_error = "Declared Agent Contract must contain one JSON object.";
+			return false;
+		}
+		r_contract = parsed;
+		return true;
+	}
+	return true;
+}
+
 static Dictionary _solers_public_plugin_inspection(const Dictionary &p_inspection) {
 	Dictionary out = p_inspection.duplicate(true);
 	out.erase("_archive_path");
 	out.erase("_mappings");
 	out.erase("_selected_files");
+	out.erase("_agent_contract");
 	return out;
 }
 
 static EditorFileSystem *_solers_editor_filesystem() {
-	return Engine::get_singleton()->is_editor_hint() ? EditorFileSystem::get_singleton() : nullptr;
+	if (!Engine::get_singleton()->is_editor_hint()) {
+		return nullptr;
+	}
+	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
+	return filesystem && filesystem->get_filesystem() ? filesystem : nullptr;
 }
 
 void SolersAssetService::_bind_methods() {
@@ -3012,6 +3188,19 @@ Dictionary SolersAssetService::plugin_inspect(const Dictionary &p_args, const Sa
 		inspection[*key] = plugin_metadata[*key];
 	}
 	inspection["sha256"] = actual_sha256;
+	Dictionary raw_contract = inspection.get("_agent_contract", Dictionary());
+	String contract_error;
+	if (raw_contract.is_empty() && !_solers_agent_contract_from_archive(inspection, raw_contract, contract_error)) {
+		return _error("PLUGIN_CONTRACT_INVALID", contract_error, false);
+	}
+	if (!raw_contract.is_empty()) {
+		Dictionary contract;
+		if (!_solers_validate_agent_contract(raw_contract, plugin_id, inspection.get("version", String()), actual_sha256, contract, contract_error)) {
+			return _error("PLUGIN_CONTRACT_INVALID", contract_error, false);
+		}
+		inspection["agent_contract"] = contract;
+	}
+	inspection.erase("_agent_contract");
 	inspection["inspection_id"] = _solers_plugin_inspection_key(source, plugin_id, inspection.get("version", String()), actual_sha256);
 	const String inspection_key = inspection.get("inspection_id", String());
 	{
@@ -3019,6 +3208,32 @@ Dictionary SolersAssetService::plugin_inspect(const Dictionary &p_args, const Sa
 		plugin_inspections[inspection_key] = inspection.duplicate(true);
 	}
 	return _ok(_solers_public_plugin_inspection(inspection));
+}
+
+Dictionary SolersAssetService::plugin_agent_contract(const Dictionary &p_args) const {
+	const String source = String(p_args.get("source", String())).strip_edges().to_lower();
+	const String plugin_id = String(p_args.get("plugin_id", String())).strip_edges().to_lower();
+	const String version = String(p_args.get("version", String())).strip_edges();
+	const String sha256 = String(p_args.get("sha256", String())).strip_edges().to_lower();
+	if (source.is_empty() || plugin_id.is_empty() || version.is_empty() || sha256.length() != 64) {
+		return _error("INVALID_ARGUMENT", "source, plugin_id, version, and SHA-256 are required.");
+	}
+	{
+		MutexLock lock(catalog_cache_mutex);
+		const Dictionary inspection = plugin_inspections.get(_solers_plugin_inspection_key(source, plugin_id, version, sha256), Dictionary());
+		const Dictionary contract = inspection.get("agent_contract", Dictionary());
+		if (!contract.is_empty()) {
+			return _ok(contract);
+		}
+	}
+	if (source == "bundled" && plugin_id == SOLERS_TERRAIN3D_ID && version == SOLERS_TERRAIN3D_VERSION && sha256 == SOLERS_TERRAIN3D_SHA256) {
+		Dictionary contract;
+		String error;
+		if (_solers_validate_agent_contract(_solers_terrain3d_agent_contract(), plugin_id, SOLERS_TERRAIN3D_VERSION, SOLERS_TERRAIN3D_SHA256, contract, error)) {
+			return _ok(contract);
+		}
+	}
+	return _error("PLUGIN_CONTRACT_UNAVAILABLE", "This plugin does not provide a validated Agent Contract.");
 }
 
 Dictionary SolersAssetService::plugin_list(const Dictionary &p_args) const {
@@ -3042,10 +3257,23 @@ Dictionary SolersAssetService::plugin_list(const Dictionary &p_args) const {
 		for (const Variant &name : names) {
 			enabled = enabled && editor && editor->is_plugin_enabled(String(name));
 		}
+		const Dictionary agent_contract = entry.get("agent_contract", Dictionary());
+		const Array required_classes = agent_contract.get("entry_classes", Array());
+		PackedStringArray missing_classes;
+		for (const Variant &value : required_classes) {
+			const String class_name = value;
+			if (!ClassDB::class_exists(class_name)) {
+				missing_classes.push_back(class_name);
+			}
+		}
 		Dictionary item = entry.duplicate(true);
+		const bool restart_required = entry.get("restart_required", false);
 		item["key"] = *key;
 		item["installed"] = installed;
 		item["enabled"] = enabled;
+		item["ready"] = installed && enabled && !restart_required && missing_classes.is_empty() && load_errors.is_empty();
+		item["restart_required"] = restart_required;
+		item["missing_classes"] = missing_classes;
 		item["load_errors"] = load_errors;
 		plugins.push_back(item);
 	}
@@ -3065,15 +3293,6 @@ Dictionary SolersAssetService::plugin_ensure(const Dictionary &p_args) {
 		return _error("INVALID_ARGUMENT", "Plugin ensure requires the exact source, plugin_id, version, and SHA-256 returned by plugin.inspect.");
 	}
 	const String inspection_key = _solers_plugin_inspection_key(source, plugin_id, version, sha256);
-	Dictionary inspection;
-	{
-		MutexLock lock(catalog_cache_mutex);
-		inspection = plugin_inspections.get(inspection_key, Dictionary()).duplicate(true);
-	}
-	if (inspection.is_empty()) {
-		return _error("PLUGIN_INSPECTION_REQUIRED", "Inspect this exact plugin version before installing it. Installation never guesses or downloads executable code implicitly.");
-	}
-
 	Dictionary lock_file = _read_json_file(SOLERS_PLUGIN_LOCK_PATH);
 	if (lock_file.is_empty()) {
 		lock_file["version"] = 1;
@@ -3082,6 +3301,24 @@ Dictionary SolersAssetService::plugin_ensure(const Dictionary &p_args) {
 	Dictionary installed_plugins = lock_file.get("plugins", Dictionary());
 	const String plugin_key = _solers_plugin_key(source, plugin_id);
 	const Dictionary previous = installed_plugins.get(plugin_key, Dictionary());
+	Dictionary inspection;
+	{
+		MutexLock lock(catalog_cache_mutex);
+		inspection = plugin_inspections.get(inspection_key, Dictionary()).duplicate(true);
+	}
+	if (inspection.is_empty()) {
+		const bool exact_locked_version = String(previous.get("version", String())) == version && String(previous.get("sha256", String())).to_lower() == sha256;
+		const Array locked_files = previous.get("files", Array());
+		bool locked_files_present = exact_locked_version && !locked_files.is_empty();
+		for (const Variant &file : locked_files) {
+			locked_files_present = locked_files_present && FileAccess::exists(String(file));
+		}
+		if (!locked_files_present) {
+			return _error("PLUGIN_INSPECTION_REQUIRED", "Inspect this exact plugin version once before installation. A pinned installed version may be retried after restart without another download.");
+		}
+		inspection = previous.duplicate(true);
+		inspection["target_files"] = locked_files;
+	}
 	const Array target_files = inspection.get("target_files", Array());
 	bool files_present = !target_files.is_empty();
 	for (const Variant &file : target_files) {
@@ -3103,7 +3340,8 @@ Dictionary SolersAssetService::plugin_ensure(const Dictionary &p_args) {
 	entry["plugin_names"] = inspection.get("plugin_names", Array());
 	entry["plugin_configs"] = inspection.get("plugin_configs", Array());
 	entry["gdextensions"] = inspection.get("gdextensions", Array());
-	entry["desired_enabled"] = (bool)p_args.get("enable", true);
+	entry["desired_enabled"] = true;
+	entry["agent_contract"] = inspection.get("agent_contract", previous.get("agent_contract", Dictionary()));
 	entry["installed_at_unix"] = (int64_t)Time::get_singleton()->get_unix_time_from_system();
 	installed_plugins[plugin_key] = entry;
 	lock_file["plugins"] = installed_plugins;
@@ -3129,6 +3367,10 @@ Dictionary SolersAssetService::plugin_ensure(const Dictionary &p_args) {
 		if (!(bool)install_result.get("ok", false)) {
 			return install_result;
 		}
+		files_present = !target_files.is_empty();
+		for (const Variant &file : target_files) {
+			files_present = files_present && FileAccess::exists(String(file));
+		}
 	}
 
 	EditorFileSystem *filesystem = _solers_editor_filesystem();
@@ -3136,8 +3378,10 @@ Dictionary SolersAssetService::plugin_ensure(const Dictionary &p_args) {
 		filesystem->scan_changes();
 	}
 	Array load_errors;
+	Array restart_reasons;
 	Vector<String> registered_classes;
 	bool restart_required = false;
+	bool load_failed = false;
 	GDExtensionManager *extension_manager = GDExtensionManager::get_singleton();
 	const Array gdextensions = inspection.get("gdextensions", Array());
 	for (const Variant &value : gdextensions) {
@@ -3145,9 +3389,9 @@ Dictionary SolersAssetService::plugin_ensure(const Dictionary &p_args) {
 		const GDExtensionManager::LoadStatus status = extension_manager ? extension_manager->load_extension(extension_path) : GDExtensionManager::LOAD_STATUS_FAILED;
 		if (status == GDExtensionManager::LOAD_STATUS_NEEDS_RESTART) {
 			restart_required = true;
-			load_errors.push_back(vformat("%s requires an editor restart before it can load.", extension_path));
+			restart_reasons.push_back(vformat("%s requires an editor restart before it can load.", extension_path));
 		} else if (status != GDExtensionManager::LOAD_STATUS_OK && status != GDExtensionManager::LOAD_STATUS_ALREADY_LOADED) {
-			restart_required = true;
+			load_failed = true;
 			load_errors.push_back(vformat("Could not load GDExtension %s (status %d).", extension_path, status));
 		}
 		if (extension_manager) {
@@ -3167,16 +3411,13 @@ Dictionary SolersAssetService::plugin_ensure(const Dictionary &p_args) {
 		class_list.push_back(class_name);
 	}
 
-	const bool should_enable = (bool)p_args.get("enable", true);
 	EditorInterface *editor = EditorInterface::get_singleton();
 	const Array plugin_names = inspection.get("plugin_names", Array());
 	bool enabled = plugin_names.is_empty();
-	if (should_enable) {
-		for (const Variant &value : plugin_names) {
-			const String plugin_name = value;
-			if (editor && !editor->is_plugin_enabled(plugin_name) && !restart_required) {
-				editor->set_plugin_enabled(plugin_name, true);
-			}
+	for (const Variant &value : plugin_names) {
+		const String plugin_name = value;
+		if (editor && !editor->is_plugin_enabled(plugin_name) && !restart_required && !load_failed) {
+			editor->set_plugin_enabled(plugin_name, true);
 		}
 	}
 	if (!plugin_names.is_empty()) {
@@ -3185,8 +3426,7 @@ Dictionary SolersAssetService::plugin_ensure(const Dictionary &p_args) {
 			enabled = enabled && editor->is_plugin_enabled(String(value));
 		}
 	}
-	if (should_enable && !enabled) {
-		restart_required = true;
+	if (!enabled && restart_required) {
 		PackedStringArray enabled_plugins;
 		const Variant enabled_setting = ProjectSettings::get_singleton()->get("editor_plugins/enabled");
 		if (enabled_setting.get_type() == Variant::PACKED_STRING_ARRAY) {
@@ -3205,12 +3445,36 @@ Dictionary SolersAssetService::plugin_ensure(const Dictionary &p_args) {
 			}
 		}
 		ProjectSettings::get_singleton()->set("editor_plugins/enabled", enabled_plugins);
-		ProjectSettings::get_singleton()->save();
+		const Error settings_error = ProjectSettings::get_singleton()->save();
+		if (settings_error != OK) {
+			load_failed = true;
+			load_errors.push_back(vformat("Could not persist enabled editor plugins (error %d).", settings_error));
+		}
+	} else if (!enabled) {
+		load_failed = true;
+		load_errors.push_back("The editor plugin could not be enabled in the current editor process.");
 	}
 
+	const Dictionary agent_contract = entry.get("agent_contract", Dictionary());
+	const Array required_classes = agent_contract.get("entry_classes", Array());
+	PackedStringArray missing_classes;
+	for (const Variant &value : required_classes) {
+		const String class_name = value;
+		if (!ClassDB::class_exists(class_name)) {
+			missing_classes.push_back(class_name);
+		}
+	}
+	if (!missing_classes.is_empty() && !restart_required) {
+		load_failed = true;
+		load_errors.push_back(vformat("Declared Agent Contract classes are not registered: %s", String(", ").join(missing_classes)));
+	}
+
+	const bool ready = files_present && enabled && !restart_required && !load_failed && missing_classes.is_empty();
 	entry["registered_classes"] = class_list;
 	entry["enabled"] = enabled;
+	entry["ready"] = ready;
 	entry["restart_required"] = restart_required;
+	entry["restart_reasons"] = restart_reasons;
 	entry["load_errors"] = load_errors;
 	installed_plugins[plugin_key] = entry;
 	lock_file["plugins"] = installed_plugins;
@@ -3221,11 +3485,31 @@ Dictionary SolersAssetService::plugin_ensure(const Dictionary &p_args) {
 	data["installed"] = !unchanged;
 	data["idempotent"] = unchanged;
 	data["enabled"] = enabled;
+	data["ready"] = ready;
 	data["restart_required"] = restart_required;
+	data["restart_reasons"] = restart_reasons;
 	data["registered_classes"] = class_list;
+	data["missing_classes"] = missing_classes;
 	data["load_errors"] = load_errors;
 	if (!lock_updated) {
-		data["lock_update_error"] = lock_error;
+		Dictionary result = _error("PLUGIN_LOCK_WRITE_FAILED", lock_error, false);
+		result["data"] = data;
+		return result;
+	}
+	if (load_failed) {
+		Dictionary result = _error("PLUGIN_LOAD_FAILED", load_errors.is_empty() ? "The plugin failed its runtime readiness checks." : String(load_errors[0]), false);
+		result["data"] = data;
+		return result;
+	}
+	if (restart_required) {
+		Dictionary result = _error("PLUGIN_RESTART_REQUIRED", restart_reasons.is_empty() ? "Installation completed; restart the editor once, then call plugin.ensure with the same arguments." : String(restart_reasons[0]));
+		result["data"] = data;
+		return result;
+	}
+	if (!ready) {
+		Dictionary result = _error("PLUGIN_LOAD_FAILED", "The plugin did not satisfy its declared readiness conditions.", false);
+		result["data"] = data;
+		return result;
 	}
 	return _ok(data);
 }

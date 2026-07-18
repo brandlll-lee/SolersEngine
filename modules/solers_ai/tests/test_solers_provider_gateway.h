@@ -543,6 +543,20 @@ TEST_CASE("[Editor][SolersPlugin] bundled Terrain3D archive is pinned and self-d
 	CHECK((bool)data.get("contains_executable_code", false));
 	CHECK(Array(data.get("plugin_names", Array())).has("terrain_3d"));
 	CHECK_FALSE(Array(data.get("gdextensions", Array())).is_empty());
+	const Dictionary contract = data.get("agent_contract", Dictionary());
+	CHECK((int)contract.get("schema_version", 0) == 1);
+	CHECK(!String(contract.get("contract_id", String())).is_empty());
+	CHECK(Array(contract.get("entry_classes", Array())).has("Terrain3DData"));
+	CHECK_FALSE(Array(contract.get("workflow", Array())).is_empty());
+	CHECK(String(Array(contract.get("workflow", Array()))[0]).contains("data_directory"));
+	Dictionary contract_args;
+	contract_args["source"] = "bundled";
+	contract_args["plugin_id"] = "terrain3d";
+	contract_args["version"] = data.get("version", String());
+	contract_args["sha256"] = data.get("sha256", String());
+	CHECK(assets.plugin_agent_contract(contract_args).get("ok", false));
+	contract_args["sha256"] = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+	CHECK_FALSE((bool)assets.plugin_agent_contract(contract_args).get("ok", true));
 }
 
 TEST_CASE("[SolersToolRegistry] schema preflight runs before approval or handler side effects") {
@@ -726,9 +740,10 @@ TEST_CASE("[SolersToolRegistry] file checkpoint reversal survives session restor
 	write_context.session_id = session_id;
 	write_context.project_path = project_path;
 	Dictionary write_args;
+	write_args["operation"] = "write_file";
 	write_args["path"] = path;
 	write_args["content"] = "created by reversible contract\n";
-	const Dictionary write_result = write_registry.call_tool_with_context(SNAME("project.write_file"), write_args, write_context);
+	const Dictionary write_result = write_registry.call_tool_with_context(SNAME("project.edit"), write_args, write_context);
 	REQUIRE((bool)write_result.get("ok", false));
 	const Dictionary mutation = Dictionary(write_result.get("data", Dictionary())).get("mutation", Dictionary());
 	const String reversal_id = mutation.get("reversal_id", String());
@@ -877,7 +892,7 @@ TEST_CASE("[SolersToolRegistry] skill.read rejects unknown builtin skills") {
 	CHECK(error.get("code", String()) == "UNKNOWN_SKILL");
 }
 
-TEST_CASE("[SolersToolRegistry] default model surface is primitive-first") {
+TEST_CASE("[SolersToolRegistry] default model surface is domain-first") {
 	SolersAssetService asset_service;
 	SolersObservationService observation_service;
 	SolersPermissionManager permissions;
@@ -896,39 +911,22 @@ TEST_CASE("[SolersToolRegistry] default model surface is primitive-first") {
 	const Array tools = registry.list_tools();
 
 	const char *required_direct[] = {
-		"class.search",
-		"class.introspect",
-		"objects.batch",
-		"editor.get_snapshot",
 		"project.read_file",
 		"project.search",
-		"project.write_file",
-		"script.patch",
+		"project.edit",
+		"scene.inspect",
+		"scene.edit",
+		"scene.validate",
+		"resource.inspect",
+		"resource.edit",
+		"script.edit",
 		"script.validate",
-		"resource.get_info",
-		"resource.create",
-		"resource.get_property",
-		"resource.set_property",
-		"native.instantiate",
-		"native.load",
-		"native.list_properties",
-		"native.get",
-		"native.set",
-		"native.list_methods",
-		"native.call",
-		"native.save",
-		"native.free",
-		"scene.instantiate",
-		"object.get_property",
-		"object.set_property",
-		"object.call_method",
-		"editor.invoke",
+		"engine.inspect",
+		"engine.execute",
 		"runtime.control",
 		"runtime.observe",
 		"history.revert",
 		"skill.read",
-		"scene.validate_spatial",
-		"scene.validate_structure",
 		"scene.bake_csg",
 		"mesh.unwrap_uv2",
 		"lightmap.bake",
@@ -946,6 +944,16 @@ TEST_CASE("[SolersToolRegistry] default model surface is primitive-first") {
 		Dictionary tool = find_tool_def(tools, name);
 		REQUIRE_FALSE(tool.is_empty());
 		CHECK(tool.get("exposure", String()) == "direct");
+	}
+	const char *removed_core[] = {
+		"class.search", "class.introspect", "objects.batch", "editor.get_snapshot", "project.write_file", "script.patch",
+		"resource.get_info", "resource.create", "resource.get_property", "resource.set_property", "native.instantiate", "native.load",
+		"native.list_properties", "native.get", "native.set", "native.list_methods", "native.call", "native.save", "native.free",
+		"scene.instantiate", "scene.validate_spatial", "scene.validate_structure", "object.get_property", "object.set_property",
+		"object.call_method", "editor.invoke"
+	};
+	for (const char *name : removed_core) {
+		CHECK(find_tool_def(tools, name).is_empty());
 	}
 	CHECK(find_tool_def(tools, "tool.search").is_empty());
 	CHECK(find_tool_def(tools, "asset.refine_to_ready").is_empty());
@@ -967,80 +975,39 @@ TEST_CASE("[SolersToolRegistry] default model surface is primitive-first") {
 	CHECK(catalog_inspect_properties.has("asset_id"));
 	CHECK(Array(Dictionary(catalog_inspect_properties.get("kind", Dictionary())).get("enum", Array())).has("3d"));
 	CHECK(Dictionary(Dictionary(find_tool_def(tools, "job.wait").get("input_schema", Dictionary())).get("properties", Dictionary())).has("ids"));
-	Dictionary create_resource = find_tool_def(tools, "resource.create");
-	Dictionary create_schema = create_resource.get("input_schema", Dictionary());
-	Dictionary create_properties = create_schema.get("properties", Dictionary());
-	CHECK(create_properties.has("properties"));
-	CHECK_FALSE(Dictionary(Dictionary(find_tool_def(tools, "native.set").get("input_schema", Dictionary())).get("properties", Dictionary())).has("save"));
-	CHECK_FALSE(Dictionary(Dictionary(find_tool_def(tools, "native.call").get("input_schema", Dictionary())).get("properties", Dictionary())).has("save"));
-	const Dictionary native_save_schema = find_tool_def(tools, "native.save").get("input_schema", Dictionary());
-	CHECK(Array(native_save_schema.get("required", Array())).has("path"));
-	Dictionary batch_tool = find_tool_def(tools, "objects.batch");
-	REQUIRE_FALSE(batch_tool.is_empty());
-	CHECK_FALSE(String(batch_tool.get("description", String())).contains("call_method"));
-	CHECK(String(batch_tool.get("description", String())).contains("empty editor scene"));
-	CHECK(batch_tool.get("execution", String()) == "main_thread");
-	CHECK(batch_tool.get("ephemeral_result", false));
-	Dictionary batch_schema = batch_tool.get("input_schema", Dictionary());
-	Dictionary batch_properties = batch_schema.get("properties", Dictionary());
-	Dictionary operations_schema = batch_properties.get("operations", Dictionary());
-	CHECK_FALSE(operations_schema.has("maxItems"));
-	const String operations_description = operations_schema.get("description", String());
-	CHECK(operations_description.contains("parent_path"));
-	CHECK(operations_description.contains("new_parent_path"));
-	CHECK(operations_description.contains("properties"));
-	Dictionary operation_items = operations_schema.get("items", Dictionary());
-	Dictionary operation_properties = operation_items.get("properties", Dictionary());
-	Array operation_names = Dictionary(operation_properties.get("op", Dictionary())).get("enum", Array());
-	CHECK(operation_names.has("get_property"));
-	CHECK(operation_names.has("list_properties"));
-	CHECK(operation_properties.has("node_path"));
-	CHECK(operation_properties.has("property"));
-	CHECK(operation_properties.has("max_properties"));
-	Dictionary instantiate_scene = find_tool_def(tools, "scene.instantiate");
-	Dictionary instantiate_properties = Dictionary(instantiate_scene.get("input_schema", Dictionary())).get("properties", Dictionary());
-	CHECK(instantiate_properties.has("resource_path"));
-	CHECK(instantiate_properties.has("parent_path"));
-	CHECK(instantiate_properties.has("name"));
-	CHECK(instantiate_properties.has("properties"));
-	Dictionary structure_validation = find_tool_def(tools, "scene.validate_structure");
-	Dictionary structure_properties = Dictionary(structure_validation.get("input_schema", Dictionary())).get("properties", Dictionary());
-	CHECK(structure_properties.has("placement_roots"));
-	CHECK(structure_properties.has("placements"));
-	CHECK(structure_properties.has("reference_layout"));
-	const Array required_structure_fields = Dictionary(structure_validation.get("input_schema", Dictionary())).get("required", Array());
-	CHECK(required_structure_fields.has("structure_roots"));
-	CHECK(required_structure_fields.has("relations"));
-	CHECK_FALSE(required_structure_fields.has("placement_roots"));
-	CHECK_FALSE(required_structure_fields.has("placements"));
-	Dictionary relation_items = Dictionary(Dictionary(structure_properties.get("relations", Dictionary())).get("items", Dictionary()));
-	Dictionary relation_properties = relation_items.get("properties", Dictionary());
-	const Array relation_kinds = Dictionary(relation_properties.get("kind", Dictionary())).get("enum", Array());
-	CHECK(relation_kinds.has("align"));
-	CHECK(relation_kinds.has("no_overlap"));
-	CHECK(relation_properties.has("a_anchor"));
-	CHECK(relation_properties.has("b_anchor"));
+	Dictionary scene_edit = find_tool_def(tools, "scene.edit");
+	REQUIRE_FALSE(scene_edit.is_empty());
+	CHECK(scene_edit.get("execution", String()) == "main_thread");
+	CHECK_FALSE(scene_edit.get("ephemeral_result", true));
+	const Dictionary scene_edit_properties = Dictionary(scene_edit.get("input_schema", Dictionary())).get("properties", Dictionary());
+	const Dictionary scene_operations = scene_edit_properties.get("operations", Dictionary());
+	CHECK((int)scene_operations.get("maxItems", 0) == 256);
+	const Dictionary operation_properties = Dictionary(scene_operations.get("items", Dictionary())).get("properties", Dictionary());
+	const Array operation_names = Dictionary(operation_properties.get("op", Dictionary())).get("enum", Array());
+	CHECK(operation_names.has("instantiate"));
+	CHECK_FALSE(operation_names.has("get_property"));
+	CHECK_FALSE(operation_names.has("list_properties"));
+
+	Dictionary engine_inspect = find_tool_def(tools, "engine.inspect");
+	CHECK(engine_inspect.get("ephemeral_result", false));
+	CHECK(Dictionary(engine_inspect.get("input_schema", Dictionary())).has("oneOf"));
+	Dictionary engine_execute = find_tool_def(tools, "engine.execute");
+	CHECK(engine_execute.get("mutation_policy", String()) == "irreversible");
+	CHECK(engine_execute.get("permission", String()) == "edit_scene");
+	Dictionary project_edit = find_tool_def(tools, "project.edit");
+	CHECK(project_edit.get("permission", String()) == "edit_files");
+	CHECK(project_edit.get("mutation_policy_dynamic", false));
+	CHECK(Dictionary(project_edit.get("input_schema", Dictionary())).has("oneOf"));
+	Dictionary resource_edit = find_tool_def(tools, "resource.edit");
+	CHECK(Dictionary(resource_edit.get("input_schema", Dictionary())).has("oneOf"));
 	CHECK(String(find_tool_def(tools, "mesh.unwrap_uv2").get("description", String())).contains("off the editor thread"));
-	CHECK(find_tool_def(tools, "class.introspect").get("ephemeral_result", false));
 	CHECK(find_tool_def(tools, "viewport.capture").get("ephemeral_result", false));
 	const Dictionary capture_properties = Dictionary(Dictionary(find_tool_def(tools, "viewport.capture").get("input_schema", Dictionary())).get("properties", Dictionary()));
 	CHECK(Array(Dictionary(capture_properties.get("target", Dictionary())).get("enum", Array())).has("orthographic"));
-	CHECK_FALSE(find_tool_def(tools, "scene.validate_spatial").get("produces_scene_validation", false));
-	CHECK(find_tool_def(tools, "scene.validate_structure").get("produces_scene_validation", false));
+	CHECK(find_tool_def(tools, "scene.validate").get("produces_scene_validation", false));
 	CHECK(find_tool_def(tools, "editor.action.list").is_empty());
 	CHECK(find_tool_def(tools, "editor.action.execute").is_empty());
 	CHECK_FALSE(find_tool_def(tools, "skill.read").get("ephemeral_result", true));
-	Dictionary write_file = find_tool_def(tools, "project.write_file");
-	CHECK(write_file.get("permission", String()) == "edit_files");
-	Dictionary write_schema = write_file.get("input_schema", Dictionary());
-	Dictionary write_properties = write_schema.get("properties", Dictionary());
-	CHECK_FALSE(write_properties.has("reimport"));
-	CHECK_FALSE(write_properties.has("validate_if_script"));
-	Dictionary patch_file = find_tool_def(tools, "script.patch");
-	Dictionary patch_schema = patch_file.get("input_schema", Dictionary());
-	Dictionary patch_properties = patch_schema.get("properties", Dictionary());
-	CHECK_FALSE(patch_properties.has("validate_if_script"));
-
 	Dictionary project_search = find_tool_def(tools, "project.search");
 	REQUIRE_FALSE(project_search.is_empty());
 	CHECK(project_search.get("exposure", String()) == "direct");
@@ -1055,9 +1022,6 @@ TEST_CASE("[SolersToolRegistry] default model surface is primitive-first") {
 	CHECK(find_tool_def(tools, "selection.get_nodes").is_empty());
 	CHECK(find_tool_def(tools, "runtime.get_status").is_empty());
 	CHECK(find_tool_def(tools, "editor.get_logs").is_empty());
-	Dictionary editor_invoke = find_tool_def(tools, "editor.invoke");
-	REQUIRE_FALSE(editor_invoke.is_empty());
-	CHECK(editor_invoke.get("exposure", String()) == "direct");
 	Dictionary export_run = find_tool_def(tools, "export.run_preset");
 	REQUIRE_FALSE(export_run.is_empty());
 	CHECK(export_run.get("exposure", String()) == "direct");
@@ -1085,6 +1049,83 @@ TEST_CASE("[SolersToolRegistry] default model surface is primitive-first") {
 		CHECK(name != "runtime.capture_screenshot");
 		CHECK(name != "editor.capture_screenshot");
 	}
+}
+
+TEST_CASE("[SolersToolRegistry] engine execution requires a current task-scoped contract") {
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
+	SolersReflectionService reflection_service;
+	SolersResourceService resource_service;
+	SolersToolRegistry registry;
+	registry.set_permission_manager(&permissions);
+	registry.set_reflection_service(&reflection_service);
+	registry.set_resource_service(&resource_service);
+	registry.register_default_tools();
+
+	SolersToolContext context;
+	context.session_id = "engine-contract-task";
+	Dictionary missing;
+	missing["contract_id"] = "missing";
+	Dictionary instantiate;
+	instantiate["id"] = "value";
+	instantiate["op"] = "instantiate";
+	instantiate["class_name"] = "RefCounted";
+	Array operations;
+	operations.push_back(instantiate);
+	missing["operations"] = operations;
+	Dictionary rejected = registry.call_tool_with_context(SNAME("engine.execute"), missing, context);
+	CHECK_FALSE(rejected.get("ok", true));
+	CHECK(Dictionary(rejected.get("error", Dictionary())).get("code", String()) == "ENGINE_CONTRACT_REQUIRED");
+
+	Dictionary class_request;
+	class_request["class_name"] = "RefCounted";
+	Array classes;
+	classes.push_back(class_request);
+	Dictionary inspect;
+	inspect["mode"] = "contract";
+	inspect["classes"] = classes;
+	const Dictionary inspected = registry.call_tool_with_context(SNAME("engine.inspect"), inspect, context);
+	REQUIRE(inspected.get("ok", false));
+	const String contract_id = Dictionary(inspected.get("data", Dictionary())).get("contract_id", String());
+	REQUIRE(!contract_id.is_empty());
+	Dictionary malformed;
+	malformed["op"] = "free";
+	Array malformed_operations;
+	malformed_operations.push_back(malformed);
+	Dictionary malformed_execute;
+	malformed_execute["contract_id"] = contract_id;
+	malformed_execute["operations"] = malformed_operations;
+	const Dictionary malformed_result = registry.call_tool_with_context(SNAME("engine.execute"), malformed_execute, context);
+	CHECK_FALSE(malformed_result.get("ok", true));
+	CHECK(Dictionary(malformed_result.get("error", Dictionary())).get("code", String()) == "ENGINE_OPERATION_ARGUMENT_INVALID");
+
+	Dictionary release;
+	release["op"] = "free";
+	release["ref"] = "value";
+	operations.push_back(release);
+	Dictionary execute;
+	execute["contract_id"] = contract_id;
+	execute["operations"] = operations;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_SCENE, true);
+	const Dictionary executed = registry.call_tool_with_context(SNAME("engine.execute"), execute, context);
+	CHECK(executed.get("ok", false));
+
+	SolersToolContext other_context = context;
+	other_context.session_id = "other-engine-contract-task";
+	const Dictionary scoped = registry.call_tool_with_context(SNAME("engine.execute"), execute, other_context);
+	CHECK_FALSE(scoped.get("ok", true));
+	CHECK(Dictionary(scoped.get("error", Dictionary())).get("code", String()) == "ENGINE_CONTRACT_SCOPE_MISMATCH");
+}
+
+TEST_CASE("[SolersScriptService] project.godot cannot use the raw file path") {
+	SolersScriptService scripts;
+	Dictionary args;
+	args["operation"] = "write_file";
+	args["path"] = "res://project.godot";
+	args["content"] = "[application]\n";
+	const Dictionary result = scripts.edit_project(args);
+	CHECK_FALSE(result.get("ok", true));
+	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "EDITOR_OWNED_FILE");
 }
 
 TEST_CASE("[SolersScriptService] script edits cannot bypass validation") {
@@ -1124,6 +1165,20 @@ TEST_CASE("[SolersScriptService] script edits cannot bypass validation") {
 	CHECK(FileAccess::get_file_as_string(path) == valid_source);
 
 	DirAccess::remove_file_or_error(fs_path);
+
+	const String shader_path = "res://solers_shader_validation_contract.gdshader";
+	const String shader_fs_path = ProjectSettings::get_singleton()->globalize_path(shader_path);
+	if (FileAccess::exists(shader_path)) {
+		DirAccess::remove_file_or_error(shader_fs_path);
+	}
+	Dictionary shader_args;
+	shader_args["operation"] = "create";
+	shader_args["path"] = shader_path;
+	shader_args["content"] = "shader_type spatial;\nvoid fragment() { ALBEDO = missing_identifier; }\n";
+	const Dictionary shader_result = script_service.edit_script(shader_args);
+	CHECK_FALSE(shader_result.get("ok", true));
+	CHECK(Dictionary(shader_result.get("error", Dictionary())).get("code", String()) == "SCRIPT_VALIDATE_FAILED");
+	CHECK_FALSE(FileAccess::exists(shader_path));
 }
 
 TEST_CASE("[SolersScriptService] native serialized resources require native resource APIs") {
@@ -1312,7 +1367,7 @@ TEST_CASE("[SolersToolRegistry] external search prioritizes exact ids and never 
 		const Dictionary tool = matches[i];
 		CHECK(tool.get("exposure", String()) == "deferred");
 	}
-	CHECK_FALSE(search_result_has_tool(result, "editor.invoke"));
+	CHECK_FALSE(search_result_has_tool(result, "engine.execute"));
 }
 
 TEST_CASE("[SolersToolRegistry] tool.search uses Godot fuzzy fallback for external metadata") {
@@ -1566,7 +1621,7 @@ TEST_CASE("[SolersReflectionService] batch refuses mutations without an undo his
 	Dictionary unknown = reflection_service.batch(args);
 	CHECK_FALSE((bool)unknown.get("ok", true));
 	Dictionary batch_error = unknown.get("error", Dictionary());
-	CHECK(batch_error.get("code", String()) == "BATCH_FAILED");
+	CHECK(batch_error.get("code", String()) == "SCENE_EDIT_FAILED");
 	Dictionary data = unknown.get("data", Dictionary());
 	Array entries = data.get("results", Array());
 	REQUIRE(entries.size() == 1);
@@ -1601,7 +1656,7 @@ TEST_CASE("[SolersReflectionService] batch has no fixed operation-count cutoff")
 	args["operations"] = operations;
 	const Dictionary result = reflection_service.batch(args);
 	CHECK_FALSE((bool)result.get("ok", true));
-	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "BATCH_FAILED");
+	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "SCENE_EDIT_FAILED");
 }
 
 TEST_CASE("[SolersResourceService] property coercion accepts named and nested Godot components") {
@@ -1758,35 +1813,11 @@ TEST_CASE("[SolersReflectionService] placement topology requires one support for
 	CHECK(Dictionary(rejected.get("error", Dictionary())).get("code", String()) == "CYCLIC_PLACEMENT_SUPPORT");
 }
 
-TEST_CASE("[SolersToolRegistry] objects.batch access follows its operation contract") {
+TEST_CASE("[SolersToolRegistry] scene.edit access follows its mutation contract") {
 	SolersReflectionService reflection_service;
 	SolersToolRegistry registry;
 	registry.set_reflection_service(&reflection_service);
 	registry.register_default_tools();
-
-	Dictionary read_op;
-	read_op["op"] = "list_properties";
-	read_op["node_path"] = "ReferenceCamera";
-	Array read_operations;
-	read_operations.push_back(read_op);
-	Dictionary read_args;
-	read_args["operations"] = read_operations;
-	CHECK(registry.is_read_only("objects.batch", read_args));
-	const Array read_access = registry.resolve_resource_access("objects.batch", read_args);
-	REQUIRE(read_access.size() == 1);
-	CHECK(Dictionary(read_access[0]).get("mode", String()) == "read");
-	CHECK(Dictionary(read_access[0]).get("key", String()) == "scene:ReferenceCamera");
-
-	Dictionary alias_read_op = read_op.duplicate(true);
-	alias_read_op.erase("node_path");
-	alias_read_op["path"] = "ReferenceCamera";
-	Array alias_operations;
-	alias_operations.push_back(alias_read_op);
-	Dictionary alias_args;
-	alias_args["operations"] = alias_operations;
-	const Array alias_access = registry.resolve_resource_access("objects.batch", alias_args);
-	REQUIRE(alias_access.size() == 1);
-	CHECK(Dictionary(alias_access[0]).get("key", String()) == "scene:ReferenceCamera");
 
 	Dictionary write_op;
 	write_op["op"] = "set_property";
@@ -1797,13 +1828,25 @@ TEST_CASE("[SolersToolRegistry] objects.batch access follows its operation contr
 	write_operations.push_back(write_op);
 	Dictionary write_args;
 	write_args["operations"] = write_operations;
-	CHECK_FALSE(registry.is_read_only("objects.batch", write_args));
+	CHECK_FALSE(registry.is_read_only("scene.edit", write_args));
+	const Array write_access = registry.resolve_resource_access("scene.edit", write_args);
+	REQUIRE(write_access.size() == 1);
+	CHECK(Dictionary(write_access[0]).get("mode", String()) == "write");
+	CHECK(Dictionary(write_access[0]).get("key", String()) == "scene:ReferenceCamera");
 
-	Array mixed_operations = read_operations.duplicate(true);
-	mixed_operations.push_back(write_op);
-	Dictionary mixed_args;
-	mixed_args["operations"] = mixed_operations;
-	CHECK_FALSE(registry.is_read_only("objects.batch", mixed_args));
+	Dictionary instantiate;
+	instantiate["op"] = "instantiate";
+	instantiate["resource_path"] = "res://props/tree.glb";
+	instantiate["parent_path"] = "Environment";
+	Array instantiate_operations;
+	instantiate_operations.push_back(instantiate);
+	Dictionary instantiate_args;
+	instantiate_args["operations"] = instantiate_operations;
+	const Array instantiate_access = registry.resolve_resource_access("scene.edit", instantiate_args);
+	REQUIRE(instantiate_access.size() == 2);
+	CHECK(Dictionary(instantiate_access[0]).get("mode", String()) == "read");
+	CHECK(Dictionary(instantiate_access[0]).get("key", String()) == "project:res://props/tree.glb");
+	CHECK(Dictionary(instantiate_access[1]).get("key", String()) == "scene:Environment");
 }
 
 TEST_CASE("[SolersObservationService] empty file search lists bounded project files") {
@@ -2547,7 +2590,7 @@ TEST_CASE("[SolersContextManager] request projection clears consumed ephemeral t
 	Array messages;
 	messages.push_back(SolersLLMMessage::user("Inspect the scene."));
 	messages.push_back(SolersLLMMessage::assistant("Inspecting.", Array()));
-	Dictionary old_ephemeral = SolersLLMMessage::tool_result("call_old", "native.get", "old observation");
+	Dictionary old_ephemeral = SolersLLMMessage::tool_result("call_old", "scene.inspect", "old observation");
 	old_ephemeral["retention"] = "ephemeral";
 	Dictionary preview;
 	preview["source"] = "asset_catalog_preview";
@@ -2557,7 +2600,7 @@ TEST_CASE("[SolersContextManager] request projection clears consumed ephemeral t
 	messages.push_back(old_ephemeral);
 	messages.push_back(SolersLLMMessage::tool_result("call_skill", "skill.read", "durable instructions"));
 	messages.push_back(SolersLLMMessage::assistant("Applying the observation.", Array()));
-	Dictionary current_ephemeral = SolersLLMMessage::tool_result("call_current", "native.get", "current observation");
+	Dictionary current_ephemeral = SolersLLMMessage::tool_result("call_current", "scene.inspect", "current observation");
 	current_ephemeral["retention"] = "ephemeral";
 	messages.push_back(current_ephemeral);
 
@@ -2663,7 +2706,7 @@ TEST_CASE("[SolersContextManager] full compaction keeps real user prompts and on
 	Array messages;
 	messages.push_back(SolersLLMMessage::user("Build a room from the reference."));
 	messages.push_back(SolersLLMMessage::assistant("I will inspect the scene.", Array()));
-	messages.push_back(SolersLLMMessage::tool_result("call_1", "editor.get_snapshot", "{\"ok\":true}"));
+	messages.push_back(SolersLLMMessage::tool_result("call_1", "scene.inspect", "{\"ok\":true}"));
 	messages.push_back(SolersLLMMessage::user("Keep the proportions realistic."));
 
 	Dictionary old_summary = SolersLLMMessage::user("obsolete summary");
@@ -2831,7 +2874,7 @@ TEST_CASE("[SolersToolRegistry] runtime lifecycle does not mutate authored proje
 	registry.register_default_tools();
 
 	CHECK_FALSE(registry.affects_authored_state(SNAME("runtime.control")));
-	CHECK_FALSE(registry.affects_authored_state(SNAME("native.instantiate")));
+	CHECK_FALSE(registry.affects_authored_state(SNAME("engine.inspect")));
 	CHECK(registry.affects_authored_state(SNAME("asset.import_to_project")));
 
 	Dictionary play;
@@ -2895,13 +2938,15 @@ TEST_CASE("[SolersToolRegistry] transcript audit preserves full redacted tool ar
 	Array operations;
 	for (int i = 0; i < 40; i++) {
 		Dictionary operation;
-		operation["op"] = "list_properties";
+		operation["op"] = "set_property";
 		operation["node_path"] = ".";
+		operation["property"] = "name";
+		operation["value"] = "Root";
 		operations.push_back(operation);
 	}
 	Dictionary args;
 	args["operations"] = operations;
-	const Dictionary audit = registry.redact_tool_args_for_audit(SNAME("objects.batch"), args);
+	const Dictionary audit = registry.redact_tool_args_for_audit(SNAME("scene.edit"), args);
 	CHECK(Array(audit.get("operations", Array())).size() == 40);
 }
 

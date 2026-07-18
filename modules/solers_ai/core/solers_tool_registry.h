@@ -12,6 +12,7 @@
 
 #include "core/object/object.h"
 #include "core/templates/hash_map.h"
+#include "core/templates/hash_set.h"
 #include "core/variant/dictionary.h"
 #include "modules/solers_ai/core/solers_permission_manager.h"
 #include "modules/solers_ai/core/solers_tool.h"
@@ -44,6 +45,8 @@ class SolersToolRegistry : public Object {
 	HashMap<String, Dictionary> failed_calls;
 	HashMap<String, Dictionary> reversals;
 	HashMap<String, String> latest_reversal_by_session;
+	HashMap<String, Dictionary> engine_contracts;
+	HashSet<String> delivered_plugin_contracts;
 
 	SolersObservationService *observation_service = nullptr;
 	SolersAssetService *asset_service = nullptr;
@@ -70,7 +73,9 @@ class SolersToolRegistry : public Object {
 			bool p_produces_scene_validation = false,
 			SolersFunctionTool::ReadyHandler p_ready_handler = {},
 			SolersFunctionTool::CompletionHandler p_completion_handler = {},
-			std::function<SolersPermissionManager::Permission(const Dictionary &)> p_permission_resolver = {});
+			std::function<SolersPermissionManager::Permission(const Dictionary &)> p_permission_resolver = {},
+			std::function<SolersToolMutationPolicy(const Dictionary &)> p_mutation_policy_resolver = {},
+			SolersFunctionTool::PreflightHandler p_preflight_handler = {});
 	void _add_observe_exposed(const char *p_name, const char *p_description, const char *p_schema_json,
 			SolersToolExposure p_exposure, SolersFunctionTool::Handler p_handler, bool p_ephemeral_result = true,
 			std::function<Array(const Dictionary &)> p_resource_access = {},
@@ -90,6 +95,11 @@ class SolersToolRegistry : public Object {
 	void _register_reflection_tools();
 	void _register_skill_tools();
 	void _register_search_tools();
+	Dictionary _inspect_engine(const SolersToolContext &p_context, const Dictionary &p_args);
+	Dictionary _preflight_engine_execute(const SolersToolContext &p_context, const Dictionary &p_args) const;
+	Dictionary _execute_engine(const SolersToolContext &p_context, const Dictionary &p_args);
+	String _engine_fingerprint() const;
+	Dictionary _compact_plugin_contract(const SolersToolContext &p_context, const Dictionary &p_result);
 	Dictionary _run_control(const Dictionary &p_args) const;
 	Dictionary _poll_runtime_control(const Dictionary &p_args) const;
 	bool _is_runtime_control_ready(const Dictionary &p_args) const;

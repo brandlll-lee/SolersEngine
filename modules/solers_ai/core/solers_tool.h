@@ -64,6 +64,9 @@ struct SolersToolCapability {
 	// same authoritative tool definition as its schema and handler.
 	std::function<SolersPermissionManager::Permission(const Dictionary &)> permission_resolver;
 	SolersToolMutationPolicy mutation_policy = SolersToolMutationPolicy::READ_ONLY;
+	// Resolve the reversal policy for a domain tool whose validated operations
+	// use different native persistence mechanisms.
+	std::function<SolersToolMutationPolicy(const Dictionary &)> mutation_policy_resolver;
 	bool requires_approval = false;
 	// Observation payloads that are only needed for the next model step.
 	bool ephemeral_result = false;
@@ -108,6 +111,10 @@ public:
 	virtual Dictionary parameters_schema() const = 0;
 	virtual SolersToolExposure exposure() const { return SolersToolExposure::DIRECT; }
 	virtual const SolersToolCapability &capability() const = 0;
+	// Optional semantic validation after JSON Schema validation and before
+	// approval or side effects. Empty means valid; otherwise return the normal
+	// structured error envelope.
+	virtual Dictionary preflight(const SolersToolContext &, const Dictionary &) const { return Dictionary(); }
 	// Execute the call. Returns the canonical { ok, data } / { ok, error }
 	// envelope used everywhere in the module.
 	virtual Dictionary execute(const SolersToolContext &p_ctx, const Dictionary &p_args) = 0;
@@ -139,6 +146,7 @@ public:
 	using PollHandler = std::function<Dictionary(const SolersToolContext &, const Dictionary &)>;
 	using ReadyHandler = std::function<bool(const SolersToolContext &, const Dictionary &)>;
 	using CompletionHandler = std::function<void(const SolersToolContext &, const Dictionary &, const Dictionary &)>;
+	using PreflightHandler = std::function<Dictionary(const SolersToolContext &, const Dictionary &)>;
 
 private:
 	StringName tool_name;
@@ -150,6 +158,7 @@ private:
 	PollHandler poll_handler;
 	ReadyHandler ready_handler;
 	CompletionHandler completion_handler;
+	PreflightHandler preflight_handler;
 
 public:
 	StringName name() const override { return tool_name; }
@@ -157,6 +166,9 @@ public:
 	Dictionary parameters_schema() const override { return schema; }
 	SolersToolExposure exposure() const override { return tool_exposure; }
 	const SolersToolCapability &capability() const override { return tool_capability; }
+	Dictionary preflight(const SolersToolContext &p_ctx, const Dictionary &p_args) const override {
+		return preflight_handler ? preflight_handler(p_ctx, p_args) : Dictionary();
+	}
 
 	Dictionary execute(const SolersToolContext &p_ctx, const Dictionary &p_args) override {
 		return handler(p_ctx, p_args);
@@ -174,7 +186,7 @@ public:
 	}
 
 	SolersFunctionTool(const StringName &p_name, const String &p_description, const Dictionary &p_schema,
-			SolersToolExposure p_exposure, const SolersToolCapability &p_capability, Handler p_handler, PollHandler p_poll_handler = {}, ReadyHandler p_ready_handler = {}, CompletionHandler p_completion_handler = {}) :
+			SolersToolExposure p_exposure, const SolersToolCapability &p_capability, Handler p_handler, PollHandler p_poll_handler = {}, ReadyHandler p_ready_handler = {}, CompletionHandler p_completion_handler = {}, PreflightHandler p_preflight_handler = {}) :
 			tool_name(p_name),
 			tool_description(p_description),
 			schema(p_schema),
@@ -183,5 +195,6 @@ public:
 			handler(std::move(p_handler)),
 			poll_handler(std::move(p_poll_handler)),
 			ready_handler(std::move(p_ready_handler)),
-			completion_handler(std::move(p_completion_handler)) {}
+			completion_handler(std::move(p_completion_handler)),
+			preflight_handler(std::move(p_preflight_handler)) {}
 };

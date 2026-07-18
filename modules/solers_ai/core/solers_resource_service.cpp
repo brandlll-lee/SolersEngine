@@ -48,6 +48,8 @@
 
 void SolersResourceService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_resource_info", "args"), &SolersResourceService::get_resource_info);
+	ClassDB::bind_method(D_METHOD("inspect_resource", "args"), &SolersResourceService::inspect_resource);
+	ClassDB::bind_method(D_METHOD("edit_resource", "args"), &SolersResourceService::edit_resource);
 	ClassDB::bind_method(D_METHOD("create_resource", "args"), &SolersResourceService::create_resource);
 	ClassDB::bind_method(D_METHOD("get_resource_property", "args"), &SolersResourceService::get_resource_property);
 	ClassDB::bind_method(D_METHOD("set_resource_property", "args"), &SolersResourceService::set_resource_property);
@@ -560,6 +562,84 @@ Dictionary SolersResourceService::get_resource_info(const Dictionary &p_args) co
 	return _ok(data);
 }
 
+Dictionary SolersResourceService::inspect_resource(const Dictionary &p_args) const {
+	Dictionary info_result = get_resource_info(p_args);
+	if (!(bool)info_result.get("ok", false)) {
+		return info_result;
+	}
+	Dictionary data = info_result.get("data", Dictionary());
+	const Array requested = p_args.get("properties", Array());
+	if (!requested.is_empty()) {
+		Dictionary values;
+		for (const Variant &value : requested) {
+			Dictionary property_args;
+			property_args["path"] = p_args.get("path", String());
+			property_args["property"] = String(value);
+			property_args["type_hint"] = p_args.get("type_hint", String());
+			const Dictionary property_result = get_resource_property(property_args);
+			if (!(bool)property_result.get("ok", false)) {
+				return property_result;
+			}
+			const Dictionary property_data = property_result.get("data", Dictionary());
+			Dictionary item;
+			item["type"] = property_data.get("type", String());
+			item["value"] = property_data.get("value", Variant());
+			values[String(value)] = item;
+		}
+		data["properties"] = values;
+	}
+	return _ok(data);
+}
+
+Dictionary SolersResourceService::edit_resource(const Dictionary &p_args) const {
+	const String action = String(p_args.get("action", String())).strip_edges();
+	String path;
+	String path_error;
+	if (!_normalize_project_path(p_args.get("path", String()), path, path_error)) {
+		return _error("INVALID_PATH", path_error);
+	}
+
+	Dictionary result;
+	if (action == "create") {
+		if (FileAccess::exists(path) || ResourceLoader::exists(path)) {
+			return _error("RESOURCE_EXISTS", "resource.edit create never overwrites an existing resource.");
+		}
+		Dictionary create_args = p_args.duplicate(true);
+		create_args["path"] = path;
+		create_args.erase("action");
+		create_args.erase("expected_sha256");
+		result = create_resource(create_args);
+	} else if (action == "update") {
+		const String expected_sha256 = p_args.get("expected_sha256", String());
+		if (expected_sha256.is_empty() || !FileAccess::exists(path) || FileAccess::get_sha256(path) != expected_sha256) {
+			return _error("RESOURCE_CHANGED", "resource.edit update requires the current resource expected_sha256.");
+		}
+		Dictionary update_args;
+		update_args["path"] = path;
+		update_args["properties"] = p_args.get("properties", Dictionary());
+		update_args["type_hint"] = p_args.get("type_hint", String());
+		result = set_resource_property(update_args);
+	} else {
+		return _error("INVALID_ARGUMENT", "resource.edit action must be create or update.");
+	}
+	if (!(bool)result.get("ok", false)) {
+		return result;
+	}
+
+	Error reload_error = OK;
+	const Ref<Resource> reloaded = ResourceLoader::load(path, p_args.get("type_hint", String()), ResourceFormatLoader::CACHE_MODE_REPLACE, &reload_error);
+	if (reloaded.is_null() || reload_error != OK) {
+		return _error("RESOURCE_RELOAD_FAILED", vformat("Saved resource could not be reloaded (error %d).", reload_error));
+	}
+	Dictionary data = result.get("data", Dictionary());
+	data["action"] = action;
+	data["path"] = path;
+	data["class_name"] = reloaded->get_class();
+	data["sha256"] = FileAccess::get_sha256(path);
+	data["reload_verified"] = true;
+	return _ok(data);
+}
+
 Dictionary SolersResourceService::create_resource(const Dictionary &p_args) const {
 	const String class_name = String(p_args.get("class_name", String())).strip_edges();
 	const String path_arg = p_args.get("path", String());
@@ -612,7 +692,7 @@ Dictionary SolersResourceService::create_resource(const Dictionary &p_args) cons
 		return _error("RESOURCE_SAVE_FAILED", vformat("Failed to save resource, error code %d.", save_err));
 	}
 	EditorFileSystem *filesystem = Engine::get_singleton()->is_editor_hint() ? EditorFileSystem::get_singleton() : nullptr;
-	if (filesystem && !filesystem->is_scanning() && filesystem->get_filesystem()) {
+	if (filesystem && filesystem->get_filesystem() && !filesystem->is_scanning()) {
 		filesystem->update_file(path);
 	}
 	Dictionary data = _solers_resource_data(resource, path);
@@ -715,7 +795,7 @@ Dictionary SolersResourceService::set_resource_property(const Dictionary &p_args
 		return _error("RESOURCE_SAVE_FAILED", vformat("Failed to save resource, error code %d.", save_err));
 	}
 	EditorFileSystem *filesystem = Engine::get_singleton()->is_editor_hint() ? EditorFileSystem::get_singleton() : nullptr;
-	if (filesystem && !filesystem->is_scanning() && filesystem->get_filesystem()) {
+	if (filesystem && filesystem->get_filesystem() && !filesystem->is_scanning()) {
 		filesystem->update_file(path);
 	}
 
@@ -937,7 +1017,7 @@ Dictionary SolersResourceService::native_save(const Dictionary &p_args) const {
 		return _error("RESOURCE_SAVE_FAILED", vformat("Failed to save resource '%s' (error %d).", path, (int)save_error));
 	}
 	EditorFileSystem *filesystem = Engine::get_singleton()->is_editor_hint() ? EditorFileSystem::get_singleton() : nullptr;
-	if (filesystem && !filesystem->is_scanning() && filesystem->get_filesystem()) {
+	if (filesystem && filesystem->get_filesystem() && !filesystem->is_scanning()) {
 		filesystem->update_file(path);
 	}
 	Dictionary data = _native_object_handle(resource);

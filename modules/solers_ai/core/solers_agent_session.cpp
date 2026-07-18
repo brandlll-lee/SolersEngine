@@ -2229,7 +2229,7 @@ void SolersAgentSession::_poll_tool_executing() {
 		if (tool_registry && tool_registry->produces_scene_validation(StringName(canonical_name))) {
 			scene_validation_revision = geometry_revision;
 		}
-		if (canonical_name == "editor.get_snapshot") {
+		if (canonical_name == "scene.inspect") {
 			observed_revision = authored_revision;
 		} else if (canonical_name == "viewport.capture") {
 			const String target = data.get("target", String());

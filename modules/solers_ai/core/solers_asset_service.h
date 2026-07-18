@@ -118,6 +118,7 @@ public:
 	Dictionary catalog_acquire(const Dictionary &p_args, const String &p_session_id);
 	Dictionary plugin_search(const Dictionary &p_args, const SafeFlag *p_cancel_requested = nullptr);
 	Dictionary plugin_inspect(const Dictionary &p_args, const SafeFlag *p_cancel_requested = nullptr);
+	Dictionary plugin_agent_contract(const Dictionary &p_args) const;
 	Dictionary plugin_list(const Dictionary &p_args) const;
 	Dictionary plugin_ensure(const Dictionary &p_args);
 	Dictionary wait_jobs(const Dictionary &p_args, const String &p_session_id) const;

@@ -776,13 +776,10 @@ bool SolersObservationService::_collect_project_files_indexed(const String &p_qu
 		return false;
 	}
 	EditorFileSystem *efs = EditorFileSystem::get_singleton();
-	if (!efs || efs->is_scanning()) {
+	if (!efs || !efs->get_filesystem() || efs->is_scanning()) {
 		return false;
 	}
 	EditorFileSystemDirectory *root = efs->get_filesystem();
-	if (!root) {
-		return false;
-	}
 
 	// Iterative DFS; explicit stack so a pathological tree can never blow the
 	// C++ call stack.
@@ -1154,8 +1151,9 @@ static int _solers_find_text(const String &p_line, const String &p_query, bool p
 static Dictionary _solers_project_result(const String &p_path) {
 	Dictionary result;
 	result["path"] = p_path;
-	if (EditorFileSystem *file_system = EditorFileSystem::get_singleton()) {
-		result["resource_type"] = file_system->get_file_type(p_path);
+	const String resource_type = ResourceLoader::get_resource_type(p_path);
+	if (!resource_type.is_empty()) {
+		result["resource_type"] = resource_type;
 	}
 	const ResourceUID::ID uid = ResourceLoader::get_resource_uid(p_path);
 	if (uid != ResourceUID::INVALID_ID) {

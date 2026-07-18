@@ -95,6 +95,7 @@ public:
 	Dictionary call_method(const Dictionary &p_args);
 
 	Dictionary invoke_editor(const Dictionary &p_args);
+	Dictionary inspect_nodes(const Dictionary &p_args);
 	Dictionary instantiate_scene(const Dictionary &p_args);
 	Dictionary validate_spatial_relations(const Dictionary &p_args) const;
 	static real_t get_aabb_max_gap(const AABB &p_a, const AABB &p_b);

@@ -239,7 +239,7 @@ Dictionary SolersFileCheckpoint::restore_checkpoint_state(const Dictionary &p_ch
 	}
 
 	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
-	if (filesystem && !filesystem->is_scanning() && filesystem->get_filesystem()) {
+	if (filesystem && filesystem->get_filesystem() && !filesystem->is_scanning()) {
 		filesystem->update_file(normalized_path);
 	}
 	if (FileAccess::exists(normalized_path)) {

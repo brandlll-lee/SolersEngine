@@ -112,25 +112,23 @@ static bool _solers_doc_matches(const String &p_name, const String &p_descriptio
 enum class SolersBatchOperationKind {
 	UNKNOWN,
 	CREATE_NODE,
+	INSTANTIATE_SCENE,
 	SET_PROPERTY,
-	GET_PROPERTY,
 	REPARENT,
 	CONNECT_SIGNAL,
 	ATTACH_SCRIPT,
 	REMOVE_NODE,
-	LIST_PROPERTIES,
-	LIST_SIGNAL_CONNECTIONS,
 };
 
 static SolersBatchOperationKind _solers_batch_operation_kind(const String &p_name) {
 	if (p_name == "create_node") {
 		return SolersBatchOperationKind::CREATE_NODE;
 	}
+	if (p_name == "instantiate") {
+		return SolersBatchOperationKind::INSTANTIATE_SCENE;
+	}
 	if (p_name == "set_property") {
 		return SolersBatchOperationKind::SET_PROPERTY;
-	}
-	if (p_name == "get_property") {
-		return SolersBatchOperationKind::GET_PROPERTY;
 	}
 	if (p_name == "reparent") {
 		return SolersBatchOperationKind::REPARENT;
@@ -144,12 +142,6 @@ static SolersBatchOperationKind _solers_batch_operation_kind(const String &p_nam
 	if (p_name == "remove_node") {
 		return SolersBatchOperationKind::REMOVE_NODE;
 	}
-	if (p_name == "list_properties") {
-		return SolersBatchOperationKind::LIST_PROPERTIES;
-	}
-	if (p_name == "list_signal_connections") {
-		return SolersBatchOperationKind::LIST_SIGNAL_CONNECTIONS;
-	}
 	return SolersBatchOperationKind::UNKNOWN;
 }
 
@@ -157,11 +149,9 @@ static Dictionary _solers_normalize_batch_operation(const Dictionary &p_operatio
 	Dictionary operation = p_operation.duplicate(true);
 	switch (p_kind) {
 		case SolersBatchOperationKind::SET_PROPERTY:
-		case SolersBatchOperationKind::GET_PROPERTY:
 		case SolersBatchOperationKind::REPARENT:
 		case SolersBatchOperationKind::ATTACH_SCRIPT:
 		case SolersBatchOperationKind::REMOVE_NODE:
-		case SolersBatchOperationKind::LIST_PROPERTIES:
 			if (!operation.has("node_path") && operation.has("path")) {
 				operation["node_path"] = operation["path"];
 			}
@@ -370,7 +360,7 @@ Dictionary SolersReflectionService::_call_method_on_object(Object *p_object, con
 	String error_code;
 	String error;
 	if (!solers_call_method(p_object, p_info, p_args, ret, error_code, error)) {
-		return _error(error_code, error + " Check argument types via class.introspect.");
+		return _error(error_code, error + " Check the exact signature in engine.inspect.");
 	}
 
 	Dictionary data;
@@ -654,7 +644,7 @@ Dictionary SolersReflectionService::get_property(const Dictionary &p_args) {
 		}
 	}
 	if (!valid) {
-		return _error("UNKNOWN_PROPERTY", vformat("Property '%s' is not exposed by %s. Use class.introspect for valid names.", property, node->get_class()));
+		return _error("UNKNOWN_PROPERTY", vformat("Property '%s' is not exposed by %s. Inspect the node or request an engine.inspect contract.", property, node->get_class()));
 	}
 
 	String safe_path;
@@ -779,7 +769,7 @@ Dictionary SolersReflectionService::call_method(const Dictionary &p_args) {
 
 	const StringName method_sn = StringName(method);
 	if (!node->has_method(method_sn)) {
-		return _error("UNKNOWN_METHOD", vformat("Method '%s' is not available on %s. Use class.introspect for valid methods.", method, node->get_class()));
+		return _error("UNKNOWN_METHOD", vformat("Method '%s' is not available on %s. Request the exact member with engine.inspect.", method, node->get_class()));
 	}
 
 	MethodInfo method_info;
@@ -810,13 +800,65 @@ Dictionary SolersReflectionService::invoke_editor(const Dictionary &p_args) {
 	const StringName method_sn = StringName(method);
 	MethodInfo method_info;
 	if (!ClassDB::get_method_info(SNAME("EditorInterface"), method_sn, &method_info)) {
-		return _error("UNKNOWN_METHOD", vformat("EditorInterface.%s is not exposed by ClassDB. Use class.introspect for valid methods.", method));
+		return _error("UNKNOWN_METHOD", vformat("EditorInterface.%s is not exposed by ClassDB. Request the exact member with engine.inspect.", method));
 	}
 	if (!editor_interface->has_method(method_sn)) {
 		return _error("UNKNOWN_METHOD", vformat("EditorInterface.%s is not callable on this editor instance.", method));
 	}
 
 	return _call_method_on_object(editor_interface, "EditorInterface", method, method_info, p_args.get("args", Array()));
+}
+
+Dictionary SolersReflectionService::inspect_nodes(const Dictionary &p_args) {
+	Array paths = p_args.get("node_paths", Array());
+	if (paths.is_empty()) {
+		paths.push_back(".");
+	}
+	const bool include_properties = p_args.get("include_properties", true);
+	const bool include_connections = p_args.get("include_connections", false);
+	const int max_properties = CLAMP((int)p_args.get("max_properties", 128), 1, 512);
+	Array nodes;
+	for (const Variant &value : paths) {
+		const String path = String(value);
+		String resolve_error;
+		Node *node = _resolve_node(path, resolve_error);
+		if (!node) {
+			return _error("NODE_NOT_FOUND", resolve_error);
+		}
+		Dictionary item;
+		String safe_path;
+		_safe_node_path(node, safe_path);
+		item["node_path"] = safe_path;
+		item["object_id"] = String::num_int64((int64_t)node->get_instance_id());
+		item["name"] = node->get_name();
+		item["class_name"] = node->get_class();
+		item["child_count"] = node->get_child_count();
+		item["scene_file_path"] = node->get_scene_file_path();
+		if (include_properties) {
+			Dictionary property_args;
+			property_args["node_path"] = safe_path;
+			property_args["max_properties"] = max_properties;
+			const Dictionary property_result = _list_properties(property_args);
+			if (!(bool)property_result.get("ok", false)) {
+				return property_result;
+			}
+			item["properties"] = Dictionary(property_result.get("data", Dictionary())).get("properties", Array());
+		}
+		if (include_connections) {
+			Dictionary connection_args;
+			connection_args["source_path"] = safe_path;
+			const Dictionary connection_result = _list_signal_connections(connection_args);
+			if (!(bool)connection_result.get("ok", false)) {
+				return connection_result;
+			}
+			item["connections"] = Dictionary(connection_result.get("data", Dictionary())).get("connections", Array());
+		}
+		nodes.push_back(item);
+	}
+	Dictionary data;
+	data["nodes"] = nodes;
+	data["count"] = nodes.size();
+	return _ok(data);
 }
 
 Dictionary SolersReflectionService::_create_node(const Dictionary &p_args) {
@@ -945,7 +987,7 @@ Dictionary SolersReflectionService::instantiate_scene(const Dictionary &p_args) 
 	}
 	const Variant properties_value = p_args.get("properties", Dictionary());
 	if (properties_value.get_type() != Variant::DICTIONARY) {
-		return _error("INVALID_ARGUMENT", "scene.instantiate properties must be an object.");
+		return _error("INVALID_ARGUMENT", "scene.edit instantiate properties must be an object.");
 	}
 
 	EditorInterface *editor_interface = EditorInterface::get_singleton();
@@ -1001,12 +1043,19 @@ Dictionary SolersReflectionService::instantiate_scene(const Dictionary &p_args) 
 		memdelete(instance);
 		return _error("UNDO_REDO_UNAVAILABLE", "EditorUndoRedoManager is not available.", false);
 	}
-	undo_redo->create_action(vformat("Solers: Instantiate %s", resource_path.get_file()), UndoRedo::MERGE_DISABLE, parent);
+	if (!batch_action_active) {
+		undo_redo->create_action(vformat("Solers: Instantiate %s", resource_path.get_file()), UndoRedo::MERGE_DISABLE, parent);
+	}
 	undo_redo->add_do_method(parent, "add_child", instance, true);
 	undo_redo->add_do_method(instance, "set_owner", edited_root);
 	undo_redo->add_do_reference(instance);
 	undo_redo->add_undo_method(parent, "remove_child", instance);
-	undo_redo->commit_action();
+	if (batch_action_active) {
+		parent->add_child(instance, true);
+		instance->set_owner(edited_root);
+	} else {
+		undo_redo->commit_action();
+	}
 
 	String safe_path;
 	_safe_node_path(instance, safe_path);
@@ -1387,6 +1436,7 @@ static bool _solers_spatial_state_equal(const HashMap<ObjectID, AABB> &p_left, c
 static bool _solers_batch_operation_mutates(SolersBatchOperationKind p_kind) {
 	switch (p_kind) {
 		case SolersBatchOperationKind::CREATE_NODE:
+		case SolersBatchOperationKind::INSTANTIATE_SCENE:
 		case SolersBatchOperationKind::SET_PROPERTY:
 		case SolersBatchOperationKind::REPARENT:
 		case SolersBatchOperationKind::CONNECT_SIGNAL:
@@ -1447,11 +1497,11 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 			case SolersBatchOperationKind::CREATE_NODE:
 				result = _create_node(op);
 				break;
+			case SolersBatchOperationKind::INSTANTIATE_SCENE:
+				result = instantiate_scene(op);
+				break;
 			case SolersBatchOperationKind::SET_PROPERTY:
 				result = set_property(op);
-				break;
-			case SolersBatchOperationKind::GET_PROPERTY:
-				result = get_property(op);
 				break;
 			case SolersBatchOperationKind::REPARENT:
 				result = _reparent_node(op);
@@ -1465,14 +1515,8 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 			case SolersBatchOperationKind::REMOVE_NODE:
 				result = _remove_node(op);
 				break;
-			case SolersBatchOperationKind::LIST_PROPERTIES:
-				result = _list_properties(op);
-				break;
-			case SolersBatchOperationKind::LIST_SIGNAL_CONNECTIONS:
-				result = _list_signal_connections(op);
-				break;
 			default:
-				result = _error("UNKNOWN_OP", vformat("Unknown batch op '%s'. Supported: create_node, set_property, get_property, reparent, connect_signal, attach_script, remove_node, list_properties, list_signal_connections.", kind));
+				result = _error("UNKNOWN_OP", vformat("Unknown scene edit op '%s'. Supported: create_node, instantiate, set_property, reparent, connect_signal, attach_script, remove_node.", kind));
 				break;
 		}
 		Dictionary entry;
@@ -1526,7 +1570,7 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 		}
 	}
 	if (error_count > 0) {
-		Dictionary result = _error("BATCH_FAILED", "objects.batch stopped at the first failed operation.");
+		Dictionary result = _error("SCENE_EDIT_FAILED", "scene.edit stopped at the first failed operation and rolled the transaction back.");
 		result["data"] = data;
 		return result;
 	}
@@ -1976,7 +2020,7 @@ Dictionary SolersReflectionService::validate_structure_topology(const Array &p_m
 			}
 		}
 		if (relation.has("tolerance")) {
-			return _error("INVALID_STRUCTURE_CONTRACT", vformat("relations[%d] cannot relax structural contact tolerance; use scene.validate_spatial for diagnostic tolerances.", i));
+			return _error("INVALID_STRUCTURE_CONTRACT", vformat("relations[%d] cannot relax structural contact tolerance; use scene.validate mode=spatial for diagnostic tolerances.", i));
 		}
 		String relation_key;
 		if (kind == "contains") {
@@ -3398,16 +3442,16 @@ Array SolersReflectionService::resolve_batch_resource_access(const Dictionary &p
 		const SolersBatchOperationKind kind = _solers_batch_operation_kind(raw_op.get("op", String()));
 		const Dictionary op = _solers_normalize_batch_operation(raw_op, kind);
 		switch (kind) {
-			case SolersBatchOperationKind::GET_PROPERTY:
-			case SolersBatchOperationKind::LIST_PROPERTIES:
-				_solers_add_scene_access(accesses, "read", op.get("node_path", "."));
-				break;
-			case SolersBatchOperationKind::LIST_SIGNAL_CONNECTIONS:
-				_solers_add_scene_access(accesses, "read", op.get("source_path", "."));
-				break;
 			case SolersBatchOperationKind::CREATE_NODE:
 				_solers_add_scene_access(accesses, "write", op.get("parent_path", op.get("parent", ".")));
 				break;
+			case SolersBatchOperationKind::INSTANTIATE_SCENE: {
+				Dictionary resource;
+				resource["mode"] = "read";
+				resource["key"] = "project:" + String(op.get("resource_path", String())).replace_char('\\', '/').simplify_path();
+				accesses.push_back(resource);
+				_solers_add_scene_access(accesses, "write", op.get("parent_path", "."));
+			} break;
 			case SolersBatchOperationKind::SET_PROPERTY:
 			case SolersBatchOperationKind::ATTACH_SCRIPT:
 			case SolersBatchOperationKind::REMOVE_NODE:

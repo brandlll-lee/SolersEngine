@@ -61,6 +61,8 @@ protected:
 
 public:
 	Dictionary get_resource_info(const Dictionary &p_args) const;
+	Dictionary inspect_resource(const Dictionary &p_args) const;
+	Dictionary edit_resource(const Dictionary &p_args) const;
 	Dictionary create_resource(const Dictionary &p_args) const;
 	Dictionary get_resource_property(const Dictionary &p_args) const;
 	Dictionary set_resource_property(const Dictionary &p_args) const;

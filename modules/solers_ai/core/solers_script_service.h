@@ -39,11 +39,13 @@ class SolersScriptService : public Object {
 	GDCLASS(SolersScriptService, Object);
 
 	SolersActionTimeline *action_timeline = nullptr;
+	Error project_settings_save_error = OK;
 
 	bool _normalize_project_path(const String &p_path, String &r_res_path, String &r_error, bool p_allow_project_data = false) const;
 	Dictionary _ok(const Variant &p_data) const;
 	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
 	Dictionary _validate_source(const String &p_path, const String &p_source) const;
+	void _apply_project_settings(const Dictionary &p_values, const PackedStringArray &p_erase);
 
 protected:
 	static void _bind_methods();
@@ -53,5 +55,7 @@ public:
 
 	Dictionary write_file(const Dictionary &p_args);
 	Dictionary patch_file(const Dictionary &p_args);
+	Dictionary edit_project(const Dictionary &p_args);
+	Dictionary edit_script(const Dictionary &p_args);
 	Dictionary validate_script(const Dictionary &p_args) const;
 };
