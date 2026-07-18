@@ -3373,35 +3373,88 @@ Dictionary SolersAssetService::plugin_ensure(const Dictionary &p_args) {
 		}
 	}
 
+	// Persist the installed entry first; the finalize phase rebuilds
+	// everything it needs from the lock file alone.
+	installed_plugins[plugin_key] = entry;
+	lock_file["plugins"] = installed_plugins;
+	String lock_error;
+	if (!_write_json_atomic(SOLERS_PLUGIN_LOCK_PATH, lock_file, lock_error)) {
+		return _error("PLUGIN_LOCK_WRITE_FAILED", lock_error, false);
+	}
+
+	// The editor's own scan pipeline is the authority for everything that
+	// follows an install: it registers global script class names and runs
+	// ensure_extensions_loaded, which loads new GDExtensions and keeps
+	// extension_list.cfg current for runtime processes. Enabling the plugin
+	// before that pipeline finishes would parse addon scripts against a
+	// half-built class registry, so readiness is evaluated only once the
+	// scan is done (through the registry's ready/poll continuation).
 	EditorFileSystem *filesystem = _solers_editor_filesystem();
-	if (filesystem) {
+	if (!unchanged && filesystem) {
 		filesystem->scan_changes();
 	}
+	Dictionary finalize_args;
+	finalize_args["plugin_key"] = plugin_key;
+	finalize_args["installed"] = !unchanged;
+	if (filesystem && filesystem->is_scanning()) {
+		finalize_args["deadline_msec"] = (int64_t)(OS::get_singleton()->get_ticks_msec() + 120000);
+		Dictionary data = finalize_args.duplicate(true);
+		data["status"] = "pending";
+		data["poll_args"] = finalize_args;
+		return _ok(data);
+	}
+	return plugin_ensure_finalize(finalize_args);
+}
+
+bool SolersAssetService::plugin_ensure_ready(const Dictionary &p_args) const {
+	EditorFileSystem *filesystem = _solers_editor_filesystem();
+	if (!filesystem || !filesystem->is_scanning()) {
+		return true;
+	}
+	return OS::get_singleton()->get_ticks_msec() >= (uint64_t)(int64_t)p_args.get("deadline_msec", 0);
+}
+
+Dictionary SolersAssetService::plugin_ensure_finalize(const Dictionary &p_args) {
+	EditorFileSystem *filesystem = _solers_editor_filesystem();
+	if (filesystem && filesystem->is_scanning()) {
+		return _error("FILESYSTEM_SCAN_TIMEOUT", "The editor filesystem scan did not finish in time; call plugin.ensure again once it settles.");
+	}
+	const String plugin_key = p_args.get("plugin_key", String());
+	Dictionary lock_file = _read_json_file(SOLERS_PLUGIN_LOCK_PATH);
+	Dictionary installed_plugins = lock_file.get("plugins", Dictionary());
+	Dictionary entry = installed_plugins.get(plugin_key, Dictionary());
+	if (entry.is_empty()) {
+		return _error("PLUGIN_NOT_INSTALLED", vformat("No installed plugin entry for %s.", plugin_key), false);
+	}
+
+	const Array target_files = entry.get("files", Array());
+	bool files_present = !target_files.is_empty();
+	for (const Variant &file : target_files) {
+		files_present = files_present && FileAccess::exists(String(file));
+	}
+
 	Array load_errors;
 	Array restart_reasons;
-	Vector<String> registered_classes;
 	bool restart_required = false;
-	bool load_failed = false;
+	// The scan already ran the engine's ensure_extensions_loaded. An
+	// extension that is still absent from the current process needs the
+	// editor restart the engine itself decided on.
 	GDExtensionManager *extension_manager = GDExtensionManager::get_singleton();
-	const Array gdextensions = inspection.get("gdextensions", Array());
+	Vector<String> registered_classes;
+	const Array gdextensions = entry.get("gdextensions", Array());
 	for (const Variant &value : gdextensions) {
 		const String extension_path = value;
-		const GDExtensionManager::LoadStatus status = extension_manager ? extension_manager->load_extension(extension_path) : GDExtensionManager::LOAD_STATUS_FAILED;
-		if (status == GDExtensionManager::LOAD_STATUS_NEEDS_RESTART) {
+		if (!extension_manager || !extension_manager->is_extension_loaded(extension_path)) {
 			restart_required = true;
-			restart_reasons.push_back(vformat("%s requires an editor restart before it can load.", extension_path));
-		} else if (status != GDExtensionManager::LOAD_STATUS_OK && status != GDExtensionManager::LOAD_STATUS_ALREADY_LOADED) {
-			load_failed = true;
-			load_errors.push_back(vformat("Could not load GDExtension %s (status %d).", extension_path, status));
+			restart_reasons.push_back(vformat("%s is not loaded in the current editor process; restart the editor, then call plugin.ensure with the same arguments.", extension_path));
+			continue;
 		}
-		if (extension_manager) {
-			const Ref<GDExtension> extension = extension_manager->get_extension(extension_path);
-			if (extension.is_valid()) {
-				List<StringName> classes;
-				ClassDB::get_extension_class_list(extension, &classes);
-				for (const StringName &class_name : classes) {
-					registered_classes.push_back(String(class_name));
-				}
+		const Ref<GDExtension> extension = extension_manager->get_extension(extension_path);
+		if (extension.is_valid()) {
+			List<StringName> classes;
+			ClassDB::get_extension_class_list(extension, &classes);
+			for (const StringName &class_name : classes) {
+				registered_classes.push_back(String(class_name));
 			}
 		}
 	}
@@ -3412,46 +3465,19 @@ Dictionary SolersAssetService::plugin_ensure(const Dictionary &p_args) {
 	}
 
 	EditorInterface *editor = EditorInterface::get_singleton();
-	const Array plugin_names = inspection.get("plugin_names", Array());
+	const Array plugin_names = entry.get("plugin_names", Array());
 	bool enabled = plugin_names.is_empty();
-	for (const Variant &value : plugin_names) {
-		const String plugin_name = value;
-		if (editor && !editor->is_plugin_enabled(plugin_name) && !restart_required && !load_failed) {
-			editor->set_plugin_enabled(plugin_name, true);
-		}
-	}
 	if (!plugin_names.is_empty()) {
 		enabled = editor != nullptr;
 		for (const Variant &value : plugin_names) {
-			enabled = enabled && editor->is_plugin_enabled(String(value));
+			const String plugin_name = value;
+			if (editor && !editor->is_plugin_enabled(plugin_name) && !restart_required) {
+				editor->set_plugin_enabled(plugin_name, true);
+			}
+			enabled = enabled && editor && editor->is_plugin_enabled(plugin_name);
 		}
 	}
-	if (!enabled && restart_required) {
-		PackedStringArray enabled_plugins;
-		const Variant enabled_setting = ProjectSettings::get_singleton()->get("editor_plugins/enabled");
-		if (enabled_setting.get_type() == Variant::PACKED_STRING_ARRAY) {
-			enabled_plugins = enabled_setting;
-		} else if (enabled_setting.get_type() == Variant::ARRAY) {
-			const Array enabled_array = enabled_setting;
-			for (const Variant &value : enabled_array) {
-				enabled_plugins.push_back(String(value));
-			}
-		}
-		const Array plugin_configs = inspection.get("plugin_configs", Array());
-		for (const Variant &config : plugin_configs) {
-			const String path = config;
-			if (!enabled_plugins.has(path)) {
-				enabled_plugins.push_back(path);
-			}
-		}
-		ProjectSettings::get_singleton()->set("editor_plugins/enabled", enabled_plugins);
-		const Error settings_error = ProjectSettings::get_singleton()->save();
-		if (settings_error != OK) {
-			load_failed = true;
-			load_errors.push_back(vformat("Could not persist enabled editor plugins (error %d).", settings_error));
-		}
-	} else if (!enabled) {
-		load_failed = true;
+	if (!enabled && !restart_required) {
 		load_errors.push_back("The editor plugin could not be enabled in the current editor process.");
 	}
 
@@ -3465,11 +3491,10 @@ Dictionary SolersAssetService::plugin_ensure(const Dictionary &p_args) {
 		}
 	}
 	if (!missing_classes.is_empty() && !restart_required) {
-		load_failed = true;
 		load_errors.push_back(vformat("Declared Agent Contract classes are not registered: %s", String(", ").join(missing_classes)));
 	}
 
-	const bool ready = files_present && enabled && !restart_required && !load_failed && missing_classes.is_empty();
+	const bool ready = files_present && enabled && !restart_required && missing_classes.is_empty() && load_errors.is_empty();
 	entry["registered_classes"] = class_list;
 	entry["enabled"] = enabled;
 	entry["ready"] = ready;
@@ -3482,8 +3507,8 @@ Dictionary SolersAssetService::plugin_ensure(const Dictionary &p_args) {
 	const bool lock_updated = _write_json_atomic(SOLERS_PLUGIN_LOCK_PATH, lock_file, lock_error);
 	Dictionary data;
 	data["plugin"] = entry;
-	data["installed"] = !unchanged;
-	data["idempotent"] = unchanged;
+	data["installed"] = p_args.get("installed", false);
+	data["idempotent"] = !(bool)p_args.get("installed", false);
 	data["enabled"] = enabled;
 	data["ready"] = ready;
 	data["restart_required"] = restart_required;

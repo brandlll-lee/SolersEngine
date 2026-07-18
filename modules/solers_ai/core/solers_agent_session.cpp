@@ -747,7 +747,7 @@ String SolersAgentSession::_request_system_prompt(bool p_include_observation_del
 	context["authored_revision"] = (int64_t)authored_revision;
 	context["platform"] = OS::get_singleton()->get_name();
 	context["runtime"] = observation->get_runtime_status();
-	context["enabled_plugins"] = GLOBAL_GET("editor_plugins/enabled");
+	context["enabled_plugins"] = ProjectSettings::get_singleton()->has_setting("editor_plugins/enabled") ? GLOBAL_GET("editor_plugins/enabled") : Variant(PackedStringArray());
 	// Plugin health up front: a half-loaded plugin (missing classes, load
 	// errors, pending restart) is the model's first fact, not something it has
 	// to rediscover through failing tool calls.

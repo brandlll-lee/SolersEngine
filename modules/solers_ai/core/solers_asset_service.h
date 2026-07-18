@@ -121,6 +121,8 @@ public:
 	Dictionary plugin_agent_contract(const Dictionary &p_args) const;
 	Dictionary plugin_list(const Dictionary &p_args) const;
 	Dictionary plugin_ensure(const Dictionary &p_args);
+	Dictionary plugin_ensure_finalize(const Dictionary &p_args);
+	bool plugin_ensure_ready(const Dictionary &p_args) const;
 	Dictionary wait_jobs(const Dictionary &p_args, const String &p_session_id) const;
 	Dictionary capabilities(const Dictionary &p_args) const;
 	Dictionary run_operation(const Dictionary &p_args);

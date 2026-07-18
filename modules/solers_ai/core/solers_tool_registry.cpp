@@ -1217,8 +1217,8 @@ void SolersToolRegistry::_register_observation_tools() {
 			R"({"type":"object","properties":{"path":{"type":"string","description":"res:// path of the file to read."},"max_bytes":{"type":"integer","description":"Maximum bytes to return. Default 262144."}},"required":["path"]})",
 			[this, obs](const SolersToolContext &, const Dictionary &a) { return _ok(obs->read_project_file(a.get("path", String()), (int)a.get("max_bytes", 262144))); },
 			_access_by_arg("read", "project:", "path"));
-	_add_observe("runtime.observe", "Read bounded EngineDebugger events since a cursor: lifecycle, output, breaks, profiler data, and remote-scene changes.",
-			R"({"type":"object","properties":{"since_cursor":{"type":"integer","minimum":0,"description":"Return events after this cursor. Default 0."},"types":{"type":"array","items":{"type":"string","enum":["started","stopped","output","break","debug_data","performance","remote_scene"]},"uniqueItems":true,"description":"Optional event type filter."},"max_events":{"type":"integer","minimum":1,"maximum":256,"description":"Maximum events. Default 128."}}})",
+	_add_observe("runtime.observe", "Read bounded EngineDebugger events since a cursor: lifecycle, output, errors, breaks, profiler data, and remote-scene changes.",
+			R"({"type":"object","properties":{"since_cursor":{"type":"integer","minimum":0,"description":"Return events after this cursor. Default 0."},"types":{"type":"array","items":{"type":"string","enum":["started","stopped","output","error","break","debug_data","performance","remote_scene"]},"uniqueItems":true,"description":"Optional event type filter."},"max_events":{"type":"integer","minimum":1,"maximum":256,"description":"Maximum events. Default 128."}}})",
 			[this, obs](const SolersToolContext &, const Dictionary &a) { return _ok(obs->observe_runtime(a)); }, {},
 			[this, obs](const SolersToolContext &, const Dictionary &a) { return _ok(obs->observe_runtime(a)); },
 			[obs](const SolersToolContext &, const Dictionary &a) { return obs->is_runtime_observation_ready(a); });
@@ -1490,7 +1490,7 @@ void SolersToolRegistry::_register_plugin_tools() {
 				accesses.push_back(access);
 				return accesses;
 			});
-	_add("plugin.ensure", "Install and enable one inspected exact plugin version. Success means files exist, extensions are loaded, editor plugins are enabled, and all Contract entry classes are registered; restart and load failures are explicit errors.",
+	_add("plugin.ensure", "Install and enable one inspected exact plugin version. Completes after the editor filesystem scan has registered the plugin's classes; success means files exist, extensions are loaded, editor plugins are enabled, and all Contract entry classes are registered.",
 			R"({"type":"object","properties":{"source":{"type":"string","enum":["bundled","assetlib"]},"plugin_id":{"type":"string","minLength":1},"version":{"type":"string","minLength":1},"sha256":{"type":"string","pattern":"^[0-9a-fA-F]{64}$"}},"required":["source","plugin_id","version","sha256"],"additionalProperties":false})",
 			SolersPermissionManager::PERMISSION_INSTALL_PLUGIN, SolersToolMutationPolicy::IRREVERSIBLE, true, Vector<String>(), SolersToolExposure::DIRECT,
 			[service](const SolersToolContext &, const Dictionary &args) { return service->plugin_ensure(args); }, false,
@@ -1505,7 +1505,10 @@ void SolersToolRegistry::_register_plugin_tools() {
 				lock["key"] = "project:res://.solers/plugins.lock.json";
 				accesses.push_back(lock);
 				return accesses;
-			}, false, {}, false, {}, {}, [](const Dictionary &args) {
+			}, false,
+			[service](const SolersToolContext &, const Dictionary &args) { return service->plugin_ensure_finalize(args); }, false,
+			[service](const SolersToolContext &, const Dictionary &args) { return service->plugin_ensure_ready(args); }, {},
+			[](const Dictionary &args) {
 				return SolersAssetService::is_trusted_plugin(args) ? SolersPermissionManager::PERMISSION_EDIT_FILES : SolersPermissionManager::PERMISSION_INSTALL_PLUGIN;
 			});
 }

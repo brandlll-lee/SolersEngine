@@ -50,6 +50,7 @@
 #include "editor/editor_log.h"
 #include "editor/editor_main_screen.h"
 #include "editor/editor_node.h"
+#include "core/debugger/debugger_marshalls.h"
 #include "editor/debugger/editor_debugger_node.h"
 #include "editor/debugger/script_editor_debugger.h"
 #include "editor/file_system/editor_file_system.h"
@@ -1499,6 +1500,23 @@ static Variant _solers_bounded_runtime_value(const Variant &p_value) {
 }
 
 void SolersObservationService::_runtime_debug_data(const String &p_message, const Array &p_data) {
+	// Game-side errors arrive on the same debugger channel as profiler data;
+	// decode them into a first-class event so runtime.observe callers see
+	// real failures without digging through the raw debug_data firehose.
+	if (p_message == "error") {
+		DebuggerMarshalls::OutputError output_error;
+		if (output_error.deserialize(p_data)) {
+			Dictionary event;
+			event["error"] = output_error.error;
+			event["details"] = output_error.error_descr;
+			event["source_file"] = output_error.source_file;
+			event["source_function"] = output_error.source_func;
+			event["source_line"] = output_error.source_line;
+			event["warning"] = output_error.warning;
+			_append_runtime_event(SNAME("error"), event, !output_error.warning);
+			return;
+		}
+	}
 	if (p_message == "performance:profile_names" && p_data.size() == 2) {
 		performance_monitor_names = p_data[0];
 		performance_monitor_types = p_data[1];
