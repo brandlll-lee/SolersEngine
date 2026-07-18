@@ -32,6 +32,7 @@
 
 #include "core/io/file_access.h"
 #include "core/io/json.h"
+#include "core/config/project_settings.h"
 #include "core/object/message_queue.h"
 #include "core/object/class_db.h"
 #include "core/os/os.h"
@@ -255,7 +256,7 @@ void SolersAgentSession::_register_session_tools() {
 
 	SolersToolCapability capability;
 	capability.permission = SolersPermissionManager::PERMISSION_OBSERVE;
-	capability.mutation_kind = "none";
+	capability.mutation_policy = SolersToolMutationPolicy::READ_ONLY;
 	tool_registry->register_tool(memnew(SolersFunctionTool(
 			"update_plan",
 			"Optionally replace the concise UI progress plan. This does not control tool access or task completion.",
@@ -289,6 +290,10 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 	Dictionary restored_plan;
 	String restored_outcome;
 	int restored_turn_id = 0;
+	uint64_t restored_authored_revision = 0;
+	uint64_t restored_runtime_epoch = 0;
+	uint64_t restored_observed_revision = 0;
+	Dictionary restored_reversal;
 	if (p_project_path.is_empty() || p_session_id.is_empty()) {
 		Dictionary empty;
 		empty["messages"] = restored;
@@ -315,8 +320,19 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 			continue;
 		}
 		restored_turn_id = MAX(restored_turn_id, (int)event.get("turn_id", 0));
+		restored_authored_revision = MAX(restored_authored_revision, (uint64_t)(int64_t)event.get("authored_revision", 0));
+		restored_runtime_epoch = MAX(restored_runtime_epoch, (uint64_t)(int64_t)event.get("runtime_epoch", 0));
+		restored_observed_revision = MAX(restored_observed_revision, (uint64_t)(int64_t)event.get("observed_revision", 0));
 
 		const String event_type = event.get("event_type", String());
+		if (event_type == "reversal_created") {
+			restored_reversal = event.get("reversal", Dictionary()).duplicate(true);
+			continue;
+		}
+		if (event_type == "reversal_cleared" || event_type == "reversal_consumed") {
+			restored_reversal.clear();
+			continue;
+		}
 		if (event_type == "tool_result") {
 			continue;
 		}
@@ -372,6 +388,10 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 	state["outcome"] = restored_outcome;
 	state["turn_id"] = restored_turn_id;
 	state["background_assets"] = restored_background_assets;
+	state["authored_revision"] = (int64_t)restored_authored_revision;
+	state["runtime_epoch"] = (int64_t)restored_runtime_epoch;
+	state["observed_revision"] = (int64_t)restored_observed_revision;
+	state["reversal"] = restored_reversal;
 	return state;
 }
 
@@ -454,15 +474,6 @@ void SolersAgentSession::_ensure_godot_log_audit(bool p_turn_active) {
 		worker_tool_audits.clear();
 		main_thread_tool_audit.clear();
 		attributable_tool_errors.clear();
-		authored_revision = 0;
-		runtime_epoch = 0;
-		scene_revision = 0;
-		geometry_revision = 0;
-		observed_revision = 0;
-		editor_capture_revision = 0;
-		camera_capture_revision = 0;
-		runtime_capture_revision = 0;
-		scene_validation_revision = 0;
 		pending_godot_diagnostics.clear();
 	}
 	godot_log_turn_active = p_turn_active;
@@ -724,6 +735,44 @@ String SolersAgentSession::_default_system_prompt() const {
 	return prompt;
 }
 
+String SolersAgentSession::_request_system_prompt(bool p_include_observation_delta) {
+	if (!tool_registry || !tool_registry->observation_service) {
+		return system_prompt;
+	}
+	SolersObservationService *observation = tool_registry->observation_service;
+	Dictionary context;
+	context["project"] = observation->get_project_info();
+	context["project_settings"] = observation->get_project_settings_summary();
+	context["authored_revision"] = (int64_t)authored_revision;
+	context["platform"] = OS::get_singleton()->get_name();
+	context["runtime"] = observation->get_runtime_status();
+	context["enabled_plugins"] = GLOBAL_GET("editor_plugins/enabled");
+	EditorInterface *editor_interface = EditorInterface::get_singleton();
+	Node *edited_root = editor_interface ? editor_interface->get_edited_scene_root() : nullptr;
+	context["current_scene"] = edited_root ? edited_root->get_scene_file_path() : String();
+
+	Dictionary selection = observation->get_selection(0, 0);
+	Array selected_nodes = selection.get("nodes", Array());
+	if (selected_nodes.size() > 16) {
+		selected_nodes.resize(16);
+		selection["truncated"] = true;
+	}
+	selection["nodes"] = selected_nodes;
+	context["selection"] = selection;
+
+	if (p_include_observation_delta) {
+		Dictionary observe_args;
+		observe_args["since_cursor"] = (int64_t)runtime_observation_cursor;
+		observe_args["max_events"] = 32;
+		const Dictionary runtime_observations = observation->observe_runtime(observe_args);
+		runtime_observation_cursor = (int64_t)runtime_observations.get("cursor", runtime_observation_cursor);
+		if (!Array(runtime_observations.get("events", Array())).is_empty()) {
+			context["runtime_events"] = runtime_observations.get("events", Array());
+		}
+	}
+	return system_prompt + "\n\nCurrent engine context (authoritative, bounded, and refreshed for this request):\n" + JSON::stringify(context, "", false, true);
+}
+
 Array SolersAgentSession::_collect_tools() const {
 	Array out;
 	if (!tool_registry) {
@@ -802,10 +851,10 @@ int SolersAgentSession::_active_model_input_support(const String &p_modality) co
 	return SolersModelsDev::input_modality_support(models_dev->get_model(catalog_provider, active_provider.get("model", String())), p_modality);
 }
 
-Dictionary SolersAgentSession::_build_request(const Array &p_messages) const {
+Dictionary SolersAgentSession::_build_request(const Array &p_messages, const String &p_request_system_prompt) const {
 	Dictionary request;
 	request["model"] = active_provider.get("model", String());
-	request["system"] = system_prompt;
+	request["system"] = p_request_system_prompt;
 	request["tools"] = _collect_tools();
 	request["messages"] = p_messages;
 	const String reasoning_effort = String(active_provider.get("reasoning_effort", String())).strip_edges();
@@ -922,18 +971,20 @@ Error SolersAgentSession::_dispatch_model_request(bool p_skip_compaction) {
 
 	const Dictionary profile = settings_service->resolve_provider_profile(provider_id, base_url);
 	const Array tools = _collect_tools();
-	if (!p_skip_compaction && context_manager && context_manager->should_compact(messages, system_prompt, tools, context_window)) {
+	String request_system_prompt = _request_system_prompt(false);
+	if (!p_skip_compaction && context_manager && context_manager->should_compact(messages, request_system_prompt, tools, context_window)) {
 		return _begin_compaction(false);
 	}
+	request_system_prompt = _request_system_prompt();
 
 	Array request_messages = messages;
 	if (context_manager) {
 		request_messages = context_manager->prepare_request(
 				messages,
-				system_prompt,
+				request_system_prompt,
 				tools);
 	}
-	Dictionary request = _build_request(request_messages);
+	Dictionary request = _build_request(request_messages, request_system_prompt);
 	current_provider_metadata.clear();
 	model_request_index++;
 	Dictionary request_event;
@@ -978,7 +1029,7 @@ Error SolersAgentSession::_begin_compaction(bool p_from_overflow) {
 	phase = PHASE_COMPACTING;
 	Dictionary payload;
 	payload["source"] = p_from_overflow ? "overflow" : "auto";
-	payload["tokens_before"] = context_manager->get_token_count_with_pending(messages, system_prompt, _collect_tools());
+	payload["tokens_before"] = context_manager->get_token_count_with_pending(messages, _request_system_prompt(false), _collect_tools());
 	_record("context_compaction_started", payload);
 	emit_signal(SNAME("compaction_started"));
 	return _dispatch_compaction_request();
@@ -1003,7 +1054,7 @@ Error SolersAgentSession::_dispatch_compaction_request() {
 	}
 	history = context_manager->prepare_request(
 			history,
-			system_prompt,
+			_request_system_prompt(false),
 			Array());
 	String instruction = SolersContextManager::COMPACTION_INSTRUCTION;
 	if (!current_plan.is_empty()) {
@@ -1011,7 +1062,7 @@ Error SolersAgentSession::_dispatch_compaction_request() {
 	}
 	history.push_back(SolersLLMMessage::user(instruction));
 
-	Dictionary request = _build_request(history);
+	Dictionary request = _build_request(history, _request_system_prompt(false));
 	request["tools"] = Array();
 	current_provider_metadata.clear();
 	_record("context_compaction_request_graph", _redacted_request_graph(request, profile));
@@ -1560,6 +1611,7 @@ void SolersAgentSession::_on_model_turn_complete() {
 				SolersToolContext context;
 				context.call_id = call.get("id", String());
 				context.session_id = session_id;
+				context.project_path = project_path;
 				context.authored_revision = authored_revision;
 				String failure_cache_key;
 				Dictionary normalized_args;
@@ -1997,6 +2049,7 @@ void SolersAgentSession::_execute_deferred_tool(uint64_t p_token) {
 	SolersToolContext context;
 	context.call_id = deferred_call_id;
 	context.session_id = session_id;
+	context.project_path = project_path;
 	context.authored_revision = authored_revision;
 	context.cancel_requested = &tool_cancel_requested;
 	if (!deferred_prepared_call) {
@@ -2406,9 +2459,23 @@ void SolersAgentSession::shutdown() {
 	_release_godot_log_audit();
 }
 
+void SolersAgentSession::_reset_session_derived_state() {
+	scene_revision = 0;
+	geometry_revision = 0;
+	editor_capture_revision = 0;
+	camera_capture_revision = 0;
+	runtime_capture_revision = 0;
+	scene_validation_revision = 0;
+	runtime_observation_cursor = 0;
+	render_artifacts.clear();
+	MutexLock lock(godot_log_mutex);
+	pending_godot_diagnostics.clear();
+}
+
 void SolersAgentSession::reset_conversation() {
 	abort();
 	_release_godot_log_audit();
+	_reset_session_derived_state();
 	messages.clear();
 	current_plan.clear();
 	last_outcome = String();
@@ -2419,12 +2486,17 @@ void SolersAgentSession::reset_conversation() {
 	pending_background_assets.clear();
 	delivered_background_assets.clear();
 	waiting_background_asset_ids.clear();
-	render_artifacts.clear();
 	background_resume_suppressed = false;
 	if (context_manager) {
 		context_manager->reset();
 	}
+	if (tool_registry) {
+		tool_registry->restore_session_reversal(session_id, Dictionary());
+	}
 	session_id = _make_session_id();
+	authored_revision = 0;
+	runtime_epoch = 0;
+	observed_revision = 0;
 	if (!project_path.is_empty()) {
 		_ensure_godot_log_audit(false);
 	}
@@ -2440,17 +2512,27 @@ void SolersAgentSession::set_project_path(const String &p_project_path) {
 void SolersAgentSession::set_session(const String &p_project_path, const String &p_session_id) {
 	abort();
 	_release_godot_log_audit();
+	const String previous_session_id = session_id;
 	project_path = p_project_path;
-	render_artifacts.clear();
+	_reset_session_derived_state();
 	task_deferred_tools.clear();
 	if (!p_session_id.is_empty()) {
 		session_id = p_session_id;
+	}
+	if (tool_registry && previous_session_id != session_id) {
+		tool_registry->restore_session_reversal(previous_session_id, Dictionary());
 	}
 	const Dictionary state = _read_transcript_state(project_path, session_id);
 	messages = state.get("messages", Array());
 	current_plan = state.get("plan", Dictionary());
 	last_outcome = state.get("outcome", String());
 	turn_id = state.get("turn_id", 0);
+	authored_revision = (int64_t)state.get("authored_revision", 0);
+	runtime_epoch = (int64_t)state.get("runtime_epoch", 0);
+	observed_revision = (int64_t)state.get("observed_revision", 0);
+	if (tool_registry) {
+		tool_registry->restore_session_reversal(session_id, state.get("reversal", Dictionary()));
+	}
 	pending_background_assets = state.get("background_assets", Array());
 	background_resume_suppressed = false;
 	delivered_background_assets.clear();

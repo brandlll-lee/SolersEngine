@@ -208,7 +208,7 @@ Solers Editor API 是工具内核与 Godot 编辑器之间的内部桥。最初�
 
 - `project.get_summary`
 - `project.get_file_tree`
-- `project.search_files`
+- `project.search`
 - `project.read_file`
 - `project.write_file`
 - `project.get_settings`

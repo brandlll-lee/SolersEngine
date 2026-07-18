@@ -169,11 +169,14 @@ class SolersAgentSession : public Object {
 	uint64_t camera_capture_revision = 0;
 	uint64_t runtime_capture_revision = 0;
 	uint64_t scene_validation_revision = 0;
+	uint64_t runtime_observation_cursor = 0;
 	Dictionary render_artifacts; // artifact kind -> versioned native-tool result
 	Array pending_godot_diagnostics;
 	bool background_resume_suppressed = false;
 
+	void _reset_session_derived_state();
 	String _default_system_prompt() const;
+	String _request_system_prompt(bool p_include_observation_delta = true);
 	String _make_session_id() const;
 	Dictionary _read_transcript_state(const String &p_project_path, const String &p_session_id) const;
 	void _stamp_transcript_event(Dictionary &r_event) const;
@@ -192,7 +195,7 @@ class SolersAgentSession : public Object {
 	Array _collect_tools() const;
 	bool _refresh_active_model_limits();
 	int _active_model_input_support(const String &p_modality) const;
-	Dictionary _build_request(const Array &p_messages) const;
+	Dictionary _build_request(const Array &p_messages, const String &p_request_system_prompt) const;
 	Dictionary _redacted_request_graph(const Dictionary &p_request, const Dictionary &p_profile) const;
 	Dictionary _provider_dispatch_error() const;
 	Error _dispatch_model_request(bool p_skip_compaction = false);
