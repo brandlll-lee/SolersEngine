@@ -14,6 +14,7 @@
 #include "core/templates/vector.h"
 #include "core/variant/dictionary.h"
 
+String solers_session_dir();
 void solers_trace_write(const String &p_where, const String &p_msg);
 void solers_transcript_write(const Dictionary &p_event);
 Vector<String> solers_transcript_read_snapshot();

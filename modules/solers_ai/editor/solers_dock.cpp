@@ -37,6 +37,7 @@
 #include "modules/solers_ai/core/solers_permission_manager.h"
 #include "modules/solers_ai/core/solers_settings_service.h"
 #include "modules/solers_ai/core/solers_tool_registry.h"
+#include "modules/solers_ai/core/solers_trace.h"
 #include "modules/solers_ai/editor/solers_chat_cells.h"
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
 #include "modules/solers_ai/llm/solers_llm_message.h"
@@ -218,7 +219,7 @@ static bool solers_is_supported_image_path(const String &p_path) {
 }
 
 static String solers_attachment_dir() {
-	return "user://solers_attachments";
+	return solers_session_dir().path_join("attachments");
 }
 
 static String solers_attachment_display_name(const Dictionary &p_attachment) {
@@ -1053,8 +1054,8 @@ bool SolersDock::_add_image_attachment_from_path(const String &p_path) {
 		return false;
 	}
 
-	Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_USERDATA);
-	if (dir.is_null() || dir->make_dir_recursive("solers_attachments") != OK) {
+	Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_RESOURCES);
+	if (dir.is_null() || dir->make_dir_recursive(solers_attachment_dir()) != OK) {
 		return false;
 	}
 	const String id = vformat("img_%s_%d", itos((int64_t)Time::get_singleton()->get_ticks_usec()), pending_attachments.size() + 1);
@@ -1089,8 +1090,8 @@ bool SolersDock::_add_image_attachment_from_clipboard() {
 	if (image.is_null() || image->is_empty()) {
 		return false;
 	}
-	Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_USERDATA);
-	if (dir.is_null() || dir->make_dir_recursive("solers_attachments") != OK) {
+	Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_RESOURCES);
+	if (dir.is_null() || dir->make_dir_recursive(solers_attachment_dir()) != OK) {
 		return false;
 	}
 	const String id = vformat("img_%s_%d", itos((int64_t)Time::get_singleton()->get_ticks_usec()), pending_attachments.size() + 1);

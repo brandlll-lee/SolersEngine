@@ -12,6 +12,7 @@
 
 #include "core/crypto/crypto_core.h"
 #include "core/io/file_access.h"
+#include "core/templates/hash_map.h"
 
 Dictionary SolersLLMMessage::encode_image_attachment(const Dictionary &p_attachment) {
 	const String path = String(p_attachment.get("local_path", String())).strip_edges();
@@ -20,53 +21,31 @@ Dictionary SolersLLMMessage::encode_image_attachment(const Dictionary &p_attachm
 		return Dictionary();
 	}
 
+	// Attachments are immutable evidence, so each file is encoded once per
+	// process. A failed load is cached too: the protocols already hand the
+	// model an explicit missing-image marker, so re-reading the same dead
+	// path on every request would only repeat the log noise.
+	static HashMap<String, Dictionary> encoded_cache;
+	if (const Dictionary *cached = encoded_cache.getptr(path)) {
+		return *cached;
+	}
+
+	Dictionary encoded;
 	Error error = OK;
 	const PackedByteArray bytes = FileAccess::get_file_as_bytes(path, &error);
 	if (error != OK || bytes.is_empty()) {
 		// Evidence must never vanish silently: captures are immutable, so a
 		// missing file indicates a real bug worth surfacing.
 		ERR_PRINT(vformat("Solers: image attachment '%s' is missing on disk: %s", String(p_attachment.get("id", String())), path));
-		return Dictionary();
+	} else {
+		const String data = CryptoCore::b64_encode_str(bytes.ptr(), bytes.size());
+		encoded["mime_type"] = mime_type;
+		encoded["base64"] = data;
+		encoded["data_uri"] = vformat("data:%s;base64,%s", mime_type, data);
 	}
-
-	const String data = CryptoCore::b64_encode_str(bytes.ptr(), bytes.size());
-	Dictionary encoded;
-	encoded["mime_type"] = mime_type;
-	encoded["base64"] = data;
-	encoded["data_uri"] = vformat("data:%s;base64,%s", mime_type, data);
+	encoded_cache.insert(path, encoded);
 	return encoded;
 }
-/**************************************************************************/
-/*  solers_llm_message.cpp                                                */
-/**************************************************************************/
-/*                         This file is part of:                          */
-/*                             GODOT ENGINE                               */
-/*                        https://godotengine.org                         */
-/**************************************************************************/
-/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
-/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
-/*                                                                        */
-/* Permission is hereby granted, free of charge, to any person obtaining  */
-/* a copy of this software and associated documentation files (the        */
-/* "Software"), to deal in the Software without restriction, including    */
-/* without limitation the rights to use, copy, modify, merge, publish,    */
-/* distribute, sublicense, and/or sell copies of the Software, and to     */
-/* permit persons to whom the Software is furnished to do so, subject to  */
-/* the following conditions:                                              */
-/*                                                                        */
-/* The above copyright notice and this permission notice shall be         */
-/* included in all copies or substantial portions of the Software.        */
-/*                                                                        */
-/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
-/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
-/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
-/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
-/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
-/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
-/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
-/**************************************************************************/
-
-#include "solers_llm_message.h"
 
 const char *SolersLLMRole::SYSTEM = "system";
 const char *SolersLLMRole::USER = "user";

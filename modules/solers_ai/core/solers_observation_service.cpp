@@ -141,6 +141,25 @@ static Camera3D *_solers_find_first_camera(Node *p_node) {
 	return nullptr;
 }
 
+// A failed node lookup should navigate, not dead-end: report where paths are
+// anchored and what actually exists so one error is enough to self-correct.
+static String _solers_scene_path_hint(Node *p_root) {
+	PackedStringArray children;
+	for (int i = 0; i < p_root->get_child_count() && i < 16; i++) {
+		children.push_back(String(p_root->get_child(i)->get_name()));
+	}
+	return vformat("Paths are relative to the edited scene root '%s' (top-level children: %s).", String(p_root->get_name()), children.is_empty() ? String("none") : String(", ").join(children));
+}
+
+static void _solers_collect_camera_paths(Node *p_node, Node *p_root, PackedStringArray &r_paths) {
+	if (Object::cast_to<Camera3D>(p_node) && r_paths.size() < 16) {
+		r_paths.push_back(String(p_root->get_path_to(p_node)));
+	}
+	for (int i = 0; i < p_node->get_child_count(); i++) {
+		_solers_collect_camera_paths(p_node->get_child(i), p_root, r_paths);
+	}
+}
+
 // The editor draws lazily; queue one full redraw so a frame-gated capture is
 // guaranteed to see a freshly rendered frame instead of timing out while the
 // editor idles.
@@ -562,7 +581,9 @@ Dictionary SolersObservationService::_begin_scene_view_capture(const String &p_t
 			scene_camera = Object::cast_to<Camera3D>(edited_root->get_node_or_null(NodePath(node_path)));
 			if (!scene_camera) {
 				memdelete(viewport);
-				return _capture_error("CAMERA_NOT_FOUND", vformat("No Camera3D at node_path: %s", node_path), true);
+				PackedStringArray camera_paths;
+				_solers_collect_camera_paths(edited_root, edited_root, camera_paths);
+				return _capture_error("CAMERA_NOT_FOUND", vformat("No Camera3D at node_path: %s. %s Camera3D nodes present: %s.", node_path, _solers_scene_path_hint(edited_root), camera_paths.is_empty() ? String("none") : String(", ").join(camera_paths)), true);
 			}
 		} else {
 			scene_camera = _solers_find_first_camera(edited_root);
@@ -617,7 +638,7 @@ Dictionary SolersObservationService::_begin_scene_view_capture(const String &p_t
 				Node *focus = edited_root->get_node_or_null(NodePath(focus_path));
 				if (!focus) {
 					memdelete(viewport);
-					return _capture_error("FOCUS_NODE_NOT_FOUND", vformat("No edited-scene node at focus_paths[%d]: %s", i, focus_path), true);
+					return _capture_error("FOCUS_NODE_NOT_FOUND", vformat("No edited-scene node at focus_paths[%d]: %s. %s", i, focus_path, _solers_scene_path_hint(edited_root)), true);
 				}
 				_solers_accumulate_world_aabb(focus, bounds, found);
 			}

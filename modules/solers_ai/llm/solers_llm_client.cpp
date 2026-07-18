@@ -17,6 +17,7 @@
 #include "core/os/os.h"
 #include "core/os/time.h"
 #include "modules/solers_ai/core/solers_codex_auth.h"
+#include "modules/solers_ai/core/solers_trace.h"
 #include "modules/solers_ai/llm/solers_llm_message.h"
 
 // DNS, connect, headers, and streamed chunks share one no-progress budget.
@@ -237,7 +238,7 @@ Error SolersLLMClient::begin(const Dictionary &p_request, const Dictionary &p_pr
 
 	const Dictionary body = active_protocol->build_request_body(p_request);
 	request_body = JSON::stringify(body, "", false, true);
-	trace_path = "user://solers_ai_provider_trace.jsonl";
+	trace_path = solers_session_dir().path_join("provider_trace.jsonl");
 	Dictionary trace_payload;
 	trace_payload["host"] = host;
 	trace_payload["path"] = request_path;

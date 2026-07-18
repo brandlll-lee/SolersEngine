@@ -10,6 +10,7 @@
 
 #include "solers_trace.h"
 
+#include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/json.h"
 #include "core/os/mutex.h"
@@ -19,13 +20,29 @@
 static Mutex solers_transcript_mutex;
 static thread_local bool solers_transcript_io_active = false;
 
+// Session artifacts (attachments, transcript, traces) live inside the project
+// at res://.solers/ next to plugins.lock.json. user:// is resolved from
+// application/config/name, so a project rename silently redirects it and
+// strands every artifact written before the rename; the project directory
+// itself is the only stable anchor. Dot-directories are already invisible to
+// the editor filesystem scanner and importers.
+String solers_session_dir() {
+	static bool ensured = false;
+	if (!ensured) {
+		Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_RESOURCES);
+		ensured = dir.is_valid() && dir->make_dir_recursive(".solers") == OK;
+	}
+	return "res://.solers";
+}
+
 void solers_trace_write(const String &p_where, const String &p_msg) {
 	const String line = vformat("[SOLERS] %s | %s", p_where, p_msg);
 	print_line(line);
 
-	Ref<FileAccess> f = FileAccess::open("user://solers_ai_trace.log", FileAccess::READ_WRITE);
+	const String trace_path = solers_session_dir().path_join("trace.log");
+	Ref<FileAccess> f = FileAccess::open(trace_path, FileAccess::READ_WRITE);
 	if (f.is_null()) {
-		f = FileAccess::open("user://solers_ai_trace.log", FileAccess::WRITE);
+		f = FileAccess::open(trace_path, FileAccess::WRITE);
 	}
 	if (f.is_valid()) {
 		f->seek_end();
@@ -45,9 +62,10 @@ void solers_transcript_write(const Dictionary &p_event) {
 		MutexLock lock(solers_transcript_mutex);
 		Dictionary event = p_event.duplicate(true);
 		event["ticks_msec"] = (int64_t)OS::get_singleton()->get_ticks_msec();
-		Ref<FileAccess> file = FileAccess::open("user://solers_ai_transcript.jsonl", FileAccess::READ_WRITE);
+		const String transcript_path = solers_session_dir().path_join("transcript.jsonl");
+		Ref<FileAccess> file = FileAccess::open(transcript_path, FileAccess::READ_WRITE);
 		if (file.is_null()) {
-			file = FileAccess::open("user://solers_ai_transcript.jsonl", FileAccess::WRITE);
+			file = FileAccess::open(transcript_path, FileAccess::WRITE);
 		}
 		if (file.is_valid()) {
 			file->seek_end();
@@ -66,7 +84,7 @@ Vector<String> solers_transcript_read_snapshot() {
 	solers_transcript_io_active = true;
 	{
 		MutexLock lock(solers_transcript_mutex);
-		Ref<FileAccess> file = FileAccess::open("user://solers_ai_transcript.jsonl", FileAccess::READ);
+		Ref<FileAccess> file = FileAccess::open(solers_session_dir().path_join("transcript.jsonl"), FileAccess::READ);
 		if (file.is_valid()) {
 			while (!file->eof_reached()) {
 				lines.push_back(file->get_line());
