@@ -177,7 +177,12 @@ class SolersAgentSession : public Object {
 	uint64_t scene_validation_revision = 0;
 	uint64_t runtime_observation_cursor = 0;
 	Dictionary render_artifacts; // artifact kind -> versioned native-tool result
+	// Aggregated by (severity, message, call_id) at ingestion: a repeated
+	// engine error is one entry with a count, so a per-frame error loop can
+	// never flood the transcript or the model boundary.
 	Array pending_godot_diagnostics;
+	HashMap<String, int> pending_godot_diagnostic_index; // group key -> index into pending_godot_diagnostics
+	int pending_godot_diagnostics_overflow = 0;
 	bool background_resume_suppressed = false;
 
 	void _reset_session_derived_state();

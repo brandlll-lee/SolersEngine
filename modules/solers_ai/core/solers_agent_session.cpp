@@ -477,6 +477,8 @@ void SolersAgentSession::_ensure_godot_log_audit(bool p_turn_active) {
 		deferred_window_audit.clear();
 		attributable_tool_errors.clear();
 		pending_godot_diagnostics.clear();
+		pending_godot_diagnostic_index.clear();
+		pending_godot_diagnostics_overflow = 0;
 	}
 	godot_log_turn_active = p_turn_active;
 	Dictionary baseline;
@@ -514,6 +516,31 @@ void SolersAgentSession::_release_godot_log_audit() {
 	}
 }
 
+// Bounds on unique aggregated diagnostic messages: repeats fold into counts,
+// so these only cap distinct message texts per call / per model boundary.
+static constexpr int MAX_UNIQUE_DIAGNOSTICS_PER_CALL = 64;
+static constexpr int MAX_UNIQUE_PENDING_DIAGNOSTICS = 256;
+
+// Fold one occurrence into an aggregated group array: identical
+// (severity, message, call_id) entries become a single record carrying a
+// count and first/last timestamps. Returns true when the group is new.
+static bool _solers_accumulate_diagnostic(Array &r_groups, const Dictionary &p_event, int p_group_index) {
+	if (p_group_index >= 0) {
+		Dictionary group = r_groups[p_group_index];
+		group["count"] = (int)group.get("count", 1) + 1;
+		group["last_ticks_msec"] = p_event.get("ticks_msec", 0);
+		r_groups[p_group_index] = group;
+		return false;
+	}
+	Dictionary group = p_event.duplicate();
+	group["count"] = 1;
+	group["first_ticks_msec"] = p_event.get("ticks_msec", 0);
+	group["last_ticks_msec"] = p_event.get("ticks_msec", 0);
+	group.erase("ticks_msec");
+	r_groups.push_back(group);
+	return true;
+}
+
 void SolersAgentSession::_on_godot_log_message(const String &p_message, int p_type, int64_t p_source_thread) {
 	if (p_type != EditorLog::MSG_TYPE_ERROR && p_type != EditorLog::MSG_TYPE_WARNING) {
 		return;
@@ -526,7 +553,12 @@ void SolersAgentSession::_on_godot_log_message(const String &p_message, int p_ty
 	event["turn_active"] = godot_log_turn_active;
 	event["ticks_msec"] = (int64_t)OS::get_singleton()->get_ticks_msec();
 	event["thread_id"] = p_source_thread;
-	if (godot_log_turn_active) {
+	if (!godot_log_turn_active) {
+		_write_transcript_event("godot_log", event);
+		return;
+	}
+	bool new_group = false;
+	{
 		MutexLock lock(godot_log_mutex);
 		const Dictionary *worker_audit = worker_tool_audits.getptr((uint64_t)p_source_thread);
 		Dictionary active_audit = worker_audit ? *worker_audit : main_thread_tool_audit;
@@ -537,31 +569,53 @@ void SolersAgentSession::_on_godot_log_message(const String &p_message, int p_ty
 			active_audit = deferred_window_audit;
 			event["window"] = "deferred";
 		}
+		const String call_id = active_audit.get("call_id", String());
 		if (!active_audit.is_empty()) {
-			event["call_id"] = active_audit.get("call_id", String());
+			event["call_id"] = call_id;
 			event["tool"] = active_audit.get("tool", String());
 		}
 		if (is_error) {
 			godot_log_error_count++;
-			if (event.has("tool")) {
-				const String call_id = event.get("call_id", String());
-				if (!call_id.is_empty()) {
-					Dictionary scoped = attributable_tool_errors.get(call_id, Dictionary());
-					Array events = scoped.get("events", Array());
-					events.push_back(event);
-					scoped["call_id"] = call_id;
-					scoped["tool"] = event.get("tool", String());
-					scoped["resource_accesses"] = active_audit.get("resource_accesses", Array());
-					scoped["events"] = events;
-					attributable_tool_errors[call_id] = scoped;
+			if (event.has("tool") && !call_id.is_empty()) {
+				Dictionary scoped = attributable_tool_errors.get(call_id, Dictionary());
+				Array events = scoped.get("events", Array());
+				int group_index = -1;
+				for (int i = 0; i < events.size(); i++) {
+					if (Dictionary(events[i]).get("message", String()) == p_message) {
+						group_index = i;
+						break;
+					}
 				}
+				if (group_index >= 0 || events.size() < MAX_UNIQUE_DIAGNOSTICS_PER_CALL) {
+					_solers_accumulate_diagnostic(events, event, group_index);
+				} else {
+					scoped["suppressed_unique_messages"] = (int)scoped.get("suppressed_unique_messages", 0) + 1;
+				}
+				scoped["call_id"] = call_id;
+				scoped["tool"] = event.get("tool", String());
+				scoped["resource_accesses"] = active_audit.get("resource_accesses", Array());
+				scoped["events"] = events;
+				attributable_tool_errors[call_id] = scoped;
 			}
 		} else {
 			godot_log_warning_count++;
 		}
-		pending_godot_diagnostics.push_back(event);
+		const String group_key = String(event.get("severity", String())) + "\n" + call_id + "\n" + p_message;
+		const int *existing = pending_godot_diagnostic_index.getptr(group_key);
+		if (existing) {
+			_solers_accumulate_diagnostic(pending_godot_diagnostics, event, *existing);
+		} else if (pending_godot_diagnostic_index.size() < MAX_UNIQUE_PENDING_DIAGNOSTICS) {
+			new_group = _solers_accumulate_diagnostic(pending_godot_diagnostics, event, -1);
+			pending_godot_diagnostic_index[group_key] = pending_godot_diagnostics.size() - 1;
+		} else {
+			pending_godot_diagnostics_overflow++;
+		}
 	}
-	_write_transcript_event("godot_log", event);
+	// One transcript record per unique message per boundary; occurrence
+	// counts arrive with godot_diagnostics_delivered.
+	if (new_group) {
+		_write_transcript_event("godot_log", event);
+	}
 }
 
 void SolersAgentSession::_begin_main_thread_tool_audit() {
@@ -622,6 +676,11 @@ Dictionary SolersAgentSession::_consume_attributable_tool_error(const String &p_
 				}
 			}
 			pending_godot_diagnostics = remaining;
+			pending_godot_diagnostic_index.clear();
+			for (int i = 0; i < pending_godot_diagnostics.size(); i++) {
+				const Dictionary event = pending_godot_diagnostics[i];
+				pending_godot_diagnostic_index[String(event.get("severity", String())) + "\n" + String(event.get("call_id", String())) + "\n" + String(event.get("message", String()))] = i;
+			}
 		}
 	}
 	const Array events = scoped.get("events", Array());
@@ -629,20 +688,25 @@ Dictionary SolersAgentSession::_consume_attributable_tool_error(const String &p_
 		return Dictionary();
 	}
 	bool handler_window = false;
+	int total_occurrences = 0;
 	for (int i = 0; i < events.size(); i++) {
-		if (String(Dictionary(events[i]).get("window", String())) != "deferred") {
+		const Dictionary event = events[i];
+		total_occurrences += (int)event.get("count", 1);
+		if (String(event.get("window", String())) != "deferred") {
 			handler_window = true;
-			break;
 		}
 	}
 	const String first_message = Dictionary(events[0]).get("message", "Godot reported an error while the native tool handler was executing.");
 	Dictionary error;
 	error["code"] = "GODOT_TOOL_ERROR";
-	error["message"] = events.size() == 1 ? first_message : vformat("Godot reported %d errors while this tool call was executing. First error: %s", events.size(), first_message);
+	error["message"] = total_occurrences == 1 ? first_message : vformat("Godot reported %d errors (%d distinct messages) while this tool call was executing. First error: %s", total_occurrences, events.size(), first_message);
 	error["recoverable"] = true;
 	error["source"] = "godot_editor";
 	error["handler_window"] = handler_window;
 	error["events"] = events;
+	if (scoped.has("suppressed_unique_messages")) {
+		error["suppressed_unique_messages"] = scoped["suppressed_unique_messages"];
+	}
 	return error;
 }
 
@@ -653,49 +717,28 @@ Dictionary SolersAgentSession::_take_godot_diagnostics() {
 		if (pending_godot_diagnostics.is_empty()) {
 			return diagnostics;
 		}
-		Array grouped;
+		// Entries are already aggregated at ingestion; counts carry the
+		// occurrence totals.
 		int errors = 0;
 		int warnings = 0;
 		for (int i = 0; i < pending_godot_diagnostics.size(); i++) {
 			const Dictionary event = pending_godot_diagnostics[i];
-			const String severity = event.get("severity", String());
-			if (severity == "error") {
-				errors++;
+			const int count = event.get("count", 1);
+			if (String(event.get("severity", String())) == "error") {
+				errors += count;
 			} else {
-				warnings++;
-			}
-			int match = -1;
-			for (int j = 0; j < grouped.size(); j++) {
-				const Dictionary candidate = grouped[j];
-				if (candidate.get("severity", String()) == severity && candidate.get("message", String()) == event.get("message", String()) &&
-						candidate.get("call_id", String()) == event.get("call_id", String()) && candidate.get("tool", String()) == event.get("tool", String())) {
-					match = j;
-					break;
-				}
-			}
-			if (match >= 0) {
-				Dictionary candidate = grouped[match];
-				candidate["count"] = (int)candidate.get("count", 1) + 1;
-				candidate["last_ticks_msec"] = event.get("ticks_msec", 0);
-				grouped[match] = candidate;
-			} else {
-				Dictionary candidate;
-				candidate["severity"] = severity;
-				candidate["message"] = event.get("message", String());
-				candidate["count"] = 1;
-				candidate["first_ticks_msec"] = event.get("ticks_msec", 0);
-				candidate["last_ticks_msec"] = event.get("ticks_msec", 0);
-				if (event.has("call_id")) {
-					candidate["call_id"] = event["call_id"];
-					candidate["tool"] = event.get("tool", String());
-				}
-				grouped.push_back(candidate);
+				warnings += count;
 			}
 		}
 		diagnostics["errors"] = errors;
 		diagnostics["warnings"] = warnings;
-		diagnostics["events"] = grouped;
+		diagnostics["events"] = pending_godot_diagnostics.duplicate();
+		if (pending_godot_diagnostics_overflow > 0) {
+			diagnostics["suppressed_unique_messages"] = pending_godot_diagnostics_overflow;
+		}
 		pending_godot_diagnostics.clear();
+		pending_godot_diagnostic_index.clear();
+		pending_godot_diagnostics_overflow = 0;
 	}
 	_write_transcript_event("godot_diagnostics_delivered", diagnostics);
 	return diagnostics;
@@ -2363,7 +2406,14 @@ void SolersAgentSession::_poll_tool_executing() {
 		Dictionary evidence_data = result.get("data", Dictionary());
 		evidence_data["godot_errors"] = godot_error.get("events", Array());
 		result["data"] = evidence_data;
-		if ((bool)result.get("ok", false) && (bool)godot_error.get("handler_window", false)) {
+		// A FILE_CHECKPOINT mutation has already committed its write when the
+		// handler reports success; content diagnostics (parser errors from the
+		// reloaded script) are part of that result's own contract, so engine
+		// events stay attached as evidence without contradicting the commit.
+		// Reporting the write as failed would desynchronize the model from the
+		// real file state and poison every follow-up edit.
+		const bool checkpointed_commit = deferred_prepared_call && deferred_prepared_call->mutation_policy == SolersToolMutationPolicy::FILE_CHECKPOINT;
+		if ((bool)result.get("ok", false) && (bool)godot_error.get("handler_window", false) && !checkpointed_commit) {
 			// Errors reported while the handler was on an audited stack make a
 			// success verdict false evidence; deferred-window events stay
 			// attached as evidence without overriding the handler's verdict.
@@ -2546,9 +2596,6 @@ void SolersAgentSession::_deliver_tool_result(const String &p_id, const String &
 			JSON::stringify(result, "", false, true),
 			SolersContextManager::tool_result_token_budget(context_window));
 	Dictionary message = SolersLLMMessage::tool_result(p_id, p_model_name, content, result.get("attachments", Array()));
-	if (tool_registry && tool_registry->is_result_ephemeral(StringName(p_canonical_name))) {
-		message["retention"] = "ephemeral";
-	}
 	messages.push_back(message);
 
 	if (!(bool)result.get("ok", false)) {
@@ -2652,6 +2699,8 @@ void SolersAgentSession::_reset_session_derived_state() {
 	render_artifacts.clear();
 	MutexLock lock(godot_log_mutex);
 	pending_godot_diagnostics.clear();
+	pending_godot_diagnostic_index.clear();
+	pending_godot_diagnostics_overflow = 0;
 }
 
 void SolersAgentSession::reset_conversation() {
@@ -2835,7 +2884,6 @@ Dictionary SolersAgentSession::get_status() const {
 	status["geometry_revision"] = (int64_t)geometry_revision;
 	if (context_manager) {
 		status["context_tokens"] = context_manager->get_last_estimated_tokens();
-		status["micro_compaction_count"] = context_manager->get_micro_compaction_count();
 		status["compaction_count"] = context_manager->get_compaction_count();
 	}
 	return status;
