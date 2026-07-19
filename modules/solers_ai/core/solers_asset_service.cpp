@@ -3853,20 +3853,25 @@ Dictionary SolersAssetService::catalog_acquire(const Dictionary &p_args, const S
 	const String source_asset_id = String(p_args.get("asset_id", String())).strip_edges();
 	const String variant = String(p_args.get("variant", String())).strip_edges();
 	const String kind = String(p_args.get("kind", String())).strip_edges().to_lower();
-	const String source_version = String(p_args.get("source_version", String())).strip_edges();
+	const String pinned_source_version = String(p_args.get("source_version", String())).strip_edges();
 	if ((provider != "ambientcg" && provider != "polyhaven") || (kind != "material" && kind != "hdri" && kind != "3d") || source_asset_id.is_empty() || variant.is_empty() || source_asset_id.contains("/") || source_asset_id.contains("\\") || source_asset_id.contains("..") || variant.contains("/") || variant.contains("\\") || variant.contains("..")) {
 		return _error("INVALID_ARGUMENT", "Catalog acquire requires official provider, kind, asset_id, and variant identifiers.");
 	}
-	if (source_version.is_empty()) {
-		return _error("INVALID_ARGUMENT", "Catalog acquire requires the exact source_version returned by asset.catalog.inspect.");
-	}
+	// The service's own cached inspection is the authority for the current
+	// source_version; the caller never has to transcribe it. A supplied value
+	// only acts as an explicit pin and must match the cached inspection.
 	String official_variant;
+	String source_version;
 	{
 		MutexLock lock(catalog_cache_mutex);
 		const Dictionary inspected = catalog_inspections.get(provider + "|" + kind + "|" + source_asset_id.to_lower(), Dictionary());
 		official_variant = match_catalog_variant_id(inspected.get("variants", Array()), variant);
-		if (inspected.is_empty() || String(inspected.get("source_version", String())) != source_version || official_variant.is_empty()) {
-			return _error("CATALOG_INSPECTION_REQUIRED", "Acquire requires an exact current source_version and variants[].id from asset.catalog.inspect; do not guess a format.");
+		if (inspected.is_empty() || official_variant.is_empty()) {
+			return _error("CATALOG_INSPECTION_REQUIRED", "Acquire requires a prior asset.catalog.inspect for this asset and an exact variants[].id from it; do not guess a format.");
+		}
+		source_version = inspected.get("source_version", String());
+		if (!pinned_source_version.is_empty() && pinned_source_version != source_version) {
+			return _error("CATALOG_INSPECTION_REQUIRED", vformat("The pinned source_version no longer matches the provider's current version (%s). Re-run asset.catalog.inspect or omit source_version to use the current one.", source_version));
 		}
 	}
 	const PackedStringArray dirs = DirAccess::get_directories_at(_asset_root());
@@ -4413,6 +4418,14 @@ Dictionary SolersAssetService::import_to_project(const Dictionary &p_args) {
 			return _error("INVALID_ARGUMENT", "max_triangles must be a non-negative integer; 0 disables the topology budget.");
 		}
 		max_triangles = (int64_t)declared_budget;
+		// The project setting is the authoritative ceiling for declared
+		// budgets. A larger density is a deliberate project decision that has
+		// to be made where it is visible and audited — in project settings —
+		// not by inflating a tool argument mid-task.
+		const int64_t budget_ceiling = ProjectSettings::get_singleton()->get_setting("solers/ai_assets/import/max_source_triangles", 2000000);
+		if (asset_kind == "3d" && budget_ceiling > 0 && (max_triangles == 0 || max_triangles > budget_ceiling)) {
+			return _error("BUDGET_CEILING_EXCEEDED", vformat("Declared max_triangles %d exceeds the project ceiling of %d (solers/ai_assets/import/max_source_triangles). Import a variant that fits, or raise that project setting through project.edit settings first if the project can truly afford the density.", max_triangles, budget_ceiling));
+		}
 	}
 	const Dictionary generation_options = manifest.get("provider_options", Dictionary());
 	int64_t remesh_triangle_target = 0;
@@ -4473,11 +4486,28 @@ Dictionary SolersAssetService::import_to_project(const Dictionary &p_args) {
 			source_geometry.push_back(entry);
 		}
 		if (source_triangle_count > max_triangles) {
-			Dictionary error = _error("TOPOLOGY_BUDGET_EXCEEDED", vformat("The asset's source geometry contains %d triangles, exceeding the import budget of %d (%s). Acquire a lower-poly variant, remesh it with asset.run_operation, or declare a larger max_triangles if the project can afford it.", source_triangle_count, max_triangles, triangle_budget_source));
+			// Remediation is assembled from this asset's actual capabilities so
+			// the model is never pointed at an operation its provider cannot run.
+			bool remesh_available = false;
+			const Array operation_defs = _solers_operation_defs(String(manifest.get("provider", String())).to_lower());
+			for (int i = 0; i < operation_defs.size(); i++) {
+				const Dictionary operation = operation_defs[i];
+				if (String(operation.get("operation_id", String())) != "remesh") {
+					continue;
+				}
+				String availability_reason;
+				remesh_available = _solers_manifest_matches_operation(manifest, operation, availability_reason);
+				break;
+			}
+			const String remediation = remesh_available
+					? String("Remesh it with asset.run_operation (operation_id=\"remesh\") or acquire a lower-poly variant.")
+					: String("This asset's provider does not offer a remesh operation; acquire a lower-poly variant instead.");
+			Dictionary error = _error("TOPOLOGY_BUDGET_EXCEEDED", vformat("The asset's source geometry contains %d triangles, exceeding the import budget of %d (%s). %s", source_triangle_count, max_triangles, triangle_budget_source, remediation));
 			Dictionary data;
 			data["triangle_count"] = source_triangle_count;
 			data["max_triangles"] = max_triangles;
 			data["triangle_budget_source"] = triangle_budget_source;
+			data["remesh_available"] = remesh_available;
 			data["files"] = source_geometry;
 			error["data"] = data;
 			return error;
@@ -4498,7 +4528,10 @@ Dictionary SolersAssetService::import_to_project(const Dictionary &p_args) {
 		if (!src.begins_with(source_root + "/")) {
 			return _error("INVALID_ASSET_SOURCE", "Asset manifest contains a file outside its source directory.", false);
 		}
-		const String dst = target_dir.path_join(source_root.path_to_file(src));
+		// path_to_file() yields "./name" for files at the source root; without
+		// simplify_path() the copied destination keeps a literal "/./" segment,
+		// which EditorFileSystem's tree lookup can never match.
+		const String dst = target_dir.path_join(source_root.path_to_file(src)).simplify_path();
 		imported.push_back(dst);
 		if (source_entrypoint_set.has(src)) {
 			entrypoints.push_back(dst);

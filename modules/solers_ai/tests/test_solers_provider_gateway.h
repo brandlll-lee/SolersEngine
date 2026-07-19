@@ -2849,17 +2849,18 @@ TEST_CASE("[SolersToolRegistry] transcript audit preserves full redacted tool ar
 	CHECK(Array(audit.get("operations", Array())).size() == 40);
 }
 
-TEST_CASE("[SolersAssetService] Poly Haven acquisition binds the searched catalog version") {
+TEST_CASE("[SolersAssetService] Poly Haven acquisition binds the inspected catalog state") {
 	SolersAssetService assets;
 	Dictionary args;
 	args["provider"] = "polyhaven";
 	args["kind"] = "3d";
 	args["asset_id"] = "synthetic_model";
 	args["variant"] = "2k-gltf";
+	// Without a cached inspection the service refuses to acquire: the cached
+	// inspect result is the version authority, never a caller-echoed hash.
 	const Dictionary result = assets.catalog_acquire(args, String());
 	CHECK_FALSE((bool)result.get("ok", true));
-	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "INVALID_ARGUMENT");
-	CHECK(String(Dictionary(result.get("error", Dictionary())).get("message", String())).contains("source_version"));
+	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "CATALOG_INSPECTION_REQUIRED");
 }
 
 TEST_CASE("[SolersAssetService] Poly Haven variants come from official file metadata") {
