@@ -57,6 +57,7 @@
 #include "editor/run/editor_run_bar.h"
 #include "editor/run/game_view_plugin.h"
 #include "editor/scene/3d/node_3d_editor_plugin.h"
+#include "modules/solers_ai/core/solers_resource_service.h"
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/node_3d.h"
 #include "scene/3d/visual_instance_3d.h"
@@ -74,10 +75,12 @@ static constexpr int SOLERS_RUNTIME_EVENT_LIMIT = 512;
 static constexpr int SOLERS_CAPTURE_MAX_DIMENSION = 1280;
 
 static Array _solers_vector3_array(const Vector3 &p_vector) {
+	// Snapped to 1e-4: full double precision multiplies the serialized tree
+	// size several times over without carrying placement information.
 	Array values;
-	values.push_back(p_vector.x);
-	values.push_back(p_vector.y);
-	values.push_back(p_vector.z);
+	values.push_back(Math::snapped(p_vector.x, (real_t)0.0001));
+	values.push_back(Math::snapped(p_vector.y, (real_t)0.0001));
+	values.push_back(Math::snapped(p_vector.z, (real_t)0.0001));
 	return values;
 }
 
@@ -888,12 +891,13 @@ void SolersObservationService::_collect_project_files(const String &p_dir, const
 	}
 }
 
-Dictionary SolersObservationService::_serialize_node(Node *p_node, Node *p_edited_root, int p_depth, int p_max_depth, int p_max_children_per_node) const {
+Dictionary SolersObservationService::_serialize_node(Node *p_node, Node *p_edited_root, int p_depth, int p_max_depth, int p_max_children_per_node, int &r_node_budget) const {
 	Dictionary node_data;
 	if (!p_node) {
 		node_data["valid"] = false;
 		return node_data;
 	}
+	r_node_budget--;
 
 	node_data["valid"] = true;
 	node_data["name"] = p_node->get_name();
@@ -981,12 +985,20 @@ Dictionary SolersObservationService::_serialize_node(Node *p_node, Node *p_edite
 	const int child_count = p_node->get_child_count();
 	const int max_children = MAX(0, p_max_children_per_node);
 	const int child_limit = MIN(child_count, max_children);
+	int serialized_children = 0;
 	for (int i = 0; i < child_limit; i++) {
-		children.push_back(_serialize_node(p_node->get_child(i), p_edited_root, p_depth + 1, p_max_depth, p_max_children_per_node));
+		if (r_node_budget <= 0) {
+			break;
+		}
+		children.push_back(_serialize_node(p_node->get_child(i), p_edited_root, p_depth + 1, p_max_depth, p_max_children_per_node, r_node_budget));
+		serialized_children++;
 	}
 	node_data["children"] = children;
-	if (child_count > child_limit) {
-		node_data["children_truncated_count"] = child_count - child_limit;
+	if (child_count > serialized_children) {
+		node_data["children_truncated_count"] = child_count - serialized_children;
+		if (serialized_children < child_limit) {
+			node_data["children_truncated_by_budget"] = true;
+		}
 	}
 
 	return node_data;
@@ -1044,10 +1056,11 @@ static Dictionary _serialize_remote_node(const LocalVector<SceneDebuggerTree::Re
 
 Array SolersObservationService::_serialize_node_array(const TypedArray<Node> &p_nodes, Node *p_edited_root, int p_max_depth, int p_max_children_per_node) const {
 	Array serialized;
+	int node_budget = SCENE_TREE_NODE_BUDGET;
 	for (int i = 0; i < p_nodes.size(); i++) {
 		Node *node = Object::cast_to<Node>(p_nodes[i]);
 		if (node) {
-			serialized.push_back(_serialize_node(node, p_edited_root, 0, p_max_depth, p_max_children_per_node));
+			serialized.push_back(_serialize_node(node, p_edited_root, 0, p_max_depth, p_max_children_per_node, node_budget));
 		}
 	}
 	return serialized;
@@ -1335,7 +1348,7 @@ Dictionary SolersObservationService::read_project_file(const String &p_path, int
 
 	if (!FileAccess::exists(res_path)) {
 		result["ok"] = false;
-		result["error"] = "File does not exist.";
+		result["error"] = vformat("File does not exist.%s", solers_file_suggestions(res_path));
 		result["path"] = res_path;
 		return result;
 	}
@@ -1413,7 +1426,12 @@ Dictionary SolersObservationService::get_scene_tree(int p_max_depth, int p_max_c
 		return result;
 	}
 
-	result["root"] = _serialize_node(edited_root, edited_root, 0, p_max_depth, p_max_children_per_node);
+	int node_budget = SCENE_TREE_NODE_BUDGET;
+	result["root"] = _serialize_node(edited_root, edited_root, 0, p_max_depth, p_max_children_per_node, node_budget);
+	if (node_budget <= 0) {
+		result["truncated_by_node_budget"] = true;
+		result["node_budget"] = SCENE_TREE_NODE_BUDGET;
+	}
 	return result;
 }
 

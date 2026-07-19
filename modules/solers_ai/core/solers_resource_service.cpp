@@ -67,6 +67,121 @@ void SolersResourceService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("run_export_preset", "args"), &SolersResourceService::run_export_preset);
 }
 
+// --- Actionable error candidates -------------------------------------------
+// Every "unknown name" error carries the closest real names from the live
+// authoritative source (property list, ClassDB, directory listing) so the
+// model's next attempt is informed instead of a guess. Ranking is purely
+// lexical: case-insensitive exact, prefix/substring containment, then Godot's
+// String::similarity.
+
+PackedStringArray solers_nearest_names(const String &p_needle, const PackedStringArray &p_candidates, int p_max) {
+	struct ScoredName {
+		String name;
+		float score = 0.0f;
+	};
+	struct ScoredNameCompare {
+		bool operator()(const ScoredName &p_a, const ScoredName &p_b) const {
+			return p_a.score > p_b.score;
+		}
+	};
+	const String needle = p_needle.strip_edges().to_lower();
+	if (needle.is_empty()) {
+		return PackedStringArray();
+	}
+	Vector<ScoredName> scored;
+	for (const String &candidate : p_candidates) {
+		const String lower = candidate.to_lower();
+		ScoredName entry;
+		entry.name = candidate;
+		if (lower == needle) {
+			entry.score = 3.0f;
+		} else if (lower.begins_with(needle) || needle.begins_with(lower)) {
+			entry.score = 2.0f + needle.similarity(lower);
+		} else if (lower.contains(needle) || needle.contains(lower)) {
+			entry.score = 1.0f + needle.similarity(lower);
+		} else {
+			entry.score = needle.similarity(lower);
+			if (entry.score < 0.4f) {
+				continue;
+			}
+		}
+		scored.push_back(entry);
+	}
+	scored.sort_custom<ScoredNameCompare>();
+	PackedStringArray result;
+	for (int i = 0; i < scored.size() && i < p_max; i++) {
+		result.push_back(scored[i].name);
+	}
+	return result;
+}
+
+String solers_property_suggestions(Object *p_object, const String &p_property) {
+	if (!p_object) {
+		return String();
+	}
+	PackedStringArray candidates;
+	List<PropertyInfo> properties;
+	p_object->get_property_list(&properties);
+	for (const PropertyInfo &info : properties) {
+		if ((info.usage & PROPERTY_USAGE_EDITOR) || (info.usage & PROPERTY_USAGE_STORAGE)) {
+			candidates.push_back(info.name);
+		}
+	}
+	// A missing property often exists as an accessor method (size -> get_size()).
+	List<MethodInfo> methods;
+	p_object->get_method_list(&methods);
+	for (const MethodInfo &info : methods) {
+		candidates.push_back(String(info.name) + "()");
+	}
+	const PackedStringArray nearest = solers_nearest_names(p_property, candidates, 5);
+	if (nearest.is_empty()) {
+		return String();
+	}
+	return vformat(" Closest members: %s.", String(", ").join(nearest));
+}
+
+String solers_class_suggestions(const String &p_class_name) {
+	String hints;
+	for (int i = 0; i < (int)Variant::VARIANT_MAX; i++) {
+		if (Variant::get_type_name(Variant::Type(i)).to_lower() == p_class_name.strip_edges().to_lower()) {
+			hints += vformat(" '%s' is a built-in Variant type, not an engine class; construct it as a value.", Variant::get_type_name(Variant::Type(i)));
+			break;
+		}
+	}
+	LocalVector<StringName> class_names;
+	ClassDB::get_class_list(class_names);
+	PackedStringArray candidates;
+	for (const StringName &name : class_names) {
+		candidates.push_back(String(name));
+	}
+	const PackedStringArray nearest = solers_nearest_names(p_class_name, candidates, 5);
+	if (!nearest.is_empty()) {
+		hints += vformat(" Closest classes: %s.", String(", ").join(nearest));
+	}
+	return hints;
+}
+
+String solers_file_suggestions(const String &p_res_path) {
+	const String dir_path = p_res_path.get_base_dir();
+	Ref<DirAccess> dir = DirAccess::open(dir_path);
+	if (dir.is_null()) {
+		return String();
+	}
+	PackedStringArray candidates;
+	dir->list_dir_begin();
+	for (String entry = dir->get_next(); !entry.is_empty(); entry = dir->get_next()) {
+		if (!dir->current_is_dir()) {
+			candidates.push_back(entry);
+		}
+	}
+	dir->list_dir_end();
+	const PackedStringArray nearest = solers_nearest_names(p_res_path.get_file(), candidates, 5);
+	if (nearest.is_empty()) {
+		return String();
+	}
+	return vformat(" Closest files in %s: %s.", dir_path, String(", ").join(nearest));
+}
+
 SolersResourceService::~SolersResourceService() {
 	for (const KeyValue<ObjectID, Node *> &E : temp_nodes) {
 		if (E.value) {
@@ -144,6 +259,41 @@ Dictionary SolersResourceService::_native_object_handle(Object *p_object) const 
 	return data;
 }
 
+// Type-driven observation bound: bulk payload types (packed arrays, long
+// strings, huge containers) summarize to a compact descriptor instead of
+// serializing element-by-element into the model context. The classification
+// is the Variant type itself, never a property name. Callers that need the
+// raw data read it through the dedicated typed tools.
+Variant solers_summarize_display_value(const Variant &p_value) {
+	switch (p_value.get_type()) {
+		case Variant::PACKED_BYTE_ARRAY:
+		case Variant::PACKED_INT32_ARRAY:
+		case Variant::PACKED_INT64_ARRAY:
+		case Variant::PACKED_FLOAT32_ARRAY:
+		case Variant::PACKED_FLOAT64_ARRAY:
+		case Variant::PACKED_STRING_ARRAY:
+		case Variant::PACKED_VECTOR2_ARRAY:
+		case Variant::PACKED_VECTOR3_ARRAY:
+		case Variant::PACKED_VECTOR4_ARRAY:
+		case Variant::PACKED_COLOR_ARRAY: {
+			const int element_count = ((Array)p_value).size();
+			if (element_count > 16) {
+				return vformat("<%s size=%d>", Variant::get_type_name(p_value.get_type()), element_count);
+			}
+			return p_value;
+		}
+		case Variant::STRING: {
+			const String text = p_value;
+			if (text.length() > 2048) {
+				return text.left(2048) + vformat("... <truncated, %d chars total>", text.length());
+			}
+			return p_value;
+		}
+		default:
+			return p_value;
+	}
+}
+
 Variant SolersResourceService::_displayable(const Variant &p_value) const {
 	if (p_value.get_type() == Variant::OBJECT) {
 		Object *object = p_value;
@@ -151,6 +301,9 @@ Variant SolersResourceService::_displayable(const Variant &p_value) const {
 	}
 	if (p_value.get_type() == Variant::ARRAY) {
 		Array in = p_value;
+		if (in.size() > 64) {
+			return vformat("<Array size=%d>", in.size());
+		}
 		Array out;
 		for (int i = 0; i < in.size(); i++) {
 			out.push_back(_displayable(in[i]));
@@ -159,14 +312,17 @@ Variant SolersResourceService::_displayable(const Variant &p_value) const {
 	}
 	if (p_value.get_type() == Variant::DICTIONARY) {
 		Dictionary in = p_value;
-		Dictionary out;
 		Array keys = in.keys();
+		if (keys.size() > 64) {
+			return vformat("<Dictionary size=%d>", keys.size());
+		}
+		Dictionary out;
 		for (int i = 0; i < keys.size(); i++) {
 			out[keys[i]] = _displayable(in[keys[i]]);
 		}
 		return out;
 	}
-	return p_value;
+	return solers_summarize_display_value(p_value);
 }
 
 static bool _solers_find_property(Object *p_object, const StringName &p_property, PropertyInfo &r_info) {
@@ -322,10 +478,25 @@ static bool _solers_coerce_value(const PropertyInfo &p_info, const Variant &p_va
 			object = p_value;
 			object_value = p_value;
 		} else if (p_value.get_type() == Variant::DICTIONARY) {
-			if (!_solers_resolve_object_handle(p_value, object, r_error)) {
+			// A handle dictionary names an object either by object_id (native
+			// tool handle) or by res:// path — both are deterministic lookups.
+			const Dictionary handle = p_value;
+			const String handle_path = String(handle.get("path", String())).strip_edges().replace_char('\\', '/').simplify_path();
+			if (!handle.has("object_id") && handle_path.begins_with("res://")) {
+				Error load_error = OK;
+				const Ref<Resource> resource = ResourceLoader::load(handle_path, String(), ResourceFormatLoader::CACHE_MODE_REUSE, &load_error);
+				if (resource.is_null() || load_error != OK) {
+					r_error = vformat("Failed to load resource '%s' (error %d).", handle_path, (int)load_error);
+					return false;
+				}
+				object = resource.ptr();
+				object_value = resource;
+			} else if (!_solers_resolve_object_handle(p_value, object, r_error)) {
+				r_error += " Object-typed properties also accept a res:// path string.";
 				return false;
+			} else {
+				object_value = object;
 			}
-			object_value = object;
 		} else if (p_value.get_type() == Variant::STRING) {
 			const String path = String(p_value).strip_edges().replace_char('\\', '/').simplify_path();
 			if (path.begins_with("res://")) {
@@ -368,7 +539,7 @@ static bool _solers_property_matches(const Variant &p_actual, const Variant &p_e
 bool solers_coerce_property_value(Object *p_object, const StringName &p_property, const Variant &p_value, Variant &r_out, String &r_error) {
 	PropertyInfo info;
 	if (!_solers_find_property(p_object, p_property, info)) {
-		r_error = vformat("Property '%s' is not exposed by %s.", String(p_property), p_object->get_class());
+		r_error = vformat("Property '%s' is not exposed by %s.%s", String(p_property), p_object->get_class(), solers_property_suggestions(p_object, String(p_property)));
 		return false;
 	}
 	if (_solers_coerce_value(info, p_value, r_out, r_error)) {
@@ -607,15 +778,10 @@ Dictionary SolersResourceService::edit_resource(const Dictionary &p_args) const 
 		Dictionary create_args = p_args.duplicate(true);
 		create_args["path"] = path;
 		create_args.erase("action");
-		create_args.erase("expected_sha256");
 		result = create_resource(create_args);
 	} else if (action == "update") {
 		if (!FileAccess::exists(path)) {
 			return _error("RESOURCE_NOT_FOUND", vformat("Resource does not exist: %s", path));
-		}
-		const String expected_sha256 = p_args.get("expected_sha256", String());
-		if (!expected_sha256.is_empty() && FileAccess::get_sha256(path) != expected_sha256) {
-			return _error("RESOURCE_CHANGED", "The resource changed since it was read; its current content no longer matches expected_sha256.");
 		}
 		Dictionary update_args;
 		update_args["path"] = path;
@@ -658,7 +824,7 @@ Dictionary SolersResourceService::create_resource(const Dictionary &p_args) cons
 
 	const StringName class_sn = StringName(class_name);
 	if (!ClassDB::class_exists(class_sn) || !ClassDB::can_instantiate(class_sn) || !ClassDB::is_parent_class(class_sn, SNAME("Resource"))) {
-		return _error("INVALID_RESOURCE_TYPE", vformat("Class is not an instantiable Resource type: %s", class_name));
+		return _error("INVALID_RESOURCE_TYPE", vformat("Class is not an instantiable Resource type: %s.%s", class_name, solers_class_suggestions(class_name)));
 	}
 
 	Ref<Resource> resource = Object::cast_to<Resource>(ClassDB::instantiate(class_sn));
@@ -725,7 +891,7 @@ Dictionary SolersResourceService::get_resource_property(const Dictionary &p_args
 	const StringName property_sn = StringName(property);
 	PropertyInfo info;
 	if (!_solers_find_property(resource.ptr(), property_sn, info)) {
-		return _error("UNKNOWN_PROPERTY", vformat("Property '%s' is not exposed by %s.", property, resource->get_class()));
+		return _error("UNKNOWN_PROPERTY", vformat("Property '%s' is not exposed by %s.%s", property, resource->get_class(), solers_property_suggestions(resource.ptr(), property)));
 	}
 
 	Dictionary data = _solers_resource_data(resource, path);
@@ -891,7 +1057,7 @@ Dictionary SolersResourceService::native_get(const Dictionary &p_args) const {
 	const StringName property_sn = StringName(property);
 	PropertyInfo info;
 	if (!_solers_find_property(object, property_sn, info)) {
-		return _error("UNKNOWN_PROPERTY", vformat("Property '%s' is not exposed by %s.", property, object->get_class()));
+		return _error("UNKNOWN_PROPERTY", vformat("Property '%s' is not exposed by %s.%s", property, object->get_class(), solers_property_suggestions(object, property)));
 	}
 
 	Dictionary data;

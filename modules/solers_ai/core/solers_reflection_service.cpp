@@ -243,7 +243,34 @@ Node *SolersReflectionService::_resolve_node(const String &p_node_path, String &
 		node = edited_root->get_node_or_null(node_path);
 	}
 	if (!node) {
-		r_error = vformat("Node not found: %s", p_node_path);
+		// Walk the requested segments to the deepest ancestor that exists and
+		// report its real children, so the model corrects the path from live
+		// scene facts instead of retrying blind.
+		Node *deepest = edited_root;
+		String missing_segment = normalized_path;
+		const Vector<String> segments = normalized_path.trim_prefix("/").split("/", false);
+		for (const String &segment : segments) {
+			Node *next = deepest->get_node_or_null(NodePath(segment));
+			if (!next) {
+				missing_segment = segment;
+				break;
+			}
+			deepest = next;
+		}
+		PackedStringArray child_names;
+		for (int i = 0; i < deepest->get_child_count() && i < 64; i++) {
+			child_names.push_back(String(deepest->get_child(i)->get_name()));
+		}
+		String detail = vformat(" Deepest existing ancestor: '%s'.", deepest == edited_root ? String(edited_root->get_name()) : String(edited_root->get_path_to(deepest)));
+		const PackedStringArray nearest = solers_nearest_names(missing_segment, child_names, 5);
+		if (!nearest.is_empty()) {
+			detail += vformat(" Closest children: %s.", String(", ").join(nearest));
+		} else if (!child_names.is_empty()) {
+			detail += vformat(" Its children: %s.", String(", ").join(child_names.size() > 20 ? child_names.slice(0, 20) : child_names));
+		} else {
+			detail += " It has no children.";
+		}
+		r_error = vformat("Node not found: %s.%s", p_node_path, detail);
 	}
 	return node;
 }
@@ -299,6 +326,9 @@ static Variant _reflect_displayable(const Variant &p_value) {
 	}
 	if (p_value.get_type() == Variant::ARRAY) {
 		Array in = p_value;
+		if (in.size() > 64) {
+			return vformat("<Array size=%d>", in.size());
+		}
 		Array out;
 		for (int i = 0; i < in.size(); i++) {
 			out.push_back(_reflect_displayable(in[i]));
@@ -307,14 +337,19 @@ static Variant _reflect_displayable(const Variant &p_value) {
 	}
 	if (p_value.get_type() == Variant::DICTIONARY) {
 		Dictionary in = p_value;
-		Dictionary out;
 		Array keys = in.keys();
+		if (keys.size() > 64) {
+			return vformat("<Dictionary size=%d>", keys.size());
+		}
+		Dictionary out;
 		for (int i = 0; i < keys.size(); i++) {
 			out[keys[i]] = _reflect_displayable(in[keys[i]]);
 		}
 		return out;
 	}
-	return p_value;
+	// Bulk Variant payloads (packed arrays, oversized strings) summarize by
+	// type so one node dump can never displace working context.
+	return solers_summarize_display_value(p_value);
 }
 
 bool SolersReflectionService::_apply_initial_properties(Node *p_node, const Dictionary &p_properties, Dictionary &r_applied, String &r_error) const {
@@ -388,7 +423,7 @@ Dictionary SolersReflectionService::search_classes(const Dictionary &p_args) {
 	if (!inherits.is_empty()) {
 		inherits_sn = StringName(inherits);
 		if (!ClassDB::class_exists(inherits_sn)) {
-			return _error("UNKNOWN_CLASS", vformat("Inherited engine class does not exist: %s", inherits));
+			return _error("UNKNOWN_CLASS", vformat("Inherited engine class does not exist: %s.%s", inherits, solers_class_suggestions(inherits)));
 		}
 	}
 
@@ -455,7 +490,7 @@ Dictionary SolersReflectionService::introspect_class(const Dictionary &p_args) {
 	}
 	const StringName class_sn = StringName(class_name);
 	if (!ClassDB::class_exists(class_sn)) {
-		return _error("UNKNOWN_CLASS", vformat("Engine class does not exist: %s", class_name));
+		return _error("UNKNOWN_CLASS", vformat("Engine class does not exist: %s.%s", class_name, solers_class_suggestions(class_name)));
 	}
 	const bool no_inheritance = !include_inherited;
 
@@ -647,7 +682,7 @@ Dictionary SolersReflectionService::get_property(const Dictionary &p_args) {
 		}
 	}
 	if (!valid) {
-		return _error("UNKNOWN_PROPERTY", vformat("Property '%s' is not exposed by %s. Check the exact member with engine.inspect.", property, node->get_class()));
+		return _error("UNKNOWN_PROPERTY", vformat("Property '%s' is not exposed by %s.%s Check the exact member with engine.inspect.", property, node->get_class(), solers_property_suggestions(node, property)));
 	}
 
 	String safe_path;
@@ -873,7 +908,7 @@ Dictionary SolersReflectionService::_create_node(const Dictionary &p_args) {
 	const String requested_name = p_args.get("name", String());
 	const StringName type_sn = StringName(type);
 	if (!ClassDB::class_exists(type_sn) || !ClassDB::can_instantiate(type_sn) || !ClassDB::is_parent_class(type_sn, SNAME("Node"))) {
-		return _error("INVALID_NODE_TYPE", vformat("Class is not an instantiable Node type: %s", type));
+		return _error("INVALID_NODE_TYPE", vformat("Class is not an instantiable Node type: %s.%s", type, solers_class_suggestions(type)));
 	}
 
 	EditorInterface *editor_interface = EditorInterface::get_singleton();

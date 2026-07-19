@@ -39,6 +39,11 @@ class Node;
 
 bool solers_coerce_property_value(Object *p_object, const StringName &p_property, const Variant &p_value, Variant &r_out, String &r_error);
 bool solers_call_method(Object *p_object, const MethodInfo &p_method, const Array &p_args, Variant &r_result, String &r_error_code, String &r_error);
+Variant solers_summarize_display_value(const Variant &p_value);
+PackedStringArray solers_nearest_names(const String &p_needle, const PackedStringArray &p_candidates, int p_max = 5);
+String solers_property_suggestions(Object *p_object, const String &p_property);
+String solers_class_suggestions(const String &p_class_name);
+String solers_file_suggestions(const String &p_res_path);
 
 class SolersResourceService : public Object {
 	GDCLASS(SolersResourceService, Object);

@@ -42,6 +42,10 @@ class ScriptEditorDebugger;
 class SolersObservationService : public Object {
 	GDCLASS(SolersObservationService, Object);
 
+	// One serialized scene tree keeps at most this many nodes regardless of
+	// depth/children arguments, so a dense scene cannot flood the model.
+	static constexpr int SCENE_TREE_NODE_BUDGET = 400;
+
 	uint64_t capture_sequence = 0;
 	HashMap<String, Dictionary> pending_captures;
 	ObjectID observed_debugger_id;
@@ -52,7 +56,7 @@ class SolersObservationService : public Object {
 	Array performance_monitor_names;
 	Array performance_monitor_types;
 
-	Dictionary _serialize_node(Node *p_node, Node *p_edited_root, int p_depth, int p_max_depth, int p_max_children_per_node) const;
+	Dictionary _serialize_node(Node *p_node, Node *p_edited_root, int p_depth, int p_max_depth, int p_max_children_per_node, int &r_node_budget) const;
 	Array _serialize_node_array(const TypedArray<Node> &p_nodes, Node *p_edited_root, int p_max_depth, int p_max_children_per_node) const;
 	bool _normalize_project_path(const String &p_path, String &r_res_path, String &r_error) const;
 	bool _collect_project_files_indexed(const String &p_query, int p_max_files, Array &r_files, int &r_scanned_count, bool &r_truncated) const;
