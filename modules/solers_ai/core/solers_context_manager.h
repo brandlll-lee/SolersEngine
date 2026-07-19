@@ -7,11 +7,11 @@
 /**************************************************************************/
 /* Solers: AI-native game engine.                                        */
 /*                                                                        */
-/* Context management derived from Kimi Code's FullCompaction and         */
-/* MicroCompaction. Provider usage is authoritative for messages already  */
-/* sent; a cheap estimator covers pending messages. Old tool payloads are  */
-/* cleared only in the request projection, while full compaction replaces */
-/* history with recent real user input plus one model-written handoff.     */
+/* Provider usage is authoritative for messages already sent; a cheap     */
+/* estimator covers pending messages. Durable history is append-only      */
+/* between compactions so the provider prefix cache stays valid; full     */
+/* compaction is the single rewrite point and replaces history with       */
+/* recent real user input plus one model-written handoff.                 */
 /**************************************************************************/
 
 #pragma once
@@ -26,18 +26,17 @@ class SolersContextManager {
 	static constexpr double COMPACTION_TRIGGER_RATIO = 0.85;
 	static constexpr int RESERVED_CONTEXT_TOKENS = 50000;
 	static constexpr int MEDIA_TOKEN_ESTIMATE = 2000;
-	// One tool result may claim at most this fraction of the model window;
-	// the floor keeps small windows usable and the fallback covers models
-	// whose limits are still unknown.
+	// One tool result may claim at most this fraction of the model window,
+	// clamped to a fixed band: the floor keeps small windows usable, the
+	// ceiling stops any single observation from displacing working history
+	// (the band codex and opencode converged on).
 	static constexpr int TOOL_RESULT_WINDOW_FRACTION = 4;
 	static constexpr int TOOL_RESULT_MIN_TOKENS = 4000;
-	static constexpr int TOOL_RESULT_FALLBACK_TOKENS = 16000;
+	static constexpr int TOOL_RESULT_MAX_TOKENS = 16000;
 
 	int authoritative_tokens = 0;
 	int covered_message_count = 0;
-	int micro_cutoff = 0;
 	int last_estimated_tokens = 0;
-	int micro_compaction_count = 0;
 	int compaction_count = 0;
 	int last_compacted_token_count = -1;
 
@@ -45,10 +44,8 @@ class SolersContextManager {
 	static String _truncate_text(const String &p_text, int p_max_tokens);
 	static Array _select_recent_user_messages(const Array &p_messages);
 	static String _build_summary_text(const String &p_summary, const Dictionary &p_plan);
-	Array _micro_project(const Array &p_messages) const;
 
 public:
-	static const char *TOOL_RESULT_PLACEHOLDER;
 	static const char *COMPACTION_SUMMARY_PREFIX;
 	static const char *COMPACTION_INSTRUCTION;
 
@@ -66,13 +63,14 @@ public:
 	bool should_compact(const Array &p_messages, const String &p_system_prompt, const Array &p_tools, int p_context_window) const;
 	bool is_overflow(const Array &p_messages, const String &p_system_prompt, const Array &p_tools, int p_context_window) const;
 
+	// Records the estimate for this request. Durable history is sent as-is:
+	// byte-identical prefixes between compactions are what make provider
+	// prefix caching effective, so no per-request rewriting happens here.
 	Array prepare_request(const Array &p_messages, const String &p_system_prompt, const Array &p_tools);
 	Dictionary apply_compaction(const Array &p_messages, const String &p_summary, const Dictionary &p_plan = Dictionary());
 	Array shrink_compaction_history(const Array &p_messages, int p_attempt) const;
 	void reset();
 
 	int get_last_estimated_tokens() const { return last_estimated_tokens; }
-	int get_micro_compaction_count() const { return micro_compaction_count; }
 	int get_compaction_count() const { return compaction_count; }
-	int get_micro_cutoff() const { return micro_cutoff; }
 };

@@ -62,7 +62,7 @@ class SolersToolRegistry : public Object {
 	void _add(const char *p_name, const char *p_description, const char *p_schema_json,
 			SolersPermissionManager::Permission p_permission, SolersToolMutationPolicy p_mutation_policy,
 			const Vector<String> &p_redact,
-			SolersToolExposure p_exposure, SolersFunctionTool::Handler p_handler, bool p_ephemeral_result = false,
+			SolersToolExposure p_exposure, SolersFunctionTool::Handler p_handler,
 			SolersToolExecution p_execution = SolersToolExecution::MAIN_THREAD,
 			std::function<Array(const Dictionary &)> p_resource_access = {},
 			bool p_cache_across_revisions = false,
@@ -73,7 +73,7 @@ class SolersToolRegistry : public Object {
 			std::function<SolersPermissionManager::Permission(const Dictionary &)> p_permission_resolver = {},
 			std::function<SolersToolMutationPolicy(const Dictionary &)> p_mutation_policy_resolver = {});
 	void _add_observe_exposed(const char *p_name, const char *p_description, const char *p_schema_json,
-			SolersToolExposure p_exposure, SolersFunctionTool::Handler p_handler, bool p_ephemeral_result = true,
+			SolersToolExposure p_exposure, SolersFunctionTool::Handler p_handler,
 			std::function<Array(const Dictionary &)> p_resource_access = {},
 			bool p_cache_across_revisions = false,
 			SolersFunctionTool::PollHandler p_poll_handler = {},
@@ -132,7 +132,6 @@ public:
 	String get_skill_catalog_prompt() const;
 	String get_model_tool_name(const StringName &p_name) const;
 	StringName resolve_model_tool_name(const String &p_model_name) const;
-	bool is_result_ephemeral(const StringName &p_name) const;
 	bool caches_across_revisions(const StringName &p_name) const;
 	bool affects_authored_state(const StringName &p_name) const;
 	bool affects_scene_state(const StringName &p_name) const;
