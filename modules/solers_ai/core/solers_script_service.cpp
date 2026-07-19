@@ -36,6 +36,7 @@
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/resource_format_binary.h"
+#include "core/io/resource_importer.h"
 #include "core/io/resource_loader.h"
 #include "core/io/logger.h"
 #include "core/object/callable_method_pointer.h"
@@ -254,11 +255,6 @@ static bool _solers_is_native_serialized_resource_path(const String &p_path) {
 static bool _solers_is_script_source_path(const String &p_path) {
 	const String extension = p_path.get_extension().to_lower();
 	return extension == "gd" || extension == "cs" || extension == "gdshader" || extension == "gdshaderinc";
-}
-
-static bool _solers_is_project_text_path(const String &p_path) {
-	const String extension = p_path.get_extension().to_lower();
-	return extension == "json" || extension == "txt" || extension == "md" || extension == "csv" || extension == "tsv" || extension == "cfg" || extension == "ini" || extension == "po" || extension == "pot";
 }
 
 static bool _solers_is_project_settings_path(const String &p_path) {
@@ -499,15 +495,55 @@ Dictionary SolersScriptService::edit_project(const Dictionary &p_args) {
 		return _ok(data);
 	}
 
+	if (operation == "create_directory") {
+		const String dir_arg = p_args.get("path", String());
+		String res_dir;
+		String dir_error;
+		if (!_normalize_project_path(dir_arg, res_dir, dir_error)) {
+			return _error("INVALID_PATH", dir_error);
+		}
+		const String global_dir = ProjectSettings::get_singleton()->globalize_path(res_dir);
+		const bool existed = DirAccess::dir_exists_absolute(global_dir);
+		if (!existed) {
+			const Error dir_err = DirAccess::make_dir_recursive_absolute(global_dir);
+			if (dir_err != OK) {
+				return _error("DIRECTORY_CREATE_FAILED", vformat("Failed to create directory, error code %d.", dir_err));
+			}
+			EditorFileSystem *filesystem = Engine::get_singleton()->is_editor_hint() ? EditorFileSystem::get_singleton() : nullptr;
+			if (filesystem && filesystem->get_filesystem() && !filesystem->is_scanning()) {
+				filesystem->scan_changes();
+			}
+		}
+		Dictionary data;
+		data["operation"] = "create_directory";
+		data["path"] = res_dir;
+		data["created"] = !existed;
+		data["existed"] = existed;
+		if (action_timeline && !existed) {
+			action_timeline->record_event("directory_created", data);
+		}
+		return _ok(data);
+	}
 	if (operation != "write_file") {
-		return _error("INVALID_ARGUMENT", "project.edit operation must be settings or write_file.");
+		return _error("INVALID_ARGUMENT", "project.edit operation must be settings, write_file, or create_directory.");
 	}
 	const String path = p_args.get("path", String());
 	if (_solers_is_project_settings_path(path)) {
 		return _error("EDITOR_OWNED_FILE", "Modify project.godot through project.edit settings.");
 	}
-	if (!_solers_is_project_text_path(path) || _solers_is_script_source_path(path) || _solers_is_native_serialized_resource_path(path)) {
-		return _error("PROJECT_FILE_TYPE_BLOCKED", "project.edit write_file accepts ordinary project text data only; use script.edit, scene.edit, or resource.edit for authored Godot files.");
+	// Ownership boundaries come from the engine's own registries — script
+	// languages, resource loaders, and the import pipeline — never from an
+	// extension whitelist. Everything they do not claim is ordinary project
+	// data (.gdignore, .editorconfig, custom text formats, ...).
+	if (_solers_is_script_source_path(path)) {
+		return _error("PROJECT_FILE_TYPE_BLOCKED", "Script sources are edited through script.edit so parser diagnostics stay attached to the write.");
+	}
+	if (_solers_is_native_serialized_resource_path(path)) {
+		return _error("PROJECT_FILE_TYPE_BLOCKED", "Godot serialized scenes and resources are edited through scene.edit or resource.edit, not raw file writes.");
+	}
+	ResourceFormatImporter *format_importer = ResourceFormatImporter::get_singleton();
+	if (format_importer && format_importer->get_importer_by_file(path).is_valid()) {
+		return _error("PROJECT_FILE_TYPE_BLOCKED", "This file format is owned by Godot's import pipeline; bring media into the project through the asset tools.");
 	}
 	const bool exists = FileAccess::exists(path);
 	const String expected_sha256 = p_args.get("expected_sha256", String());
