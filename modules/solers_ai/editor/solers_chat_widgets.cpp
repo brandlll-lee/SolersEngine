@@ -14,6 +14,7 @@
 #include "core/os/keyboard.h"
 #include "editor/themes/editor_scale.h"
 #include "modules/modules_enabled.gen.h"
+#include "modules/solers_ai/generated/solers_provider_logos.gen.h"
 #include "scene/resources/image_texture.h"
 #include "scene/resources/style_box_flat.h"
 #include "scene/theme/theme_db.h"
@@ -142,6 +143,56 @@ Ref<Texture2D> SolersChatGlyphs::get(const StringName &p_name, int p_size_px, fl
 		image.instantiate();
 		const float scale = float(size_px) / 24.0f;
 		if (ImageLoaderSVG::create_image_from_string(image, svg, scale, false, HashMap<Color, Color>()) == OK && image.is_valid() && !image->is_empty()) {
+			texture = ImageTexture::create_from_image(image);
+		}
+	}
+#endif
+	g_solers_glyph_cache.insert(key, texture);
+	return texture;
+}
+
+Ref<Texture2D> SolersChatGlyphs::provider_logo(const String &p_catalog_id, int p_size_px) {
+	const int size_px = MAX(2, p_size_px);
+	const String id = p_catalog_id.strip_edges().to_lower();
+
+	const char *svg = nullptr;
+	String cache_id = id;
+	for (int i = 0; i < SOLERS_PROVIDER_LOGO_COUNT && !svg; i++) {
+		if (id == SOLERS_PROVIDER_LOGOS[i].id) {
+			svg = SOLERS_PROVIDER_LOGOS[i].svg;
+		}
+	}
+	if (!svg) {
+		cache_id = "synthetic";
+		for (int i = 0; i < SOLERS_PROVIDER_LOGO_COUNT && !svg; i++) {
+			if (cache_id == SOLERS_PROVIDER_LOGOS[i].id) {
+				svg = SOLERS_PROVIDER_LOGOS[i].svg;
+			}
+		}
+	}
+	if (!svg) {
+		return Ref<Texture2D>();
+	}
+
+	const String key = "logo:" + cache_id + "@" + itos(size_px);
+	if (const Ref<Texture2D> *found = g_solers_glyph_cache.getptr(key)) {
+		return *found;
+	}
+
+	Ref<Texture2D> texture;
+#ifdef MODULE_SVG_ENABLED
+	// Logos are baked white at build time (currentColor -> #ffffff); callers
+	// tint via draw modulate, same contract as the Lucide glyph cache. The
+	// intrinsic document size varies per mark (24 or 40 px), so probe at 1x
+	// once, then rasterize at the exact scale. Both results are cached.
+	const String svg_string = String::utf8(svg);
+	Ref<Image> probe;
+	probe.instantiate();
+	if (ImageLoaderSVG::create_image_from_string(probe, svg_string, 1.0f, false, HashMap<Color, Color>()) == OK && probe.is_valid() && probe->get_width() > 0) {
+		const float scale = float(size_px) / float(MAX(probe->get_width(), probe->get_height()));
+		Ref<Image> image;
+		image.instantiate();
+		if (ImageLoaderSVG::create_image_from_string(image, svg_string, scale, false, HashMap<Color, Color>()) == OK && image.is_valid() && !image->is_empty()) {
 			texture = ImageTexture::create_from_image(image);
 		}
 	}
@@ -357,6 +408,15 @@ void SolersSelectChip::set_texts(const String &p_strong, const String &p_muted) 
 	queue_redraw();
 }
 
+void SolersSelectChip::set_leading_texture(const Ref<Texture2D> &p_texture) {
+	if (leading_texture == p_texture) {
+		return;
+	}
+	leading_texture = p_texture;
+	update_minimum_size();
+	queue_redraw();
+}
+
 void SolersSelectChip::set_show_chevron(bool p_show) {
 	if (show_chevron == p_show) {
 		return;
@@ -372,7 +432,7 @@ Size2 SolersSelectChip::get_minimum_size() const {
 	const int font_size = int(12 * ed);
 
 	float width = 5.0f * ed; // Leading pad.
-	if (glyph != StringName()) {
+	if (leading_texture.is_valid() || glyph != StringName()) {
 		width += 13.0f * ed + 5.0f * ed;
 	}
 	if (font.is_valid()) {
@@ -469,7 +529,13 @@ void SolersSelectChip::_notification(int p_what) {
 			const int font_size = int(12 * ed);
 			float x = 5.0f * ed;
 
-			if (glyph != StringName()) {
+			if (leading_texture.is_valid()) {
+				// Provider mark: dim at rest, full strength on hover
+				// (opencode's opacity-40 -> group-hover:opacity-100).
+				const Point2 pos(x, (r.size.y - leading_texture->get_height()) * 0.5f);
+				draw_texture(leading_texture, pos.floor(), Color(1, 1, 1, 0.55f + 0.45f * anim));
+				x += 13.0f * ed + 5.0f * ed;
+			} else if (glyph != StringName()) {
 				Ref<Texture2D> icon = SolersChatGlyphs::get(glyph, int(Math::round(13.0f * ed)), 1.9f);
 				if (icon.is_valid()) {
 					const Point2 pos(x, (r.size.y - icon->get_height()) * 0.5f);

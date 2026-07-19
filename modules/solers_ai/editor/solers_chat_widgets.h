@@ -35,6 +35,10 @@ public:
 	// Returns a white-stroke glyph texture at p_size_px physical pixels.
 	// Tint it with CanvasItem draw modulate; never bake colors into the cache.
 	static Ref<Texture2D> get(const StringName &p_name, int p_size_px, float p_stroke_width = 1.7f);
+	// White provider mark for a models.dev catalog id (profile field
+	// `catalog_provider`), from the build-time vendored logo table. Unknown
+	// ids fall back to the generic "synthetic" mark, mirroring opencode.
+	static Ref<Texture2D> provider_logo(const String &p_catalog_id, int p_size_px);
 	static void clear_cache();
 };
 
@@ -91,6 +95,7 @@ class SolersSelectChip : public Control {
 	GDCLASS(SolersSelectChip, Control);
 
 	StringName glyph; // Optional leading glyph (empty -> none).
+	Ref<Texture2D> leading_texture; // Optional leading mark (e.g. provider logo); wins over glyph.
 	String strong_text;
 	String muted_text;
 	Color accent = Color(0, 0, 0, 0); // Transparent means neutral gray ramp.
@@ -117,6 +122,7 @@ public:
 	void configure(const StringName &p_glyph, const String &p_strong, const String &p_muted, const String &p_tooltip);
 	void set_accent(const Color &p_accent);
 	void set_texts(const String &p_strong, const String &p_muted);
+	void set_leading_texture(const Ref<Texture2D> &p_texture);
 	void set_show_chevron(bool p_show);
 	void set_pressed_callback(const Callable &p_cb) { pressed_callback = p_cb; }
 
