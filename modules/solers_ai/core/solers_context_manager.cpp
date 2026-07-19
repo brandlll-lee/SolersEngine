@@ -166,6 +166,49 @@ String SolersContextManager::_truncate_text(const String &p_text, int p_max_toke
 	return p_text.left(end);
 }
 
+int SolersContextManager::tool_result_token_budget(int p_context_window) {
+	if (p_context_window <= 0) {
+		return TOOL_RESULT_FALLBACK_TOKENS;
+	}
+	return MAX(TOOL_RESULT_MIN_TOKENS, p_context_window / TOOL_RESULT_WINDOW_FRACTION);
+}
+
+// Suffix of p_text whose estimated token count is at most p_max_tokens.
+static String _tail_by_tokens(const String &p_text, int p_max_tokens) {
+	if (p_max_tokens <= 0) {
+		return String();
+	}
+	int ascii_count = 0;
+	int non_ascii_count = 0;
+	int start = p_text.length();
+	for (int i = p_text.length() - 1; i >= 0; i--) {
+		if (p_text[i] <= 127) {
+			ascii_count++;
+		} else {
+			non_ascii_count++;
+		}
+		if ((ascii_count + 3) / 4 + non_ascii_count > p_max_tokens) {
+			break;
+		}
+		start = i;
+	}
+	return p_text.substr(start);
+}
+
+String SolersContextManager::middle_truncate(const String &p_text, int p_max_tokens) {
+	const int total_tokens = estimate_tokens(p_text);
+	if (p_max_tokens <= 0 || total_tokens <= p_max_tokens) {
+		return p_text;
+	}
+	const int keep_each_side = p_max_tokens / 2;
+	const String head = _truncate_text(p_text, keep_each_side);
+	const String tail = _tail_by_tokens(p_text, keep_each_side);
+	return head +
+			vformat("\n...[Solers: middle of this output elided, %d of ~%d tokens kept. Re-run the tool with tighter limits for the full data.]...\n",
+					p_max_tokens, total_tokens) +
+			tail;
+}
+
 Array SolersContextManager::_select_recent_user_messages(const Array &p_messages) {
 	Array candidates;
 	for (int i = 0; i < p_messages.size(); i++) {

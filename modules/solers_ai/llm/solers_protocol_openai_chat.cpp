@@ -259,7 +259,11 @@ Array SolersOpenAIChatProtocol::parse_event(Dictionary &r_state, const String &p
 	// requested it; surface them regardless of position.
 	if (obj.has("usage") && Dictionary(obj["usage"]).size() > 0) {
 		const Dictionary u = obj["usage"];
-		events.push_back(SolersLLMEvent::usage(u.get("prompt_tokens", 0), u.get("completion_tokens", 0)));
+		// Canonical usage separates cached from fresh input tokens; OpenAI's
+		// prompt_tokens already includes the cached share, so split it out.
+		const int prompt_tokens = u.get("prompt_tokens", 0);
+		const int cached_tokens = Dictionary(u.get("prompt_tokens_details", Dictionary())).get("cached_tokens", 0);
+		events.push_back(SolersLLMEvent::usage(MAX(0, prompt_tokens - cached_tokens), u.get("completion_tokens", 0), cached_tokens > 0 ? cached_tokens : -1));
 	}
 
 	const Array choices = obj.get("choices", Array());

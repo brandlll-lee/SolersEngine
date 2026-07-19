@@ -187,9 +187,44 @@ Dictionary SolersAnthropicMessagesProtocol::build_request_body(const Dictionary 
 
 	const String system = p_request.get("system", String());
 	if (!system.is_empty()) {
-		body["system"] = system;
+		// Cache breakpoint after the byte-stable request prefix (tools +
+		// system prompt), so repeated session requests hit the prompt cache.
+		Dictionary cache_control;
+		cache_control["type"] = "ephemeral";
+		Dictionary system_block;
+		system_block["type"] = "text";
+		system_block["text"] = system;
+		system_block["cache_control"] = cache_control;
+		Array system_blocks;
+		system_blocks.push_back(system_block);
+		body["system"] = system_blocks;
 	}
-	body["messages"] = _lower_messages(p_request);
+	Array lowered_messages = _lower_messages(p_request);
+	// Second breakpoint on the newest message: the next request extends this
+	// exact history, so everything up to here is a cache hit.
+	if (!lowered_messages.is_empty()) {
+		Dictionary last = lowered_messages[lowered_messages.size() - 1];
+		const Variant content = last.get("content", Variant());
+		Array blocks;
+		if (content.get_type() == Variant::STRING && !String(content).is_empty()) {
+			Dictionary text_block;
+			text_block["type"] = "text";
+			text_block["text"] = content;
+			blocks.push_back(text_block);
+		} else if (content.get_type() == Variant::ARRAY) {
+			blocks = content;
+		}
+		if (!blocks.is_empty()) {
+			Dictionary cache_control;
+			cache_control["type"] = "ephemeral";
+			Dictionary last_block = Dictionary(blocks[blocks.size() - 1]).duplicate();
+			last_block["cache_control"] = cache_control;
+			blocks[blocks.size() - 1] = last_block;
+			last["content"] = blocks;
+			lowered_messages[lowered_messages.size() - 1] = last;
+		}
+	}
+	body["messages"] = lowered_messages;
 
 	const Array tools = p_request.get("tools", Array());
 	if (!tools.is_empty()) {
@@ -269,11 +304,24 @@ Array SolersAnthropicMessagesProtocol::parse_event(Dictionary &r_state, const St
 			}
 			events.push_back(SolersLLMEvent::tool_call(tracked.get("id", String()), tracked.get("name", String()), args));
 		}
+	} else if (type == "message_start") {
+		// Prompt/cache accounting arrives once here; message_delta only
+		// refreshes output tokens, so stash these for the final usage event.
+		const Dictionary usage = Dictionary(obj.get("message", Dictionary())).get("usage", Dictionary());
+		if (!usage.is_empty()) {
+			r_state["input_tokens"] = usage.get("input_tokens", 0);
+			r_state["cache_read_tokens"] = usage.get("cache_read_input_tokens", -1);
+			r_state["cache_write_tokens"] = usage.get("cache_creation_input_tokens", -1);
+		}
 	} else if (type == "message_delta") {
 		const Dictionary delta = obj.get("delta", Dictionary());
 		if (obj.has("usage")) {
 			const Dictionary usage = obj["usage"];
-			events.push_back(SolersLLMEvent::usage(usage.get("input_tokens", 0), usage.get("output_tokens", 0)));
+			events.push_back(SolersLLMEvent::usage(
+					usage.get("input_tokens", r_state.get("input_tokens", 0)),
+					usage.get("output_tokens", 0),
+					usage.get("cache_read_input_tokens", r_state.get("cache_read_tokens", -1)),
+					usage.get("cache_creation_input_tokens", r_state.get("cache_write_tokens", -1))));
 		}
 		const Variant stop_v = delta.get("stop_reason", Variant());
 		if (stop_v.get_type() == Variant::STRING && !String(stop_v).is_empty()) {

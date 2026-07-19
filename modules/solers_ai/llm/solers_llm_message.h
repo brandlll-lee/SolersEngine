@@ -133,11 +133,17 @@ public:
 		return e;
 	}
 
-	static Dictionary usage(int p_input_tokens, int p_output_tokens) {
+	static Dictionary usage(int p_input_tokens, int p_output_tokens, int p_cache_read_tokens = -1, int p_cache_write_tokens = -1) {
 		Dictionary e;
 		e["kind"] = SolersLLMEventKind::USAGE;
 		e["input_tokens"] = p_input_tokens;
 		e["output_tokens"] = p_output_tokens;
+		if (p_cache_read_tokens >= 0) {
+			e["cache_read_tokens"] = p_cache_read_tokens;
+		}
+		if (p_cache_write_tokens >= 0) {
+			e["cache_write_tokens"] = p_cache_write_tokens;
+		}
 		return e;
 	}
 

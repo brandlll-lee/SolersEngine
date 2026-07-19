@@ -26,6 +26,12 @@ class SolersContextManager {
 	static constexpr double COMPACTION_TRIGGER_RATIO = 0.85;
 	static constexpr int RESERVED_CONTEXT_TOKENS = 50000;
 	static constexpr int MEDIA_TOKEN_ESTIMATE = 2000;
+	// One tool result may claim at most this fraction of the model window;
+	// the floor keeps small windows usable and the fallback covers models
+	// whose limits are still unknown.
+	static constexpr int TOOL_RESULT_WINDOW_FRACTION = 4;
+	static constexpr int TOOL_RESULT_MIN_TOKENS = 4000;
+	static constexpr int TOOL_RESULT_FALLBACK_TOKENS = 16000;
 
 	int authoritative_tokens = 0;
 	int covered_message_count = 0;
@@ -48,6 +54,11 @@ public:
 
 	static int estimate_tokens(const String &p_text);
 	static int estimate_messages_tokens(const Array &p_messages);
+	// Budget for one tool result, resolved from the active model window.
+	static int tool_result_token_budget(int p_context_window);
+	// Keep the head and tail of an oversized payload and elide the middle,
+	// measuring in estimated tokens (mirrors codex/pi middle truncation).
+	static String middle_truncate(const String &p_text, int p_max_tokens);
 
 	void record_usage(int p_input_tokens, int p_covered_message_count);
 	int get_token_count_with_pending(const Array &p_messages, const String &p_system_prompt, const Array &p_tools) const;
