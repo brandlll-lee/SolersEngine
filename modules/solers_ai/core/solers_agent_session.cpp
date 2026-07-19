@@ -828,7 +828,8 @@ String SolersAgentSession::_default_system_prompt() const {
 			"- For algorithmic or bulk work (procedural data, batch changes), run a one-shot @tool script through script.run instead of attaching temporary scripts to the scene or playing it. Declare func run(host) when nodes need scene-tree access. Everything parented under host is discarded when the call ends unless you pass persist_host_children=true, which hands those nodes to the edited scene as one undoable action - that handover (or scene.edit) is the only way scripted content becomes part of the scene.\n"
 			"- Background tools return stable job ids immediately. Continue independent work; when nothing else is runnable, call job.wait once with the required ids. Solers resumes this same task when any requested job reaches a terminal state.\n"
 			"- Tool errors carry the native cause; read it, change what it names, and retry. Repeating an identical failed call wastes a step.\n"
-			"- Use update_plan only as a concise optional progress display. A final assistant message ends the task directly.";
+			"- Before each non-trivial tool call or group of related calls, write one short sentence saying what you are about to do and why. Group related actions under one preamble; skip it for trivial reads. This narration is how the user follows your progress.\n"
+			"- Use update_plan only as a concise optional progress display. Text without tool calls ends the task, so keep progress notes attached to tool-calling turns and finish with a clear final summary.";
 	if (tool_registry) {
 		const String skill_catalog = tool_registry->get_skill_catalog_prompt();
 		if (!skill_catalog.is_empty()) {

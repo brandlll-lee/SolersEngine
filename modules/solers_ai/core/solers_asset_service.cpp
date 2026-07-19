@@ -1469,9 +1469,10 @@ Array SolersAssetService::normalize_polyhaven_variants(const Dictionary &p_files
 				variant["format"] = String(*format_key);
 				variant["size"] = _polyhaven_file_spec_size(spec);
 				variant["checksum"] = spec.get("md5", String());
-				Array dependencies = Dictionary(spec.get("include", Dictionary())).keys();
-				dependencies.sort();
-				variant["dependencies"] = dependencies;
+				// The full include list repeats dozens of texture paths per
+				// variant; the count is enough signal for choosing one, and
+				// acquire resolves the real list from live metadata anyway.
+				variant["dependency_count"] = Dictionary(spec.get("include", Dictionary())).size();
 				by_id[variant["id"]] = variant;
 			}
 		}

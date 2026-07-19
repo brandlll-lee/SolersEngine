@@ -2894,7 +2894,7 @@ TEST_CASE("[SolersAssetService] Poly Haven variants come from official file meta
 	CHECK(variant.get("id", String()) == "1k-fbx");
 	CHECK(variant.get("checksum", String()) == "0123456789abcdef0123456789abcdef");
 	CHECK((int64_t)variant.get("size", 0) == 125);
-	CHECK(Array(variant.get("dependencies", Array())).has("textures/book_diffuse.jpg"));
+	CHECK((int)variant.get("dependency_count", 0) == 1);
 }
 
 TEST_CASE("[SolersAssetService] catalog variant identity is case-insensitive and preserves the official id") {
