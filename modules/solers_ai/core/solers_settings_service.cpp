@@ -216,12 +216,35 @@ Dictionary SolersSettingsService::_get_provider_config(const String &p_provider,
 	data["reasoning_effort"] = settings->has_setting(_provider_setting_path(p_provider, "reasoning_effort")) ? String(settings->get_setting(_provider_setting_path(p_provider, "reasoning_effort"))) : String();
 	data["base_url"] = settings->has_setting(_provider_setting_path(p_provider, "base_url")) ? String(settings->get_setting(_provider_setting_path(p_provider, "base_url"))) : String(profile.get("default_base_url", String()));
 
-	const Dictionary auth = _get_stored_auth(p_provider);
+	// Credential PRESENCE only: a stored blob / env var existing is the
+	// authoritative signal that a credential was configured. Decryption
+	// (DPAPI is an lsass RPC per call) happens exclusively at request time in
+	// resolve_active_provider(); status/UI paths must stay crypto-free. An
+	// undecryptable blob (settings copied across machines) thus reads as
+	// configured here and fails loudly at first request instead.
 	const String auth_type = profile.get("auth_type", "api_key");
-	const bool api_key_configured = auth_type == "api_key" && !String(auth.get("key", String())).is_empty();
-	const bool oauth_configured = auth_type == "oauth" && !String(auth.get("refresh", String())).is_empty();
+	bool api_key_configured = false;
+	String api_key_source = "none";
+	if (auth_type == "api_key") {
+		const String key_path = _provider_setting_path(p_provider, "api_key");
+		if (settings->has_setting(key_path) && !String(settings->get_setting(key_path)).is_empty()) {
+			api_key_configured = true;
+			api_key_source = "settings";
+		} else {
+			const String env_name = profile.get("api_key_env", String());
+			if (!env_name.is_empty() && OS::get_singleton()->has_environment(env_name) && !OS::get_singleton()->get_environment(env_name).is_empty()) {
+				api_key_configured = true;
+				api_key_source = "environment";
+			}
+		}
+	}
+	bool oauth_configured = false;
+	if (auth_type == "oauth") {
+		const String oauth_path = _provider_setting_path(p_provider, "oauth");
+		oauth_configured = settings->has_setting(oauth_path) && SolersSecretStore::is_protected(String(settings->get_setting(oauth_path)));
+	}
 	data["api_key_configured"] = api_key_configured;
-	data["api_key_source"] = auth.get("source", "none");
+	data["api_key_source"] = api_key_source;
 	data["oauth_configured"] = oauth_configured;
 	data["api_key"] = "<redacted>";
 
@@ -235,7 +258,7 @@ Dictionary SolersSettingsService::_get_provider_config(const String &p_provider,
 	data["available"] = connected && (!(bool)data["local_models_only"] || (bool)profile.get("local", false));
 	data["active"] = settings->has_setting(_setting_path("provider")) && String(settings->get_setting(_setting_path("provider"))) == p_provider;
 	if (p_include_secret) {
-		data["auth"] = auth;
+		data["auth"] = _get_stored_auth(p_provider);
 	}
 	return data;
 }
