@@ -43,6 +43,7 @@
 #include "core/object/class_db.h"
 #include "core/object/script_language.h"
 #include "core/os/os.h"
+#include "editor/editor_interface.h"
 #include "editor/editor_node.h"
 #include "scene/main/node.h"
 #include "editor/editor_undo_redo_manager.h"
@@ -719,6 +720,13 @@ Dictionary SolersScriptService::run_script(const Dictionary &p_args) {
 	if (source.strip_edges().is_empty()) {
 		return _error("INVALID_ARGUMENT", "source is required.");
 	}
+	const bool persist_children = p_args.get("persist_host_children", false);
+	if (persist_children) {
+		EditorInterface *editor_interface = EditorInterface::get_singleton();
+		if (!editor_interface || !editor_interface->get_edited_scene_root()) {
+			return _error("PERSIST_TARGET_MISSING", "persist_host_children needs an open edited scene to hand the nodes to; open or create a scene first.");
+		}
+	}
 
 	const Dictionary validation = _validate_source("res://.solers/script_run.gd", source);
 	if (validation.has("ok") && !(bool)validation.get("ok", true)) {
@@ -814,6 +822,7 @@ Dictionary SolersScriptService::run_script(const Dictionary &p_args) {
 		pending.host_id = host_id;
 		pending.entry = String(entry);
 		pending.source_bytes = source_bytes;
+		pending.persist_children = persist_children;
 		pending_runs.insert(run_id, pending);
 		state_object->connect(SNAME("completed"), callable_mp(this, &SolersScriptService::_on_run_completed).bind(run_id), Object::CONNECT_ONE_SHOT);
 		Dictionary poll_args;
@@ -826,7 +835,7 @@ Dictionary SolersScriptService::run_script(const Dictionary &p_args) {
 	}
 
 	solers_run_capture_logger->end();
-	return _finish_run(String(entry), source_bytes, return_value, host_id);
+	return _finish_run(String(entry), source_bytes, return_value, host_id, persist_children);
 }
 
 void SolersScriptService::_on_run_completed(const Variant &p_result, int64_t p_run_id) {
@@ -859,21 +868,52 @@ Dictionary SolersScriptService::run_script_finalize(const Dictionary &p_args) {
 	if (!pending.completed) {
 		// Dropping the coroutine and instance references abandons the
 		// suspended run(); freeing the host clears its temporary nodes.
+		// A timed-out run never persists: its nodes are half-built.
 		Dictionary finished = _finish_run(pending.entry, pending.source_bytes, Variant(), pending.host_id);
 		Dictionary result = _error("SCRIPT_RUN_TIMEOUT", "run() was still awaiting after 30 seconds; the coroutine was abandoned and its host node freed.");
 		result["data"] = finished.get("data", Dictionary());
 		return result;
 	}
-	return _finish_run(pending.entry, pending.source_bytes, pending.result, pending.host_id);
+	return _finish_run(pending.entry, pending.source_bytes, pending.result, pending.host_id, pending.persist_children);
 }
 
-Dictionary SolersScriptService::_finish_run(const String &p_entry, int64_t p_source_bytes, const Variant &p_return_value, ObjectID p_host_id) {
+Dictionary SolersScriptService::_finish_run(const String &p_entry, int64_t p_source_bytes, const Variant &p_return_value, ObjectID p_host_id, bool p_persist_children) {
 	Dictionary data;
 	data["entry"] = p_entry;
 	data["output"] = solers_run_capture_logger ? solers_run_capture_logger->output : String();
 	data["error_output"] = solers_run_capture_logger ? solers_run_capture_logger->errors : String();
 	data["result"] = _solers_run_jsonable(p_return_value);
 	Node *host = Object::cast_to<Node>(ObjectDB::get_instance(p_host_id));
+	EditorInterface *editor_interface = EditorInterface::get_singleton();
+	Node *scene_root = editor_interface ? editor_interface->get_edited_scene_root() : nullptr;
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	if (host && p_persist_children && host->get_child_count() > 0 && scene_root && undo_redo) {
+		// Hand the computed nodes over to the edited scene as one undoable
+		// transaction: this is the single boundary between script.run's
+		// throwaway compute space and durable authored content.
+		Vector<Node *> handover;
+		while (host->get_child_count() > 0) {
+			Node *child = host->get_child(0);
+			host->remove_child(child);
+			handover.push_back(child);
+		}
+		undo_redo->create_action("Script run: persist nodes");
+		for (Node *child : handover) {
+			undo_redo->add_do_method(scene_root, "add_child", child, true);
+			// propagate_call assigns ownership through the whole subtree so
+			// every scripted descendant is saved with the scene.
+			undo_redo->add_do_method(child, "propagate_call", "set_owner", varray(scene_root), false);
+			undo_redo->add_do_reference(child);
+			undo_redo->add_undo_method(scene_root, "remove_child", child);
+		}
+		undo_redo->commit_action();
+		Array persisted_paths;
+		for (Node *child : handover) {
+			persisted_paths.push_back(String(scene_root->get_path_to(child)));
+		}
+		data["persisted_node_paths"] = persisted_paths;
+		data["scene_state_changed"] = true;
+	}
 	if (host) {
 		data["host_children_freed"] = host->get_child_count();
 		host->queue_free();

@@ -53,13 +53,14 @@ class SolersScriptService : public Object {
 		String entry;
 		int64_t source_bytes = 0;
 		bool completed = false;
+		bool persist_children = false;
 		Variant result;
 	};
 	HashMap<int64_t, PendingRun> pending_runs;
 	int64_t next_run_id = 1;
 
 	void _on_run_completed(const Variant &p_result, int64_t p_run_id);
-	Dictionary _finish_run(const String &p_entry, int64_t p_source_bytes, const Variant &p_return_value, ObjectID p_host_id);
+	Dictionary _finish_run(const String &p_entry, int64_t p_source_bytes, const Variant &p_return_value, ObjectID p_host_id, bool p_persist_children = false);
 
 	bool _normalize_project_path(const String &p_path, String &r_res_path, String &r_error, bool p_allow_project_data = false) const;
 	Dictionary _ok(const Variant &p_data) const;
