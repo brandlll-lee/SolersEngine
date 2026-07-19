@@ -64,6 +64,10 @@ class SolersAgentSession : public Object {
 		PHASE_WAITING,
 	};
 
+	// Transient LLM failures retry with backoff at most this many times per
+	// request before the turn fails (mirrors opencode's retry budget).
+	static constexpr int MAX_LLM_RETRY_ATTEMPTS = 10;
+
 	SolersToolRegistry *tool_registry = nullptr;
 	SolersSettingsService *settings_service = nullptr;
 	SolersActionTimeline *action_timeline = nullptr;
@@ -148,6 +152,7 @@ class SolersAgentSession : public Object {
 	SolersToolRegistry *session_tools_registry = nullptr;
 	String project_path;
 	String session_id;
+	Array pending_steering_messages; // user input queued mid-turn, injected before the next model dispatch
 	Array pending_background_assets;
 	HashSet<String> delivered_background_assets;
 	HashSet<String> waiting_background_asset_ids;
@@ -177,7 +182,10 @@ class SolersAgentSession : public Object {
 
 	void _reset_session_derived_state();
 	String _default_system_prompt() const;
-	String _request_system_prompt(bool p_include_observation_delta = true);
+	// Fresh engine facts for one request, carried as the final projected user
+	// message (origin solers_state) so the system prompt stays byte-stable
+	// and provider prompt caching keeps its prefix hits.
+	Dictionary _environment_context_message(bool p_include_observation_delta);
 	String _make_session_id() const;
 	Dictionary _read_transcript_state(const String &p_project_path, const String &p_session_id) const;
 	void _stamp_transcript_event(Dictionary &r_event) const;
@@ -230,6 +238,7 @@ class SolersAgentSession : public Object {
 	bool _is_awaiting_approval_result(const Dictionary &p_result) const;
 	void _register_session_tools();
 	Dictionary _handle_update_plan(const Dictionary &p_args);
+	bool _flush_pending_steering();
 	Dictionary _commit_dirty_scene_if_needed();
 	bool _append_background_asset_deltas(bool p_waited_only);
 	void _resume_next_background_asset();
@@ -253,6 +262,10 @@ public:
 
 	static Dictionary validate_plan(const Dictionary &p_args);
 	Dictionary start_turn(const Dictionary &p_args); // { prompt: String }
+	// Steer the running turn: the message is queued and joins the
+	// conversation after the current tool batch, before the next model
+	// dispatch. Fails with AGENT_IDLE when no turn is running.
+	Dictionary queue_user_message(const Dictionary &p_args);
 	void poll();
 	void shutdown();
 	void abort();

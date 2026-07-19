@@ -133,6 +133,7 @@ static Dictionary _update_plan_schema() {
 
 void SolersAgentSession::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("start_turn", "args"), &SolersAgentSession::start_turn);
+	ClassDB::bind_method(D_METHOD("queue_user_message", "args"), &SolersAgentSession::queue_user_message);
 	ClassDB::bind_method(D_METHOD("poll"), &SolersAgentSession::poll);
 	ClassDB::bind_method(D_METHOD("abort"), &SolersAgentSession::abort);
 	ClassDB::bind_method(D_METHOD("reset_conversation"), &SolersAgentSession::reset_conversation);
@@ -726,6 +727,42 @@ bool SolersAgentSession::_poll_state_observation() {
 	return false;
 }
 
+Dictionary SolersAgentSession::queue_user_message(const Dictionary &p_args) {
+	const String prompt = String(p_args.get("prompt", String())).strip_edges();
+	const Array attachments = p_args.get("attachments", Array()).duplicate(true);
+	if (prompt.is_empty() && attachments.is_empty()) {
+		return _error("EMPTY_PROMPT", "Prompt is empty.");
+	}
+	if (!running) {
+		return _error("AGENT_IDLE", "No agent turn is running; start a new turn instead.");
+	}
+	Dictionary message = SolersLLMMessage::user(prompt);
+	message["origin"] = "user_steering";
+	if (!attachments.is_empty()) {
+		message["attachments"] = attachments;
+	}
+	pending_steering_messages.push_back(message);
+	Dictionary payload;
+	payload["queued"] = pending_steering_messages.size();
+	_write_transcript_event("steering_queued", payload);
+	Dictionary data;
+	data["queued"] = pending_steering_messages.size();
+	return _ok(data);
+}
+
+bool SolersAgentSession::_flush_pending_steering() {
+	if (pending_steering_messages.is_empty()) {
+		return false;
+	}
+	for (int i = 0; i < pending_steering_messages.size(); i++) {
+		const Dictionary message = pending_steering_messages[i];
+		messages.push_back(message);
+		_write_transcript_message("user", message.get("content", String()));
+	}
+	pending_steering_messages.clear();
+	return true;
+}
+
 Dictionary SolersAgentSession::_commit_dirty_scene_if_needed() {
 	Dictionary data;
 
@@ -801,9 +838,9 @@ String SolersAgentSession::_default_system_prompt() const {
 	return prompt;
 }
 
-String SolersAgentSession::_request_system_prompt(bool p_include_observation_delta) {
+Dictionary SolersAgentSession::_environment_context_message(bool p_include_observation_delta) {
 	if (!tool_registry || !tool_registry->observation_service) {
-		return system_prompt;
+		return Dictionary();
 	}
 	SolersObservationService *observation = tool_registry->observation_service;
 	Dictionary context;
@@ -868,7 +905,10 @@ String SolersAgentSession::_request_system_prompt(bool p_include_observation_del
 			context["runtime_events"] = runtime_observations.get("events", Array());
 		}
 	}
-	return system_prompt + "\n\nCurrent engine context (authoritative, bounded, and refreshed for this request):\n" + JSON::stringify(context, "", false, true);
+	Dictionary message = SolersLLMMessage::user(
+			"Current engine context (authoritative, bounded, and refreshed for this request):\n" + JSON::stringify(context, "", false, true));
+	message["origin"] = "solers_state";
+	return message;
 }
 
 Array SolersAgentSession::_collect_tools() const {
@@ -1055,6 +1095,7 @@ Error SolersAgentSession::_dispatch_model_request(bool p_skip_compaction) {
 	}
 	_append_background_asset_deltas(false);
 	_flush_godot_diagnostics();
+	_flush_pending_steering();
 	if (_refresh_active_model_limits()) {
 		Dictionary limits;
 		limits["context_window"] = context_window;
@@ -1068,21 +1109,29 @@ Error SolersAgentSession::_dispatch_model_request(bool p_skip_compaction) {
 	const Dictionary auth = active_provider.get("auth", Dictionary());
 
 	const Dictionary profile = settings_service->resolve_provider_profile(provider_id, base_url);
+	if (system_prompt.is_empty()) {
+		system_prompt = _default_system_prompt();
+	}
 	const Array tools = _collect_tools();
-	String request_system_prompt = _request_system_prompt(false);
-	if (!p_skip_compaction && context_manager && context_manager->should_compact(messages, request_system_prompt, tools, context_window)) {
+	if (!p_skip_compaction && context_manager && context_manager->should_compact(messages, system_prompt, tools, context_window)) {
 		return _begin_compaction(false);
 	}
-	request_system_prompt = _request_system_prompt();
 
-	Array request_messages = messages;
+	Array request_messages = messages.duplicate();
 	if (context_manager) {
 		request_messages = context_manager->prepare_request(
 				messages,
-				request_system_prompt,
+				system_prompt,
 				tools);
 	}
-	Dictionary request = _build_request(request_messages, request_system_prompt);
+	// The dynamic engine facts ride at the end of the projection instead of
+	// inside the system prompt, so every request keeps a byte-stable prefix
+	// (system + tools + history) for provider prompt caching.
+	const Dictionary environment_message = _environment_context_message(true);
+	if (!environment_message.is_empty()) {
+		request_messages.push_back(environment_message);
+	}
+	Dictionary request = _build_request(request_messages, system_prompt);
 	current_provider_metadata.clear();
 	model_request_index++;
 	Dictionary request_event;
@@ -1127,7 +1176,7 @@ Error SolersAgentSession::_begin_compaction(bool p_from_overflow) {
 	phase = PHASE_COMPACTING;
 	Dictionary payload;
 	payload["source"] = p_from_overflow ? "overflow" : "auto";
-	payload["tokens_before"] = context_manager->get_token_count_with_pending(messages, _request_system_prompt(false), _collect_tools());
+	payload["tokens_before"] = context_manager->get_token_count_with_pending(messages, system_prompt, _collect_tools());
 	_record("context_compaction_started", payload);
 	emit_signal(SNAME("compaction_started"));
 	return _dispatch_compaction_request();
@@ -1152,7 +1201,7 @@ Error SolersAgentSession::_dispatch_compaction_request() {
 	}
 	history = context_manager->prepare_request(
 			history,
-			_request_system_prompt(false),
+			system_prompt,
 			Array());
 	String instruction = SolersContextManager::COMPACTION_INSTRUCTION;
 	if (!current_plan.is_empty()) {
@@ -1160,7 +1209,7 @@ Error SolersAgentSession::_dispatch_compaction_request() {
 	}
 	history.push_back(SolersLLMMessage::user(instruction));
 
-	Dictionary request = _build_request(history, _request_system_prompt(false));
+	Dictionary request = _build_request(history, system_prompt);
 	request["tools"] = Array();
 	current_provider_metadata.clear();
 	_record("context_compaction_request_graph", _redacted_request_graph(request, profile));
@@ -1191,7 +1240,7 @@ bool SolersAgentSession::_is_context_overflow(const Dictionary &p_error) const {
 }
 
 bool SolersAgentSession::_schedule_llm_retry(const Dictionary &p_error) {
-	if (!SolersLLMRetry::is_retryable(p_error)) {
+	if (!SolersLLMRetry::is_retryable(p_error) || retry_attempt >= MAX_LLM_RETRY_ATTEMPTS) {
 		return false;
 	}
 	retry_attempt++;
@@ -1596,7 +1645,10 @@ void SolersAgentSession::poll() {
 		} else if (kind == SolersLLMEventKind::USAGE) {
 			last_usage = e;
 			if (context_manager) {
-				context_manager->record_usage((int)e.get("input_tokens", 0), messages.size());
+				// Canonical input_tokens excludes cached shares; the window is
+				// occupied by fresh + cache-read + cache-write together.
+				const int prompt_tokens = (int)e.get("input_tokens", 0) + MAX(0, (int)e.get("cache_read_tokens", 0)) + MAX(0, (int)e.get("cache_write_tokens", 0));
+				context_manager->record_usage(prompt_tokens, messages.size());
 			}
 		} else if (kind == SolersLLMEventKind::FINISH) {
 			last_stop_reason = e.get("stop_reason", String());
@@ -1739,6 +1791,9 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 		tool_cancel_requested.set();
 		_collect_tool_thread_result(true);
 	}
+	// Steering that never reached a dispatch still belongs to the
+	// conversation; the next turn's model request will carry it.
+	_flush_pending_steering();
 	Dictionary data;
 	data["outcome"] = p_outcome;
 	data["text"] = p_message;
@@ -2475,12 +2530,11 @@ void SolersAgentSession::_deliver_tool_result(const String &p_id, const String &
 		turn_runtime_owned = false;
 	}
 
-	String content = JSON::stringify(result, "", false, true);
-	if (context_window > 0 && content.utf8().length() > context_window) {
-		const int original_len = content.length();
-		content = content.left(context_window / 2);
-		content += vformat("\n...[Solers: tool result truncated, %d of %d characters kept. Re-run the tool with tighter limits for the full data.]", content.length(), original_len);
-	}
+	// Clamp in token units against the active model window; middle truncation
+	// preserves both the envelope head (ok/error/codes) and the payload tail.
+	const String content = SolersContextManager::middle_truncate(
+			JSON::stringify(result, "", false, true),
+			SolersContextManager::tool_result_token_budget(context_window));
 	Dictionary message = SolersLLMMessage::tool_result(p_id, p_model_name, content, result.get("attachments", Array()));
 	if (tool_registry && tool_registry->is_result_ephemeral(StringName(p_canonical_name))) {
 		message["retention"] = "ephemeral";
@@ -2595,6 +2649,7 @@ void SolersAgentSession::reset_conversation() {
 	_release_godot_log_audit();
 	_reset_session_derived_state();
 	messages.clear();
+	pending_steering_messages.clear();
 	current_plan.clear();
 	last_outcome = String();
 	last_stop_reason = String();
