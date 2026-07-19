@@ -1917,7 +1917,9 @@ bool EditorFileSystem::_find_file(const String &p_file, EditorFileSystemDirector
 
 		if (idx == -1) {
 			// Only create a missing directory in memory when it exists on disk.
-			if (!dir->dir_exists(fs->get_path().path_join(path[i]))) {
+			// `dir` uses ACCESS_FILESYSTEM, which never resolves res:// paths,
+			// so the check must run against the globalized OS path.
+			if (!dir->dir_exists(ProjectSettings::get_singleton()->globalize_path(fs->get_path().path_join(path[i])))) {
 				return false;
 			}
 			EditorFileSystemDirectory *efsd = memnew(EditorFileSystemDirectory);
