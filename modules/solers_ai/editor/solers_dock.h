@@ -140,6 +140,7 @@ class SolersDock : public PanelContainer {
 	void _reset_model_defaults_from_popup();
 	void _open_model_settings_from_popup();
 	void _submit_chat_prompt(const String &p_prompt, const Array &p_attachments = Array());
+	void _submit_steering(const String &p_prompt, const Array &p_attachments);
 	void _on_agent_model_request_started();
 	void _on_agent_assistant_delta(const String &p_text);
 	void _on_agent_reasoning_delta(const String &p_text);

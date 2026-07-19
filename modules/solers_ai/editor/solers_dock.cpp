@@ -376,7 +376,7 @@ static StringName solers_tool_glyph_for_metadata(const Dictionary &p_tool) {
 	if (mutation != "read_only") {
 		return mutation == "editor_undo" || mutation == "file_checkpoint" ? SNAME("tool_scene") : SNAME("alert");
 	}
-	return bool(p_tool.get("requires_approval", false)) ? SNAME("shield") : SNAME("sparkle");
+	return SNAME("sparkle");
 }
 
 static StringName solers_tool_glyph_for_name(const SolersToolRegistry *p_registry, const String &p_name) {
@@ -685,15 +685,26 @@ void SolersDock::_on_send_chat_pressed() {
 	if (!chat_input) {
 		return;
 	}
+	const String prompt = chat_input->get_text().strip_edges();
 	if (agent_session && agent_session->is_running()) {
-		_on_stop_chat_pressed();
+		// Typing while the agent works steers the running turn; an empty
+		// composer keeps the button as the stop control.
+		if (prompt.is_empty() && pending_attachments.is_empty()) {
+			_on_stop_chat_pressed();
+			return;
+		}
+		const Array attachments = pending_attachments.duplicate(true);
+		chat_input->set_text("");
+		_clear_attachments();
+		_update_chat_input_height();
+		_update_send_enabled();
+		_submit_steering(prompt, attachments);
 		return;
 	}
 	if (send_chat_button && !send_chat_button->is_enabled()) {
 		return;
 	}
 
-	const String prompt = chat_input->get_text().strip_edges();
 	if (prompt.is_empty() && pending_attachments.is_empty()) {
 		return;
 	}
@@ -1134,6 +1145,22 @@ void SolersDock::_submit_chat_prompt(const String &p_prompt, const Array &p_atta
 	_refresh_status();
 }
 
+void SolersDock::_submit_steering(const String &p_prompt, const Array &p_attachments) {
+	Dictionary args;
+	args["prompt"] = p_prompt;
+	if (!p_attachments.is_empty()) {
+		args["attachments"] = p_attachments.duplicate(true);
+	}
+	const Dictionary result = agent_session ? agent_session->queue_user_message(args) : Dictionary();
+	if ((bool)result.get("ok", false)) {
+		_append_user_message(p_prompt, p_attachments);
+		callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
+		return;
+	}
+	// The turn ended between typing and sending: start an ordinary turn.
+	_submit_chat_prompt(p_prompt, p_attachments);
+}
+
 void SolersDock::_on_chat_input_gui_input(const Ref<InputEvent> &p_event) {
 	Ref<InputEventKey> key = p_event;
 	if (key.is_null() || !key->is_pressed() || key->is_echo()) {
@@ -1303,11 +1330,16 @@ void SolersDock::_update_send_enabled() {
 		const bool running = agent_session && agent_session->is_running();
 		const Dictionary provider = settings_service ? Dictionary(settings_service->get_provider_config().get("data", Dictionary())) : Dictionary();
 		const bool provider_available = provider.get("connected", false) && provider.get("available", false);
-		chat_input->set_editable(!blocked && !running);
+		chat_input->set_editable(!blocked);
 		if (running) {
-			send_chat_button->configure(SNAME("stop"), SolersGlyphButton::SKIN_PRIMARY, TTR("Stop generation"), 14);
-			send_chat_button->set_pressed_callback(callable_mp(this, &SolersDock::_on_stop_chat_pressed));
-			send_chat_button->set_enabled(true);
+			const bool has_steering_input = !chat_input->get_text().strip_edges().is_empty() || !pending_attachments.is_empty();
+			if (has_steering_input) {
+				send_chat_button->configure(SNAME("send_up"), SolersGlyphButton::SKIN_PRIMARY, TTR("Send to the running turn"), 16);
+			} else {
+				send_chat_button->configure(SNAME("stop"), SolersGlyphButton::SKIN_PRIMARY, TTR("Stop generation"), 14);
+			}
+			send_chat_button->set_pressed_callback(callable_mp(this, &SolersDock::_on_send_chat_pressed));
+			send_chat_button->set_enabled(!blocked);
 		} else {
 			const String tooltip = provider_available ? TTR("Send") : (provider.get("connected", false) ? TTR("Local Models Only blocks the selected remote provider.") : TTR("Connect a model provider before sending."));
 			send_chat_button->configure(SNAME("send_up"), SolersGlyphButton::SKIN_PRIMARY, tooltip, 16);
