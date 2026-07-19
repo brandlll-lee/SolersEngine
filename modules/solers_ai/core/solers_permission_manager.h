@@ -47,6 +47,7 @@ public:
 		PERMISSION_NETWORK,
 		PERMISSION_INSTALL_PLUGIN,
 		PERMISSION_SHELL,
+		PERMISSION_MAX, // sentinel, not a permission
 	};
 
 	enum RequestDecision {
@@ -57,7 +58,15 @@ public:
 	};
 
 private:
-	HashSet<Permission> auto_approved_permissions;
+	// Single rule table: every gate decision is one evaluation of this table
+	// plus per-request approvals. A locked rule is a trust boundary the user
+	// cannot relax at runtime (observation never asks; third-party plugin
+	// installation always asks) — data here, never special-cased at call sites.
+	struct PermissionRule {
+		bool allow = false;
+		bool locked = false;
+	};
+	PermissionRule rules[PERMISSION_MAX];
 	Dictionary approved_once_requests;
 	HashSet<int> rejected_request_ids;
 	Array pending_requests;

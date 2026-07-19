@@ -110,7 +110,7 @@ Array SolersMCPAdapter::_tool_definitions_for_mcp() const {
 		annotations["title"] = definition.get("name", String());
 		annotations["modelName"] = definition.get("model_name", String());
 		annotations["readOnlyHint"] = String(definition.get("mutation_policy", "read_only")) == "read_only";
-		annotations["destructiveHint"] = (bool)definition.get("requires_approval", false);
+		annotations["destructiveHint"] = String(definition.get("mutation_policy", "read_only")) == "irreversible";
 		annotations["openWorldHint"] = false;
 		tool["annotations"] = annotations;
 		tools.push_back(tool);

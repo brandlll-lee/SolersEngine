@@ -365,7 +365,6 @@ TEST_CASE("[SolersToolRegistry] registers tools by lookup, not a hardcoded catal
 	Dictionary tool = tools[0];
 	CHECK(tool.get("name", String()) == "synthetic.echo");
 	CHECK(tool.get("model_name", String()) == "synthetic_echo");
-	CHECK_FALSE((bool)tool.get("requires_approval", true));
 	CHECK(tool.get("execution", String()) == "worker");
 	CHECK_FALSE(Dictionary(Dictionary(tool.get("input_schema", Dictionary())).get("properties", Dictionary())).has("retry_of"));
 	CHECK(registry.get_model_tool_name("synthetic.echo") == "synthetic_echo");
@@ -567,7 +566,6 @@ TEST_CASE("[SolersToolRegistry] schema preflight runs before approval or handler
 	SolersToolCapability cap;
 	cap.permission = SolersPermissionManager::PERMISSION_EDIT_FILES;
 	cap.mutation_policy = SolersToolMutationPolicy::IRREVERSIBLE;
-	cap.requires_approval = true;
 	Dictionary amount;
 	amount["type"] = "number";
 	amount["exclusiveMinimum"] = 0;

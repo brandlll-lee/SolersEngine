@@ -96,10 +96,12 @@ String SolersPermissionManager::get_permission_name(Permission p_permission) con
 }
 
 bool SolersPermissionManager::is_auto_approved(Permission p_permission) const {
-	if (p_permission == PERMISSION_INSTALL_PLUGIN) {
-		return false;
+	ERR_FAIL_INDEX_V(p_permission, PERMISSION_MAX, false);
+	const PermissionRule &rule = rules[p_permission];
+	if (rule.locked) {
+		return rule.allow;
 	}
-	return auto_approve_all || auto_approved_permissions.has(p_permission);
+	return auto_approve_all || rule.allow;
 }
 
 bool SolersPermissionManager::is_auto_approve_all() const {
@@ -111,21 +113,16 @@ void SolersPermissionManager::set_auto_approve_all(bool p_enabled) {
 }
 
 void SolersPermissionManager::set_auto_approve_permission(Permission p_permission, bool p_enabled) {
-	if (p_permission == PERMISSION_INSTALL_PLUGIN) {
+	ERR_FAIL_INDEX(p_permission, PERMISSION_MAX);
+	if (rules[p_permission].locked) {
 		return;
 	}
-	if (p_enabled) {
-		auto_approved_permissions.insert(p_permission);
-	} else if (p_permission != PERMISSION_OBSERVE) {
-		auto_approved_permissions.erase(p_permission);
-	}
+	rules[p_permission].allow = p_enabled;
 }
 
 bool SolersPermissionManager::get_auto_approve_permission(Permission p_permission) const {
-	if (p_permission == PERMISSION_INSTALL_PLUGIN) {
-		return false;
-	}
-	return auto_approved_permissions.has(p_permission);
+	ERR_FAIL_INDEX_V(p_permission, PERMISSION_MAX, false);
+	return rules[p_permission].allow;
 }
 
 Dictionary SolersPermissionManager::request_user_approval(const StringName &p_tool_name, const Dictionary &p_args, Permission p_permission) {
@@ -135,7 +132,7 @@ Dictionary SolersPermissionManager::request_user_approval(const StringName &p_to
 	request["args"] = p_args;
 	request["permission_id"] = (int)p_permission;
 	request["permission"] = get_permission_name(p_permission);
-	if (auto_approve_all && p_permission != PERMISSION_INSTALL_PLUGIN) {
+	if (is_auto_approved(p_permission)) {
 		approved_once_requests[request["id"]] = p_tool_name;
 		return request;
 	}
@@ -175,22 +172,11 @@ bool SolersPermissionManager::reject_request(int p_request_id) {
 }
 
 bool SolersPermissionManager::consume_approval(int p_request_id, const StringName &p_tool_name) {
+	// Approvals are consumed strictly by request id: the id travels with the
+	// blocked call and back through its retry, so a grant can never leak onto
+	// a different call that merely shares the tool name.
 	if (p_request_id <= 0) {
-		Variant matched_id;
-		bool found = false;
-		for (const KeyValue<Variant, Variant> &kv : approved_once_requests) {
-			const StringName approved_tool = StringName(kv.value);
-			if (approved_tool == p_tool_name) {
-				matched_id = kv.key;
-				found = true;
-				break;
-			}
-		}
-		if (!found) {
-			return false;
-		}
-		approved_once_requests.erase(matched_id);
-		return true;
+		return false;
 	}
 	if (rejected_request_ids.has(p_request_id) || !approved_once_requests.has(p_request_id)) {
 		return false;
@@ -220,5 +206,9 @@ SolersPermissionManager::RequestDecision SolersPermissionManager::get_request_de
 }
 
 SolersPermissionManager::SolersPermissionManager() {
-	auto_approved_permissions.insert(PERMISSION_OBSERVE);
+	// Observation is always allowed; third-party plugin installation always
+	// asks. Both are locked trust boundaries, everything else defaults to ask
+	// and can be relaxed per session ("Allow always" / auto-approve mode).
+	rules[PERMISSION_OBSERVE] = PermissionRule{ /*allow*/ true, /*locked*/ true };
+	rules[PERMISSION_INSTALL_PLUGIN] = PermissionRule{ /*allow*/ false, /*locked*/ true };
 }

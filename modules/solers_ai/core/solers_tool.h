@@ -67,7 +67,6 @@ struct SolersToolCapability {
 	// Resolve the reversal policy for a domain tool whose validated operations
 	// use different native persistence mechanisms.
 	std::function<SolersToolMutationPolicy(const Dictionary &)> mutation_policy_resolver;
-	bool requires_approval = false;
 	// Observation payloads that are only needed for the next model step.
 	bool ephemeral_result = false;
 	// When true, identical read-only calls reuse the session cache across

@@ -61,7 +61,7 @@ class SolersToolRegistry : public Object {
 	void _register(SolersTool *p_tool);
 	void _add(const char *p_name, const char *p_description, const char *p_schema_json,
 			SolersPermissionManager::Permission p_permission, SolersToolMutationPolicy p_mutation_policy,
-			bool p_requires_approval, const Vector<String> &p_redact,
+			const Vector<String> &p_redact,
 			SolersToolExposure p_exposure, SolersFunctionTool::Handler p_handler, bool p_ephemeral_result = false,
 			SolersToolExecution p_execution = SolersToolExecution::MAIN_THREAD,
 			std::function<Array(const Dictionary &)> p_resource_access = {},
