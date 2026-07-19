@@ -27,12 +27,11 @@
 #include "modules/solers_ai/core/solers_provider_registry.h"
 #include "modules/solers_ai/core/solers_secret_store.h"
 #include "modules/solers_ai/core/solers_settings_service.h"
+#include "modules/solers_ai/editor/solers_chat_widgets.h"
 #endif
 
 // Lucide glyph bodies (24x24 viewBox; ISC license, see solers_ai/UI_ICON_LICENSE.txt).
 static const char *SOLERS_AI_LUCIDE_CLOUD = "<path d=\"M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z\"/>";
-static const char *SOLERS_AI_LUCIDE_MONITOR = "<rect width=\"20\" height=\"14\" x=\"2\" y=\"3\" rx=\"2\"/><line x1=\"8\" x2=\"16\" y1=\"21\" y2=\"21\"/><line x1=\"12\" x2=\"12\" y1=\"17\" y2=\"21\"/>";
-static const char *SOLERS_AI_LUCIDE_SLIDERS = "<line x1=\"21\" x2=\"14\" y1=\"4\" y2=\"4\"/><line x1=\"10\" x2=\"3\" y1=\"4\" y2=\"4\"/><line x1=\"21\" x2=\"12\" y1=\"12\" y2=\"12\"/><line x1=\"8\" x2=\"3\" y1=\"12\" y2=\"12\"/><line x1=\"21\" x2=\"16\" y1=\"20\" y2=\"20\"/><line x1=\"12\" x2=\"3\" y1=\"20\" y2=\"20\"/><line x1=\"14\" x2=\"14\" y1=\"2\" y2=\"6\"/><line x1=\"8\" x2=\"8\" y1=\"10\" y2=\"14\"/><line x1=\"16\" x2=\"16\" y1=\"18\" y2=\"22\"/>";
 static const char *SOLERS_AI_LUCIDE_EYE = "<path d=\"M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0\"/><circle cx=\"12\" cy=\"12\" r=\"3\"/>";
 static const char *SOLERS_AI_LUCIDE_BOX = "<path d=\"m21 8-9-5-9 5 9 5 9-5Z\"/><path d=\"M3 8v8l9 5 9-5V8\"/><path d=\"M12 13v8\"/>";
 static const char *SOLERS_AI_LUCIDE_AUDIO = "<path d=\"M9 18V5l12-2v13\"/><circle cx=\"6\" cy=\"18\" r=\"3\"/><circle cx=\"18\" cy=\"16\" r=\"3\"/>";
@@ -141,10 +140,10 @@ void SolersPMAIView::_build_provider_list() {
 	for (const Variant &profile_value : profiles) {
 		const Dictionary profile = profile_value;
 		const String id = profile.get("id", String());
-		const bool local = profile.get("local", false);
-		const Array features = profile.get("features", Array());
-		const char *glyph = features.has("user_defined") ? SOLERS_AI_LUCIDE_SLIDERS : (local ? SOLERS_AI_LUCIDE_MONITOR : SOLERS_AI_LUCIDE_CLOUD);
-		_add_provider_row(id, TTRGET(String(profile.get("label", id))), SolersPMTheme::lucide_icon(glyph, 16));
+		// The profile's models.dev catalog id doubles as the logo id; unknown
+		// ids (custom gateways) fall back to the generic "synthetic" mark.
+		const String catalog_id = profile.get("catalog_provider", id);
+		_add_provider_row(id, TTRGET(String(profile.get("label", id))), SolersChatGlyphs::provider_logo(catalog_id, int(Math::round(16.0f * EDSCALE))));
 	}
 #endif
 }

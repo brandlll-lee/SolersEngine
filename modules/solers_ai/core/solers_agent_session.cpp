@@ -2799,11 +2799,12 @@ bool SolersAgentSession::is_admitting_tool_calls() const {
 	return !_conflicts_with_pending(accesses);
 }
 
-Array SolersAgentSession::list_model_providers() {
-	if (models_dev) {
-		models_dev->refresh();
+Dictionary SolersAgentSession::get_model_provider(const String &p_catalog_id, const String &p_api_url) {
+	if (!models_dev) {
+		return Dictionary();
 	}
-	return models_dev ? models_dev->list_providers() : Array();
+	models_dev->refresh();
+	return models_dev->find_provider(p_catalog_id, p_api_url);
 }
 
 SolersAgentSession::SolersAgentSession() {

@@ -335,13 +335,24 @@ Array SolersModelsDev::reasoning_efforts(const Dictionary &p_model) {
 	return efforts;
 }
 
-Array SolersModelsDev::list_providers() const {
+Dictionary SolersModelsDev::find_provider(const String &p_id, const String &p_api_url) const {
 	MutexLock lock(providers_mutex);
-	Array out;
-	for (const KeyValue<StringName, Dictionary> &kv : providers) {
-		out.push_back(kv.value.duplicate(true));
+	const Dictionary *found = providers.getptr(StringName(p_id));
+	if (found) {
+		return found->duplicate(true);
 	}
-	return out;
+	// Custom/gateway profiles carry no catalog id; the endpoint URL is the
+	// remaining authoritative link to a catalog entry.
+	const String api_url = p_api_url.strip_edges().trim_suffix("/");
+	if (api_url.is_empty()) {
+		return Dictionary();
+	}
+	for (const KeyValue<StringName, Dictionary> &kv : providers) {
+		if (String(kv.value.get("api", String())).strip_edges().trim_suffix("/") == api_url) {
+			return kv.value.duplicate(true);
+		}
+	}
+	return Dictionary();
 }
 
 SolersModelsDev::SolersModelsDev() {}

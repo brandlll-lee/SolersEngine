@@ -72,9 +72,16 @@ class SolersDock : public PanelContainer {
 	SolersPMAIView *provider_settings_view = nullptr;
 	SolersSelectChip *model_chip = nullptr;
 	Control *model_popup_overlay = nullptr;
-	PanelContainer *model_popup = nullptr;
-	ScrollContainer *model_popup_scroll = nullptr;
-	VBoxContainer *model_popup_box = nullptr;
+	// Cascading model menu: a compact root menu (Model / Effort / actions)
+	// plus one lazily built submenu that opens beside the hovered row.
+	PanelContainer *model_menu = nullptr;
+	VBoxContainer *model_menu_box = nullptr;
+	Button *model_menu_model_row = nullptr;
+	Button *model_menu_effort_row = nullptr;
+	PanelContainer *model_submenu = nullptr;
+	ScrollContainer *model_submenu_scroll = nullptr;
+	VBoxContainer *model_submenu_box = nullptr;
+	int model_submenu_kind = 0; // 0 = closed, 1 = model, 2 = effort.
 	SolersSelectChip *context_chip = nullptr;
 	SolersSelectChip *approval_mode_chip = nullptr;
 	MarginContainer *approval_overlay_inset = nullptr;
@@ -122,11 +129,15 @@ class SolersDock : public PanelContainer {
 	void _on_workspace_toggle_pressed();
 	void _on_session_menu_pressed();
 	void _on_model_chip_pressed();
-	void _position_model_popup();
+	void _position_model_menu();
+	void _open_model_submenu(int p_kind);
+	void _position_model_submenu(Button *p_anchor_row);
+	void _close_model_submenu();
 	void _hide_model_popup();
 	void _on_model_popup_overlay_gui_input(const Ref<InputEvent> &p_event);
 	void _set_model_provider_from_popup(const String &p_provider, const String &p_model);
 	void _set_reasoning_effort_from_popup(const String &p_effort);
+	void _reset_model_defaults_from_popup();
 	void _open_model_settings_from_popup();
 	void _submit_chat_prompt(const String &p_prompt, const Array &p_attachments = Array());
 	void _on_agent_model_request_started();

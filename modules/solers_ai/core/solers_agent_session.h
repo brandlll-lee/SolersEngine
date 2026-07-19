@@ -265,7 +265,7 @@ public:
 	Array get_messages() const;
 	Dictionary get_plan() const { return current_plan.duplicate(true); }
 	Dictionary get_status() const;
-	Array list_model_providers();
+	Dictionary get_model_provider(const String &p_catalog_id, const String &p_api_url = String());
 	bool is_running() const { return running; }
 	bool is_executing_tool() const { return running && phase == PHASE_TOOL_EXECUTING; }
 	bool is_admitting_tool_calls() const;

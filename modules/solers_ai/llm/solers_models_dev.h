@@ -61,7 +61,9 @@ public:
 	// Effort values declared by models.dev. Unknown/custom reasoning models keep
 	// the generic High/Extra High controls instead of losing the capability.
 	static Array reasoning_efforts(const Dictionary &p_model);
-	Array list_providers() const;
+	// Catalog entry by id, falling back to matching the endpoint URL (custom
+	// gateway profiles). Empty dictionary when the catalog has no answer.
+	Dictionary find_provider(const String &p_id, const String &p_api_url = String()) const;
 
 	SolersModelsDev();
 	~SolersModelsDev();
