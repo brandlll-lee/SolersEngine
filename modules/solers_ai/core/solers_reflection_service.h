@@ -103,6 +103,7 @@ public:
 	Dictionary validate_placement_topology(const Array &p_members, const Array &p_relations) const;
 	Dictionary validate_structure(const Dictionary &p_args) const;
 	Dictionary bake_csg(const Dictionary &p_args);
+	Dictionary scatter_instances(const Dictionary &p_args);
 	Dictionary unwrap_uv2(const Dictionary &p_args, const String &p_operation_id = String());
 	Dictionary poll_uv2_unwrap(const Dictionary &p_args);
 	bool is_uv2_unwrap_ready(const Dictionary &p_args) const;

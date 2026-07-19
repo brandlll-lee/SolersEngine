@@ -15,7 +15,9 @@
 #include "core/io/json.h"
 #include "core/io/resource.h"
 #include "core/io/resource_loader.h"
+#include "core/io/resource_saver.h"
 #include "core/math/geometry_3d.h"
+#include "core/math/random_pcg.h"
 #include "core/object/class_db.h"
 #include "core/object/script_language.h"
 #include "core/templates/hash_set.h"
@@ -34,6 +36,7 @@
 #include "scene/3d/light_3d.h"
 #include "scene/3d/lightmap_gi.h"
 #include "scene/3d/mesh_instance_3d.h"
+#include "scene/3d/multimesh_instance_3d.h"
 #include "scene/3d/node_3d.h"
 #include "scene/3d/visual_instance_3d.h"
 #include "scene/3d/world_environment.h"
@@ -2871,6 +2874,175 @@ Dictionary SolersReflectionService::bake_csg(const Dictionary &) {
 	return _error("CSG_MODULE_UNAVAILABLE", "This build does not include the CSG module.", false);
 }
 #endif
+
+// Rejection sampling (slope filter) gets this many candidate draws per
+// requested instance before the tool reports what it actually placed.
+static constexpr int SOLERS_SCATTER_OVERSAMPLE_LIMIT = 8;
+
+Dictionary SolersReflectionService::scatter_instances(const Dictionary &p_args) {
+	String resolve_error;
+	MeshInstance3D *surface = Object::cast_to<MeshInstance3D>(_resolve_node(String(p_args.get("surface_path", String())), resolve_error));
+	if (!surface || surface->get_mesh().is_null()) {
+		return _error("SCATTER_SURFACE_INVALID", resolve_error.is_empty() ? "surface_path must reference a MeshInstance3D with a mesh." : resolve_error);
+	}
+	const String mesh_path = p_args.get("mesh_path", String());
+	const Ref<Mesh> instance_mesh = ResourceLoader::load(mesh_path, "Mesh");
+	if (instance_mesh.is_null()) {
+		return _error("SCATTER_MESH_INVALID", vformat("mesh_path does not load as a Mesh: %s", mesh_path));
+	}
+	const int requested = (int)p_args.get("count", 0);
+	if (requested <= 0) {
+		return _error("INVALID_ARGUMENT", "count must be a positive integer.");
+	}
+	const double scale_min = p_args.get("scale_min", 1.0);
+	const double scale_max = p_args.get("scale_max", scale_min);
+	if (scale_min <= 0.0 || scale_max < scale_min) {
+		return _error("INVALID_ARGUMENT", "Scale range requires 0 < scale_min <= scale_max.");
+	}
+	const bool align_to_normal = p_args.get("align_to_normal", true);
+	const bool random_yaw = p_args.get("random_yaw", true);
+	const double max_slope_degrees = CLAMP((double)p_args.get("max_slope_degrees", 90.0), 0.0, 90.0);
+	const double min_up_dot = Math::cos(Math::deg_to_rad(max_slope_degrees));
+
+	EditorInterface *editor_interface = EditorInterface::get_singleton();
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	Node *owner = editor_interface ? editor_interface->get_edited_scene_root() : nullptr;
+	if (!undo_redo || !owner) {
+		return _error("EDITOR_CONTEXT_UNAVAILABLE", "Scattering requires an edited scene and EditorUndoRedoManager.", false);
+	}
+
+	const Vector<Face3> faces = surface->get_mesh()->get_faces();
+	if (faces.is_empty()) {
+		return _error("SCATTER_SURFACE_INVALID", "The surface mesh has no triangles to scatter onto.");
+	}
+	// Area-weighted CDF over the surface triangles, measured in world units so
+	// a scaled surface node cannot bias the sample density.
+	const Transform3D surface_xform = surface->get_global_transform();
+	Vector<double> cumulative_area;
+	cumulative_area.resize(faces.size());
+	double total_area = 0.0;
+	for (int i = 0; i < faces.size(); i++) {
+		Face3 world_face = faces[i];
+		for (int j = 0; j < 3; j++) {
+			world_face.vertex[j] = surface_xform.xform(world_face.vertex[j]);
+		}
+		total_area += world_face.get_area();
+		cumulative_area.write[i] = total_area;
+	}
+	if (total_area <= 0.0) {
+		return _error("SCATTER_SURFACE_INVALID", "The surface mesh has zero area.");
+	}
+	// Correct normal transport under non-uniform surface scale.
+	const Basis world_normal_xform = surface_xform.basis.inverse().transposed();
+
+	RandomPCG rng((uint64_t)(int64_t)p_args.get("seed", 0));
+	LocalVector<Transform3D> placed;
+	placed.reserve(requested);
+	const int64_t max_attempts = (int64_t)requested * SOLERS_SCATTER_OVERSAMPLE_LIMIT;
+	for (int64_t attempt = 0; attempt < max_attempts && (int)placed.size() < requested; attempt++) {
+		const double pick = rng.randd() * total_area;
+		int low = 0;
+		int high = faces.size() - 1;
+		while (low < high) {
+			const int mid = (low + high) / 2;
+			if (cumulative_area[mid] < pick) {
+				low = mid + 1;
+			} else {
+				high = mid;
+			}
+		}
+		const Face3 &face = faces[low];
+		const Vector3 local_normal = face.get_plane().normal;
+		if (world_normal_xform.xform(local_normal).normalized().y < min_up_dot) {
+			continue;
+		}
+		// Uniform barycentric sample inside the triangle.
+		double u = rng.randd();
+		double v = rng.randd();
+		if (u + v > 1.0) {
+			u = 1.0 - u;
+			v = 1.0 - v;
+		}
+		const Vector3 position = face.vertex[0] + (face.vertex[1] - face.vertex[0]) * u + (face.vertex[2] - face.vertex[0]) * v;
+
+		Basis basis;
+		if (align_to_normal) {
+			const Vector3 up = local_normal;
+			const Vector3 reference = Math::abs(up.y) < (real_t)0.99 ? Vector3(0, 1, 0) : Vector3(1, 0, 0);
+			const Vector3 tangent = reference.cross(up).normalized();
+			basis = Basis(tangent, up, up.cross(tangent));
+		}
+		if (random_yaw) {
+			basis = basis * Basis(Vector3(0, 1, 0), rng.randd() * Math::TAU);
+		}
+		basis.scale(Vector3(1, 1, 1) * (real_t)(scale_min + rng.randd() * (scale_max - scale_min)));
+		placed.push_back(Transform3D(basis, position));
+	}
+	if (placed.is_empty()) {
+		return _error("SCATTER_NO_VALID_SURFACE", "No sample passed the slope filter; loosen max_slope_degrees or pick another surface.");
+	}
+
+	// One flat buffer upload instead of tens of thousands of per-instance
+	// RenderingServer calls. Layout: 3 rows of (basis row, origin component).
+	Ref<MultiMesh> multimesh;
+	multimesh.instantiate();
+	multimesh->set_transform_format(MultiMesh::TRANSFORM_3D);
+	multimesh->set_mesh(instance_mesh);
+	multimesh->set_instance_count((int)placed.size());
+	Vector<float> buffer;
+	buffer.resize((int)placed.size() * 12);
+	float *buffer_write = buffer.ptrw();
+	for (uint32_t i = 0; i < placed.size(); i++) {
+		const Transform3D &t = placed[i];
+		float *dst = buffer_write + i * 12;
+		for (int row = 0; row < 3; row++) {
+			dst[row * 4 + 0] = t.basis.rows[row][0];
+			dst[row * 4 + 1] = t.basis.rows[row][1];
+			dst[row * 4 + 2] = t.basis.rows[row][2];
+			dst[row * 4 + 3] = t.origin[row];
+		}
+	}
+	// set_buffer is C++-protected but exposed as the "buffer" property.
+	multimesh->set(SNAME("buffer"), buffer);
+
+	const String node_name = p_args.get("name", mesh_path.get_file().get_basename().to_pascal_case() + "Scatter");
+	String multimesh_path = p_args.get("multimesh_path", String());
+	if (multimesh_path.is_empty()) {
+		const String scene_path = owner->get_scene_file_path();
+		multimesh_path = (scene_path.is_empty() ? String("res://") : scene_path.get_base_dir()).path_join(node_name.to_snake_case() + ".multimesh.res");
+	}
+	// The transform payload lives in its own binary resource so the scene file
+	// stays reviewable no matter how many instances were placed.
+	multimesh->set_path(multimesh_path, true);
+	const Error save_error = ResourceSaver::save(multimesh, multimesh_path);
+	if (save_error != OK) {
+		return _error("SCATTER_SAVE_FAILED", vformat("Could not save the MultiMesh resource to %s (error %d).", multimesh_path, (int)save_error));
+	}
+
+	MultiMeshInstance3D *instances = memnew(MultiMeshInstance3D);
+	instances->set_name(node_name);
+	instances->set_multimesh(multimesh);
+	// Child of the surface: the buffer transforms are in surface-local space,
+	// so the instances follow the surface if it is moved later.
+	undo_redo->create_action("Scatter instances");
+	undo_redo->add_do_method(surface, "add_child", instances, true);
+	undo_redo->add_do_method(instances, "set_owner", owner);
+	undo_redo->add_do_reference(instances);
+	undo_redo->add_undo_method(surface, "remove_child", instances);
+	undo_redo->commit_action();
+
+	String output_path;
+	_safe_node_path(instances, output_path);
+	Dictionary data;
+	data["node_path"] = output_path;
+	data["multimesh_path"] = multimesh_path;
+	data["requested_count"] = requested;
+	data["placed_count"] = (int)placed.size();
+	data["surface_area"] = total_area;
+	data["scene_state_changed"] = true;
+	data["spatial_geometry_changed"] = true;
+	return _ok(data);
+}
 
 static bool _solers_mesh_has_uv2(const Ref<Mesh> &p_mesh) {
 	if (p_mesh.is_null() || p_mesh->get_surface_count() == 0) {
