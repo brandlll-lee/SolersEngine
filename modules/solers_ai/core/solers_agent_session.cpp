@@ -1806,6 +1806,15 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	const Dictionary scene_commit = _commit_dirty_scene_if_needed();
 	if (!scene_commit.is_empty()) {
 		data["scene_commit"] = scene_commit;
+		if (!(bool)scene_commit.get("ok", true)) {
+			// A failed commit means authored work is still memory-only. Put the
+			// native cause into history so the next turn acts on it instead of
+			// assuming the scene was saved.
+			const String commit_path = scene_commit.get("path", String());
+			Dictionary message = SolersLLMMessage::user(vformat("Solers could not save the edited scene when this turn ended (path: %s, error %d). The scene is still unsaved and its authored work exists only in memory; save it to a res:// path (EditorInterface.save_scene_as) before relying on it.", commit_path.is_empty() ? String("<unassigned>") : commit_path, (int)scene_commit.get("error", 0)));
+			message["origin"] = "godot_diagnostics";
+			messages.push_back(message);
+		}
 	}
 	if (!last_usage.is_empty()) {
 		data["usage"] = last_usage;

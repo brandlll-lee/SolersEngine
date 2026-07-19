@@ -2834,6 +2834,33 @@ void SolersAssetService::_run_task(Task *p_task) {
 		state["status"] = "ready";
 		state["stage"] = "ready";
 	}
+	if (String(state.get("kind", String())).to_lower() == "3d") {
+		// Provider-declared polycounts are estimates and can be far off.
+		// Measure the delivered glTF geometry once here so every later budget
+		// decision and model-facing report uses the same authoritative number.
+		int64_t measured_triangles = 0;
+		bool measured = false;
+		for (int i = 0; i < files.size(); i++) {
+			const String path = String(files[i]);
+			const String extension = path.get_extension().to_lower();
+			if (extension != "gltf" && extension != "glb") {
+				continue;
+			}
+			Dictionary document;
+			String parse_error;
+			if (_solers_gltf_document_json(path, document, parse_error)) {
+				measured_triangles += _solers_gltf_source_triangle_count(document);
+				measured = true;
+			}
+		}
+		if (measured) {
+			const int64_t declared = state.get("polycount", 0);
+			if (declared > 0 && declared != measured_triangles) {
+				state["declared_polycount"] = declared;
+			}
+			state["polycount"] = measured_triangles;
+		}
+	}
 	if (!state.has("entrypoints")) {
 		state["entrypoints"] = files;
 	}
@@ -4347,7 +4374,20 @@ Dictionary SolersAssetService::import_to_project(const Dictionary &p_args) {
 	}
 	const String status = String(manifest.get("status", String()));
 	if (status != "ready" && status != "draft") {
-		return _error("ASSET_NOT_READY", "Asset is not ready to import.");
+		const String stage = String(manifest.get("stage", String()));
+		const int progress = (int)manifest.get("progress", 0);
+		Dictionary error;
+		if (status == "queued" || status == "running") {
+			error = _error("ASSET_NOT_READY", vformat("Asset %s is still %s (stage: %s, %d%%). Do other work, then call job.wait with this asset id; Solers resumes you when it is ready.", asset_id, status, stage.is_empty() ? "processing" : stage, progress));
+		} else {
+			error = _error("ASSET_NOT_READY", vformat("Asset %s is in status \"%s\" and cannot be imported. Inspect it with asset.status, or acquire it again.", asset_id, status));
+		}
+		Dictionary data;
+		data["status"] = status;
+		data["stage"] = stage;
+		data["progress"] = progress;
+		error["data"] = data;
+		return error;
 	}
 	const Array source_files = manifest.get("files", Array());
 	Array declared_import_files = manifest.get("import_files", Array());
