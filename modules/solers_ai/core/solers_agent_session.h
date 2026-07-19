@@ -159,6 +159,7 @@ class SolersAgentSession : public Object {
 	int godot_log_warning_count = 0;
 	HashMap<uint64_t, Dictionary> worker_tool_audits;
 	Dictionary main_thread_tool_audit; // active only while a native handler is on-stack
+	Dictionary deferred_window_audit; // the single parked tool whose continuation owns the main thread between polls
 	Dictionary attributable_tool_errors; // call_id -> scoped Godot error evidence
 	uint64_t authored_revision = 0;
 	uint64_t runtime_epoch = 0;
@@ -186,6 +187,7 @@ class SolersAgentSession : public Object {
 	void _on_godot_log_message(const String &p_message, int p_type, int64_t p_source_thread);
 	void _begin_main_thread_tool_audit();
 	void _end_main_thread_tool_audit();
+	void _refresh_deferred_window_audit();
 	void _register_worker_tool_audit(uint64_t p_thread_id, const String &p_call_id, const String &p_tool, const Array &p_resource_accesses);
 	Dictionary _consume_attributable_tool_error(const String &p_call_id);
 	Dictionary _take_godot_diagnostics();

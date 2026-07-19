@@ -473,6 +473,7 @@ void SolersAgentSession::_ensure_godot_log_audit(bool p_turn_active) {
 		godot_log_warning_count = 0;
 		worker_tool_audits.clear();
 		main_thread_tool_audit.clear();
+		deferred_window_audit.clear();
 		attributable_tool_errors.clear();
 		pending_godot_diagnostics.clear();
 	}
@@ -506,6 +507,7 @@ void SolersAgentSession::_release_godot_log_audit() {
 	{
 		MutexLock lock(godot_log_mutex);
 		main_thread_tool_audit.clear();
+		deferred_window_audit.clear();
 		worker_tool_audits.clear();
 		attributable_tool_errors.clear();
 	}
@@ -526,7 +528,14 @@ void SolersAgentSession::_on_godot_log_message(const String &p_message, int p_ty
 	if (godot_log_turn_active) {
 		MutexLock lock(godot_log_mutex);
 		const Dictionary *worker_audit = worker_tool_audits.getptr((uint64_t)p_source_thread);
-		const Dictionary active_audit = worker_audit ? *worker_audit : main_thread_tool_audit;
+		Dictionary active_audit = worker_audit ? *worker_audit : main_thread_tool_audit;
+		if (active_audit.is_empty() && !deferred_window_audit.is_empty()) {
+			// No handler is on an audited stack, but exactly one parked tool
+			// (an awaited script, a pending import) owns this window: its
+			// continuation is the only session work the main loop can run.
+			active_audit = deferred_window_audit;
+			event["window"] = "deferred";
+		}
 		if (!active_audit.is_empty()) {
 			event["call_id"] = active_audit.get("call_id", String());
 			event["tool"] = active_audit.get("tool", String());
@@ -568,6 +577,21 @@ void SolersAgentSession::_end_main_thread_tool_audit() {
 	main_thread_tool_audit.clear();
 }
 
+void SolersAgentSession::_refresh_deferred_window_audit() {
+	// Attribution stays authoritative: only when exactly one tool is parked is
+	// the between-polls window unambiguously its continuation. With zero or
+	// several parked tools the window stays unattributed rather than guessed.
+	Dictionary audit;
+	if (pending_tool_executions.size() == 1) {
+		const PendingToolExecution *pending = pending_tool_executions[0];
+		audit["call_id"] = pending->call_id;
+		audit["tool"] = pending->canonical_name;
+		audit["resource_accesses"] = pending->resource_accesses;
+	}
+	MutexLock lock(godot_log_mutex);
+	deferred_window_audit = audit;
+}
+
 void SolersAgentSession::_register_worker_tool_audit(uint64_t p_thread_id, const String &p_call_id, const String &p_tool, const Array &p_resource_accesses) {
 	if (p_thread_id == Thread::UNASSIGNED_ID) {
 		return;
@@ -586,17 +610,37 @@ Dictionary SolersAgentSession::_consume_attributable_tool_error(const String &p_
 		MutexLock lock(godot_log_mutex);
 		scoped = attributable_tool_errors.get(p_call_id, Dictionary());
 		attributable_tool_errors.erase(p_call_id);
+		if (!scoped.is_empty()) {
+			// These events are delivered inside the tool result itself, so the
+			// boundary diagnostics channel keeps only unattributed evidence.
+			Array remaining;
+			for (int i = 0; i < pending_godot_diagnostics.size(); i++) {
+				const Dictionary event = pending_godot_diagnostics[i];
+				if (String(event.get("call_id", String())) != p_call_id) {
+					remaining.push_back(event);
+				}
+			}
+			pending_godot_diagnostics = remaining;
+		}
 	}
 	const Array events = scoped.get("events", Array());
 	if (events.is_empty()) {
 		return Dictionary();
 	}
+	bool handler_window = false;
+	for (int i = 0; i < events.size(); i++) {
+		if (String(Dictionary(events[i]).get("window", String())) != "deferred") {
+			handler_window = true;
+			break;
+		}
+	}
 	const String first_message = Dictionary(events[0]).get("message", "Godot reported an error while the native tool handler was executing.");
 	Dictionary error;
 	error["code"] = "GODOT_TOOL_ERROR";
-	error["message"] = events.size() == 1 ? first_message : vformat("Godot reported %d errors while the native tool handler was executing. First error: %s", events.size(), first_message);
+	error["message"] = events.size() == 1 ? first_message : vformat("Godot reported %d errors while this tool call was executing. First error: %s", events.size(), first_message);
 	error["recoverable"] = true;
 	error["source"] = "godot_editor";
+	error["handler_window"] = handler_window;
 	error["events"] = events;
 	return error;
 }
@@ -700,7 +744,24 @@ Dictionary SolersAgentSession::_commit_dirty_scene_if_needed() {
 	}
 
 	Error err = ERR_UNCONFIGURED;
-	if (editor_interface && root && !path.is_empty()) {
+	String save_path = path;
+	bool assigned_path = false;
+	if (editor_interface && root && save_path.is_empty()) {
+		// A dirty edited scene without a file yet gets a deterministic home
+		// derived from its root name, so authored work is always committable
+		// instead of silently evaporating with the in-memory scene.
+		String base = String(root->get_name()).validate_filename().to_lower();
+		if (base.is_empty()) {
+			base = "scene";
+		}
+		save_path = "res://" + base + ".tscn";
+		for (int i = 2; i < 100 && FileAccess::exists(save_path); i++) {
+			save_path = vformat("res://%s_%d.tscn", base, i);
+		}
+		editor_interface->save_scene_as(save_path, false);
+		assigned_path = root->get_scene_file_path() == save_path && FileAccess::exists(save_path);
+		err = assigned_path ? OK : ERR_CANT_CREATE;
+	} else if (editor_interface && root && !save_path.is_empty()) {
 		err = editor_interface->save_scene();
 	}
 	const bool dirty_after = history_id >= 0 && EditorUndoRedoManager::get_singleton() ?
@@ -708,7 +769,10 @@ Dictionary SolersAgentSession::_commit_dirty_scene_if_needed() {
 			dirty_before;
 
 	data["ok"] = err == OK;
-	data["path"] = path;
+	data["path"] = save_path;
+	if (assigned_path) {
+		data["assigned_path"] = true;
+	}
 	data["dirty_before"] = dirty_before;
 	data["dirty_after"] = dirty_after;
 	data["error"] = err;
@@ -723,6 +787,7 @@ String SolersAgentSession::_default_system_prompt() const {
 			"- Prefer the smallest coherent native change. Inspect live state before editing; do not guess APIs or scene contents.\n"
 			"- Built-in tools are already available. If tool.search is present, it discovers only external plugin, connector, or MCP tools. Skills provide knowledge and never activate capabilities.\n"
 			"- Keep scene edits undoable and authored in scene/resources. Write or patch code only when native composition cannot express the requested behavior.\n"
+			"- When context reports current_scene_unsaved, the edited scene exists only in memory. Save it to a res:// path early (EditorInterface.save_scene_as via engine.execute editor_call) so authored work is durable; Solers also commits it automatically when the turn ends.\n"
 			"- For algorithmic or bulk work (procedural data, batch changes), run a one-shot @tool script through script.run instead of attaching temporary scripts to the scene or playing it. Declare func run(host) when nodes need scene-tree access: parent them to host (a temporary in-tree Node freed after the call) and await inside run() as needed.\n"
 			"- Background tools return stable job ids immediately. Continue independent work; when nothing else is runnable, call job.wait once with the required ids. Solers resumes this same task when any requested job reaches a terminal state.\n"
 			"- Tool errors carry the native cause; read it, change what it names, and retry. Repeating an identical failed call wastes a step.\n"
@@ -778,6 +843,11 @@ String SolersAgentSession::_request_system_prompt(bool p_include_observation_del
 	EditorInterface *editor_interface = EditorInterface::get_singleton();
 	Node *edited_root = editor_interface ? editor_interface->get_edited_scene_root() : nullptr;
 	context["current_scene"] = edited_root ? edited_root->get_scene_file_path() : String();
+	if (edited_root && edited_root->get_scene_file_path().is_empty()) {
+		// Explicit fact instead of an empty string the model has to interpret:
+		// this scene lives only in memory until it is saved to a res:// path.
+		context["current_scene_unsaved"] = true;
+	}
 
 	Dictionary selection = observation->get_selection(0, 0);
 	Array selected_nodes = selection.get("nodes", Array());
@@ -1674,7 +1744,10 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	data["text"] = p_message;
 	data["reasoning"] = current_reasoning;
 	data["stop_reason"] = last_stop_reason;
-	const Dictionary scene_commit = p_outcome == "aborted" ? Dictionary() : _commit_dirty_scene_if_needed();
+	// Every terminal path commits authored scene work — including aborts.
+	// Stopping the loop must never discard finished edits; explicit reversal
+	// (history.revert, editor undo) is the mechanism that undoes work.
+	const Dictionary scene_commit = _commit_dirty_scene_if_needed();
 	if (!scene_commit.is_empty()) {
 		data["scene_commit"] = scene_commit;
 	}
@@ -1909,6 +1982,7 @@ void SolersAgentSession::_park_pending_tool(const Dictionary &p_poll_args) {
 	pending->is_resume = deferred_is_resume;
 	pending->started_msec = tool_started_msec;
 	pending_tool_executions.push_back(pending);
+	_refresh_deferred_window_audit();
 
 	deferred_prepared_call = nullptr;
 	deferred_queue_index = -1;
@@ -1936,6 +2010,7 @@ bool SolersAgentSession::_resume_ready_pending_tool() {
 			continue;
 		}
 		pending_tool_executions.remove_at(i);
+		_refresh_deferred_window_audit();
 		deferred_queue_index = pending->queue_index;
 		deferred_call_id = pending->call_id;
 		deferred_model_name = pending->model_name;
@@ -2010,6 +2085,7 @@ void SolersAgentSession::_clear_pending_tools(const Dictionary &p_terminal_resul
 		memdelete(pending);
 	}
 	pending_tool_executions.clear();
+	_refresh_deferred_window_audit();
 }
 
 void SolersAgentSession::_schedule_tool_execution(int p_queue_index, const String &p_id, const String &p_model_name, const String &p_canonical_name, const Dictionary &p_args, bool p_is_resume) {
@@ -2173,7 +2249,6 @@ void SolersAgentSession::_poll_tool_executing() {
 
 	deferred_done = false;
 	deferred_result = Dictionary();
-	_consume_attributable_tool_error(id);
 
 	if (!is_resume && permission_manager && _is_awaiting_approval_result(result)) {
 		const Dictionary error = result.get("error", Dictionary());
@@ -2214,6 +2289,22 @@ void SolersAgentSession::_poll_tool_executing() {
 		}
 		_park_pending_tool(Dictionary(poll_args));
 		return;
+	}
+	// The engine's own error stream is authoritative for whether this call's
+	// native work actually succeeded. Evidence is consumed only when the call
+	// settles so awaited continuations keep accumulating into the same call.
+	const Dictionary godot_error = _consume_attributable_tool_error(id);
+	if (!godot_error.is_empty()) {
+		Dictionary evidence_data = result.get("data", Dictionary());
+		evidence_data["godot_errors"] = godot_error.get("events", Array());
+		result["data"] = evidence_data;
+		if ((bool)result.get("ok", false) && (bool)godot_error.get("handler_window", false)) {
+			// Errors reported while the handler was on an audited stack make a
+			// success verdict false evidence; deferred-window events stay
+			// attached as evidence without overriding the handler's verdict.
+			result["ok"] = false;
+			result["error"] = godot_error;
+		}
 	}
 	const bool tool_succeeded = (bool)result.get("ok", false);
 	Dictionary data = result.get("data", Dictionary());
