@@ -4661,10 +4661,15 @@ Dictionary SolersAssetService::import_to_project(const Dictionary &p_args) {
 		forced_import.insert(String(Dictionary(static_lightmap_import_requests[i]).get("path", String())));
 	}
 	Array pending_import_files;
+	Array deferred_register_files;
 	for (int i = 0; i < imported.size(); i++) {
 		const String dst = imported[i];
 		const Ref<ResourceImporter> dst_importer = format_importer ? format_importer->get_importer_by_file(dst) : Ref<ResourceImporter>();
 		if (dst_importer.is_null()) {
+			// Files Godot does not import (.tres, .bin, ...) may reference the
+			// imported ones, so they register only after those imports settle;
+			// indexing them earlier lets previews/loads race the pipeline.
+			deferred_register_files.push_back(dst);
 			continue;
 		}
 		if (!(bool)copy_required[i] && !forced_import.has(dst) && ResourceLoader::is_import_valid(dst)) {
@@ -4684,6 +4689,7 @@ Dictionary SolersAssetService::import_to_project(const Dictionary &p_args) {
 	state["files"] = imported;
 	state["entrypoints"] = entrypoints;
 	state["pending_files"] = pending_import_files;
+	state["deferred_register_files"] = deferred_register_files;
 	state["import_file_count"] = pending_import_files.size();
 	state["result"] = result_data;
 	state["poll_args"] = poll_args;
@@ -4902,8 +4908,16 @@ void SolersAssetService::poll(bool p_allow_new_imports) {
 					continue;
 				}
 				const Array files = state.get("files", Array());
+				HashSet<String> deferred;
+				const Array deferred_files = state.get("deferred_register_files", Array());
+				for (int i = 0; i < deferred_files.size(); i++) {
+					deferred.insert(String(deferred_files[i]));
+				}
 				for (int i = 0; i < files.size(); i++) {
 					const String path = files[i];
+					if (deferred.has(path)) {
+						continue; // Registers after this transaction's imports settle.
+					}
 					if (!seen_register.has(path)) {
 						seen_register.insert(path);
 						register_files.push_back(path);
@@ -4967,6 +4981,17 @@ void SolersAssetService::poll(bool p_allow_new_imports) {
 	if (!verify_id.is_empty()) {
 		const Array files = verify_state.get("files", Array());
 		const Array entrypoints = verify_state.get("entrypoints", files);
+		// Every import this transaction depends on has settled; the files that
+		// reference them can now register and load without racing the pipeline.
+		const Array deferred_files = verify_state.get("deferred_register_files", Array());
+		if (!deferred_files.is_empty()) {
+			Vector<String> deferred_register;
+			for (int i = 0; i < deferred_files.size(); i++) {
+				deferred_register.push_back(String(deferred_files[i]));
+			}
+			filesystem->update_files(deferred_register);
+			verify_state.erase("deferred_register_files");
+		}
 		const Dictionary inspection = _project_import_inspection(files, entrypoints, true);
 		const Array static_lightmap_paths = Dictionary(verify_state.get("result", Dictionary())).get("static_lightmap_import_paths", Array());
 		if (!(bool)inspection.get("ready", false)) {

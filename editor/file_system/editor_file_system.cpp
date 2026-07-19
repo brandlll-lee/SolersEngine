@@ -3481,9 +3481,40 @@ Error EditorFileSystem::reimport_files_incremental_begin(const Vector<String> &p
 	return OK;
 }
 
+struct EditorFileSystem::IncrementalThreadedBatch {
+	WorkerThreadPool::GroupID group = -1;
+	int from = 0;
+	int count = 0;
+	Ref<ResourceImporter> importer;
+	Semaphore sem; // _reimport_thread posts per file; nothing waits, count dies with the batch.
+	ImportThreadData tdata;
+};
+
 bool EditorFileSystem::reimport_files_incremental_step(uint64_t p_budget_msec) {
 	if (!incremental_import_active) {
 		return true;
+	}
+	// A worker-pool batch owns the pipeline (`importing` stays true so scans
+	// cannot interleave); the step only polls it for completion.
+	if (incremental_import.threaded_batch) {
+		IncrementalThreadedBatch *batch = incremental_import.threaded_batch;
+		if (!WorkerThreadPool::get_singleton()->is_group_task_completed(batch->group)) {
+			if (incremental_import.progress) {
+				incremental_import.progress->step(batch->from + (int)WorkerThreadPool::get_singleton()->get_group_processed_element_count(batch->group));
+			}
+			return false;
+		}
+		WorkerThreadPool::get_singleton()->wait_for_group_task_completion(batch->group);
+		batch->importer->import_threaded_end();
+		Vector<String> reloads;
+		for (int i = 0; i < batch->count; i++) {
+			reloads.push_back(incremental_import.files[batch->from + i].path);
+		}
+		incremental_import.next = batch->from + batch->count;
+		memdelete(batch);
+		incremental_import.threaded_batch = nullptr;
+		importing = false;
+		emit_signal(SNAME("resources_reimported"), reloads);
 	}
 	// A modal import or a scan owns the pipeline right now; resume next frame.
 	if (importing || is_scanning()) {
@@ -3491,11 +3522,47 @@ bool EditorFileSystem::reimport_files_incremental_step(uint64_t p_budget_msec) {
 	}
 	importing = true;
 
+#if defined(THREADS_ENABLED) && !defined(WEB_ENABLED)
+	const bool use_multiple_threads = GLOBAL_GET("editor/import/use_multiple_threads");
+#else
+	const bool use_multiple_threads = false;
+#endif
+
 	// The budget is measured against real import work: each file is atomic, and
 	// at least one file makes progress per step. Signals are paired per file so
 	// observers receive authoritative completion events at file granularity.
 	const uint64_t deadline = OS::get_singleton()->get_ticks_msec() + MAX((uint64_t)1, p_budget_msec);
 	while (incremental_import.next < incremental_import.files.size()) {
+		const int from = incremental_import.next;
+		if (use_multiple_threads && incremental_import.files[from].threaded) {
+			Ref<ResourceImporter> importer = ResourceFormatImporter::get_singleton()->get_importer_by_name(incremental_import.files[from].importer);
+			if (importer.is_valid()) {
+				// Hand the contiguous run sharing this importer to the worker
+				// pool and return; later steps poll for completion above.
+				int end = from + 1;
+				while (end < incremental_import.files.size() && incremental_import.files[end].threaded && incremental_import.files[end].importer == incremental_import.files[from].importer) {
+					end++;
+				}
+				Vector<String> reimporting;
+				for (int i = from; i < end; i++) {
+					reimporting.push_back(incremental_import.files[i].path);
+				}
+				emit_signal(SNAME("resources_reimporting"), reimporting);
+				importer->import_threaded_begin();
+				IncrementalThreadedBatch *batch = memnew(IncrementalThreadedBatch);
+				batch->from = from;
+				batch->count = end - from;
+				batch->importer = importer;
+				batch->tdata.reimport_from = from;
+				batch->tdata.reimport_files = incremental_import.files.ptr();
+				batch->tdata.imported_sem = &batch->sem;
+				batch->group = WorkerThreadPool::get_singleton()->add_template_group_task(this, &EditorFileSystem::_reimport_thread, &batch->tdata, batch->count, -1, false, vformat(TTR("Import resources of type: %s"), incremental_import.files[from].importer));
+				incremental_import.threaded_batch = batch;
+				return false; // `importing` stays true until the batch settles.
+			}
+			// An unresolved importer falls through to the single-file path,
+			// which keeps the per-file signal pairing intact.
+		}
 		const String path = incremental_import.files[incremental_import.next].path;
 		if (incremental_import.progress) {
 			incremental_import.progress->step(incremental_import.next);

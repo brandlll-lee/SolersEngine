@@ -368,11 +368,16 @@ class EditorFileSystem : public Node {
 
 	// Solers: state for the incremental (frame-sliced) reimport variant used by
 	// agent-driven asset imports. See reimport_files_incremental_begin().
+	// Runs of thread-capable importers (textures and friends) execute as one
+	// WorkerThreadPool group batch that steps only poll for completion, so the
+	// editor loop never carries that import work itself.
+	struct IncrementalThreadedBatch;
 	struct IncrementalImportQueue {
 		Vector<ImportFile> files;
 		HashSet<String> groups_to_reimport;
 		int next = 0;
 		EditorProgressBG *progress = nullptr;
+		IncrementalThreadedBatch *threaded_batch = nullptr;
 	};
 	IncrementalImportQueue incremental_import;
 	bool incremental_import_active = false;
