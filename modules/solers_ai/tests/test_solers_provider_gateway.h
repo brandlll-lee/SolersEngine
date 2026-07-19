@@ -725,7 +725,7 @@ TEST_CASE("[SolersTool] pending work has a distinct continuation callback") {
 }
 
 TEST_CASE("[SolersBuiltinSkills] compiled index exposes catalog summary without full content") {
-	CHECK(SolersBuiltinSkills::get_count() == 12);
+	CHECK(SolersBuiltinSkills::get_count() == 14);
 
 	SolersBuiltinSkillView skill;
 	REQUIRE(SolersBuiltinSkills::find_by_name("godot-3d-rendering", skill));
@@ -737,10 +737,16 @@ TEST_CASE("[SolersBuiltinSkills] compiled index exposes catalog summary without 
 	CHECK(skill.content.contains("Preserve standard Godot paths"));
 	REQUIRE(SolersBuiltinSkills::find_by_name("godot-plugins-terrain", skill));
 	CHECK(skill.content.contains("never invent a `terrain.*` API"));
+	REQUIRE(SolersBuiltinSkills::find_by_name("photorealism-pipeline", skill));
+	CHECK(skill.content.contains("physical_light_units"));
+	REQUIRE(SolersBuiltinSkills::find_by_name("destruction-vfx", skill));
+	CHECK(skill.content.contains("decompress"));
 
 	const String catalog = SolersBuiltinSkills::build_catalog_prompt();
 	CHECK(catalog.contains("godot-3d-rendering"));
 	CHECK(catalog.contains("godot-xr-mobile-platforms"));
+	CHECK(catalog.contains("photorealism-pipeline"));
+	CHECK(catalog.contains("destruction-vfx"));
 	CHECK_FALSE(catalog.contains("one authoritative final GI path"));
 
 	SolersBuiltinSkillView missing;
@@ -867,7 +873,7 @@ TEST_CASE("[SolersToolRegistry] default model surface is domain-first") {
 	Dictionary scene_edit = find_tool_def(tools, "scene.edit");
 	REQUIRE_FALSE(scene_edit.is_empty());
 	CHECK(scene_edit.get("execution", String()) == "main_thread");
-	CHECK_FALSE(scene_edit.get("ephemeral_result", true));
+	CHECK_FALSE(scene_edit.has("ephemeral_result"));
 	const Dictionary scene_edit_properties = Dictionary(scene_edit.get("input_schema", Dictionary())).get("properties", Dictionary());
 	const Dictionary scene_operations = scene_edit_properties.get("operations", Dictionary());
 	CHECK((int)scene_operations.get("maxItems", 0) == 256);
@@ -878,7 +884,7 @@ TEST_CASE("[SolersToolRegistry] default model surface is domain-first") {
 	CHECK_FALSE(operation_names.has("list_properties"));
 
 	Dictionary engine_inspect = find_tool_def(tools, "engine.inspect");
-	CHECK(engine_inspect.get("ephemeral_result", false));
+	CHECK_FALSE(engine_inspect.has("ephemeral_result"));
 	const Dictionary engine_inspect_properties = Dictionary(engine_inspect.get("input_schema", Dictionary())).get("properties", Dictionary());
 	CHECK(engine_inspect_properties.has("query"));
 	CHECK(engine_inspect_properties.has("classes"));
@@ -897,13 +903,13 @@ TEST_CASE("[SolersToolRegistry] default model surface is domain-first") {
 	Dictionary resource_edit = find_tool_def(tools, "resource.edit");
 	CHECK(Dictionary(resource_edit.get("input_schema", Dictionary())).has("oneOf"));
 	CHECK(String(find_tool_def(tools, "mesh.unwrap_uv2").get("description", String())).contains("off the editor thread"));
-	CHECK(find_tool_def(tools, "viewport.capture").get("ephemeral_result", false));
+	CHECK_FALSE(find_tool_def(tools, "viewport.capture").has("ephemeral_result"));
 	const Dictionary capture_properties = Dictionary(Dictionary(find_tool_def(tools, "viewport.capture").get("input_schema", Dictionary())).get("properties", Dictionary()));
 	CHECK(Array(Dictionary(capture_properties.get("target", Dictionary())).get("enum", Array())).has("orthographic"));
 	CHECK(find_tool_def(tools, "scene.validate").get("produces_scene_validation", false));
 	CHECK(find_tool_def(tools, "editor.action.list").is_empty());
 	CHECK(find_tool_def(tools, "editor.action.execute").is_empty());
-	CHECK_FALSE(find_tool_def(tools, "skill.read").get("ephemeral_result", true));
+	CHECK_FALSE(find_tool_def(tools, "skill.read").has("ephemeral_result"));
 	Dictionary project_search = find_tool_def(tools, "project.search");
 	REQUIRE_FALSE(project_search.is_empty());
 	CHECK(project_search.get("exposure", String()) == "direct");
@@ -1075,6 +1081,77 @@ TEST_CASE("[SolersScriptService] script edits commit and return post-write diagn
 	CHECK_FALSE((bool)Dictionary(shader_result.get("data", Dictionary())).get("valid", true));
 	CHECK(FileAccess::exists(shader_path));
 	DirAccess::remove_file_or_error(shader_fs_path);
+}
+
+TEST_CASE("[SolersScriptService] patch matching tolerates whitespace drift and rejects ambiguity") {
+	const String path = "res://solers_patch_cascade_contract.gd";
+	const String fs_path = ProjectSettings::get_singleton()->globalize_path(path);
+	if (FileAccess::exists(path)) {
+		DirAccess::remove_file_or_error(fs_path);
+	}
+	SolersScriptService script_service;
+	Dictionary write_args;
+	write_args["path"] = path;
+	write_args["content"] = String::utf8("extends Node\n\nfunc alpha() -> int:\n\treturn 1\n\nfunc beta() -> int:\n\tprint(\"hello world\")\n\treturn 2\n\nfunc first_stub() -> void:\n\tpass\n\nfunc second_stub() -> void:\n\tpass\n");
+	REQUIRE((bool)script_service.write_file(write_args).get("ok", false));
+
+	// Indentation drift: the model sent spaces where the file uses tabs. The
+	// match re-anchors on trimmed lines and the replacement is re-indented to
+	// the file's actual indentation.
+	Dictionary drift;
+	drift["path"] = path;
+	drift["old_text"] = "    return 1";
+	drift["new_text"] = "    return 10";
+	const Dictionary drifted = script_service.patch_file(drift);
+	REQUIRE((bool)drifted.get("ok", false));
+	const Dictionary drift_data = drifted.get("data", Dictionary());
+	CHECK(drift_data.get("match_strategy", String()) == "line_trimmed");
+	CHECK(String(drift_data.get("context_after", String())).contains("return 10"));
+	CHECK(FileAccess::get_file_as_string(path).contains("\treturn 10"));
+
+	// Typographic quotes fold to their ASCII equivalents before comparison.
+	Dictionary quotes;
+	quotes["path"] = path;
+	quotes["old_text"] = String::utf8("\tprint(\xE2\x80\x9Chello world\xE2\x80\x9D)");
+	quotes["new_text"] = "\tprint(\"hello, world\")";
+	const Dictionary quoted = script_service.patch_file(quotes);
+	REQUIRE((bool)quoted.get("ok", false));
+	CHECK(FileAccess::get_file_as_string(path).contains("hello, world"));
+
+	// Two stub bodies share the same trimmed key: tolerant matching must ask
+	// for more context instead of guessing which one was meant.
+	Dictionary ambiguous;
+	ambiguous["path"] = path;
+	ambiguous["old_text"] = "    pass";
+	ambiguous["new_text"] = "    breakpoint";
+	const Dictionary ambiguous_result = script_service.patch_file(ambiguous);
+	CHECK_FALSE(ambiguous_result.get("ok", true));
+	CHECK(Dictionary(ambiguous_result.get("error", Dictionary())).get("code", String()) == "PATCH_TEXT_AMBIGUOUS");
+
+	// An explicit occurrence beyond the exact count fails outright; tolerant
+	// tiers never silently retarget a different occurrence.
+	Dictionary occurrence;
+	occurrence["path"] = path;
+	occurrence["old_text"] = "pass";
+	occurrence["new_text"] = "breakpoint";
+	occurrence["occurrence"] = 3;
+	const Dictionary occurrence_result = script_service.patch_file(occurrence);
+	CHECK_FALSE(occurrence_result.get("ok", true));
+	CHECK(Dictionary(occurrence_result.get("error", Dictionary())).get("code", String()) == "PATCH_TEXT_NOT_FOUND");
+	CHECK(FileAccess::get_file_as_string(path).contains("pass"));
+
+	// A genuine miss returns the real bytes around the nearest anchor line so
+	// the next attempt can copy them exactly.
+	Dictionary missing;
+	missing["path"] = path;
+	missing["old_text"] = "func beta() -> int:\n\treturn 999";
+	missing["new_text"] = "func beta() -> int:\n\treturn 3";
+	const Dictionary missing_result = script_service.patch_file(missing);
+	CHECK_FALSE(missing_result.get("ok", true));
+	CHECK(Dictionary(missing_result.get("error", Dictionary())).get("code", String()) == "PATCH_TEXT_NOT_FOUND");
+	CHECK(String(Dictionary(missing_result.get("data", Dictionary())).get("closest_context", String())).contains("return 2"));
+
+	DirAccess::remove_file_or_error(fs_path);
 }
 
 TEST_CASE("[SolersScriptService] native serialized resources require native resource APIs") {
@@ -2482,120 +2559,38 @@ TEST_CASE("[SolersContextManager] compaction requires context growth after the l
 	CHECK(context.should_compact(tokens_after + 1, tokens_after + 1));
 }
 
-TEST_CASE("[SolersContextManager] request projection clears consumed ephemeral tool results") {
+TEST_CASE("[SolersContextManager] request projection is append-only pass-through") {
+	// Durable history must reach the provider byte-identical between
+	// compactions: any per-request rewrite would invalidate the provider's
+	// prefix cache and reprocess the entire conversation.
 	SolersContextManager context;
+	Dictionary capture;
+	capture["id"] = "capture_1";
+	capture["source"] = "tool_capture";
+	Array capture_attachments;
+	capture_attachments.push_back(capture);
+	Dictionary old_tool = SolersLLMMessage::tool_result("call_old", "scene.inspect", "old observation");
+	old_tool["attachments"] = capture_attachments;
+
 	Array messages;
 	messages.push_back(SolersLLMMessage::user("Inspect the scene."));
 	messages.push_back(SolersLLMMessage::assistant("Inspecting.", Array()));
-	Dictionary old_ephemeral = SolersLLMMessage::tool_result("call_old", "scene.inspect", "old observation");
-	old_ephemeral["retention"] = "ephemeral";
-	Dictionary preview;
-	preview["source"] = "asset_catalog_preview";
-	Array preview_attachments;
-	preview_attachments.push_back(preview);
-	old_ephemeral["attachments"] = preview_attachments;
-	messages.push_back(old_ephemeral);
-	messages.push_back(SolersLLMMessage::tool_result("call_skill", "skill.read", "durable instructions"));
-	messages.push_back(SolersLLMMessage::assistant("Applying the observation.", Array()));
-	Dictionary current_ephemeral = SolersLLMMessage::tool_result("call_current", "scene.inspect", "current observation");
-	current_ephemeral["retention"] = "ephemeral";
-	messages.push_back(current_ephemeral);
-
-	const Array projected = context.prepare_request(messages, String(), Array());
-
-	const Dictionary old_tool = projected[2];
-	const Dictionary durable_tool = projected[3];
-	const Dictionary current_tool = projected[5];
-	CHECK(old_tool.get("content", String()) == String(SolersContextManager::TOOL_RESULT_PLACEHOLDER));
-	CHECK_FALSE(old_tool.has("attachments"));
-	CHECK(durable_tool.get("content", String()) == "durable instructions");
-	CHECK(current_tool.get("content", String()) == "current observation");
-}
-
-TEST_CASE("[SolersContextManager] request projection keeps latest asset catalog contact sheet") {
-	SolersContextManager context;
-	Dictionary old_preview;
-	old_preview["id"] = "catalog_old";
-	old_preview["source"] = "asset_catalog_preview";
-	Array old_attachments;
-	old_attachments.push_back(old_preview);
-	Dictionary old_tool = SolersLLMMessage::tool_result("call_old", "asset.catalog.search", "{}");
-	old_tool["attachments"] = old_attachments;
-
-	Dictionary new_preview;
-	new_preview["id"] = "catalog_new";
-	new_preview["source"] = "asset_catalog_preview";
-	Array new_attachments;
-	new_attachments.push_back(new_preview);
-	Dictionary new_tool = SolersLLMMessage::tool_result("call_new", "asset.catalog.search", "{}");
-	new_tool["attachments"] = new_attachments;
-
-	Array messages;
-	messages.push_back(SolersLLMMessage::user("Find wallpaper."));
 	messages.push_back(old_tool);
-	messages.push_back(new_tool);
+	messages.push_back(SolersLLMMessage::assistant("Applying the observation.", Array()));
+	messages.push_back(SolersLLMMessage::tool_result("call_current", "scene.inspect", "current observation"));
+
 	const Array projected = context.prepare_request(messages, String(), Array());
-	CHECK(Array(Dictionary(projected[1]).get("attachments", Array())).is_empty());
-	REQUIRE(Array(Dictionary(projected[2]).get("attachments", Array())).size() == 1);
-	CHECK(Dictionary(Array(Dictionary(projected[2]).get("attachments", Array()))[0]).get("id", String()) == "catalog_new");
-}
-
-TEST_CASE("[SolersContextManager] request projection preserves user references and unconsumed captures") {
-	SolersContextManager context;
-	Dictionary user_attachment;
-	user_attachment["id"] = "reference";
-	user_attachment["source"] = "user";
-	Array user_attachments;
-	user_attachments.push_back(user_attachment);
-	Dictionary user = SolersLLMMessage::user("Match this reference.");
-	user["attachments"] = user_attachments;
-
-	Dictionary first_capture;
-	first_capture["id"] = "capture_1";
-	first_capture["source"] = "tool_capture";
-	Array first_attachments;
-	first_attachments.push_back(first_capture);
-	Dictionary first_tool = SolersLLMMessage::tool_result("call_1", "viewport_capture", "{}");
-	first_tool["attachments"] = first_attachments;
-
-	Dictionary second_capture;
-	second_capture["id"] = "capture_2";
-	second_capture["source"] = "tool_capture";
-	Array second_attachments;
-	second_attachments.push_back(second_capture);
-	Dictionary second_tool = SolersLLMMessage::tool_result("call_2", "viewport_capture", "{}");
-	second_tool["attachments"] = second_attachments;
-
-	Array messages;
-	messages.push_back(user);
-	messages.push_back(first_tool);
-	messages.push_back(second_tool);
-	Array projected = context.prepare_request(messages, String(), Array());
-
-	CHECK(Array(Dictionary(projected[0]).get("attachments", Array())).size() == 1);
-	CHECK(Array(Dictionary(projected[1]).get("attachments", Array())).size() == 1);
-	REQUIRE(Array(Dictionary(projected[2]).get("attachments", Array())).size() == 1);
-	CHECK(Dictionary(Array(Dictionary(projected[2]).get("attachments", Array()))[0]).get("id", String()) == "capture_2");
-}
-
-TEST_CASE("[SolersContextManager] request projection does not resend consumed state captures") {
-	SolersContextManager context;
-	Dictionary capture;
-	capture["id"] = "state_capture";
-	capture["source"] = "tool_capture";
-	Array attachments;
-	attachments.push_back(capture);
-	Dictionary state = SolersLLMMessage::user("revision 2");
-	state["origin"] = "solers_state";
-	state["attachments"] = attachments;
-
-	Array messages;
-	messages.push_back(SolersLLMMessage::user("Build the room."));
-	messages.push_back(state);
-	messages.push_back(SolersLLMMessage::assistant("I inspected revision 2.", Array()));
-	const Array projected = context.prepare_request(messages, String(), Array());
-	REQUIRE(projected.size() == 3);
-	CHECK(Array(Dictionary(projected[1]).get("attachments", Array())).is_empty());
+	REQUIRE(projected.size() == messages.size());
+	for (int i = 0; i < messages.size(); i++) {
+		CHECK(Dictionary(projected[i]) == Dictionary(messages[i]));
+	}
+	CHECK(Dictionary(projected[2]).get("content", String()) == "old observation");
+	CHECK(Array(Dictionary(projected[2]).get("attachments", Array())).size() == 1);
+	// The projection is a copy: appending the per-request environment message
+	// must not leak into durable history.
+	Array mutable_projection = projected;
+	mutable_projection.push_back(SolersLLMMessage::user("environment"));
+	CHECK(messages.size() == 5);
 }
 
 TEST_CASE("[SolersContextManager] full compaction keeps real user prompts and one plan-aware summary") {
@@ -2682,32 +2677,64 @@ TEST_CASE("[SolersContextManager] full compaction drops consumed tool captures")
 	CHECK(Dictionary(compacted[1]).get("origin", String()) == "compaction_summary");
 }
 
-TEST_CASE("[SolersContextManager] request and full compaction keep only the latest harness state") {
+TEST_CASE("[SolersContextManager] full compaction drops per-request harness state") {
+	// solers_state messages are regenerated fresh for every request; keeping a
+	// stale copy across a compaction would present outdated engine facts as
+	// current.
 	SolersContextManager context;
-	Dictionary old_state = SolersLLMMessage::user("revision 1");
-	old_state["origin"] = "solers_state";
-	Dictionary new_state = SolersLLMMessage::user("revision 2");
-	new_state["origin"] = "solers_state";
-	Dictionary state_capture;
-	state_capture["id"] = "state_capture";
-	state_capture["source"] = "tool_capture";
-	Array state_attachments;
-	state_attachments.push_back(state_capture);
-	new_state["attachments"] = state_attachments;
+	Dictionary state = SolersLLMMessage::user("revision 2");
+	state["origin"] = "solers_state";
 	Array messages;
 	messages.push_back(SolersLLMMessage::user("Build the room."));
-	messages.push_back(old_state);
-	messages.push_back(new_state);
-
-	const Array projected = context.prepare_request(messages, "system", Array());
-	REQUIRE(projected.size() == 2);
-	CHECK(Dictionary(projected[1]).get("content", String()) == "revision 2");
+	messages.push_back(state);
 
 	const Array compacted = Dictionary(context.apply_compaction(messages, "Continue.", Dictionary())).get("messages", Array());
-	REQUIRE(compacted.size() == 3);
-	CHECK(Dictionary(compacted[1]).get("content", String()) == "revision 2");
-	CHECK(Dictionary(compacted[1]).get("origin", String()) == "solers_state");
-	CHECK(Array(Dictionary(compacted[1]).get("attachments", Array())).is_empty());
+	REQUIRE(compacted.size() == 2);
+	CHECK(Dictionary(compacted[0]).get("content", String()) == "Build the room.");
+	CHECK(Dictionary(compacted[1]).get("origin", String()) == "compaction_summary");
+}
+
+TEST_CASE("[SolersContextManager] tool result budget clamps to a fixed band") {
+	// Window fraction applies between the floor and the ceiling; a giant
+	// window must not let one observation displace working history.
+	CHECK(SolersContextManager::tool_result_token_budget(0) == 16000);
+	CHECK(SolersContextManager::tool_result_token_budget(8000) == 4000);
+	CHECK(SolersContextManager::tool_result_token_budget(40000) == 10000);
+	CHECK(SolersContextManager::tool_result_token_budget(200000) == 16000);
+	CHECK(SolersContextManager::tool_result_token_budget(1000000) == 16000);
+}
+
+TEST_CASE("[SolersResourceService] nearest names rank containment above similarity") {
+	PackedStringArray candidates;
+	candidates.push_back("get_size()");
+	candidates.push_back("size_flags_horizontal");
+	candidates.push_back("visible");
+	candidates.push_back("scale");
+	const PackedStringArray nearest = solers_nearest_names("size", candidates, 3);
+	REQUIRE(nearest.size() >= 2);
+	CHECK(nearest.has("get_size()"));
+	CHECK(nearest.has("size_flags_horizontal"));
+	CHECK_FALSE(nearest.has("visible"));
+	CHECK(solers_nearest_names("", candidates, 3).is_empty());
+}
+
+TEST_CASE("[SolersResourceService] display values summarize bulk variants by type") {
+	PackedVector3Array big_points;
+	big_points.resize(3654);
+	const Variant big_summary = solers_summarize_display_value(big_points);
+	REQUIRE(big_summary.get_type() == Variant::STRING);
+	CHECK(String(big_summary).contains("PackedVector3Array"));
+	CHECK(String(big_summary).contains("3654"));
+
+	PackedVector3Array small_points;
+	small_points.resize(3);
+	CHECK(solers_summarize_display_value(small_points).get_type() == Variant::PACKED_VECTOR3_ARRAY);
+
+	const String long_text = String("x").repeat(5000);
+	const Variant truncated = solers_summarize_display_value(long_text);
+	CHECK(String(truncated).length() < 2200);
+	CHECK(String(truncated).contains("5000 chars total"));
+	CHECK(String(solers_summarize_display_value(String("short"))) == "short");
 }
 
 TEST_CASE("[SolersAgentSession] leaves model request limits to the caller") {
