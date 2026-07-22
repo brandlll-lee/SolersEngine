@@ -39,6 +39,7 @@
 #include "editor/gui/editor_version_button.h"
 #include "editor/scene/editor_scene_tabs.h"
 #include "editor/settings/editor_command_palette.h"
+#include "modules/modules_enabled.gen.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
 #include "scene/gui/separator.h"
@@ -101,6 +102,21 @@ int EditorBottomPanel::get_bottom_panel_offset() {
 }
 
 void EditorBottomPanel::_repaint() {
+#ifdef MODULE_SOLERS_AI_ENABLED
+	// Solers: bottom chrome is the right strip. Keep center_split collapsed forever.
+	if (EditorNode::get_singleton() && EditorNode::get_singleton()->is_solers_side_layout()) {
+		previous_tab = get_current_tab();
+		DockSplitContainer *center_split = EditorNode::get_center_split();
+		ERR_FAIL_NULL(center_split);
+		center_split->set_dragger_visibility(SplitContainer::DRAGGER_HIDDEN);
+		center_split->set_collapsed(true);
+		pin_button->hide();
+		expand_button->hide();
+		remove_theme_style_override(SceneStringName(panel));
+		return;
+	}
+#endif
+
 	bool panel_collapsed = get_current_tab() == -1;
 
 	if (panel_collapsed && get_popup()) {

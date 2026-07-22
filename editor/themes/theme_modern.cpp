@@ -1585,7 +1585,6 @@ void ThemeModern::populate_editor_styles(const Ref<EditorTheme> &p_theme, Editor
 
 		p_theme->set_stylebox("panel_container", "ProjectManager", p_config.foreground_panel);
 		p_theme->set_stylebox("project_list", "ProjectManager", style_project_list);
-		p_theme->set_stylebox("quick_settings_panel", "ProjectManager", style_project_list);
 		p_theme->set_constant("sidebar_button_icon_separation", "ProjectManager", int(6 * EDSCALE));
 		p_theme->set_icon("browse_folder", "ProjectManager", p_theme->get_icon(SNAME("FolderBrowse"), EditorStringName(EditorIcons)));
 		p_theme->set_icon("browse_file", "ProjectManager", p_theme->get_icon(SNAME("FileBrowse"), EditorStringName(EditorIcons)));

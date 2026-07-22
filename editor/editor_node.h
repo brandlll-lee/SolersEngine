@@ -82,6 +82,7 @@ class EditorAbout;
 class EditorBuildProfileManager;
 class EditorBottomPanel;
 class EditorCommandPalette;
+class EditorDock;
 class EditorDockManager;
 class EditorExport;
 class EditorExportPreset;
@@ -314,11 +315,6 @@ private:
 	DockSplitContainer *right_l_vsplit = nullptr;
 	DockSplitContainer *right_r_vsplit = nullptr;
 	DockSplitContainer *center_split = nullptr;
-	PopupMenu *solers_run_options_popup = nullptr;
-	Control *solers_session_overlay = nullptr;
-	PanelContainer *solers_session_popup = nullptr;
-	VBoxContainer *solers_session_popup_list = nullptr;
-	SolersGlyphButton *solers_viewport_chrome_button = nullptr;
 	HSplitContainer *solers_editor_split = nullptr;
 	VBoxContainer *solers_editor_host = nullptr;
 	HSplitContainer *solers_workspace_split = nullptr;
@@ -330,6 +326,11 @@ private:
 	DockSplitContainer *solers_native_file_split = nullptr;
 	Control *solers_native_file_top = nullptr;
 	Control *solers_native_file_bottom = nullptr;
+	Control *solers_bottom_dock_host = nullptr;
+	EditorDock *solers_hosted_bottom_dock = nullptr;
+	PopupMenu *solers_side_more_popup = nullptr;
+	bool solers_suppress_bottom_host = false;
+	bool solers_side_layout = false;
 	Node *solers_scene_original_parent = nullptr;
 	Node *solers_filesystem_original_parent = nullptr;
 	Node *solers_inspector_original_parent = nullptr;
@@ -343,7 +344,6 @@ private:
 	String solers_project_path;
 	String solers_session_id;
 	bool solers_side_panel_visible = false;
-	bool solers_viewport_chrome_visible = false;
 
 	// Main tabs.
 	EditorSceneTabs *scene_tabs = nullptr;
@@ -768,29 +768,25 @@ private:
 	void _add_to_main_menu(const String &p_name, PopupMenu *p_menu);
 
 	void _bottom_panel_resized();
-	void _show_solers_session_popup(const Rect2 &p_anchor);
-	void _position_solers_session_popup();
-	void _hide_solers_session_popup();
-	void _solers_session_overlay_gui_input(const Ref<InputEvent> &p_event);
 	void _solers_session_pressed(const String &p_session_id);
 	void _solers_new_session_pressed();
 	void _set_solers_session(const String &p_project_path, const String &p_session_id);
 	void _set_solers_side_panel_visible(bool p_visible);
 	void _toggle_solers_side_panel();
-	void _toggle_solers_viewport_chrome();
-	void _sync_solers_viewport_chrome();
 	void _solers_side_tab_pressed(int p_tab);
+	void _solers_bottom_dock_tab_pressed(Object *p_dock);
+	void _solers_side_more_pressed();
+	void _solers_side_more_id_pressed(int p_id);
 	void _sync_solers_side_tabs();
+	void _rebuild_solers_side_strip();
 	void _rebuild_solers_side_panel();
 	void _populate_solers_changes_tree();
 	void _show_solers_native_scene_panel();
 	void _restore_solers_native_scene_panel();
 	void _show_solers_native_file_panel();
 	void _restore_solers_native_file_panel();
-	void _show_solers_run_options();
-	void _solers_run_option_selected(int p_id);
-	void _solers_filesystem_pressed();
-	void _solers_output_pressed();
+	void _solers_host_bottom_dock(EditorDock *p_dock);
+	void _restore_solers_hosted_bottom_dock();
 
 protected:
 	friend class FileSystemDock;
@@ -822,6 +818,12 @@ public:
 	static EditorMainScreen *get_editor_main_screen() { return singleton->editor_main_screen; }
 
 	static Button *get_distraction_free_button() { return singleton->distraction_free; }
+
+	bool is_solers_side_layout() const { return solers_side_layout; }
+	Control *get_solers_bottom_dock_host() const { return solers_bottom_dock_host; }
+	bool solers_try_host_bottom_dock(EditorDock *p_dock);
+	void solers_unhost_bottom_dock();
+	void solers_notify_docks_changed();
 
 	static String adjust_scene_name_casing(const String &p_root_name);
 	static String adjust_script_name_casing(const String &p_file_name, ScriptLanguage::ScriptNameCasing p_auto_casing);

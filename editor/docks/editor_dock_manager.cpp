@@ -44,6 +44,7 @@
 #include "editor/gui/window_wrapper.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
+#include "modules/modules_enabled.gen.h"
 #include "scene/resources/style_box_flat.h"
 
 enum class TabStyle {
@@ -555,7 +556,9 @@ void EditorDockManager::_update_tab_style(EditorDock *p_dock) {
 	}
 
 	TabContainer *tab_container = get_dock_tab_container(p_dock);
-	ERR_FAIL_NULL(tab_container);
+	if (!tab_container) {
+		return; // Hosted outside a TabContainer (e.g. Solers side dock host).
+	}
 
 	int index = tab_container->get_tab_idx_from_control(p_dock);
 	ERR_FAIL_COND(index == -1);
@@ -835,7 +838,10 @@ void EditorDockManager::close_dock(EditorDock *p_dock) {
 	p_dock->is_open = false;
 
 	EditorBottomPanel *bottom_panel = EditorNode::get_bottom_panel();
-	if (get_dock_tab_container(p_dock) == bottom_panel && bottom_panel->get_current_tab_control() == p_dock) {
+	Control *solers_host = EditorNode::get_singleton() ? EditorNode::get_singleton()->get_solers_bottom_dock_host() : nullptr;
+	if (solers_host && p_dock->get_parent() == solers_host) {
+		EditorNode::get_singleton()->solers_unhost_bottom_dock();
+	} else if (get_dock_tab_container(p_dock) == bottom_panel && bottom_panel->get_current_tab_control() == p_dock) {
 		bottom_panel->hide_bottom_panel();
 	}
 	// Hide before moving to remove inconsistent signals.
@@ -896,6 +902,13 @@ void EditorDockManager::_make_dock_visible(EditorDock *p_dock, bool p_grab_focus
 		return;
 	}
 
+#ifdef MODULE_SOLERS_AI_ENABLED
+	// Solers hosts DOCK_SLOT_BOTTOM content in the right strip — never expand center_split.
+	if (EditorNode::get_singleton() && EditorNode::get_singleton()->solers_try_host_bottom_dock(p_dock)) {
+		return;
+	}
+#endif
+
 	if (p_dock->get_parent() == EditorNode::get_bottom_panel()) {
 		if (EditorNode::get_bottom_panel()->is_locked()) {
 			return;
@@ -946,6 +959,12 @@ void EditorDockManager::add_dock(EditorDock *p_dock) {
 		p_dock->hide();
 		_update_layout();
 	}
+
+#ifdef MODULE_SOLERS_AI_ENABLED
+	if (EditorNode::get_singleton()) {
+		EditorNode::get_singleton()->solers_notify_docks_changed();
+	}
+#endif
 }
 
 void EditorDockManager::remove_dock(EditorDock *p_dock) {
@@ -958,6 +977,12 @@ void EditorDockManager::remove_dock(EditorDock *p_dock) {
 	p_dock->disconnect("_tab_style_changed", callable_mp(this, &EditorDockManager::_queue_update_tab_style));
 	p_dock->disconnect("renamed", callable_mp(this, &EditorDockManager::_queue_update_tab_style));
 	_update_layout();
+
+#ifdef MODULE_SOLERS_AI_ENABLED
+	if (EditorNode::get_singleton()) {
+		EditorNode::get_singleton()->solers_notify_docks_changed();
+	}
+#endif
 }
 
 void EditorDockManager::set_docks_visible(bool p_show) {
@@ -1381,8 +1406,14 @@ void DockShortcutHandler::shortcut_input(const Ref<InputEvent> &p_event) {
 	for (EditorDock *dock : EditorDockManager::get_singleton()->all_docks) {
 		const Ref<Shortcut> &dock_shortcut = dock->get_dock_shortcut();
 		if (dock_shortcut.is_valid() && dock_shortcut->matches_event(p_event)) {
-			if (dock->is_visible() && dock->get_parent() == EditorNode::get_bottom_panel()) {
-				EditorNode::get_bottom_panel()->hide_bottom_panel();
+			Control *solers_host = EditorNode::get_singleton() ? EditorNode::get_singleton()->get_solers_bottom_dock_host() : nullptr;
+			const bool hosted_on_solers = solers_host && dock->get_parent() == solers_host;
+			if (dock->is_visible() && (dock->get_parent() == EditorNode::get_bottom_panel() || hosted_on_solers)) {
+				if (hosted_on_solers && EditorNode::get_singleton()) {
+					EditorNode::get_singleton()->solers_unhost_bottom_dock();
+				} else {
+					EditorNode::get_bottom_panel()->hide_bottom_panel();
+				}
 			} else if (!dock->transient || dock->is_open) {
 				EditorDockManager::get_singleton()->focus_dock(dock);
 			}
