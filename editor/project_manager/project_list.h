@@ -37,47 +37,25 @@
 
 class AcceptDialog;
 class Button;
-class Container;
-class HFlowContainer;
 class Label;
 class PopupMenu;
 class ProjectList;
-class TextureButton;
 class TextureRect;
 
 class ProjectListItemControl : public HBoxContainer {
 	GDCLASS(ProjectListItemControl, HBoxContainer)
 
-	VBoxContainer *main_vbox = nullptr;
-	Control *card_thumb = nullptr; // Solers: card image well; anchors the caption band.
-	TextureButton *favorite_button = nullptr;
-	Button *explore_button = nullptr;
-
 	TextureRect *project_icon = nullptr;
 	Label *project_title = nullptr;
 	Label *project_path = nullptr;
-	Label *last_edited_info = nullptr;
-	Label *project_version = nullptr;
-	TextureRect *project_unsupported_features = nullptr;
-	HBoxContainer *tag_container = nullptr;
-	Button *touch_menu_button = nullptr;
-
-	Color favorite_focus_color;
+	Button *menu_button = nullptr;
 
 	bool project_is_missing = false;
 	bool icon_needs_reload = true;
 	bool is_selected = false;
 	bool is_focus_hidden = false;
 	bool is_hovering = false;
-	bool is_favorite = false;
-	bool is_card = false; // Solers: card (grid) layout vs. row (list) layout.
 
-	void _build_row_layout(); // Solers: classic horizontal row.
-	void _build_card_layout(); // Solers: UE-style vertical thumbnail card.
-
-	void _update_favorite_button_focus_color();
-	void _favorite_button_pressed();
-	void _explore_button_pressed();
 	void _request_menu();
 
 	ProjectList *get_list() const;
@@ -94,22 +72,16 @@ protected:
 public:
 	void set_project_title(const String &p_title);
 	void set_project_path(const String &p_path);
-	void set_tags(const PackedStringArray &p_tags, ProjectList *p_parent_list);
 	void set_project_icon(const Ref<Texture2D> &p_icon, bool p_cover = false);
-	void set_last_edited_info(const String &p_info);
-	void set_project_version(const String &p_version);
 	void set_unsupported_features(PackedStringArray p_features);
 
 	bool should_load_project_icon() const;
 	void set_selected(bool p_selected, bool p_hide_focus = false);
 
-	void set_is_favorite(bool p_favorite);
 	void set_is_missing(bool p_missing);
 	void set_is_grayed(bool p_grayed);
 
-	bool is_card_layout() const { return is_card; }
-
-	ProjectListItemControl(bool p_card_mode = false);
+	ProjectListItemControl();
 };
 
 class ProjectList : public ScrollContainer {
@@ -139,13 +111,6 @@ public:
 		MENU_REMOVE,
 	};
 
-	// Solers: how project items are laid out.
-	enum DisplayMode {
-		DISPLAY_LIST, // Classic dense rows.
-		DISPLAY_GRID, // UE-style thumbnail cards.
-	};
-
-	// Can often be passed by copy.
 	struct Item {
 		String project_name;
 		String description;
@@ -228,22 +193,15 @@ private:
 
 	String _search_term;
 	FilterOption _order_option = FilterOption::EDIT_DATE;
-	DisplayMode _display_mode = DisplayMode::DISPLAY_LIST; // Solers.
-	bool _favorites_only = false; // Solers: left-nav "Favorites" filter.
 	HashSet<String> _selected_project_paths;
-	String _last_clicked; // Project key
+	String _last_clicked;
 
-	// Solers: items live in `content_root`; `project_list_vbox` (rows) and
-	// `project_grid` (cards) coexist there, only the active one is visible and
-	// populated. `_items_parent` points at whichever is active so all the
-	// index-based selection/sort logic keeps working unchanged.
-	VBoxContainer *content_root = nullptr;
 	VBoxContainer *project_list_vbox = nullptr;
-	HFlowContainer *project_grid = nullptr;
-	Container *_items_parent = nullptr;
 	PopupMenu *project_context_menu = nullptr;
+	bool scrollbar_hovered = false;
 
-	// Projects scan.
+	void _ensure_scrollbar_ignores_mouse();
+	void _sync_scrollbar_hover_visual();
 
 	struct ScanData {
 		Thread *thread = nullptr;
@@ -257,23 +215,15 @@ private:
 	static void _scan_thread(void *p_scan_data);
 	void _scan_finished();
 
-	// Initialization & loading.
-
 	void _migrate_config();
 
 	static Item load_project_data(const String &p_property_key, bool p_favorite);
 	void _update_icons_async();
 	void _load_project_icon(int p_index);
 
-	// Project list updates.
-
 	static void _scan_folder_recursive(const String &p_path, List<String> *r_projects, const SafeFlag &p_scan_active);
 
-	// Project list items.
-
 	void _create_project_item_control(int p_index);
-	void _rebuild_item_controls(); // Solers: recreate controls for the active layout (no disk reload).
-	Container *_active_items_parent() const; // Solers.
 	void _toggle_project(int p_index);
 	void _remove_project(int p_index, bool p_update_settings);
 
@@ -285,14 +235,10 @@ private:
 	void _menu_option(int p_option);
 	void _update_menu_icons();
 
-	// Project list selection.
-
 	void _clear_project_selection();
 	void _select_project_nocheck(int p_index, bool p_hide_focus = false);
 	void _deselect_project_nocheck(int p_index);
 	void _select_project_range(int p_begin, int p_end);
-
-	// Global menu integration.
 
 	void _global_menu_new_window(const Variant &p_tag);
 	void _global_menu_open_project(const Variant &p_tag);
@@ -307,13 +253,11 @@ public:
 	static inline const char *SIGNAL_PROJECT_ASK_OPEN = "project_ask_open";
 	static inline const char *SIGNAL_MENU_OPTION_SELECTED = "menu_option_selected";
 
+	static constexpr int ROW_MIN_HEIGHT_PX = 44;
+
 	static bool project_feature_looks_like_version(const String &p_feature);
 
-	// Initialization & loading.
-
 	void save_config();
-
-	// Project list updates.
 
 	void load_project_list();
 	void update_project_list();
@@ -323,15 +267,11 @@ public:
 	void find_projects(const String &p_path);
 	void find_projects_multiple(const PackedStringArray &p_paths);
 
-	// Project list items.
-
 	void add_project(const String &dir_path, bool favorite);
 	void set_project_version(const String &p_project_path, int version);
 	int refresh_project(const String &dir_path);
 	void ensure_project_visible(int p_index);
 	int get_index(const ProjectListItemControl *p_control) const;
-
-	// Project list selection.
 
 	void select_project(int p_index, bool p_hide_focus = false);
 	void deselect_project(int p_index);
@@ -343,25 +283,14 @@ public:
 	int get_single_selected_index() const;
 	void erase_selected_projects(bool p_delete_project_contents);
 
-	// Missing projects.
-
 	bool is_any_project_missing() const;
 	void erase_missing_projects();
-
-	// Project list sorting and filtering.
 
 	void set_search_term(String p_search_term);
 	void add_search_tag(const String &p_tag);
 	void set_order_option(int p_option, bool p_save);
 
-	// Solers: layout + favorites filtering + tag discovery for the left nav.
-	void set_display_mode(int p_mode);
-	int get_display_mode() const { return (int)_display_mode; }
-	void set_favorites_only(bool p_enabled);
-	bool get_favorites_only() const { return _favorites_only; }
 	PackedStringArray get_all_tags() const;
-
-	// Global menu integration.
 
 	void update_dock_menu();
 

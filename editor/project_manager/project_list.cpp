@@ -32,25 +32,22 @@
 
 #include "core/config/project_settings.h"
 #include "core/io/dir_access.h"
+#include "core/io/file_access.h"
 #include "core/os/time.h"
 #include "core/version.h"
 #include "editor/editor_string_names.h"
 #include "editor/file_system/editor_paths.h"
 #include "editor/project_manager/project_manager.h"
-#include "editor/project_manager/project_tag.h"
-#include "editor/project_manager/solers_pm_theme.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
 #include "scene/gui/button.h"
 #include "scene/gui/dialogs.h"
-#include "scene/gui/flow_container.h"
 #include "scene/gui/label.h"
 #include "scene/gui/line_edit.h"
-#include "scene/gui/margin_container.h"
 #include "scene/gui/panel_container.h"
 #include "scene/gui/popup_menu.h"
 #include "scene/gui/progress_bar.h"
-#include "scene/gui/texture_button.h"
+#include "scene/gui/scroll_bar.h"
 #include "scene/gui/texture_rect.h"
 #include "scene/resources/image_texture.h"
 
@@ -58,57 +55,44 @@ void ProjectListItemControl::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_THEME_CHANGED: {
 			if (icon_needs_reload) {
-				// The project icon may not be loaded by the time the control is displayed,
-				// so use a loading placeholder.
 				project_icon->set_texture(get_editor_theme_icon(SNAME("ProjectIconLoading")));
 			}
-
 			project_title->begin_bulk_theme_override();
 			project_title->add_theme_font_override(SceneStringName(font), get_theme_font(SNAME("bold"), EditorStringName(EditorFonts)));
-			if (is_card) {
-				project_title->add_theme_font_size_override(SceneStringName(font_size), MAX(9, (int)(10 * EDSCALE)));
-				project_version->add_theme_font_size_override(SceneStringName(font_size), MAX(9, (int)(10 * EDSCALE)));
-			} else {
-				project_title->add_theme_font_size_override(SceneStringName(font_size), get_theme_font_size(SNAME("title_size"), EditorStringName(EditorFonts)));
-			}
+			project_title->add_theme_font_size_override(SceneStringName(font_size), get_theme_font_size(SNAME("title_size"), EditorStringName(EditorFonts)));
 			project_title->add_theme_color_override(SceneStringName(font_color), get_theme_color(SceneStringName(font_color), SNAME("ProjectList")));
 			project_title->end_bulk_theme_override();
-
-			project_path->add_theme_color_override(SceneStringName(font_color), get_theme_color(SceneStringName(font_color), SNAME("ProjectList")));
-			project_unsupported_features->set_texture(get_editor_theme_icon(SNAME("NodeWarning")));
-
-			favorite_focus_color = get_theme_color(SNAME("accent_color"), EditorStringName(Editor));
-			_update_favorite_button_focus_color();
-			// Monochrome star — the gold Favorites glyph is stock-Godot color noise.
-			if (is_favorite) {
-				favorite_button->set_texture_normal(SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Favorites"))));
-			} else {
-				favorite_button->set_texture_normal(SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Unfavorite"))));
-			}
-
-			if (project_is_missing) {
-				explore_button->set_button_icon(get_editor_theme_icon(SNAME("FileBroken")));
-#if !defined(ANDROID_ENABLED) && !defined(WEB_ENABLED)
-			} else {
-				explore_button->set_button_icon(get_editor_theme_icon(SNAME("Load")));
-#endif
-			}
-
-			if (touch_menu_button) {
-				touch_menu_button->set_button_icon(get_editor_theme_icon(SNAME("GuiTabMenuHl")));
+			project_path->add_theme_color_override(SceneStringName(font_color), get_theme_color(SNAME("font_dim_color"), SNAME("ProjectList")));
+			if (menu_button) {
+				menu_button->set_button_icon(get_editor_theme_icon(SNAME("GuiTabMenuHl")));
 			}
 		} break;
 
 		case NOTIFICATION_MOUSE_ENTER: {
 			is_hovering = true;
+			if (menu_button) {
+				// Opacity only — never hide()/show() under the cursor (that
+				// re-runs Viewport mouse-over and re-enters this enter/exit loop).
+				menu_button->set_modulate(Color(1, 1, 1, 1));
+				menu_button->set_mouse_filter(MOUSE_FILTER_STOP);
+			}
 			queue_redraw();
-			queue_accessibility_update();
 		} break;
 
 		case NOTIFICATION_MOUSE_EXIT: {
+			// Authority: Viewport breaks the hover chain at a STOP child, so the
+			// row gets MOUSE_EXIT when the pointer moves onto ⋯ even though the
+			// cursor is still inside this rect. Only clear hover when the mouse
+			// has actually left the row.
+			if (get_global_rect().has_point(get_global_mouse_position())) {
+				break;
+			}
 			is_hovering = false;
+			if (menu_button) {
+				menu_button->set_modulate(Color(1, 1, 1, 0));
+				menu_button->set_mouse_filter(MOUSE_FILTER_IGNORE);
+			}
 			queue_redraw();
-			queue_accessibility_update();
 		} break;
 
 		case NOTIFICATION_ACCESSIBILITY_UPDATE: {
@@ -137,10 +121,8 @@ void ProjectListItemControl::_notification(int p_what) {
 			if (pl) {
 				int idx = pl->get_index(this);
 				if (idx >= 0) {
-					// has_focus(true) is false on mouse-initiated focus, true on keyboard navigation.
 					pl->select_project(idx, !has_focus(true));
 					pl->ensure_project_visible(idx);
-
 					pl->emit_signal(SNAME(ProjectList::SIGNAL_SELECTION_CHANGED));
 				}
 			}
@@ -148,51 +130,15 @@ void ProjectListItemControl::_notification(int p_what) {
 
 		case NOTIFICATION_DRAW: {
 			const Rect2 box(Point2(), get_size());
-			if (is_card) {
-				// Solers: each grid item is a hard-edged UE template tile drawn
-				// behind its child widgets; hover/selection swap the 1px outline.
-				StringName card_sb = SNAME("solers_card");
-				if (is_selected) {
-					card_sb = SNAME("solers_card_selected");
-				} else if (is_hovering) {
-					card_sb = SNAME("solers_card_hover");
-				}
-				draw_style_box(get_theme_stylebox(card_sb, SNAME("ProjectList")), box);
-
-				// UE caption band: fill everything below the image well. Idle/hover
-				// use a faintly lifted strip; selection floods it with accent blue
-				// (the signature UE "selected template" treatment).
-				if (card_thumb != nullptr) {
-					StringName cap_col_name = SNAME("solers_caption");
-					if (is_selected) {
-						cap_col_name = SNAME("solers_caption_selected");
-					} else if (is_hovering) {
-						cap_col_name = SNAME("solers_caption_hover");
-					}
-					const float inset = MAX(1.0f, EDSCALE); // Keep the 1px tile outline visible.
-					const float cap_y = card_thumb->get_global_rect().get_end().y - get_global_rect().position.y;
-					const Rect2 cap_rect(inset, cap_y, box.size.x - 2.0f * inset, box.size.y - cap_y - inset);
-					if (cap_rect.size.y > 0) {
-						draw_rect(cap_rect, get_theme_color(cap_col_name, SNAME("ProjectList")));
-					}
-				}
-			} else {
-				if (is_selected && is_hovering) {
-					draw_style_box(get_theme_stylebox(SNAME("hover_pressed"), SNAME("ProjectList")), box);
-				} else if (is_selected) {
-					draw_style_box(get_theme_stylebox(SNAME("selected"), SNAME("ProjectList")), box);
-				} else if (is_hovering) {
-					draw_style_box(get_theme_stylebox(SNAME("hovered"), SNAME("ProjectList")), box);
-				}
+			if (is_selected && is_hovering) {
+				draw_style_box(get_theme_stylebox(SNAME("hover_pressed"), SNAME("ProjectList")), box);
+			} else if (is_selected) {
+				draw_style_box(get_theme_stylebox(SNAME("selected"), SNAME("ProjectList")), box);
+			} else if (is_hovering) {
+				draw_style_box(get_theme_stylebox(SNAME("hovered"), SNAME("ProjectList")), box);
 			}
-			// Due to how this control works, we can't rely on the built-in way of checking for focus visibility.
 			if (has_focus() && !is_focus_hidden) {
 				draw_style_box(get_theme_stylebox(SNAME("focus"), SNAME("ProjectList")), box);
-			}
-
-			// Solers: row separators only make sense in the dense list layout.
-			if (!is_card) {
-				draw_line(Point2(0, get_size().y + 1), Point2(get_size().x, get_size().y + 1), get_theme_color(SNAME("guide_color"), SNAME("ProjectList")));
 			}
 		} break;
 	}
@@ -202,9 +148,6 @@ ProjectList *ProjectListItemControl::get_list() const {
 	if (!is_inside_tree()) {
 		return nullptr;
 	}
-	// Solers: items may be nested one level deeper (content_root → vbox/grid),
-	// so resolve the owning ProjectList by walking up ancestors instead of
-	// assuming a fixed depth.
 	Node *n = get_parent();
 	while (n) {
 		ProjectList *pl = Object::cast_to<ProjectList>(n);
@@ -254,24 +197,10 @@ void ProjectListItemControl::_accessibility_action_blur(const Variant &p_data) {
 		}
 	}
 }
-void ProjectListItemControl::_update_favorite_button_focus_color() {
-	if (favorite_button->has_focus()) {
-		favorite_button->set_self_modulate(favorite_focus_color);
-	} else {
-		favorite_button->set_self_modulate(Color(1.0, 1.0, 1.0, 1.0));
-	}
-}
-
-void ProjectListItemControl::_favorite_button_pressed() {
-	emit_signal(SNAME("favorite_pressed"));
-}
-
-void ProjectListItemControl::_explore_button_pressed() {
-	emit_signal(SNAME("explore_pressed"));
-}
 
 void ProjectListItemControl::_request_menu() {
-	emit_signal(SNAME("request_menu"), Vector2(touch_menu_button->get_position()));
+	// Position relative to this row (menu lives in a nested path_slot).
+	emit_signal(SNAME("request_menu"), menu_button->get_screen_position() - get_screen_position());
 }
 
 void ProjectListItemControl::set_project_title(const String &p_title) {
@@ -286,78 +215,43 @@ void ProjectListItemControl::set_project_path(const String &p_path) {
 	queue_accessibility_update();
 }
 
-void ProjectListItemControl::set_tags(const PackedStringArray &p_tags, ProjectList *p_parent_list) {
-	for (const String &tag : p_tags) {
-		ProjectTag *tag_control = memnew(ProjectTag(tag));
-		tag_container->add_child(tag_control);
-		tag_control->connect_button_to(callable_mp(p_parent_list, &ProjectList::add_search_tag).bind(tag));
-	}
-}
-
 void ProjectListItemControl::set_project_icon(const Ref<Texture2D> &p_icon, bool p_cover) {
 	icon_needs_reload = false;
-
-	// The default project icon is 128×128 to look crisp on hiDPI displays,
-	// but we want the actual displayed size to be 64×64 on loDPI displays.
 	project_icon->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
-	if (!is_card) {
-		project_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
-		project_icon->set_custom_minimum_size(Size2(64, 64) * EDSCALE);
-	} else if (p_cover) {
+	if (p_cover) {
 		project_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_COVERED);
-		project_icon->set_custom_minimum_size(Size2());
-		project_icon->set_h_size_flags(SIZE_EXPAND_FILL);
-		project_icon->set_v_size_flags(SIZE_EXPAND_FILL);
 	} else {
 		project_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
-		project_icon->set_custom_minimum_size(Size2(44, 44) * EDSCALE);
-		project_icon->set_h_size_flags(SIZE_SHRINK_CENTER);
-		project_icon->set_v_size_flags(SIZE_SHRINK_CENTER);
 	}
-
 	project_icon->set_texture(p_icon);
 }
 
-void ProjectListItemControl::set_last_edited_info(const String &p_info) {
-	last_edited_info->set_text(p_info);
-}
-
-void ProjectListItemControl::set_project_version(const String &p_info) {
-	project_version->set_text(p_info);
-}
-
 void ProjectListItemControl::set_unsupported_features(PackedStringArray p_features) {
-	if (p_features.size() > 0) {
-		String tooltip_text = "";
-		for (int i = 0; i < p_features.size(); i++) {
-			if (ProjectList::project_feature_looks_like_version(p_features[i])) {
-				PackedStringArray project_version_split = p_features[i].split(".");
-				int project_version_major = 0, project_version_minor = 0;
-				if (project_version_split.size() >= 2) {
-					project_version_major = project_version_split[0].to_int();
-					project_version_minor = project_version_split[1].to_int();
-				}
-				if (GODOT_VERSION_MAJOR != project_version_major || GODOT_VERSION_MINOR <= project_version_minor) {
-					// Don't show a warning if the project was last edited in a previous minor version.
-					tooltip_text += TTR("This project was last edited in a different Godot version: ") + p_features[i] + "\n";
-				}
-				p_features.remove_at(i);
-				i--;
+	if (p_features.is_empty()) {
+		return;
+	}
+	String tooltip_text;
+	for (int i = 0; i < p_features.size(); i++) {
+		if (ProjectList::project_feature_looks_like_version(p_features[i])) {
+			PackedStringArray project_version_split = p_features[i].split(".");
+			int project_version_major = 0, project_version_minor = 0;
+			if (project_version_split.size() >= 2) {
+				project_version_major = project_version_split[0].to_int();
+				project_version_minor = project_version_split[1].to_int();
 			}
+			if (GODOT_VERSION_MAJOR != project_version_major || GODOT_VERSION_MINOR <= project_version_minor) {
+				tooltip_text += TTR("This project was last edited in a different Godot version: ") + p_features[i] + "\n";
+			}
+			p_features.remove_at(i);
+			i--;
 		}
-		if (p_features.size() > 0) {
-			String unsupported_features_str = String(", ").join(p_features);
-			tooltip_text += TTR("This project uses features unsupported by the current build:") + "\n" + unsupported_features_str;
-		}
-		if (tooltip_text.is_empty()) {
-			return;
-		}
-		project_version->set_tooltip_text(tooltip_text);
-		project_unsupported_features->set_focus_mode(FOCUS_ACCESSIBILITY);
-		project_unsupported_features->set_tooltip_text(tooltip_text);
-		project_unsupported_features->show();
-	} else {
-		project_unsupported_features->hide();
+	}
+	if (p_features.size() > 0) {
+		tooltip_text += TTR("This project uses features unsupported by the current build:") + "\n" + String(", ").join(p_features);
+	}
+	if (!tooltip_text.is_empty()) {
+		const String existing = get_tooltip_text();
+		set_tooltip_text(existing.is_empty() ? tooltip_text : existing + "\n" + tooltip_text);
 	}
 }
 
@@ -372,314 +266,82 @@ void ProjectListItemControl::set_selected(bool p_selected, bool p_hide_focus) {
 	queue_accessibility_update();
 }
 
-void ProjectListItemControl::set_is_favorite(bool p_favorite) {
-	is_favorite = p_favorite;
-	if (is_card) {
-		favorite_button->set_visible(p_favorite);
-	}
-	if (p_favorite) {
-		favorite_button->set_texture_normal(SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Favorites"))));
-		favorite_button->set_accessibility_name(TTRC("Remove from Favorites"));
-	} else {
-		favorite_button->set_texture_normal(SolersPMTheme::mono_icon(get_editor_theme_icon(SNAME("Unfavorite"))));
-		favorite_button->set_accessibility_name(TTRC("Add to Favorites"));
-	}
-}
-
 void ProjectListItemControl::set_is_missing(bool p_missing) {
 	project_is_missing = p_missing;
-
-	if (project_is_missing) {
-		project_icon->set_modulate(Color(1, 1, 1, 0.5));
-
-		explore_button->set_button_icon(get_editor_theme_icon(SNAME("FileBroken")));
-		explore_button->set_tooltip_text(TTRC("Error: Project is missing on the filesystem."));
-	} else {
-#if !defined(ANDROID_ENABLED) && !defined(WEB_ENABLED)
-		explore_button->set_button_icon(get_editor_theme_icon(SNAME("Load")));
-		explore_button->set_tooltip_text(TTRC("Show in File Manager"));
-#else
-		// Opening the system file manager is not supported on the Android and web editors.
-		explore_button->hide();
-#endif
-	}
+	project_icon->set_modulate(project_is_missing ? Color(1, 1, 1, 0.5) : Color(1, 1, 1, 1));
 }
 
 void ProjectListItemControl::set_is_grayed(bool p_grayed) {
-	if (p_grayed) {
-		main_vbox->set_modulate(Color(1, 1, 1, 0.5));
-		// Don't make the icon less prominent if the parent is already grayed out.
-		explore_button->set_modulate(Color(1, 1, 1, 1.0));
-	} else {
-		main_vbox->set_modulate(Color(1, 1, 1, 1.0));
-		explore_button->set_modulate(Color(1, 1, 1, 0.5));
-	}
+	set_modulate(p_grayed ? Color(1, 1, 1, 0.5) : Color(1, 1, 1, 1));
 }
 
 void ProjectListItemControl::_bind_methods() {
-	ADD_SIGNAL(MethodInfo("favorite_pressed"));
-	ADD_SIGNAL(MethodInfo("explore_pressed"));
 	ADD_SIGNAL(MethodInfo("request_menu"));
 }
 
-ProjectListItemControl::ProjectListItemControl(bool p_card_mode) {
-	is_card = p_card_mode;
+ProjectListItemControl::ProjectListItemControl() {
 	set_focus_mode(FocusMode::FOCUS_ALL);
 	set_auto_translate_mode(AUTO_TRANSLATE_MODE_DISABLED);
+	set_custom_minimum_size(Size2(0, ProjectList::ROW_MIN_HEIGHT_PX) * EDSCALE);
+	add_theme_constant_override("separation", 12 * EDSCALE);
 
-	if (is_card) {
-		_build_card_layout();
-	} else {
-		_build_row_layout();
-	}
-}
-
-// Solers: classic dense horizontal row (the original Godot layout).
-void ProjectListItemControl::_build_row_layout() {
-	// Left spacer.
-	add_child(memnew(Control));
-
-	VBoxContainer *favorite_box = memnew(VBoxContainer);
-	favorite_box->set_alignment(BoxContainer::ALIGNMENT_CENTER);
-	add_child(favorite_box);
-
-	favorite_button = memnew(TextureButton);
-	favorite_button->set_name("FavoriteButton");
-	favorite_button->set_tooltip_text(TTRC("Toggle Favorite"));
-	favorite_button->set_auto_translate_mode(AUTO_TRANSLATE_MODE_ALWAYS);
-	// This makes the project's "hover" style display correctly when hovering the favorite icon.
-	favorite_button->set_mouse_filter(MOUSE_FILTER_PASS);
-	favorite_box->add_child(favorite_button);
-	favorite_button->connect(SceneStringName(pressed), callable_mp(this, &ProjectListItemControl::_favorite_button_pressed));
-	favorite_button->connect(SceneStringName(focus_entered), callable_mp(this, &ProjectListItemControl::_update_favorite_button_focus_color));
-	favorite_button->connect(SceneStringName(focus_exited), callable_mp(this, &ProjectListItemControl::_update_favorite_button_focus_color));
+	PanelContainer *thumb = memnew(PanelContainer);
+	thumb->set_theme_type_variation("PMProjectThumb");
+	thumb->set_v_size_flags(SIZE_SHRINK_CENTER);
+	thumb->set_custom_minimum_size(Size2(36, 36) * EDSCALE);
+	thumb->set_mouse_filter(MOUSE_FILTER_PASS);
+	// StyleBoxFlat alpha is the authority for the rounded silhouette.
+	thumb->set_clip_children_mode(CanvasItem::CLIP_CHILDREN_ONLY);
+	add_child(thumb);
 
 	project_icon = memnew(TextureRect);
 	project_icon->set_name("ProjectIcon");
-	project_icon->set_v_size_flags(SIZE_SHRINK_CENTER);
-	add_child(project_icon);
+	project_icon->set_mouse_filter(MOUSE_FILTER_PASS);
+	project_icon->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
+	project_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+	thumb->add_child(project_icon);
 
-	main_vbox = memnew(VBoxContainer);
-	main_vbox->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	add_child(main_vbox);
+	project_title = memnew(Label);
+	project_title->set_focus_mode(FOCUS_ACCESSIBILITY);
+	project_title->set_name("ProjectName");
+	project_title->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	project_title->set_v_size_flags(SIZE_SHRINK_CENTER);
+	project_title->set_clip_text(true);
+	project_title->set_mouse_filter(MOUSE_FILTER_PASS);
+	add_child(project_title);
 
-	Control *ec = memnew(Control);
-	ec->set_custom_minimum_size(Size2(0, 1));
-	ec->set_mouse_filter(MOUSE_FILTER_PASS);
-	main_vbox->add_child(ec);
-
-	// Top half, title, tags and unsupported features labels.
-	{
-		HBoxContainer *title_hb = memnew(HBoxContainer);
-		main_vbox->add_child(title_hb);
-
-		project_title = memnew(Label);
-		project_title->set_focus_mode(FOCUS_ACCESSIBILITY);
-		project_title->set_name("ProjectName");
-		project_title->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		project_title->set_clip_text(true);
-		title_hb->add_child(project_title);
-
-		tag_container = memnew(HBoxContainer);
-		title_hb->add_child(tag_container);
-	}
-
-	// Bottom half, containing the path and view folder button.
-	{
-		HBoxContainer *path_hb = memnew(HBoxContainer);
-		path_hb->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		main_vbox->add_child(path_hb);
-
-		explore_button = memnew(Button);
-		explore_button->set_name("ExploreButton");
-		explore_button->set_tooltip_auto_translate_mode(AUTO_TRANSLATE_MODE_ALWAYS);
-		explore_button->set_mouse_filter(MOUSE_FILTER_PASS);
-		explore_button->set_tooltip_text(TTRC("Open in file manager"));
-		explore_button->set_flat(true);
-		path_hb->add_child(explore_button);
-		explore_button->connect(SceneStringName(pressed), callable_mp(this, &ProjectListItemControl::_explore_button_pressed));
-
-		project_path = memnew(Label);
-		project_path->set_name("ProjectPath");
-		project_path->set_focus_mode(FOCUS_ACCESSIBILITY);
-		project_path->set_structured_text_bidi_override(TextServer::STRUCTURED_TEXT_FILE);
-		project_path->set_clip_text(true);
-		project_path->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		project_path->set_modulate(Color(1, 1, 1, 0.5));
-		path_hb->add_child(project_path);
-
-		project_unsupported_features = memnew(TextureRect);
-		project_unsupported_features->set_name("ProjectUnsupportedFeatures");
-		project_unsupported_features->set_stretch_mode(TextureRect::STRETCH_KEEP_CENTERED);
-		path_hb->add_child(project_unsupported_features);
-		project_unsupported_features->hide();
-
-		project_version = memnew(Label);
-		project_version->set_focus_mode(FOCUS_ACCESSIBILITY);
-		project_version->set_name("ProjectVersion");
-		project_version->set_mouse_filter(Control::MOUSE_FILTER_PASS);
-		path_hb->add_child(project_version);
-
-		last_edited_info = memnew(Label);
-		last_edited_info->set_focus_mode(FOCUS_ACCESSIBILITY);
-		last_edited_info->set_name("LastEditedInfo");
-		last_edited_info->set_mouse_filter(Control::MOUSE_FILTER_PASS);
-		last_edited_info->set_tooltip_auto_translate_mode(AUTO_TRANSLATE_MODE_ALWAYS);
-		last_edited_info->set_tooltip_text(TTRC("Last edited timestamp"));
-		last_edited_info->set_modulate(Color(1, 1, 1, 0.5));
-		path_hb->add_child(last_edited_info);
-	}
-
-	if (DisplayServer::get_singleton()->is_touchscreen_available()) {
-		touch_menu_button = memnew(Button);
-		touch_menu_button->set_theme_type_variation(SceneStringName(FlatButton));
-		touch_menu_button->set_v_size_flags(SIZE_SHRINK_CENTER);
-		add_child(touch_menu_button);
-		touch_menu_button->set_mouse_filter(MOUSE_FILTER_PASS);
-		touch_menu_button->connect(SceneStringName(pressed), callable_mp(this, &ProjectListItemControl::_request_menu));
-	}
-
-	// Right spacer.
-	add_child(memnew(Control));
-}
-
-// Solers: compact UE-style thumbnail card for the grid layout.
-void ProjectListItemControl::_build_card_layout() {
-	set_h_size_flags(SIZE_SHRINK_BEGIN);
-	set_v_size_flags(SIZE_SHRINK_BEGIN);
-	set_custom_minimum_size(Size2(96, 0) * EDSCALE);
-
-	const int tile_inset = MAX(1, (int)EDSCALE);
-	MarginContainer *card_margin = memnew(MarginContainer);
-	card_margin->set_h_size_flags(SIZE_EXPAND_FILL);
-	card_margin->set_v_size_flags(SIZE_EXPAND_FILL);
-	card_margin->add_theme_constant_override("margin_left", tile_inset);
-	card_margin->add_theme_constant_override("margin_right", tile_inset);
-	card_margin->add_theme_constant_override("margin_top", tile_inset);
-	card_margin->add_theme_constant_override("margin_bottom", tile_inset);
-	add_child(card_margin);
-
-	main_vbox = memnew(VBoxContainer);
-	main_vbox->set_h_size_flags(SIZE_EXPAND_FILL);
-	main_vbox->set_v_size_flags(SIZE_EXPAND_FILL);
-	main_vbox->add_theme_constant_override("separation", 0);
-	card_margin->add_child(main_vbox);
-
-	{
-		PanelContainer *thumb = memnew(PanelContainer);
-		thumb->set_theme_type_variation("PMCardThumb");
-		thumb->set_custom_minimum_size(Size2(0, 70) * EDSCALE);
-		thumb->set_mouse_filter(MOUSE_FILTER_PASS);
-		main_vbox->add_child(thumb);
-		card_thumb = thumb;
-
-		project_icon = memnew(TextureRect);
-		project_icon->set_name("ProjectIcon");
-		project_icon->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
-		project_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
-		project_icon->set_custom_minimum_size(Size2(44, 44) * EDSCALE);
-		project_icon->set_h_size_flags(SIZE_SHRINK_CENTER);
-		project_icon->set_v_size_flags(SIZE_SHRINK_CENTER);
-		project_icon->set_mouse_filter(MOUSE_FILTER_PASS);
-		thumb->add_child(project_icon);
-	}
-
-	MarginContainer *caption_margin = memnew(MarginContainer);
-	caption_margin->set_h_size_flags(SIZE_EXPAND_FILL);
-	caption_margin->set_v_size_flags(SIZE_EXPAND_FILL);
-	caption_margin->add_theme_constant_override("margin_left", 5 * EDSCALE);
-	caption_margin->add_theme_constant_override("margin_right", 5 * EDSCALE);
-	caption_margin->add_theme_constant_override("margin_top", 4 * EDSCALE);
-	caption_margin->add_theme_constant_override("margin_bottom", 4 * EDSCALE);
-	main_vbox->add_child(caption_margin);
-
-	VBoxContainer *caption_vbox = memnew(VBoxContainer);
-	caption_vbox->set_h_size_flags(SIZE_EXPAND_FILL);
-	caption_vbox->add_theme_constant_override("separation", 1 * EDSCALE);
-	caption_margin->add_child(caption_vbox);
-
-	{
-		HBoxContainer *title_hb = memnew(HBoxContainer);
-		caption_vbox->add_child(title_hb);
-
-		project_title = memnew(Label);
-		project_title->set_focus_mode(FOCUS_ACCESSIBILITY);
-		project_title->set_name("ProjectName");
-		project_title->set_h_size_flags(SIZE_EXPAND_FILL);
-		project_title->set_clip_text(true);
-		title_hb->add_child(project_title);
-
-		project_unsupported_features = memnew(TextureRect);
-		project_unsupported_features->set_name("ProjectUnsupportedFeatures");
-		project_unsupported_features->set_stretch_mode(TextureRect::STRETCH_KEEP_CENTERED);
-		title_hb->add_child(project_unsupported_features);
-		project_unsupported_features->hide();
-
-		favorite_button = memnew(TextureButton);
-		favorite_button->set_name("FavoriteButton");
-		favorite_button->set_tooltip_text(TTRC("Toggle Favorite"));
-		favorite_button->set_auto_translate_mode(AUTO_TRANSLATE_MODE_ALWAYS);
-		favorite_button->set_mouse_filter(MOUSE_FILTER_PASS);
-		favorite_button->set_v_size_flags(SIZE_SHRINK_CENTER);
-		favorite_button->set_custom_minimum_size(Size2(12, 12) * EDSCALE);
-		favorite_button->hide();
-		title_hb->add_child(favorite_button);
-		favorite_button->connect(SceneStringName(pressed), callable_mp(this, &ProjectListItemControl::_favorite_button_pressed));
-		favorite_button->connect(SceneStringName(focus_entered), callable_mp(this, &ProjectListItemControl::_update_favorite_button_focus_color));
-		favorite_button->connect(SceneStringName(focus_exited), callable_mp(this, &ProjectListItemControl::_update_favorite_button_focus_color));
-	}
-
-	project_version = memnew(Label);
-	project_version->set_focus_mode(FOCUS_ACCESSIBILITY);
-	project_version->set_name("ProjectVersion");
-	project_version->set_mouse_filter(MOUSE_FILTER_PASS);
-	project_version->set_clip_text(true);
-	project_version->set_modulate(Color(1, 1, 1, 0.75));
-	caption_vbox->add_child(project_version);
-
-	explore_button = memnew(Button);
-	explore_button->set_name("ExploreButton");
-	explore_button->set_tooltip_auto_translate_mode(AUTO_TRANSLATE_MODE_ALWAYS);
-	explore_button->set_mouse_filter(MOUSE_FILTER_PASS);
-	explore_button->set_tooltip_text(TTRC("Open in file manager"));
-	explore_button->set_flat(true);
-	explore_button->hide();
-	caption_vbox->add_child(explore_button);
-	explore_button->connect(SceneStringName(pressed), callable_mp(this, &ProjectListItemControl::_explore_button_pressed));
+	// Path owns the right side; ⋯ overlays it on hover (no layout shift).
+	Control *path_slot = memnew(Control);
+	path_slot->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	path_slot->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	path_slot->set_mouse_filter(MOUSE_FILTER_PASS);
+	add_child(path_slot);
 
 	project_path = memnew(Label);
 	project_path->set_name("ProjectPath");
 	project_path->set_focus_mode(FOCUS_ACCESSIBILITY);
 	project_path->set_structured_text_bidi_override(TextServer::STRUCTURED_TEXT_FILE);
 	project_path->set_clip_text(true);
-	project_path->set_h_size_flags(SIZE_EXPAND_FILL);
-	project_path->set_modulate(Color(1, 1, 1, 0.5));
-	project_path->hide();
-	caption_vbox->add_child(project_path);
+	project_path->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
+	project_path->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_RIGHT);
+	project_path->set_vertical_alignment(VERTICAL_ALIGNMENT_CENTER);
+	project_path->set_mouse_filter(MOUSE_FILTER_PASS);
+	path_slot->add_child(project_path);
 
-	last_edited_info = memnew(Label);
-	last_edited_info->set_focus_mode(FOCUS_ACCESSIBILITY);
-	last_edited_info->set_name("LastEditedInfo");
-	last_edited_info->set_mouse_filter(MOUSE_FILTER_PASS);
-	last_edited_info->set_tooltip_auto_translate_mode(AUTO_TRANSLATE_MODE_ALWAYS);
-	last_edited_info->set_tooltip_text(TTRC("Last edited timestamp"));
-	last_edited_info->set_modulate(Color(1, 1, 1, 0.5));
-	last_edited_info->set_h_size_flags(SIZE_EXPAND_FILL);
-	last_edited_info->hide();
-	caption_vbox->add_child(last_edited_info);
-
-	tag_container = memnew(HBoxContainer);
-	tag_container->hide();
-	caption_vbox->add_child(tag_container);
-
-	if (DisplayServer::get_singleton()->is_touchscreen_available()) {
-		touch_menu_button = memnew(Button);
-		touch_menu_button->set_theme_type_variation(SceneStringName(FlatButton));
-		touch_menu_button->set_v_size_flags(SIZE_SHRINK_CENTER);
-		caption_vbox->add_child(touch_menu_button);
-		touch_menu_button->set_mouse_filter(MOUSE_FILTER_PASS);
-		touch_menu_button->connect(SceneStringName(pressed), callable_mp(this, &ProjectListItemControl::_request_menu));
-	}
+	menu_button = memnew(Button);
+	menu_button->set_theme_type_variation(SceneStringName(FlatButton));
+	const real_t menu_sz = 28 * EDSCALE;
+	menu_button->set_custom_minimum_size(Size2(menu_sz, menu_sz));
+	menu_button->set_accessibility_name(TTRC("Project Options"));
+	menu_button->set_anchors_preset(Control::PRESET_CENTER_RIGHT);
+	menu_button->set_offset(SIDE_LEFT, -menu_sz);
+	menu_button->set_offset(SIDE_TOP, -menu_sz * 0.5f);
+	menu_button->set_offset(SIDE_RIGHT, 0);
+	menu_button->set_offset(SIDE_BOTTOM, menu_sz * 0.5f);
+	menu_button->set_modulate(Color(1, 1, 1, 0));
+	menu_button->set_mouse_filter(MOUSE_FILTER_IGNORE);
+	menu_button->connect(SceneStringName(pressed), callable_mp(this, &ProjectListItemControl::_request_menu));
+	path_slot->add_child(menu_button);
 }
 
 struct ProjectListComparator {
@@ -712,6 +374,21 @@ bool ProjectList::project_feature_looks_like_version(const String &p_feature) {
 	return p_feature.contains_char('.') && p_feature.substr(0, 3).is_numeric();
 }
 
+void ProjectList::_ensure_scrollbar_ignores_mouse() {
+	ScrollBar *sb = get_v_scroll_bar();
+	if (sb) {
+		// Policy once: bar must never steal hits from row ⋯ (wheel still scrolls).
+		sb->set_mouse_filter(MOUSE_FILTER_IGNORE);
+	}
+}
+
+void ProjectList::_sync_scrollbar_hover_visual() {
+	ScrollBar *sb = get_v_scroll_bar();
+	if (sb) {
+		sb->set_modulate(scrollbar_hovered ? Color(1, 1, 1, 1) : Color(1, 1, 1, 0));
+	}
+}
+
 // Notifications.
 
 void ProjectList::_notification(int p_what) {
@@ -727,6 +404,23 @@ void ProjectList::_notification(int p_what) {
 			if (project_context_menu) {
 				_update_menu_icons();
 			}
+			_ensure_scrollbar_ignores_mouse();
+			_sync_scrollbar_hover_visual();
+		} break;
+
+		case NOTIFICATION_READY: {
+			_ensure_scrollbar_ignores_mouse();
+			_sync_scrollbar_hover_visual();
+		} break;
+
+		case NOTIFICATION_MOUSE_ENTER: {
+			scrollbar_hovered = true;
+			_sync_scrollbar_hover_visual();
+		} break;
+
+		case NOTIFICATION_MOUSE_EXIT: {
+			scrollbar_hovered = false;
+			_sync_scrollbar_hover_visual();
 		} break;
 
 		case NOTIFICATION_PROCESS: {
@@ -967,18 +661,19 @@ void ProjectList::_load_project_icon(int p_index) {
 	Ref<Texture2D> default_icon = get_editor_theme_icon(SNAME("DefaultProjectIcon"));
 	Ref<Texture2D> icon;
 	bool cover_icon = false;
-	if (_display_mode == DISPLAY_GRID) {
-		const String preview_path = item.path.path_join(".godot/solers/project_preview.png");
-		if (FileAccess::exists(preview_path)) {
-			Ref<Image> img;
-			img.instantiate();
-			if (img->load(preview_path) == OK && img->get_width() > 1 && img->get_height() > 1) {
-				icon = ImageTexture::create_from_image(img);
-				cover_icon = true;
-			}
+
+	// Authority: editor-saved scene preview (Node3DEditor / GameView).
+	const String preview_path = item.path.path_join(".godot/solers/project_preview.png");
+	if (FileAccess::exists(preview_path)) {
+		Ref<Image> img;
+		img.instantiate();
+		if (img->load(preview_path) == OK && img->get_width() > 1 && img->get_height() > 1) {
+			icon = ImageTexture::create_from_image(img);
+			cover_icon = true;
 		}
 	}
-	if (_display_mode != DISPLAY_GRID && icon.is_null() && !item.icon.is_empty()) {
+
+	if (icon.is_null() && !item.icon.is_empty()) {
 		Ref<Image> img;
 		img.instantiate();
 		Error err = img->load(item.icon.replace_first("res://", item.path + "/"));
@@ -987,7 +682,7 @@ void ProjectList::_load_project_icon(int p_index) {
 			icon = ImageTexture::create_from_image(img);
 		}
 	}
-	if (_display_mode != DISPLAY_GRID && icon.is_null()) {
+	if (icon.is_null()) {
 		icon = default_icon;
 	}
 
@@ -1079,11 +774,6 @@ void ProjectList::sort_projects() {
 
 			// When searching, display projects whose name or path contain the search term and whose tags match the searched tags.
 			item_visible = !missing_tags && (search_term.is_empty() || item.project_name.containsn(search_term) || search_path.containsn(search_term));
-		}
-
-		// Solers: left-nav "Favorites" filter narrows the visible set further.
-		if (_favorites_only && !item.favorite) {
-			item_visible = false;
 		}
 
 		item.control->set_visible(item_visible);
@@ -1262,39 +952,23 @@ void ProjectList::ensure_project_visible(int p_index) {
 }
 
 void ProjectList::_create_project_item_control(int p_index) {
-	Container *parent = _active_items_parent();
-
-	// Will be added last in the active container, so make sure indexes match.
-	ERR_FAIL_COND(p_index != parent->get_child_count());
+	ERR_FAIL_COND(p_index != project_list_vbox->get_child_count());
 
 	Item &item = _projects.write[p_index];
 	ERR_FAIL_COND(item.control != nullptr); // Already created
 
-	ProjectListItemControl *hb = memnew(ProjectListItemControl(_display_mode == DISPLAY_GRID));
-	hb->add_theme_constant_override("separation", 10 * EDSCALE);
-
+	ProjectListItemControl *hb = memnew(ProjectListItemControl);
 	hb->set_project_title(!item.missing ? item.project_name : TTR("Missing Project"));
 	hb->set_project_path(item.path);
 	hb->set_tooltip_text(item.description);
-	hb->set_tags(item.tags, this);
 	hb->set_unsupported_features(item.unsupported_features.duplicate());
-	const String project_version = (_display_mode == DISPLAY_GRID && item.project_version == GODOT_VERSION_BRANCH) ? TTR("Current") : item.project_version;
-	hb->set_project_version(project_version);
-	hb->set_last_edited_info(item.get_last_edited_string());
-
-	hb->set_is_favorite(item.favorite);
 	hb->set_is_missing(item.missing);
 	hb->set_is_grayed(item.grayed);
 
 	hb->connect(SceneStringName(gui_input), callable_mp(this, &ProjectList::_list_item_input).bind(hb));
-	hb->connect("favorite_pressed", callable_mp(this, &ProjectList::_on_favorite_pressed).bind(hb));
-
-#if !defined(ANDROID_ENABLED) && !defined(WEB_ENABLED)
-	hb->connect("explore_pressed", callable_mp(this, &ProjectList::_on_explore_pressed).bind(item.path));
-#endif
 	hb->connect("request_menu", callable_mp(this, &ProjectList::_open_menu).bind(hb));
 
-	parent->add_child(hb);
+	project_list_vbox->add_child(hb);
 	item.control = hb;
 }
 
@@ -1404,8 +1078,6 @@ void ProjectList::_on_favorite_pressed(Node *p_hb) {
 
 	_projects.write[index] = item;
 
-	control->set_is_favorite(item.favorite);
-
 	sort_projects();
 
 	// As controls are sorted, the calls are delayed in case follow focus does not take effect.
@@ -1429,10 +1101,10 @@ void ProjectList::_open_menu(const Vector2 &p_at, Control *p_hb) {
 
 	if (!project_context_menu) {
 		project_context_menu = memnew(PopupMenu);
-		project_context_menu->add_item(TTRC("Open in Editor"), MENU_EDIT);
-		project_context_menu->add_item(TTRC("Open in Editor (Verbose Mode)"), MENU_EDIT_VERBOSE);
-		project_context_menu->add_item(TTRC("Open in Editor (Recovery Mode)"), MENU_EDIT_RECOVERY);
-		project_context_menu->add_item(TTRC("Run Project"), MENU_RUN);
+		project_context_menu->add_item(TTRC("Load Editor"), MENU_EDIT);
+		project_context_menu->add_item(TTRC("Load Editor (Verbose)"), MENU_EDIT_VERBOSE);
+		project_context_menu->add_item(TTRC("Load Editor (Recovery)"), MENU_EDIT_RECOVERY);
+		project_context_menu->add_item(TTRC("Run"), MENU_RUN);
 		project_context_menu->add_separator();
 #if !defined(ANDROID_ENABLED) && !defined(WEB_ENABLED)
 		project_context_menu->add_item(TTRC("Show in File Manager"), MENU_SHOW_IN_FILE_MANAGER);
@@ -1692,7 +1364,9 @@ void ProjectList::add_search_tag(const String &p_tag) {
 	} else {
 		_search_term += " " + tag_string;
 	}
-	ProjectManager::get_singleton()->get_search_box()->set_text(_search_term);
+	if (LineEdit *search_box = ProjectManager::get_singleton()->get_search_box()) {
+		search_box->set_text(_search_term);
+	}
 
 	sort_projects();
 }
@@ -1708,79 +1382,7 @@ void ProjectList::set_order_option(int p_option, bool p_save) {
 	sort_projects();
 }
 
-// Solers: layout (list/grid) + favorites filtering + tag discovery.
-
-Container *ProjectList::_active_items_parent() const {
-	return _items_parent ? _items_parent : (Container *)project_list_vbox;
-}
-
-void ProjectList::_rebuild_item_controls() {
-	// Recreate the item controls for the active layout WITHOUT re-reading
-	// projects from disk (so toggling the view stays cheap). Selection state in
-	// `_selected_project_paths` is preserved and re-applied below.
-	for (int i = 0; i < _projects.size(); ++i) {
-		if (_projects[i].control) {
-			memdelete(_projects.write[i].control);
-			_projects.write[i].control = nullptr;
-		}
-	}
-
-	for (int i = 0; i < _projects.size(); ++i) {
-		_create_project_item_control(i);
-	}
-
-	sort_projects(); // Applies order + visibility + child order; restarts icon coroutine.
-
-	for (int i = 0; i < _projects.size(); ++i) {
-		if (_selected_project_paths.has(_projects[i].path)) {
-			_projects.write[i].control->set_selected(true, true);
-		}
-	}
-
-	set_v_scroll(0);
-	queue_accessibility_update();
-}
-
-void ProjectList::set_display_mode(int p_mode) {
-	DisplayMode mode = (DisplayMode)p_mode;
-	if (mode == _display_mode) {
-		return;
-	}
-	_display_mode = mode;
-
-	if (mode == DISPLAY_GRID) {
-		project_list_vbox->hide();
-		project_grid->show();
-		_items_parent = project_grid;
-	} else {
-		project_grid->hide();
-		project_list_vbox->show();
-		_items_parent = project_list_vbox;
-	}
-
-	// Only rebuild when item controls already exist. During initial setup the
-	// controls have not been created yet (load_project_list() only fills data),
-	// so update_project_list() will build them directly into the active
-	// container — rebuilding here would double-create and assert.
-	bool has_controls = false;
-	for (const Item &it : _projects) {
-		if (it.control) {
-			has_controls = true;
-			break;
-		}
-	}
-	if (has_controls) {
-		_rebuild_item_controls();
-	}
-}
-
-void ProjectList::set_favorites_only(bool p_enabled) {
-	if (_favorites_only == p_enabled) {
-		return;
-	}
-	_favorites_only = p_enabled;
-	sort_projects();
-}
+// Tag discovery for the manage-tags dialog.
 
 PackedStringArray ProjectList::get_all_tags() const {
 	HashSet<String> seen;
@@ -1856,24 +1458,14 @@ void ProjectList::_bind_methods() {
 
 ProjectList::ProjectList() {
 	set_follow_focus(true);
-
-	// Solers: single scroll content holding both the row and grid containers.
-	content_root = memnew(VBoxContainer);
-	content_root->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	add_child(content_root);
+	set_horizontal_scroll_mode(SCROLL_MODE_DISABLED);
+	// Always AUTO: never toggle SHOW_NEVER↔AUTO (that width thrash is the hover flicker).
+	set_vertical_scroll_mode(SCROLL_MODE_AUTO);
 
 	project_list_vbox = memnew(VBoxContainer);
 	project_list_vbox->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	content_root->add_child(project_list_vbox);
-
-	project_grid = memnew(HFlowContainer);
-	project_grid->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	project_grid->add_theme_constant_override("h_separation", 7 * EDSCALE);
-	project_grid->add_theme_constant_override("v_separation", 7 * EDSCALE);
-	project_grid->hide();
-	content_root->add_child(project_grid);
-
-	_items_parent = project_list_vbox;
+	project_list_vbox->add_theme_constant_override("separation", 2 * EDSCALE);
+	add_child(project_list_vbox);
 
 	_config_path = EditorPaths::get_singleton()->get_data_dir().path_join("projects.cfg");
 	_migrate_config();

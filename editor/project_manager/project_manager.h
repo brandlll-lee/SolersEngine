@@ -51,15 +51,14 @@ class PanelContainer;
 class PopupMenu;
 class ProjectDialog;
 class ProjectList;
-class QuickSettingsDialog;
 class RichTextLabel;
 class SolersAgentRuntime;
-class SolersCategoryCard;
 class SolersDock;
 class Shortcut;
 class TabBar;
 class TabContainer;
 class Texture2D;
+class TextureRect;
 class VBoxContainer;
 
 class ProjectManager : public Control {
@@ -103,9 +102,6 @@ class ProjectManager : public Control {
 	PanelContainer *shell_chat_panel = nullptr;
 	PanelContainer *shell_workspace_panel = nullptr;
 	HSplitContainer *shell_work_split = nullptr;
-	Control *shell_session_overlay = nullptr;
-	PanelContainer *shell_session_popup = nullptr;
-	VBoxContainer *shell_session_popup_list = nullptr;
 	Control *shell_editor_host = nullptr;
 	Control *shell_editor_gui = nullptr;
 	EditorNode *shell_editor_node = nullptr;
@@ -143,10 +139,6 @@ class ProjectManager : public Control {
 	void _toggle_shell_workspace();
 	void _show_shell_chat();
 	void _show_shell_global_view(Control *p_view);
-	void _show_shell_session_popup(const Rect2 &p_anchor);
-	void _position_shell_session_popup();
-	void _hide_shell_session_popup();
-	void _shell_session_overlay_gui_input(const Ref<InputEvent> &p_event);
 	void _shell_session_pressed(const String &p_session_id);
 	void _shell_new_session_pressed();
 	void _shell_asset_pressed();
@@ -174,86 +166,19 @@ class ProjectManager : public Control {
 	void _show_error(const String &p_message, const Size2 &p_min_size = Size2());
 	void _dim_window();
 
-	// Quick settings.
-
-	QuickSettingsDialog *quick_settings_dialog = nullptr;
-
 	void _show_quick_settings();
 	void _restart_confirmed();
 
-	// Project list.
+	// Project list (Cursor-style home: logo + tiles + All Projects).
 
-	VBoxContainer *empty_list_placeholder = nullptr;
-	RichTextLabel *empty_list_message = nullptr;
-	Button *empty_list_create_project = nullptr;
-	Button *empty_list_import_project = nullptr;
-	Button *empty_list_open_assetlib = nullptr;
-	Label *empty_list_online_warning = nullptr;
-
+	Label *empty_list_message = nullptr;
 	void _update_list_placeholder();
 
 	ProjectList *project_list = nullptr;
 	bool initialized = false;
 
-	LineEdit *search_box = nullptr;
 	Label *loading_label = nullptr;
-	Label *sort_label = nullptr;
-	OptionButton *filter_option = nullptr;
-	PanelContainer *project_list_panel = nullptr;
-
-	// Solers: view mode toggle (list / grid).
-	Ref<ButtonGroup> view_mode_group;
-	Button *view_list_btn = nullptr;
-	Button *view_grid_btn = nullptr;
-	void _set_project_view(int p_mode);
-
-	// Solers: left navigation rail — custom-drawn UE-style category cards.
-	VBoxContainer *nav_panel = nullptr;
-	SolersCategoryCard *nav_new_card = nullptr;
-	SolersCategoryCard *nav_all_card = nullptr;
-	SolersCategoryCard *nav_asset_card = nullptr;
-	SolersCategoryCard *nav_ai_card = nullptr;
-	SolersCategoryCard *nav_settings_card = nullptr;
-	void _nav_new_pressed();
-	void _nav_card_pressed(SolersCategoryCard *p_card);
-	void _deselect_all_nav_cards();
-	void _nav_all_pressed();
-	void _bottom_bar_separator(HBoxContainer *p_bar);
-
-	// Solers: progressive-disclosure bottom bar. Low-frequency actions live in
-	// two overflow menus; the selection group only exists while a selection does.
-	enum BottomBarMenuOption {
-		BOTTOM_MENU_SCAN,
-		BOTTOM_MENU_ERASE_MISSING,
-		BOTTOM_MENU_RENAME,
-		BOTTOM_MENU_DUPLICATE,
-		BOTTOM_MENU_MANAGE_TAGS,
-		BOTTOM_MENU_ERASE,
-	};
-	void _on_library_more_id_pressed(int p_id);
-	void _on_selection_more_id_pressed(int p_id);
-	void _refresh_library_more_menu();
-	void _position_overflow_popup(PopupMenu *p_popup, Control *p_anchor);
-
-	MenuButton *library_more_btn = nullptr;
-	MenuButton *selection_more_btn = nullptr;
-	HBoxContainer *selection_bar = nullptr;
-
-	Button *create_btn = nullptr;
-	Button *import_btn = nullptr;
-	Button *scan_btn = nullptr;
-	Button *open_btn = nullptr;
-	Button *open_options_btn = nullptr;
-	Button *run_btn = nullptr;
-	Button *rename_btn = nullptr;
-	Button *duplicate_btn = nullptr;
-	Button *manage_tags_btn = nullptr;
-	Button *erase_btn = nullptr;
-	Button *erase_missing_btn = nullptr;
-	Button *donate_btn = nullptr;
-
-	HBoxContainer *open_btn_container = nullptr;
-	PopupMenu *open_options_popup = nullptr;
+	TextureRect *home_logo = nullptr;
 
 	EditorFileDialog *scan_dir = nullptr;
 
@@ -289,20 +214,13 @@ class ProjectManager : public Control {
 	void _erase_project_confirm();
 	void _erase_missing_projects_confirm();
 	void _update_project_buttons();
-	void _open_options_popup();
 	void _open_recovery_mode_ask(bool manual = false);
-	void _open_donate_page();
 
 	void _on_project_created(const String &dir, bool edit);
 	void _on_project_duplicated(const String &p_original_path, const String &p_duplicate_path, bool p_edit);
 	void _on_projects_updated();
-	void _on_open_options_selected(int p_option);
 	void _on_recovery_mode_popup_open_normal();
 	void _on_recovery_mode_popup_open_recovery();
-
-	void _on_order_option_changed(int p_idx);
-	void _on_search_term_changed(const String &p_term);
-	void _on_search_term_submitted(const String &p_text);
 
 	// Project tag management.
 
