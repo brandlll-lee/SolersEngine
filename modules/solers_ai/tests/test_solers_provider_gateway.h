@@ -50,6 +50,9 @@
 
 #include "modules/solers_ai/core/solers_agent_session.h"
 #include "modules/solers_ai/core/solers_asset_service.h"
+#include "modules/solers_ai/plugins/solers_plugin.h"
+#include "modules/solers_ai/plugins/solers_plugin_meshy.h"
+#include "modules/solers_ai/plugins/solers_plugin_polyhaven.h"
 #include "modules/solers_ai/core/solers_context_manager.h"
 #include "modules/solers_ai/core/solers_file_checkpoint.h"
 #include "modules/solers_ai/core/solers_geometry_facts.h"
@@ -111,6 +114,38 @@ public:
 	}
 };
 
+class SolersSyntheticFuturePlugin : public SolersPlugin {
+public:
+	bool job_ran = false;
+
+	Dictionary get_profile() const override {
+		Dictionary profile;
+		profile["id"] = "synthetic-future";
+		profile["label"] = "Synthetic Future";
+		Array kinds;
+		kinds.push_back("novel-geometry");
+		profile["kinds"] = kinds;
+		profile["supports_generation"] = true;
+		profile["supports_catalog"] = false;
+		profile["supports_resume"] = false;
+		profile["requires_api_key"] = false;
+		return profile;
+	}
+
+	Dictionary get_generation_options_schema(const String &p_kind) const override {
+		Dictionary density;
+		density["type"] = "number";
+		density["description"] = "Synthetic contract option.";
+		Dictionary properties;
+		properties["density"] = density;
+		return properties;
+	}
+
+	void run_job(const Ref<SolersPluginJob> &p_job) override {
+		job_ran = p_job.is_valid();
+	}
+};
+
 Dictionary make_user_message(const String &p_text) {
 	Dictionary message;
 	message["role"] = "user";
@@ -154,6 +189,16 @@ Dictionary find_tool_def(const Array &p_tools, const String &p_name) {
 		const Dictionary tool = p_tools[i];
 		if (tool.get("name", String()) == p_name) {
 			return tool;
+		}
+	}
+	return Dictionary();
+}
+
+Dictionary find_operation_def(const Array &p_operations, const String &p_operation_id) {
+	for (int i = 0; i < p_operations.size(); i++) {
+		const Dictionary operation = p_operations[i];
+		if (String(operation.get("operation_id", String())) == p_operation_id) {
+			return operation;
 		}
 	}
 	return Dictionary();
@@ -388,7 +433,7 @@ TEST_CASE("[SolersToolRegistry] registers tools by lookup, not a hardcoded catal
 	CHECK((bool)data.get("has_unknown_empty", false));
 }
 
-TEST_CASE("[SolersPermissionManager] third-party plugin code always requires explicit approval") {
+TEST_CASE("[SolersPermissionManager] third-party addon code always requires explicit approval") {
 	SolersPermissionManager permissions;
 	permissions.set_auto_approve_all(true);
 	CHECK_FALSE(permissions.is_auto_approved(SolersPermissionManager::PERMISSION_INSTALL_PLUGIN));
@@ -405,7 +450,7 @@ TEST_CASE("[SolersPermissionManager] third-party plugin code always requires exp
 	third_party["plugin_id"] = "123";
 	third_party["version"] = "1.0.0";
 	third_party["sha256"] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-	const Dictionary blocked = registry.call_tool("plugin.ensure", third_party);
+	const Dictionary blocked = registry.call_tool("addon.ensure", third_party);
 	CHECK_FALSE((bool)blocked.get("ok", true));
 	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "USER_APPROVAL_REQUIRED");
 	CHECK(permissions.get_pending_request_count() == 1);
@@ -417,19 +462,19 @@ TEST_CASE("[SolersPermissionManager] third-party plugin code always requires exp
 	bundled["sha256"] = "a071850250ec5e596aa54da61c01d75768774eb379ee997584d426a45f4884a2";
 	Dictionary untrusted_bundle = bundled.duplicate(true);
 	untrusted_bundle["sha256"] = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-	CHECK(SolersAssetService::is_trusted_plugin(bundled));
-	CHECK_FALSE(SolersAssetService::is_trusted_plugin(untrusted_bundle));
-	const Dictionary untrusted = registry.call_tool("plugin.ensure", untrusted_bundle);
+	CHECK(SolersAssetService::is_trusted_addon(bundled));
+	CHECK_FALSE(SolersAssetService::is_trusted_addon(untrusted_bundle));
+	const Dictionary untrusted = registry.call_tool("addon.ensure", untrusted_bundle);
 	CHECK_FALSE((bool)untrusted.get("ok", true));
 	CHECK(Dictionary(untrusted.get("error", Dictionary())).get("code", String()) == "USER_APPROVAL_REQUIRED");
 	CHECK(permissions.get_pending_request_count() == 2);
 
-	const Dictionary reached_handler = registry.call_tool("plugin.ensure", bundled);
+	const Dictionary reached_handler = registry.call_tool("addon.ensure", bundled);
 	CHECK_FALSE((bool)reached_handler.get("ok", true));
 	CHECK(Dictionary(reached_handler.get("error", Dictionary())).get("code", String()) == "PLUGIN_INSPECTION_REQUIRED");
 }
 
-TEST_CASE("[Editor][SolersPlugin] package paths are validated and project writes roll back") {
+TEST_CASE("[Editor][SolersAddon] package paths are validated and project writes roll back") {
 	const String unsafe_zip = "user://.solers_unsafe_plugin_contract.zip";
 	const String package_zip = "user://.solers_plugin_transaction_contract.zip";
 	const String target_dir = "res://.solers_plugin_transaction_contract";
@@ -511,7 +556,7 @@ TEST_CASE("[Editor][SolersPlugin] package paths are validated and project writes
 	DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(package_zip));
 }
 
-TEST_CASE("[Editor][SolersPlugin] bundled Terrain3D archive is pinned and self-describing") {
+TEST_CASE("[Editor][SolersAddon] bundled Terrain3D archive is pinned and self-describing") {
 	const String invalid_archive = "user://.solers_invalid_terrain_bundle.zip";
 	Vector<Pair<String, String>> invalid_files;
 	invalid_files.push_back(Pair<String, String>("addons/terrain_3d/plugin.cfg", "[plugin]"));
@@ -522,7 +567,7 @@ TEST_CASE("[Editor][SolersPlugin] bundled Terrain3D archive is pinned and self-d
 	Dictionary args;
 	args["source"] = "bundled";
 	args["plugin_id"] = "terrain3d";
-	const Dictionary mismatch = invalid_assets.plugin_inspect(args);
+	const Dictionary mismatch = invalid_assets.addon_inspect(args);
 	if (previous_override.is_empty()) {
 		OS::get_singleton()->unset_environment("SOLERS_TERRAIN3D_ARCHIVE");
 	} else {
@@ -533,7 +578,7 @@ TEST_CASE("[Editor][SolersPlugin] bundled Terrain3D archive is pinned and self-d
 	CHECK(Dictionary(mismatch.get("error", Dictionary())).get("code", String()) == "PLUGIN_HASH_MISMATCH");
 
 	SolersAssetService assets;
-	const Dictionary result = assets.plugin_inspect(args);
+	const Dictionary result = assets.addon_inspect(args);
 	REQUIRE(result.get("ok", false));
 	const Dictionary data = result.get("data", Dictionary());
 	CHECK(data.get("version", String()) == "1.0.2-stable");
@@ -553,9 +598,9 @@ TEST_CASE("[Editor][SolersPlugin] bundled Terrain3D archive is pinned and self-d
 	contract_args["plugin_id"] = "terrain3d";
 	contract_args["version"] = data.get("version", String());
 	contract_args["sha256"] = data.get("sha256", String());
-	CHECK(assets.plugin_agent_contract(contract_args).get("ok", false));
+	CHECK(assets.addon_agent_contract(contract_args).get("ok", false));
 	contract_args["sha256"] = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-	CHECK_FALSE((bool)assets.plugin_agent_contract(contract_args).get("ok", true));
+	CHECK_FALSE((bool)assets.addon_agent_contract(contract_args).get("ok", true));
 }
 
 TEST_CASE("[SolersToolRegistry] schema preflight runs before approval or handler side effects") {
@@ -830,10 +875,12 @@ TEST_CASE("[SolersToolRegistry] default model surface is domain-first") {
 		"asset.catalog.inspect",
 		"asset.catalog.acquire",
 		"job.wait",
-		"asset.list_local",
-		"asset.import_to_project",
 		"asset.generate",
 		"asset.status",
+		"addon.search",
+		"addon.inspect",
+		"addon.list",
+		"addon.ensure",
 	};
 	for (const char *name : required_direct) {
 		Dictionary tool = find_tool_def(tools, name);
@@ -845,7 +892,8 @@ TEST_CASE("[SolersToolRegistry] default model surface is domain-first") {
 		"resource.get_info", "resource.create", "resource.get_property", "resource.set_property", "native.instantiate", "native.load",
 		"native.list_properties", "native.get", "native.set", "native.list_methods", "native.call", "native.save", "native.free",
 		"scene.instantiate", "scene.validate_spatial", "scene.validate_structure", "object.get_property", "object.set_property",
-		"object.call_method", "editor.invoke"
+		"object.call_method", "editor.invoke", "asset.list_local", "asset.import_to_project",
+		"plugin.search", "plugin.inspect", "plugin.list", "plugin.ensure"
 	};
 	for (const char *name : removed_core) {
 		CHECK(find_tool_def(tools, name).is_empty());
@@ -858,17 +906,23 @@ TEST_CASE("[SolersToolRegistry] default model surface is domain-first") {
 	CHECK(find_tool_def(tools, "ambientcg.acquire").is_empty());
 	Dictionary catalog_search = find_tool_def(tools, "asset.catalog.search");
 	Dictionary catalog_search_properties = Dictionary(catalog_search.get("input_schema", Dictionary())).get("properties", Dictionary());
-	CHECK(Array(Dictionary(catalog_search_properties.get("provider", Dictionary())).get("enum", Array())).has("ambientcg"));
-	CHECK(Array(Dictionary(catalog_search_properties.get("provider", Dictionary())).get("enum", Array())).has("polyhaven"));
-	CHECK(Array(Dictionary(catalog_search_properties.get("kind", Dictionary())).get("enum", Array())).has("3d"));
+	const Array catalog_providers = Dictionary(catalog_search_properties.get("provider", Dictionary())).get("enum", Array());
+	CHECK_FALSE(catalog_providers.is_empty());
+	for (int i = 0; i < catalog_providers.size(); i++) {
+		SolersPlugin *plugin = SolersPluginRegistry::get_plugin(catalog_providers[i]);
+		CHECK(plugin != nullptr);
+		if (plugin) {
+			CHECK((bool)plugin->get_profile().get("supports_catalog", false));
+		}
+	}
 	Dictionary catalog_acquire = find_tool_def(tools, "asset.catalog.acquire");
 	Dictionary catalog_acquire_properties = Dictionary(catalog_acquire.get("input_schema", Dictionary())).get("properties", Dictionary());
 	CHECK(catalog_acquire_properties.has("source_version"));
-	CHECK(Array(Dictionary(catalog_acquire_properties.get("kind", Dictionary())).get("enum", Array())).has("3d"));
+	CHECK_FALSE(Array(Dictionary(catalog_acquire_properties.get("kind", Dictionary())).get("enum", Array())).is_empty());
 	Dictionary catalog_inspect = find_tool_def(tools, "asset.catalog.inspect");
 	Dictionary catalog_inspect_properties = Dictionary(catalog_inspect.get("input_schema", Dictionary())).get("properties", Dictionary());
 	CHECK(catalog_inspect_properties.has("asset_id"));
-	CHECK(Array(Dictionary(catalog_inspect_properties.get("kind", Dictionary())).get("enum", Array())).has("3d"));
+	CHECK_FALSE(Array(Dictionary(catalog_inspect_properties.get("kind", Dictionary())).get("enum", Array())).is_empty());
 	CHECK(Dictionary(Dictionary(find_tool_def(tools, "job.wait").get("input_schema", Dictionary())).get("properties", Dictionary())).has("ids"));
 	Dictionary scene_edit = find_tool_def(tools, "scene.edit");
 	REQUIRE_FALSE(scene_edit.is_empty());
@@ -951,6 +1005,44 @@ TEST_CASE("[SolersToolRegistry] default model surface is domain-first") {
 		CHECK(name != "runtime.capture_screenshot");
 		CHECK(name != "editor.capture_screenshot");
 	}
+}
+
+TEST_CASE("[SolersPluginRegistry] an unknown connector extends every registry-driven surface") {
+	SolersSyntheticFuturePlugin *plugin = memnew(SolersSyntheticFuturePlugin);
+	SolersPluginRegistry::register_plugin(plugin);
+
+	CHECK(SolersPluginRegistry::get_plugin("synthetic-future") == plugin);
+	CHECK(SolersPluginRegistry::default_generator_for_kind("novel-geometry") == plugin);
+
+	SolersAssetService asset_service;
+	SolersToolRegistry registry;
+	registry.set_asset_service(&asset_service);
+	registry.register_default_tools();
+	const Dictionary generate = find_tool_def(registry.list_tools(), "asset.generate");
+	const Dictionary properties = Dictionary(generate.get("input_schema", Dictionary())).get("properties", Dictionary());
+	CHECK(Array(Dictionary(properties.get("provider", Dictionary())).get("enum", Array())).has("synthetic-future"));
+	CHECK(Array(Dictionary(properties.get("kind", Dictionary())).get("enum", Array())).has("novel-geometry"));
+	CHECK(Dictionary(Dictionary(properties.get("provider_options", Dictionary())).get("properties", Dictionary())).has("density"));
+
+	const String partial = "Create with @synthetic-fut";
+	int mention_start = -1;
+	CHECK(SolersPluginRegistry::mention_query_at(partial, partial.length(), mention_start) == "synthetic-fut");
+	CHECK(mention_start == 12);
+	const Array mentions = SolersPluginRegistry::parse_mentions("Use @synthetic-future, not @synthetic-future-extra.");
+	CHECK(mentions.size() == 1);
+	if (mentions.size() == 1) {
+		CHECK(Dictionary(mentions[0]).get("id", String()) == "synthetic-future");
+	}
+
+	Ref<SolersPluginJob> job;
+	job.instantiate();
+	if (SolersPlugin *registered = SolersPluginRegistry::get_plugin("synthetic-future")) {
+		registered->run_job(job);
+	}
+	CHECK(plugin->job_ran);
+
+	SolersPluginRegistry::unregister_plugin(plugin);
+	memdelete(plugin);
 }
 
 TEST_CASE("[SolersToolRegistry] engine execution runs typed operations and reports the native cause") {
@@ -1993,9 +2085,9 @@ TEST_CASE("[SolersResourceService] create initializes properties and accepts lis
 	DirAccess::remove_file_or_error(ProjectSettings::get_singleton()->globalize_path(texture_path));
 }
 
-TEST_CASE("[SolersAssetService][SceneTree] texture-set import follows requested manifest roles") {
+TEST_CASE("[SolersAssetService][SceneTree] direct texture-set import follows requested manifest roles") {
 	const String asset_id = ".solers_map_role_import_contract";
-	const String asset_dir = "user://solers_library/assets/" + asset_id;
+	const String asset_dir = "user://solers_jobs/" + asset_id;
 	const String source_dir = asset_dir.path_join("source");
 	const String target_dir = "res://.solers_map_role_import_contract";
 	const String color_path = source_dir.path_join("color.png");
@@ -2029,6 +2121,7 @@ TEST_CASE("[SolersAssetService][SceneTree] texture-set import follows requested 
 	manifest["kind"] = "material";
 	manifest["name"] = "Map Role Import Contract";
 	manifest["status"] = "ready";
+	manifest["target_dir"] = target_dir;
 	manifest["files"] = files;
 	manifest["import_files"] = files;
 	manifest["entrypoints"] = files;
@@ -2042,15 +2135,11 @@ TEST_CASE("[SolersAssetService][SceneTree] texture-set import follows requested 
 	Dictionary args;
 	args["asset_id"] = asset_id;
 	args["target_dir"] = target_dir;
-	Dictionary result = asset_service.import_to_project(args);
-	CHECK_FALSE((bool)result.get("ok", true));
-	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "MAP_SELECTION_REQUIRED");
-
 	Array selected_roles;
 	selected_roles.push_back("surface_color");
 	selected_roles.push_back("surface_normal");
 	args["map_types"] = selected_roles;
-	result = asset_service.import_to_project(args);
+	const Dictionary result = asset_service.start_project_import(args);
 	REQUIRE(result.get("ok", false));
 	CHECK(FileAccess::exists(target_dir.path_join("color.png")));
 	CHECK(FileAccess::exists(target_dir.path_join("normal.png")));
@@ -2065,6 +2154,69 @@ TEST_CASE("[SolersAssetService][SceneTree] texture-set import follows requested 
 	DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(source_dir));
 	DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(asset_dir));
 	DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(target_dir));
+}
+
+TEST_CASE("[SolersPluginMeshy] offline operation contracts") {
+	SolersPluginMeshy meshy;
+	const Array operations = meshy.get_operation_defs();
+	const Dictionary convert = find_operation_def(operations, "convert");
+	const Dictionary resize = find_operation_def(operations, "resize");
+	const Dictionary uv_unwrap = find_operation_def(operations, "uv_unwrap");
+	REQUIRE_FALSE(convert.is_empty());
+	REQUIRE_FALSE(resize.is_empty());
+	REQUIRE_FALSE(uv_unwrap.is_empty());
+	CHECK(convert.get("endpoint", String()) == "/openapi/v1/convert");
+	CHECK(resize.get("endpoint", String()) == "/openapi/v1/resize");
+	CHECK(uv_unwrap.get("endpoint", String()) == "/openapi/v1/uv-unwrap");
+	CHECK(Array(Dictionary(convert.get("options_schema", Dictionary())).get("required", Array())).has("target_formats"));
+
+	Dictionary source;
+	source["provider_task_id"] = "meshy-source-task";
+	source["polycount"] = 40000;
+
+	Dictionary convert_options;
+	convert_options["input_task_id"] = "unrelated-task";
+	Array convert_formats;
+	convert_formats.push_back("STL");
+	convert_options["target_formats"] = convert_formats;
+	Dictionary result = meshy.prepare_operation(convert, source, convert_options);
+	CHECK(result.is_empty());
+	CHECK(convert_options.get("input_task_id", String()) == "meshy-source-task");
+	const Array normalized_formats = convert_options.get("target_formats", Array());
+	CHECK(normalized_formats.size() == 1);
+	CHECK(String(normalized_formats[0]) == "stl");
+
+	Dictionary resize_options;
+	resize_options["resize_height"] = 1.8;
+	result = meshy.prepare_operation(resize, source, resize_options);
+	CHECK(result.is_empty());
+	CHECK(resize_options.get("input_task_id", String()) == "meshy-source-task");
+
+	Dictionary conflicting_resize_options;
+	conflicting_resize_options["resize_height"] = 1.8;
+	conflicting_resize_options["resize_longest_side"] = 2.0;
+	result = meshy.prepare_operation(resize, source, conflicting_resize_options);
+	CHECK_FALSE(result.is_empty());
+	CHECK(result.get("code", String()) == "INVALID_ARGUMENT");
+	CHECK(String(result.get("message", String())).contains("exactly one"));
+
+	Dictionary false_auto_size_options;
+	false_auto_size_options["auto_size"] = false;
+	result = meshy.prepare_operation(resize, source, false_auto_size_options);
+	CHECK_FALSE(result.is_empty());
+	CHECK(result.get("code", String()) == "INVALID_ARGUMENT");
+
+	Dictionary oversized_source = source.duplicate(true);
+	oversized_source["polycount"] = 40001;
+	Dictionary uv_options;
+	result = meshy.prepare_operation(uv_unwrap, oversized_source, uv_options);
+	CHECK_FALSE(result.is_empty());
+	CHECK(result.get("code", String()) == "UV_UNWRAP_FACE_LIMIT");
+
+	uv_options.clear();
+	result = meshy.prepare_operation(uv_unwrap, source, uv_options);
+	CHECK(result.is_empty());
+	CHECK(uv_options.get("input_task_id", String()) == "meshy-source-task");
 }
 
 TEST_CASE("[SolersAssetService] Meshy topology target is an integer contract for Text-to-3D") {
@@ -2095,7 +2247,7 @@ TEST_CASE("[SolersAssetService][SceneTree] baked_static imports use Godot native
 		return;
 	}
 	const String asset_id = ".solers_static_lightmap_import_contract";
-	const String asset_dir = "user://solers_library/assets/" + asset_id;
+	const String asset_dir = "user://solers_jobs/" + asset_id;
 	const String source_dir = asset_dir.path_join("source");
 	const String source_path = source_dir.path_join("quad.obj");
 	const String target_dir = "res://.solers_static_lightmap_import_contract";
@@ -2126,6 +2278,10 @@ TEST_CASE("[SolersAssetService][SceneTree] baked_static imports use Godot native
 	manifest["kind"] = "3d";
 	manifest["name"] = "Static Lightmap Import Contract";
 	manifest["status"] = "ready";
+	manifest["target_dir"] = target_dir;
+	Dictionary import_options;
+	import_options["import_profile"] = "baked_static";
+	manifest["import_options"] = import_options;
 	Array files;
 	files.push_back(source_path);
 	manifest["files"] = files;
@@ -2144,7 +2300,7 @@ TEST_CASE("[SolersAssetService][SceneTree] baked_static imports use Godot native
 	args["asset_id"] = asset_id;
 	args["target_dir"] = target_dir;
 	args["import_profile"] = "baked_static";
-	Dictionary result = asset_service.import_to_project(args);
+	Dictionary result = asset_service.start_project_import(args);
 	REQUIRE(result.get("ok", false));
 	Dictionary data = result.get("data", Dictionary());
 	for (int i = 0; i < 1000 && String(data.get("status", String())) == "pending"; i++) {
@@ -2167,10 +2323,15 @@ TEST_CASE("[SolersAssetService][SceneTree] baked_static imports use Godot native
 	REQUIRE(import_config->load(target_path + ".import") == OK);
 	CHECK((bool)import_config->get_value("params", "generate_lightmap_uv2", false));
 	CHECK(FileAccess::exists(target_path + ".unwrap_cache"));
+	asset_service.poll();
+	Dictionary status_args;
+	status_args["asset_id"] = asset_id;
+	const String sidecar_path = Dictionary(Dictionary(asset_service.status(status_args)).get("data", Dictionary())).get("sidecar_file", String());
 
 	remove_if_exists(target_path);
 	remove_if_exists(target_path + ".import");
 	remove_if_exists(target_path + ".unwrap_cache");
+	remove_if_exists(sidecar_path);
 	remove_if_exists(source_path);
 	remove_if_exists(asset_dir.path_join("manifest.json"));
 	DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(source_dir));
@@ -2190,8 +2351,8 @@ TEST_CASE("[SolersAssetService][SceneTree] project import follows native Materia
 	filesystem->connect(SNAME("resources_reimported"), lifecycle_callback);
 	const String asset_id = ".solers_material_import_contract";
 	const String second_asset_id = ".solers_material_import_contract_b";
-	const String asset_dir = "user://solers_library/assets/" + asset_id;
-	const String second_asset_dir = "user://solers_library/assets/" + second_asset_id;
+	const String asset_dir = "user://solers_jobs/" + asset_id;
+	const String second_asset_dir = "user://solers_jobs/" + second_asset_id;
 	const String source_dir = asset_dir.path_join("source");
 	const String second_source_dir = second_asset_dir.path_join("source");
 	const String target_dir = "res://.solers_material_import_contract";
@@ -2239,9 +2400,12 @@ TEST_CASE("[SolersAssetService][SceneTree] project import follows native Materia
 	files.push_back(unused_path);
 	Dictionary manifest;
 	manifest["id"] = asset_id;
+	manifest["provider"] = "synthetic-origin";
 	manifest["kind"] = "material";
 	manifest["name"] = "Material Import Contract";
+	manifest["prompt"] = "Synthetic provenance contract";
 	manifest["status"] = "ready";
+	manifest["target_dir"] = target_dir;
 	manifest["files"] = files;
 	Array import_files;
 	import_files.push_back(material_path);
@@ -2273,6 +2437,7 @@ TEST_CASE("[SolersAssetService][SceneTree] project import follows native Materia
 	second_manifest["kind"] = "material";
 	second_manifest["name"] = "Material Import Contract B";
 	second_manifest["status"] = "ready";
+	second_manifest["target_dir"] = second_target_dir;
 	second_manifest["files"] = second_files;
 	Array no_entrypoints;
 	second_manifest["entrypoints"] = no_entrypoints;
@@ -2282,14 +2447,14 @@ TEST_CASE("[SolersAssetService][SceneTree] project import follows native Materia
 	Dictionary args;
 	args["asset_id"] = asset_id;
 	args["target_dir"] = target_dir;
-	Dictionary result = asset_service.import_to_project(args);
+	Dictionary result = asset_service.start_project_import(args);
 	REQUIRE(result.get("ok", false));
 	Dictionary data = result.get("data", Dictionary());
 	REQUIRE(data.get("status", String()) == "pending");
 	Dictionary second_args;
 	second_args["asset_id"] = second_asset_id;
 	second_args["target_dir"] = second_target_dir;
-	Dictionary second_result = asset_service.import_to_project(second_args);
+	Dictionary second_result = asset_service.start_project_import(second_args);
 	REQUIRE(second_result.get("ok", false));
 	Dictionary second_data = second_result.get("data", Dictionary());
 	REQUIRE(second_data.get("status", String()) == "pending");
@@ -2297,7 +2462,7 @@ TEST_CASE("[SolersAssetService][SceneTree] project import follows native Materia
 	CHECK_FALSE(staged_imports.get("wave_active", true));
 	CHECK((int)staged_imports.get("queued_count", 0) == 2);
 	const Dictionary first_poll_args = data.get("poll_args", Dictionary());
-	Dictionary duplicate_pending = asset_service.import_to_project(args);
+	Dictionary duplicate_pending = asset_service.start_project_import(args);
 	REQUIRE(duplicate_pending.get("ok", false));
 	const Dictionary duplicate_data = duplicate_pending.get("data", Dictionary());
 	CHECK(duplicate_data.get("reused", false));
@@ -2348,10 +2513,28 @@ TEST_CASE("[SolersAssetService][SceneTree] project import follows native Materia
 	CHECK(ResourceLoader::load(second_target_dir.path_join("material.tres"), String(), ResourceFormatLoader::CACHE_MODE_REUSE).is_valid());
 	CHECK(FileAccess::exists(second_target_dir.path_join("textures/surface.png")));
 	CHECK_FALSE(FileAccess::exists(second_target_dir.path_join("buffers/model.bin")));
+	asset_service.poll();
+	Dictionary status_args;
+	status_args["asset_id"] = asset_id;
+	const Dictionary imported_status = asset_service.status(status_args);
+	REQUIRE(imported_status.get("ok", false));
+	const Dictionary imported_manifest = imported_status.get("data", Dictionary());
+	CHECK(imported_manifest.get("status", String()) == "imported");
+	const String sidecar_path = imported_manifest.get("sidecar_file", String());
+	REQUIRE(FileAccess::exists(sidecar_path));
+	const Dictionary sidecar = SolersPlugin::read_json_file(sidecar_path);
+	CHECK((int)sidecar.get("schema_version", 0) == 1);
+	CHECK(sidecar.get("job_id", String()) == asset_id);
+	CHECK(sidecar.get("plugin", String()) == "synthetic-origin");
+	CHECK(sidecar.get("target_dir", String()) == target_dir);
+	status_args["asset_id"] = second_asset_id;
+	const Dictionary second_imported_status = asset_service.status(status_args);
+	const String second_sidecar_path = Dictionary(second_imported_status.get("data", Dictionary())).get("sidecar_file", String());
+	CHECK(FileAccess::exists(second_sidecar_path));
 
 	const uint64_t imported_mtime = FileAccess::get_modified_time(target_dir.path_join("surface.png"));
 	SolersAssetService restarted_service;
-	Dictionary repeated = restarted_service.import_to_project(args);
+	Dictionary repeated = restarted_service.start_project_import(args);
 	REQUIRE(repeated.get("ok", false));
 	CHECK(String(Dictionary(repeated.get("data", Dictionary())).get("status", String())) != "pending");
 	CHECK(FileAccess::get_modified_time(target_dir.path_join("surface.png")) == imported_mtime);
@@ -2361,6 +2544,8 @@ TEST_CASE("[SolersAssetService][SceneTree] project import follows native Materia
 	cleanup_files.push_back(target_dir.path_join("surface.png"));
 	cleanup_files.push_back(target_dir.path_join("surface.png.import"));
 	cleanup_files.push_back(target_dir.path_join("unused.tres"));
+	cleanup_files.push_back(sidecar_path);
+	cleanup_files.push_back(second_sidecar_path);
 	cleanup_files.push_back(material_path);
 	cleanup_files.push_back(texture_path);
 	cleanup_files.push_back(unused_path);
@@ -2396,7 +2581,7 @@ TEST_CASE("[SolersAssetService][SceneTree] project import never opens interactiv
 		return;
 	}
 	const String asset_id = ".solers_noninteractive_import_contract";
-	const String asset_dir = "user://solers_library/assets/" + asset_id;
+	const String asset_dir = "user://solers_jobs/" + asset_id;
 	const String source_path = asset_dir.path_join("source/payload.futureformat");
 	const String target_dir = "res://.solers_noninteractive_import_contract";
 	const String target_path = target_dir.path_join("payload.futureformat");
@@ -2413,6 +2598,7 @@ TEST_CASE("[SolersAssetService][SceneTree] project import never opens interactiv
 	manifest["kind"] = "3d";
 	manifest["name"] = "Noninteractive Import Contract";
 	manifest["status"] = "ready";
+	manifest["target_dir"] = target_dir;
 	manifest["files"] = files;
 	manifest["import_files"] = files;
 	manifest["entrypoints"] = files;
@@ -2429,7 +2615,7 @@ TEST_CASE("[SolersAssetService][SceneTree] project import never opens interactiv
 	Dictionary args;
 	args["asset_id"] = asset_id;
 	args["target_dir"] = target_dir;
-	const Dictionary result = asset_service.import_to_project(args);
+	const Dictionary result = asset_service.start_project_import(args);
 	CHECK_FALSE((bool)result.get("ok", true));
 	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "IMPORT_FORMAT_CONFIGURATION_REQUIRED");
 	CHECK_FALSE(query->queried);
@@ -2799,7 +2985,10 @@ TEST_CASE("[SolersToolRegistry] runtime lifecycle does not mutate authored proje
 
 	CHECK_FALSE(registry.affects_authored_state(SNAME("runtime.control")));
 	CHECK_FALSE(registry.affects_authored_state(SNAME("engine.inspect")));
-	CHECK(registry.affects_authored_state(SNAME("asset.import_to_project")));
+	CHECK(registry.affects_authored_state(SNAME("asset.generate")));
+	CHECK(registry.affects_authored_state(SNAME("asset.catalog.acquire")));
+	CHECK(registry.affects_authored_state(SNAME("asset.run_operation")));
+	CHECK_FALSE(registry.affects_authored_state(SNAME("asset.import_to_project")));
 
 	Dictionary play;
 	play["action"] = "play_current_scene";
@@ -2808,31 +2997,32 @@ TEST_CASE("[SolersToolRegistry] runtime lifecycle does not mutate authored proje
 	CHECK(Dictionary(runtime_accesses[0]).get("key", String()) == "runtime:");
 }
 
-TEST_CASE("[SolersToolRegistry] asset reads do not conflict with project imports") {
+TEST_CASE("[SolersToolRegistry] direct asset jobs declare their project writes") {
 	SolersAssetService assets;
 	SolersToolRegistry registry;
 	registry.set_asset_service(&assets);
 	registry.register_default_tools();
 
-	const Array list_accesses = registry.resolve_resource_access(SNAME("asset.list_local"), Dictionary());
-	REQUIRE(list_accesses.size() == 1);
-	CHECK(Dictionary(list_accesses[0]).get("mode", String()) == "read");
-	CHECK(Dictionary(list_accesses[0]).get("key", String()) == "asset-library:");
-
-	Dictionary import_args;
-	import_args["asset_id"] = "synthetic_asset";
-	const Array import_accesses = registry.resolve_resource_access(SNAME("asset.import_to_project"), import_args);
-	REQUIRE(import_accesses.size() == 2);
-	CHECK(Dictionary(import_accesses[0]).get("mode", String()) == "read");
-	CHECK(Dictionary(import_accesses[0]).get("key", String()) == "asset:synthetic_asset");
-	CHECK(Dictionary(import_accesses[1]).get("mode", String()) == "write");
-	const String project_key = Dictionary(import_accesses[1]).get("key", String());
-	CHECK(project_key.begins_with("project:res:"));
-	CHECK(project_key.ends_with("/solers_assets"));
+	Dictionary generate_args;
+	generate_args["kind"] = "synthetic_kind";
+	generate_args["name"] = "contract_asset";
+	generate_args["target_dir"] = "res://generated/contract_asset";
+	const Array generate_accesses = registry.resolve_resource_access(SNAME("asset.generate"), generate_args);
+	REQUIRE(generate_accesses.size() == 2);
+	CHECK(Dictionary(generate_accesses[0]).get("mode", String()) == "write");
+	CHECK(String(Dictionary(generate_accesses[0]).get("key", String())).begins_with("asset-job:"));
+	CHECK(Dictionary(generate_accesses[1]).get("mode", String()) == "write");
+	CHECK(Dictionary(generate_accesses[1]).get("key", String()) == "project:res://generated/contract_asset");
 
 	Dictionary first_search;
-	first_search["provider"] = "polyhaven";
-	first_search["kind"] = "3d";
+	const Dictionary catalog_tool = find_tool_def(registry.list_tools(), "asset.catalog.search");
+	const Dictionary catalog_properties = Dictionary(catalog_tool.get("input_schema", Dictionary())).get("properties", Dictionary());
+	const Array providers = Dictionary(catalog_properties.get("provider", Dictionary())).get("enum", Array());
+	const Array kinds = Dictionary(catalog_properties.get("kind", Dictionary())).get("enum", Array());
+	REQUIRE_FALSE(providers.is_empty());
+	REQUIRE_FALSE(kinds.is_empty());
+	first_search["provider"] = providers[0];
+	first_search["kind"] = kinds[0];
 	first_search["query"] = "books";
 	const Array catalog_accesses = registry.resolve_resource_access(SNAME("asset.catalog.search"), first_search);
 	REQUIRE(catalog_accesses.size() == 1);
@@ -2844,16 +3034,19 @@ TEST_CASE("[SolersToolRegistry] asset reads do not conflict with project imports
 	CHECK(SolersToolRegistry::has_write_conflict(catalog_accesses, second_catalog_accesses));
 	CHECK(SolersToolRegistry::has_write_conflict(catalog_accesses, registry.resolve_resource_access(SNAME("asset.catalog.search"), first_search)));
 	Dictionary other_kind_search = first_search.duplicate(true);
-	other_kind_search["kind"] = "material";
+	other_kind_search["kind"] = "synthetic_other_kind";
 	CHECK_FALSE(SolersToolRegistry::has_write_conflict(catalog_accesses, registry.resolve_resource_access(SNAME("asset.catalog.search"), other_kind_search)));
 	Dictionary catalog_args;
-	catalog_args["provider"] = "polyhaven";
-	catalog_args["asset_id"] = "aerial_asphalt_01";
-	catalog_args["variant"] = "2k-jpg";
+	catalog_args["provider"] = providers[0];
+	catalog_args["kind"] = kinds[0];
+	catalog_args["asset_id"] = "synthetic_catalog_asset";
+	catalog_args["variant"] = "synthetic_variant";
 	const Array catalog_acquire_accesses = registry.resolve_resource_access(SNAME("asset.catalog.acquire"), catalog_args);
-	REQUIRE(catalog_acquire_accesses.size() == 1);
+	REQUIRE(catalog_acquire_accesses.size() == 2);
 	CHECK(Dictionary(catalog_acquire_accesses[0]).get("mode", String()) == "write");
-	CHECK(String(Dictionary(catalog_acquire_accesses[0]).get("key", String())).contains("aerial_asphalt_01"));
+	CHECK(String(Dictionary(catalog_acquire_accesses[0]).get("key", String())).contains("synthetic_catalog_asset"));
+	CHECK(Dictionary(catalog_acquire_accesses[1]).get("mode", String()) == "write");
+	CHECK(String(Dictionary(catalog_acquire_accesses[1]).get("key", String())).begins_with("project:res://assets/"));
 }
 
 TEST_CASE("[SolersToolRegistry] transcript audit preserves full redacted tool arguments") {
@@ -2915,7 +3108,7 @@ TEST_CASE("[SolersAssetService] Poly Haven variants come from official file meta
 	Dictionary files;
 	files["fbx"] = model_resolutions;
 	files["Diffuse"] = texture_resolutions;
-	const Array variants = SolersAssetService::normalize_polyhaven_variants(files, "3d");
+	const Array variants = SolersPluginPolyHaven::normalize_variants(files, "3d");
 	REQUIRE(variants.size() == 1);
 	const Dictionary variant = variants[0];
 	CHECK(variant.get("id", String()) == "1k-fbx");
@@ -2930,8 +3123,8 @@ TEST_CASE("[SolersAssetService] catalog variant identity is case-insensitive and
 	Array variants;
 	variants.push_back(variant);
 
-	CHECK(SolersAssetService::match_catalog_variant_id(variants, "official-mixedcase") == "Official-MixedCase");
-	CHECK(SolersAssetService::match_catalog_variant_id(variants, "missing").is_empty());
+	CHECK(SolersPlugin::match_catalog_variant_id(variants, "official-mixedcase") == "Official-MixedCase");
+	CHECK(SolersPlugin::match_catalog_variant_id(variants, "missing").is_empty());
 }
 
 TEST_CASE("[SolersAssetService] catalog ranking uses partial term coverage and stable relevance") {
@@ -2958,7 +3151,7 @@ TEST_CASE("[SolersAssetService] catalog ranking uses partial term coverage and s
 	candidates.push_back(partial);
 	candidates.push_back(unrelated);
 	candidates.push_back(exact);
-	const Array ranked = SolersAssetService::rank_catalog_assets(candidates, "wood bed");
+	const Array ranked = SolersPlugin::rank_catalog_assets(candidates, "wood bed");
 	REQUIRE(ranked.size() == 2);
 	CHECK(Dictionary(ranked[0]).get("asset_id", String()) == "wood_bed");
 	CHECK(Array(Dictionary(ranked[0]).get("matched_terms", Array())).size() == 2);
