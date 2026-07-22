@@ -83,7 +83,7 @@ class SolersPMAIView : public HBoxContainer {
 	void _build_nav();
 	void _select_category(const String &p_id);
 	void _build_provider_list();
-	void _add_provider_row(const String &p_id, const String &p_title, const Ref<Texture2D> &p_icon);
+	void _add_provider_row(const String &p_id, const String &p_title, const Ref<Texture2D> &p_icon, bool p_preserve_icon_color = false);
 	void _open_provider(const String &p_id);
 	void _show_provider_list();
 	void _select_provider(const String &p_id, bool p_load_stored);

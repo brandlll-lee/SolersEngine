@@ -33,6 +33,7 @@ class SolersCategoryCard : public Control {
 	String title;
 	Ref<Texture2D> icon;
 	Color hue = Color(0.10f, 0.45f, 0.95f); // Per-category accent tint (icon only).
+	bool preserve_icon_color = false; // Official multicolor marks — no grey chrome tint.
 
 	bool selected = false;
 	bool filled = false;
@@ -55,6 +56,7 @@ public:
 
 	void configure(const String &p_title, const Ref<Texture2D> &p_icon, const Color &p_hue);
 	void set_icon(const Ref<Texture2D> &p_icon);
+	void set_preserve_icon_color(bool p_preserve);
 	void set_filled(bool p_filled);
 	void set_selected(bool p_selected);
 	bool is_selected() const { return selected; }

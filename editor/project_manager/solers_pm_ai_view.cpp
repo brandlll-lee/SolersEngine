@@ -111,9 +111,10 @@ void SolersPMAIView::_select_category(const String &p_id) {
 	_show_provider_list();
 }
 
-void SolersPMAIView::_add_provider_row(const String &p_id, const String &p_title, const Ref<Texture2D> &p_icon) {
+void SolersPMAIView::_add_provider_row(const String &p_id, const String &p_title, const Ref<Texture2D> &p_icon, bool p_preserve_icon_color) {
 	SolersCategoryCard *card = memnew(SolersCategoryCard);
 	card->configure(p_title, p_icon, Color());
+	card->set_preserve_icon_color(p_preserve_icon_color);
 	card->set_meta("provider_id", p_id);
 	card->set_pressed_callback(callable_mp(this, &SolersPMAIView::_open_provider).bind(p_id));
 	provider_list->add_child(card);
@@ -141,7 +142,11 @@ void SolersPMAIView::_build_provider_list() {
 				continue;
 			}
 			const String id = profile.get("id", String());
-			_add_provider_row(id, String(profile.get("label", id)), SolersPMTheme::lucide_icon(SOLERS_AI_LUCIDE_BOX, 16));
+			const int logo_px = int(Math::round(16.0f * EDSCALE));
+			const Ref<Texture2D> color_logo = SolersChatGlyphs::provider_logo_color(id, logo_px);
+			_add_provider_row(id, String(profile.get("label", id)),
+					color_logo.is_valid() ? color_logo : SolersChatGlyphs::provider_logo(id, logo_px),
+					color_logo.is_valid());
 		}
 		return;
 	}

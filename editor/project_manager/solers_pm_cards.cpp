@@ -43,6 +43,14 @@ void SolersCategoryCard::set_icon(const Ref<Texture2D> &p_icon) {
 	queue_redraw();
 }
 
+void SolersCategoryCard::set_preserve_icon_color(bool p_preserve) {
+	if (preserve_icon_color == p_preserve) {
+		return;
+	}
+	preserve_icon_color = p_preserve;
+	queue_redraw();
+}
+
 void SolersCategoryCard::set_filled(bool p_filled) {
 	filled = p_filled;
 	queue_redraw();
@@ -120,8 +128,13 @@ void SolersCategoryCard::_notification(int p_what) {
 
 			if (icon.is_valid()) {
 				const Vector2 ipos = Vector2(icon_x, Math::round((r.size.y - isz.y) * 0.5f));
-				const Color idle_tint = Color(0.66f, 0.69f, 0.74f, 0.95f);
-				const Color icon_col = (filled || selected) ? Color(1, 1, 1) : idle_tint.lerp(Color(1, 1, 1), 0.35f * anim);
+				Color icon_col = Color(1, 1, 1);
+				if (!preserve_icon_color) {
+					const Color idle_tint = Color(0.66f, 0.69f, 0.74f, 0.95f);
+					icon_col = (filled || selected) ? Color(1, 1, 1) : idle_tint.lerp(Color(1, 1, 1), 0.35f * anim);
+				} else if (!(filled || selected)) {
+					icon_col = Color(1, 1, 1, 0.92f + 0.08f * anim);
+				}
 				draw_texture_rect(icon, Rect2(ipos, isz), false, icon_col);
 			}
 
