@@ -248,7 +248,7 @@ class SolersAgentSession : public Object {
 	Dictionary _commit_dirty_scene_if_needed();
 	bool _append_background_asset_deltas(bool p_waited_only);
 	void _resume_next_background_asset();
-	void _write_transcript_message(const String &p_role, const String &p_content) const;
+	void _write_transcript_message(const String &p_role, const String &p_content, const Array &p_mentions = Array()) const;
 	void _write_transcript_tool(const String &p_call_id, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result) const;
 	void _write_transcript_plan() const;
 	void _write_transcript_compaction(const Dictionary &p_result) const;

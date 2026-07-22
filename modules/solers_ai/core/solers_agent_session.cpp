@@ -378,7 +378,20 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 			continue;
 		}
 		if (role == SolersLLMRole::USER) {
-			restored.push_back(SolersLLMMessage::user(content));
+			Array mentions = event.get("mentions", Array());
+			const bool had_block = content.find("[Selected Solers context]") >= 0;
+			const String display = SolersMention::strip_prompt_block(content);
+			if (mentions.is_empty() && had_block) {
+				mentions = SolersMention::parse(display);
+			}
+			// Legacy rows already embed prompt_block (+ optional attachment appendix).
+			// New rows store display content + mentions; expand for the model only.
+			String model_content = had_block ? content : (display + SolersMention::prompt_block(mentions));
+			Dictionary user_message = SolersLLMMessage::user(model_content);
+			if (!mentions.is_empty()) {
+				user_message["mentions"] = mentions;
+			}
+			restored.push_back(user_message);
 		} else if (role == SolersLLMRole::ASSISTANT) {
 			restored.push_back(SolersLLMMessage::assistant(content, Array()));
 		}
@@ -414,12 +427,15 @@ void SolersAgentSession::_write_transcript_event(const String &p_type, const Dic
 	solers_transcript_write(event);
 }
 
-void SolersAgentSession::_write_transcript_message(const String &p_role, const String &p_content) const {
+void SolersAgentSession::_write_transcript_message(const String &p_role, const String &p_content, const Array &p_mentions) const {
 	Dictionary event;
 	event["event_type"] = "message";
 	event["turn_id"] = turn_id;
 	event["role"] = p_role;
 	event["content"] = p_content;
+	if (!p_mentions.is_empty()) {
+		event["mentions"] = p_mentions;
+	}
 	event["wall"] = Time::get_singleton()->get_unix_time_from_system();
 	_stamp_transcript_event(event);
 	solers_transcript_write(event);
@@ -824,7 +840,7 @@ bool SolersAgentSession::_flush_pending_steering() {
 			}
 		}
 		messages.push_back(message);
-		_write_transcript_message("user", message.get("content", String()));
+		_write_transcript_message("user", SolersMention::strip_prompt_block(message.get("content", String())), mentions);
 	}
 	pending_steering_messages.clear();
 	return true;
@@ -1618,7 +1634,7 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 	turn_started["model_limits_known"] = context_window > 0;
 	_write_transcript_event("turn_started", turn_started);
 	_record("agent_turn_started", turn_started);
-	_write_transcript_message("user", model_prompt);
+	_write_transcript_message("user", prompt, turn_mentions);
 
 	const Error err = _dispatch_model_request();
 	if (err != OK) {

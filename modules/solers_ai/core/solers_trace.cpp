@@ -16,6 +16,7 @@
 #include "core/os/mutex.h"
 #include "core/os/os.h"
 #include "core/string/print_string.h"
+#include "core/templates/hash_map.h"
 
 static Mutex solers_transcript_mutex;
 static thread_local bool solers_transcript_io_active = false;
@@ -108,4 +109,70 @@ bool solers_transcript_parse_record(const String &p_line, Dictionary &r_event) {
 	}
 	r_event = json->get_data();
 	return true;
+}
+
+Vector<SolersSessionInfo> solers_list_sessions(const String &p_project_path) {
+	Vector<SolersSessionInfo> sessions;
+	const String project_path = p_project_path.strip_edges();
+	if (project_path.is_empty()) {
+		return sessions;
+	}
+
+	struct Scratch {
+		SolersSessionInfo info;
+		bool has_user = false;
+		bool has_title = false;
+	};
+	Vector<Scratch> scratch;
+	HashMap<String, int> by_id;
+
+	const Vector<String> transcript_lines = solers_transcript_read_snapshot();
+	for (const String &record : transcript_lines) {
+		Dictionary event;
+		if (!solers_transcript_parse_record(record, event)) {
+			continue;
+		}
+		if (String(event.get("project_path", String())) != project_path) {
+			continue;
+		}
+		const String session_id = String(event.get("session_id", String())).strip_edges();
+		if (session_id.is_empty()) {
+			continue;
+		}
+
+		if (!by_id.has(session_id)) {
+			Scratch entry;
+			entry.info.session_id = session_id;
+			entry.info.title = "Current chat";
+			entry.info.wall = (int64_t)event.get("wall", 0);
+			scratch.push_back(entry);
+			by_id[session_id] = scratch.size() - 1;
+		}
+
+		Scratch &entry = scratch.write[by_id[session_id]];
+		if (event.has("wall")) {
+			entry.info.wall = (int64_t)event.get("wall", 0);
+		}
+		const String role = event.get("role", String());
+		if (role == "user" || role == "assistant") {
+			entry.info.message_count++;
+		}
+		if (role == "user") {
+			entry.has_user = true;
+			if (!entry.has_title) {
+				const String title = String(event.get("content", String())).strip_edges().replace("\r", " ").replace("\n", " ").strip_edges();
+				if (!title.is_empty()) {
+					entry.info.title = title;
+					entry.has_title = true;
+				}
+			}
+		}
+	}
+
+	for (const Scratch &entry : scratch) {
+		if (entry.has_user) {
+			sessions.push_back(entry.info);
+		}
+	}
+	return sessions;
 }
