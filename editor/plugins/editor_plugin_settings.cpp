@@ -72,7 +72,7 @@ void EditorPluginSettings::update_plugins() {
 	updating = true;
 	TreeItem *root = plugin_list->create_item();
 
-	Vector<String> plugins = _get_plugins("res://addons");
+	Vector<String> plugins = list_plugin_configs();
 	plugins.sort();
 
 	for (int i = 0; i < plugins.size(); i++) {
@@ -185,7 +185,7 @@ void EditorPluginSettings::_cell_button_pressed(Object *p_item, int p_column, in
 	}
 }
 
-Vector<String> EditorPluginSettings::_get_plugins(const String &p_dir) {
+Vector<String> EditorPluginSettings::list_plugin_configs(const String &p_dir) {
 	Ref<DirAccess> da = DirAccess::create(DirAccess::ACCESS_RESOURCES);
 	Error err = da->change_dir(p_dir);
 	if (err != OK) {
@@ -204,7 +204,7 @@ Vector<String> EditorPluginSettings::_get_plugins(const String &p_dir) {
 		if (FileAccess::exists(plugin_config)) {
 			plugins.push_back(plugin_config);
 		} else {
-			plugins.append_array(_get_plugins(full_path));
+			plugins.append_array(list_plugin_configs(full_path));
 		}
 	}
 

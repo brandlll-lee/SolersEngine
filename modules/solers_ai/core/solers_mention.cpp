@@ -4,11 +4,13 @@
 
 #include "solers_mention.h"
 
+#include "core/io/config_file.h"
 #include "core/io/file_access.h"
 #include "core/io/json.h"
 #include "core/io/resource_loader.h"
 #include "core/templates/hash_set.h"
 #include "editor/editor_interface.h"
+#include "editor/plugins/editor_plugin_settings.h"
 #include "modules/solers_ai/core/solers_observation_service.h"
 #include "modules/solers_ai/plugins/solers_plugin.h"
 #include "scene/main/node.h"
@@ -122,6 +124,37 @@ static Array _collect_plugins(const String &p_query) {
 	HashSet<String> seen;
 	for (SolersPlugin *plugin : SolersPluginRegistry::get_plugins()) {
 		Dictionary mention = _plugin_mention(plugin);
+		if (!_matches_query(mention, p_query)) {
+			continue;
+		}
+		_append_unique(items, seen, mention);
+	}
+	return items;
+}
+
+static Array _collect_addons(const String &p_query) {
+	Array items;
+	HashSet<String> seen;
+	const Vector<String> configs = EditorPluginSettings::list_plugin_configs();
+	EditorInterface *editor = EditorInterface::get_singleton();
+	for (int i = 0; i < configs.size(); i++) {
+		const String path = configs[i];
+		Ref<ConfigFile> cfg;
+		cfg.instantiate();
+		if (cfg->load(path) != OK) {
+			continue;
+		}
+		if (!cfg->has_section_key("plugin", "name")) {
+			continue;
+		}
+		const String name = String(cfg->get_value("plugin", "name")).strip_edges();
+		if (name.is_empty()) {
+			continue;
+		}
+		Dictionary mention = _path_mention("addon", path, name);
+		if (editor) {
+			mention["enabled"] = editor->is_plugin_enabled(path);
+		}
 		if (!_matches_query(mention, p_query)) {
 			continue;
 		}
@@ -274,6 +307,14 @@ String prompt_block(const Array &p_mentions) {
 	return p_mentions.is_empty() ? String() : "\n\n[Selected Solers context]\n" + JSON::stringify(p_mentions);
 }
 
+String strip_prompt_block(const String &p_text) {
+	const int ctx = p_text.find("[Selected Solers context]");
+	if (ctx < 0) {
+		return p_text;
+	}
+	return p_text.substr(0, ctx).strip_edges();
+}
+
 String dedupe_key(const Dictionary &p_mention) {
 	const String id = String(p_mention.get("id", String())).strip_edges();
 	if (id.is_empty()) {
@@ -300,6 +341,9 @@ static Dictionary _try_parse_token(const String &p_body) {
 	} else if (body.begins_with("node:")) {
 		source = "node";
 		id = body.substr(5);
+	} else if (body.begins_with("addon:")) {
+		source = "addon";
+		id = body.substr(6);
 	} else {
 		source = "plugin";
 		id = body.to_lower();
@@ -327,6 +371,22 @@ static Dictionary _try_parse_token(const String &p_body) {
 			return empty;
 		}
 		return _path_mention(source, id);
+	}
+	if (source == "addon") {
+		if (!_path_exists(id) || !id.ends_with("plugin.cfg")) {
+			return empty;
+		}
+		Ref<ConfigFile> cfg;
+		cfg.instantiate();
+		String label;
+		if (cfg->load(id) == OK && cfg->has_section_key("plugin", "name")) {
+			label = String(cfg->get_value("plugin", "name")).strip_edges();
+		}
+		Dictionary mention = _path_mention("addon", id, label);
+		if (EditorInterface *editor = EditorInterface::get_singleton()) {
+			mention["enabled"] = editor->is_plugin_enabled(id);
+		}
+		return mention;
 	}
 	if (source == "node") {
 		if (!_node_exists(id)) {
@@ -398,13 +458,17 @@ Array collect_section_items(const String &p_section_id, SolersObservationService
 			}
 		};
 		merge(_collect_plugins(p_query));
+		merge(_collect_addons(p_query));
 		merge(_collect_files(p_observation, p_query));
 		merge(_collect_scenes(p_observation, p_query));
 		merge(_collect_selection(p_observation, p_query));
 		return all;
 	}
-	if (section == "plugins") {
+	if (section == "solers") {
 		return _collect_plugins(p_query);
+	}
+	if (section == "addons") {
+		return _collect_addons(p_query);
 	}
 	if (section == "files") {
 		return _collect_files(p_observation, p_query);
@@ -424,7 +488,8 @@ Array collect_root_sections(SolersObservationService *p_observation, const Strin
 		const char *label;
 	};
 	static const SectionDef defs[] = {
-		{ "plugins", "Plugins" },
+		{ "solers", "Solers Plugins" },
+		{ "addons", "Godot Plugins" },
 		{ "files", "Files" },
 		{ "scenes", "Open Scenes" },
 		{ "selection", "Selection" },

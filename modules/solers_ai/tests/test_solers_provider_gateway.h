@@ -1036,7 +1036,7 @@ TEST_CASE("[SolersPluginRegistry] an unknown connector extends every registry-dr
 		CHECK(Dictionary(mentions[0]).get("source", String()) == "plugin");
 	}
 
-	const Array generators = SolersMention::collect_section_items("plugins", nullptr, String());
+	const Array generators = SolersMention::collect_section_items("solers", nullptr, String());
 	bool found_synthetic_generator = false;
 	for (int i = 0; i < generators.size(); i++) {
 		if (String(Dictionary(generators[i]).get("id", String())) == "synthetic-future") {

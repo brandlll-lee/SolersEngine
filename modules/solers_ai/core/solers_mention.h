@@ -10,9 +10,10 @@
 
 class SolersObservationService;
 
-// Context mentions pinned via @ in the chat composer. Membership comes from
-// SolersPluginRegistry capability flags and SolersObservationService facts —
-// never from name whitelists in the dock.
+// Context mentions pinned via @ in the chat composer.
+// Solers connectors: SolersPluginRegistry. Godot project addons: plugin.cfg scan
+// (EditorPluginSettings::list_plugin_configs). Files/scenes/selection: observation.
+// Never name whitelists in the dock.
 namespace SolersMention {
 
 static constexpr int COLLECT_LIMIT = 32;
@@ -24,6 +25,8 @@ Array parse(const String &p_text);
 Array scan_line_spans(const String &p_line);
 String format_token(const Dictionary &p_mention);
 String prompt_block(const Array &p_mentions);
+// Peel owned model-only appendix for UI/title. Marker through end of string.
+String strip_prompt_block(const String &p_text);
 String dedupe_key(const Dictionary &p_mention);
 
 // Non-empty root sections: { id, label, count }.
