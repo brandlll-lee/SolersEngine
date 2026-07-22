@@ -11,6 +11,7 @@
 #include "core/io/image.h"
 #include "editor/editor_string_names.h"
 #include "editor/themes/editor_scale.h"
+#include "scene/gui/dialogs.h"
 #include "scene/resources/image_texture.h"
 #include "scene/resources/style_box_flat.h"
 
@@ -152,13 +153,22 @@ SolersPMTheme::Tokens SolersPMTheme::make_tokens(const Ref<Theme> &p_theme) {
 	t.text = Color(0.886f, 0.890f, 0.902f); // ~#E2E3E6 — primary text.
 	t.text_dim = Color(0.886f, 0.890f, 0.902f, 0.55f); // Muted text.
 
-	// UE template-tile caption band: a slightly lifted strip under the thumbnail
-	// that turns solid accent blue when the tile is selected (white label on top).
-	t.caption = Color(0.137f, 0.137f, 0.149f); // ~#232326 — idle band.
-	t.caption_hover = Color(0.173f, 0.173f, 0.188f); // ~#2C2C30 — hovered band.
-	t.caption_selected = t.accent; // Selected band = UE blue.
+	t.home_tile = Color(0.090f, 0.090f, 0.096f); // ~#171718
+	t.home_tile_hover = Color(0.125f, 0.125f, 0.132f);
+	t.home_tile_pressed = Color(0.070f, 0.070f, 0.076f);
 
 	return t;
+}
+
+void SolersPMTheme::configure_settings_host(AcceptDialog *p_dialog) {
+	ERR_FAIL_NULL(p_dialog);
+	p_dialog->set_theme_type_variation("PMSettingsDialog");
+	if (Button *ok = p_dialog->get_ok_button()) {
+		ok->hide();
+		if (CanvasItem *bar = Object::cast_to<CanvasItem>(ok->get_parent())) {
+			bar->hide();
+		}
+	}
 }
 
 void SolersPMTheme::apply(const Ref<Theme> &p_theme) {
@@ -167,7 +177,6 @@ void SolersPMTheme::apply(const Ref<Theme> &p_theme) {
 	const Tokens t = make_tokens(p_theme);
 
 	const int rp = MAX(0, (int)(t.radius_panel * EDSCALE));
-	const int rc = MAX(0, (int)(t.radius_card * EDSCALE));
 	const int rr = MAX(0, (int)(t.radius_control * EDSCALE));
 	const int hair = MAX(1, (int)(EDSCALE));
 
@@ -188,25 +197,26 @@ void SolersPMTheme::apply(const Ref<Theme> &p_theme) {
 		Ref<StyleBoxFlat> workspace_home = _solers_flat(t.surface, 0, Color(), 0, 0);
 		p_theme->set_stylebox("workspace_home", "ProjectManager", workspace_home);
 
-		Ref<StyleBoxFlat> list = _solers_flat(t.surface, rc, t.border_strong, hair, 6 * EDSCALE);
+		// Flat home — same surface as window, no framed list well.
+		Ref<StyleBoxFlat> list = _solers_flat(t.surface, 0, Color(), 0, 0);
 		p_theme->set_stylebox("project_list", "ProjectManager", list);
-
-		Ref<StyleBoxFlat> qs = _solers_flat(t.card, rc, t.border, hair, 6 * EDSCALE);
-		p_theme->set_stylebox("quick_settings_panel", "ProjectManager", qs);
 	}
 
-	// 3) Project list row states (hover / selected / focus).
+	// Flat settings AcceptDialog — one Solers fill, zero picture-frame margins.
 	{
-		Ref<StyleBoxFlat> hovered = _solers_flat(t.card_hover, rr, Color(), 0, 0);
+		p_theme->set_type_variation("PMSettingsDialog", "AcceptDialog");
+		Ref<StyleBoxFlat> panel = _solers_flat(t.bg, 0, Color(), 0, 0);
+		panel->set_content_margin_all(0);
+		p_theme->set_stylebox(SNAME("panel"), "PMSettingsDialog", panel);
+		p_theme->set_constant(SNAME("buttons_separation"), "PMSettingsDialog", 0);
+	}
 
-		Ref<StyleBoxFlat> selected = _solers_flat(t.card_selected, rr, Color(), 0, 0);
-		selected->set_border_color(t.accent);
-		selected->set_border_width(SIDE_LEFT, MAX(2, (int)(3 * EDSCALE)));
-
-		Ref<StyleBoxFlat> hover_pressed = selected->duplicate();
-		hover_pressed->set_bg_color(t.card_selected.lerp(t.accent, 0.10f));
-
-		Ref<StyleBoxFlat> focus = _solers_flat(Color(0, 0, 0, 0), rr, Color(t.accent.r, t.accent.g, t.accent.b, 0.75), hair, 0);
+	// 3) Project list row states (hover / selected / focus) — quiet Cursor-like.
+	{
+		Ref<StyleBoxFlat> hovered = _solers_flat(Color(1, 1, 1, 0.04f), rr, Color(), 0, 0);
+		Ref<StyleBoxFlat> selected = _solers_flat(Color(1, 1, 1, 0.06f), rr, Color(), 0, 0);
+		Ref<StyleBoxFlat> hover_pressed = _solers_flat(Color(1, 1, 1, 0.08f), rr, Color(), 0, 0);
+		Ref<StyleBoxFlat> focus = _solers_flat(Color(0, 0, 0, 0), rr, Color(t.accent.r, t.accent.g, t.accent.b, 0.45f), hair, 0);
 		focus->set_draw_center(false);
 
 		p_theme->set_stylebox("hovered", "ProjectList", hovered);
@@ -215,8 +225,59 @@ void SolersPMTheme::apply(const Ref<Theme> &p_theme) {
 		p_theme->set_stylebox("focus", "ProjectList", focus);
 
 		p_theme->set_color(SNAME("font_color"), "ProjectList", t.text);
-		// Faint row guide for an ordered, textured list (UE-like separators).
-		p_theme->set_color("guide_color", "ProjectList", Color(t.border.r, t.border.g, t.border.b, t.border.a * 0.8f));
+		p_theme->set_color(SNAME("font_dim_color"), "ProjectList", t.text_dim);
+		p_theme->set_color("guide_color", "ProjectList", Color(0, 0, 0, 0));
+	}
+
+	// Home action tiles — single-line icon + label (native Button layout).
+	{
+		p_theme->set_type_variation("PMHomeTile", "Button");
+		const int tile_rr = MAX(10, (int)(t.radius_home_tile * EDSCALE));
+		Ref<StyleBoxFlat> normal = _solers_flat(t.home_tile, tile_rr, Color(), 0, 0);
+		normal->set_content_margin_individual(14 * EDSCALE, 10 * EDSCALE, 14 * EDSCALE, 10 * EDSCALE);
+		Ref<StyleBoxFlat> hover = normal->duplicate();
+		hover->set_bg_color(t.home_tile_hover);
+		Ref<StyleBoxFlat> pressed = normal->duplicate();
+		pressed->set_bg_color(t.home_tile_pressed);
+		p_theme->set_stylebox(SNAME("normal"), "PMHomeTile", normal);
+		p_theme->set_stylebox(SNAME("hover"), "PMHomeTile", hover);
+		p_theme->set_stylebox(SNAME("pressed"), "PMHomeTile", pressed);
+		p_theme->set_stylebox(SNAME("hover_pressed"), "PMHomeTile", pressed);
+		p_theme->set_stylebox(SNAME("focus"), "PMHomeTile", hover);
+		p_theme->set_color(SNAME("font_color"), "PMHomeTile", t.text);
+		p_theme->set_color(SNAME("font_hover_color"), "PMHomeTile", t.text);
+		p_theme->set_color(SNAME("font_pressed_color"), "PMHomeTile", t.text);
+		p_theme->set_color(SNAME("icon_normal_color"), "PMHomeTile", Color(0.88f, 0.89f, 0.91f));
+		p_theme->set_color(SNAME("icon_hover_color"), "PMHomeTile", t.text);
+		p_theme->set_color(SNAME("icon_pressed_color"), "PMHomeTile", t.text);
+		p_theme->set_font_size(SNAME("font_size"), "PMHomeTile", MAX(12, (int)Math::round(13.0 * EDSCALE)));
+		p_theme->set_constant(SNAME("h_separation"), "PMHomeTile", 10 * EDSCALE);
+		p_theme->set_constant(SNAME("icon_max_width"), "PMHomeTile", 18 * EDSCALE);
+	}
+
+	// Project-list thumbnail: opaque rounded mask for clip_children.
+	{
+		p_theme->set_type_variation("PMProjectThumb", "PanelContainer");
+		const int thumb_rr = MAX(4, (int)(t.radius_list_thumb * EDSCALE));
+		Ref<StyleBoxFlat> thumb = _solers_flat(Color(1, 1, 1, 1), thumb_rr, Color(), 0, 0);
+		thumb->set_content_margin_all(0);
+		p_theme->set_stylebox(SNAME("panel"), "PMProjectThumb", thumb);
+	}
+
+	// Near-invisible list scrollbar (shown only while hovering the list).
+	{
+		Ref<StyleBoxFlat> grabber = _solers_flat(Color(t.text.r, t.text.g, t.text.b, 0.18f), MAX(2, (int)(3 * EDSCALE)), Color(), 0, 0);
+		grabber->set_content_margin_all(0);
+		Ref<StyleBoxFlat> grabber_hl = grabber->duplicate();
+		grabber_hl->set_bg_color(Color(t.text.r, t.text.g, t.text.b, 0.28f));
+		Ref<StyleBoxFlat> track = _solers_flat(Color(0, 0, 0, 0), 0, Color(), 0, 0);
+		track->set_draw_center(false);
+		p_theme->set_stylebox("scroll", "VScrollBar", track);
+		p_theme->set_stylebox("scroll_focus", "VScrollBar", track);
+		p_theme->set_stylebox("grabber", "VScrollBar", grabber);
+		p_theme->set_stylebox("grabber_highlight", "VScrollBar", grabber_hl);
+		p_theme->set_stylebox("grabber_pressed", "VScrollBar", grabber_hl);
+		p_theme->set_constant("width", "VScrollBar", MAX(3, (int)(4 * EDSCALE)));
 	}
 
 	// 4) Top view toggles (MainScreenButton variation) — UE tab treatment: the
@@ -494,16 +555,7 @@ void SolersPMTheme::apply(const Ref<Theme> &p_theme) {
 		p_theme->set_font_size(SNAME("font_size"), "SolersShellTree", MAX(10, p_theme->get_default_font_size() - (int)MAX(1.0f, EDSCALE)));
 	}
 
-	// 6) Card thumbnail recess (PMCardThumb) — the tile's image well. Near-black
-	//    like UE's template-art area, hard-cornered, borderless (the tile outline
-	//    is drawn by the card itself, so the image runs edge-to-edge).
-	{
-		p_theme->set_type_variation("PMCardThumb", "PanelContainer");
-		Ref<StyleBoxFlat> thumb = _solers_flat(t.bg.lerp(Color(0, 0, 0), 0.25f), 0, Color(), 0, 0);
-		p_theme->set_stylebox(SNAME("panel"), "PMCardThumb", thumb);
-	}
-
-	// 7) P4 — cohesive control styling for the bottom bar + dialogs.
+	// 6) Cohesive control styling for dialogs / shared chrome.
 	//     Geometry/margins are preserved (states are recolored in place), so no
 	//     layout shifts; only the palette is unified with the deep PM theme.
 	{
@@ -587,32 +639,7 @@ void SolersPMTheme::apply(const Ref<Theme> &p_theme) {
 		p_theme->set_font_size(SNAME("font_size"), "PopupMenu", dense_fs);
 	}
 
-	// 8) Project CARD tiles (grid view) — faithful UE template tiles: a hard-edged
-	//    slab with a 1px outline that goes light on hover and accent on selection.
-	//    The selection *color* lives in the caption band (drawn by the item), not
-	//    in the tile fill — exactly how UE marks its selected template.
-	{
-		// Normal: dark recess outline so each tile reads as a discrete slab.
-		Ref<StyleBoxFlat> card = _solers_flat(t.card, 0, t.border_strong, hair, 0);
-
-		// Hover: UE brightens the *edge* (thin light-gray outline), not the fill.
-		Ref<StyleBoxFlat> card_hover = _solers_flat(t.card.lerp(Color(1, 1, 1), 0.03f), 0, Color(1, 1, 1, 0.30f), hair, 0);
-
-		// Selected: crisp 1px accent ring; the blue caption band does the talking.
-		Ref<StyleBoxFlat> card_selected = _solers_flat(t.card, 0, t.accent, hair, 0);
-
-		p_theme->set_stylebox("solers_card", "ProjectList", card);
-		p_theme->set_stylebox("solers_card_hover", "ProjectList", card_hover);
-		p_theme->set_stylebox("solers_card_selected", "ProjectList", card_selected);
-
-		// Caption band palette consumed by ProjectListItemControl's draw pass.
-		p_theme->set_color("solers_caption", "ProjectList", t.caption);
-		p_theme->set_color("solers_caption_hover", "ProjectList", t.caption_hover);
-		p_theme->set_color("solers_caption_selected", "ProjectList", t.caption_selected);
-	}
-
-	// 9) Primary action button (PMPrimaryButton) — the UE blue filled CTA used by
-	//    the bottom-bar "Edit" action, replicating Unreal's "Open" button.
+	// 7) Primary action button (PMPrimaryButton) — accent CTA (settings save, etc.).
 	{
 		p_theme->set_type_variation("PMPrimaryButton", "Button");
 
@@ -694,22 +721,5 @@ void SolersPMTheme::apply(const Ref<Theme> &p_theme) {
 		}
 	}
 
-	// 10) Bottom action bar (PMBottomBarPanel) — Unreal's command bar reads as a
-	//     distinct recessed strip separated from the content by a single top
-	//     hairline, not a floating row of buttons. We draw only the top edge (a
-	//     dark recess line) over a faint deeper fill, with generous padding so the
-	//     buttons breathe like UE's footer. PanelContainer draws this behind the
-	//     button HBox; geometry stays in the constructor so nothing shifts.
-	{
-		p_theme->set_type_variation("PMBottomBarPanel", "PanelContainer");
-		Ref<StyleBoxFlat> bar = _solers_flat(t.bg, 0, Color(), 0, -1.0f);
-		bar->set_border_color(t.border_strong);
-		bar->set_border_width(SIDE_TOP, hair);
-		bar->set_border_blend(true);
-		bar->set_content_margin(SIDE_LEFT, 10 * EDSCALE);
-		bar->set_content_margin(SIDE_RIGHT, 10 * EDSCALE);
-		bar->set_content_margin(SIDE_TOP, 9 * EDSCALE);
-		bar->set_content_margin(SIDE_BOTTOM, 9 * EDSCALE);
-		p_theme->set_stylebox(SNAME("panel"), "PMBottomBarPanel", bar);
-	}
+	(void)rp;
 }

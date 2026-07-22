@@ -7,17 +7,8 @@
 /**************************************************************************/
 /* Solers: AI-native game engine.                                        */
 /*                                                                        */
-/* Custom-drawn navigation/category card for the Project Manager's left   */
-/* rail. This is a fully self-drawn Control (no stock Button/Panel        */
-/* skeleton), so it escapes the recognizable Godot look and matches       */
-/* Unreal's refined, minimal left-rail tiles: a neutral graphite surface  */
-/* that lifts on hover, a left-aligned accent icon glyph, a vertically    */
-/* centered title, and a crisp accent fill + edge + bar on selection.     */
-/* No saturated color fills (those read as cheap), only restrained tints. */
-/*                                                                        */
-/* It is event-driven: hover/selection drive a short, bounded internal    */
-/* process for a subtle highlight animation, then processing stops — so    */
-/* it never adds steady CPU/redraw load to the low-power Project Manager.  */
+/* Self-drawn nav / list row for Project Manager and Provider Settings.  */
+/* Quiet ink wash on hover/selection (Cursor-flat), optional subtitle.   */
 /**************************************************************************/
 
 #pragma once
@@ -31,8 +22,9 @@ class SolersCategoryCard : public Control {
 	GDCLASS(SolersCategoryCard, Control);
 
 	String title;
+	String subtitle;
 	Ref<Texture2D> icon;
-	Color hue = Color(0.10f, 0.45f, 0.95f); // Per-category accent tint (icon only).
+	Color status_dot = Color(0, 0, 0, 0); // Trailing readiness light; transparent = none.
 	bool preserve_icon_color = false; // Official multicolor marks — no grey chrome tint.
 
 	bool selected = false;
@@ -46,6 +38,7 @@ class SolersCategoryCard : public Control {
 	Callable pressed_callback;
 
 	void _update_anim_target();
+	void _sync_min_height();
 
 protected:
 	void _notification(int p_what);
@@ -54,7 +47,7 @@ protected:
 public:
 	virtual void gui_input(const Ref<InputEvent> &p_event) override;
 
-	void configure(const String &p_title, const Ref<Texture2D> &p_icon, const Color &p_hue);
+	void configure(const String &p_title, const Ref<Texture2D> &p_icon, const String &p_subtitle = String(), const Color &p_status_dot = Color(0, 0, 0, 0));
 	void set_icon(const Ref<Texture2D> &p_icon);
 	void set_preserve_icon_color(bool p_preserve);
 	void set_filled(bool p_filled);

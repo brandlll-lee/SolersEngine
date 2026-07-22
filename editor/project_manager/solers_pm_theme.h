@@ -21,6 +21,8 @@
 #include "scene/resources/texture.h"
 #include "scene/resources/theme.h"
 
+class AcceptDialog;
+
 // Design-token + StyleBox set for the Solers Project Manager.
 //
 // All values are derived from the *already generated* editor theme (so the
@@ -33,27 +35,23 @@ public:
 	struct Tokens {
 		Color bg; // Window backdrop (deepest).
 		Color surface; // Outer content panel.
-		Color card; // Project list / card surface.
-		Color card_hover; // Row/card hover.
-		Color card_selected; // Row/card selected (accent-tinted).
-		Color border; // Hairline separators / panel edges.
-		Color border_strong; // Emphasized edges.
-		Color accent; // Brand/selection accent (from theme).
-		Color text; // Primary text.
-		Color text_dim; // Secondary/muted text.
+		Color card; // Elevated surfaces.
+		Color card_hover;
+		Color card_selected;
+		Color border;
+		Color border_strong;
+		Color accent;
+		Color text;
+		Color text_dim;
 
-		// Unreal's Project Browser is *rectangular*: panels, tiles and inputs are
-		// hard-cornered (radius 0) and only clickable controls keep a barely-there
-		// 2px softening (see UE's Create/Cancel buttons). Square corners are the
-		// single biggest lever for shedding the stock-Godot silhouette.
-		int radius_panel = 0; // Outer panels — hard edges, UE-true.
-		int radius_card = 0; // List / cards / thumbnails — hard edges.
-		int radius_control = 2; // Buttons / dropdowns only.
+		Color home_tile; // PM home action tiles.
+		Color home_tile_hover;
+		Color home_tile_pressed;
 
-		// Project-card caption strip (the UE template-tile label band).
-		Color caption; // Idle caption band.
-		Color caption_hover; // Hovered caption band.
-		Color caption_selected; // Selected caption band (accent fill).
+		int radius_panel = 0;
+		int radius_control = 2;
+		int radius_home_tile = 12;
+		int radius_list_thumb = 6;
 	};
 
 	// Compute the token set from a generated theme (pure, no side effects).
@@ -62,6 +60,9 @@ public:
 	// Apply the Solers Project Manager theme overlay in-place.
 	// Safe to call repeatedly (idempotent) after every theme (re)generation.
 	static void apply(const Ref<Theme> &p_theme);
+
+	// Flat settings host: one Solers fill, no AcceptDialog picture-frame margins.
+	static void configure_settings_host(AcceptDialog *p_dialog);
 
 	// Convert a (possibly colored) editor icon into a neutral monochrome glyph.
 	// Unreal's chrome is strictly grayscale; stock editor SVGs like the red

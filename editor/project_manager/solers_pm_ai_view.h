@@ -7,13 +7,8 @@
 /**************************************************************************/
 /* Solers: AI-native game engine.                                        */
 /*                                                                        */
-/* BYOK (bring-your-own-key) AI model configuration view, hosted as a     */
-/* first-class shared settings view. Left rail lists provider profiles   */
-/* (SolersCategoryCard rows, Lucide glyphs); the right pane is a calm,    */
-/* hard-edged UE-style form: model / base URL / API key, local policy,    */
-/* and a live validation readout. Secrets are written through            */
-/* SolersSecretStore (DPAPI / machine-bound AES) and are never echoed     */
-/* back into the UI.                                                      */
+/* Shared settings host: left rail Plugins | LLM Provider | Quick        */
+/* Settings; right pane lists/forms or EditorSettings quick controls.    */
 /**************************************************************************/
 
 #pragma once
@@ -23,9 +18,11 @@
 
 class Button;
 class CheckBox;
+class EditorSettingsDialog;
 class GridContainer;
 class Label;
 class LineEdit;
+class OptionButton;
 class ScrollContainer;
 class SolersCategoryCard;
 class SolersProviderRegistry;
@@ -44,7 +41,7 @@ class SolersPMAIView : public HBoxContainer {
 	String selected_category;
 	String selected_provider;
 
-	// Right pane.
+	// Right pane — providers.
 	VBoxContainer *provider_list_view = nullptr;
 	VBoxContainer *provider_list = nullptr;
 	VBoxContainer *provider_detail_view = nullptr;
@@ -74,17 +71,41 @@ class SolersPMAIView : public HBoxContainer {
 	Button *disconnect_btn = nullptr;
 	Label *saved_feedback = nullptr;
 
+	// Right pane — quick EditorSettings (migrated from QuickSettingsDialog).
+	VBoxContainer *quick_settings_view = nullptr;
+	VBoxContainer *quick_settings_list = nullptr;
+#ifndef ANDROID_ENABLED
+	Vector<String> editor_languages;
+	OptionButton *language_option_button = nullptr;
+#endif
+	Vector<String> editor_styles;
+	Vector<String> editor_themes;
+	Vector<String> editor_scales;
+	Vector<String> editor_network_modes;
+	Vector<String> editor_check_for_updates;
+	Vector<String> editor_directory_naming_conventions;
+	OptionButton *style_option_button = nullptr;
+	OptionButton *theme_option_button = nullptr;
+	OptionButton *scale_option_button = nullptr;
+	OptionButton *network_mode_option_button = nullptr;
+	OptionButton *check_for_update_button = nullptr;
+	OptionButton *directory_naming_convention_button = nullptr;
+	Label *custom_theme_label = nullptr;
+	Label *restart_required_label = nullptr;
+	Button *restart_required_button = nullptr;
+	EditorSettingsDialog *editor_settings_dialog = nullptr;
+
 	String _asset_setting_path(const String &p_plugin_id, const String &p_key) const;
 	String _stored_asset_string(const String &p_plugin_id, const String &p_key, const String &p_default = String()) const;
 	Dictionary _asset_plugin_profile(const String &p_id) const;
 	bool _is_asset_provider(const String &p_id) const;
 	bool _uses_codex_auth(const String &p_id) const;
+	Dictionary _provider_status(const String &p_id, bool p_live_form = false) const;
 
 	void _build_nav();
 	void _select_category(const String &p_id);
 	void _build_provider_list();
-	void _add_provider_row(const String &p_id, const String &p_title, const Ref<Texture2D> &p_icon, bool p_preserve_icon_color = false);
-	void _open_provider(const String &p_id);
+	void _add_provider_row(const String &p_id, const String &p_title, const Ref<Texture2D> &p_icon, bool p_preserve_icon_color = false, const String &p_subtitle = String());
 	void _show_provider_list();
 	void _select_provider(const String &p_id, bool p_load_stored);
 	void _refresh_form(bool p_load_stored);
@@ -99,12 +120,31 @@ class SolersPMAIView : public HBoxContainer {
 	void _save();
 	void _disconnect_selected_provider();
 
+	void _fetch_quick_setting_values();
+	void _update_quick_settings_values();
+	void _add_quick_setting_control(const String &p_text, Control *p_control);
+#ifndef ANDROID_ENABLED
+	void _language_selected(int p_id);
+#endif
+	void _style_selected(int p_id);
+	void _theme_selected(int p_id);
+	void _scale_selected(int p_id);
+	void _network_mode_selected(int p_id);
+	void _check_for_update_selected(int p_id);
+	void _directory_naming_convention_selected(int p_id);
+	void _set_quick_setting_value(const String &p_setting, const Variant &p_value, bool p_restart_required = false);
+	void _show_full_settings();
+	void _request_restart();
+
 protected:
 	void _notification(int p_what);
-	static void _bind_methods() {}
+	static void _bind_methods();
 
 public:
 	void refresh();
+	void select_category(const String &p_id);
+	void update_quick_popup_size_limits(const Size2 &p_max_popup_size);
+
 	SolersPMAIView();
 	~SolersPMAIView();
 };
