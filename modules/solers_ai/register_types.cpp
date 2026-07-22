@@ -46,6 +46,11 @@
 #include "editor/solers_chat_cells.h"
 #include "editor/solers_chat_widgets.h"
 #include "editor/solers_dock.h"
+#include "plugins/solers_plugin.h"
+#include "plugins/solers_plugin_ambientcg.h"
+#include "plugins/solers_plugin_elevenlabs.h"
+#include "plugins/solers_plugin_meshy.h"
+#include "plugins/solers_plugin_polyhaven.h"
 #include "protocol/solers_mcp_adapter.h"
 #include "protocol/solers_rpc_server.h"
 
@@ -66,6 +71,12 @@ void initialize_solers_ai_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(SolersScriptService);
 		GDREGISTER_CLASS(SolersSettingsService);
 		GDREGISTER_CLASS(SolersToolRegistry);
+		GDREGISTER_CLASS(SolersPluginJob);
+		GDREGISTER_ABSTRACT_CLASS(SolersPlugin);
+		GDREGISTER_CLASS(SolersPluginAmbientCG);
+		GDREGISTER_CLASS(SolersPluginElevenLabs);
+		GDREGISTER_CLASS(SolersPluginMeshy);
+		GDREGISTER_CLASS(SolersPluginPolyHaven);
 		GDREGISTER_CLASS(SolersMCPAdapter);
 		GDREGISTER_CLASS(SolersRpcServer);
 		GDREGISTER_CLASS(SolersDock);
@@ -80,9 +91,15 @@ void initialize_solers_ai_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(SolersToolCell);
 		GDREGISTER_CLASS(SolersToolGroupCell);
 		GDREGISTER_CLASS(SolersStatusCell);
+		SolersPluginRegistry::register_builtins();
 	}
 #endif // TOOLS_ENABLED
 }
 
 void uninitialize_solers_ai_module(ModuleInitializationLevel p_level) {
+#ifdef TOOLS_ENABLED
+	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
+		SolersPluginRegistry::unregister_builtins();
+	}
+#endif // TOOLS_ENABLED
 }

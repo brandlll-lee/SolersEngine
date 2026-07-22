@@ -31,6 +31,7 @@ env_solers_ai.CommandNoCache(
 env_solers_ai.add_source_files(module_obj, "*.cpp")
 env_solers_ai.add_source_files(module_obj, "core/*.cpp")
 env_solers_ai.add_source_files(module_obj, "llm/*.cpp")
+env_solers_ai.add_source_files(module_obj, "plugins/*.cpp")
 env_solers_ai.add_source_files(module_obj, "protocol/*.cpp")
 env_solers_ai.Depends(module_obj, generated_skills_header)
 env_solers_ai.Depends(module_obj, generated_logos_header)
