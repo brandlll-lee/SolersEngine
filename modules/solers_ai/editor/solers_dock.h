@@ -19,6 +19,7 @@
 
 #include "core/input/input_event.h"
 #include "core/templates/hash_map.h"
+#include "core/templates/vector.h"
 #include "core/variant/callable.h"
 #include "scene/gui/panel_container.h"
 
@@ -71,6 +72,13 @@ class SolersDock : public PanelContainer {
 	AcceptDialog *provider_settings_dialog = nullptr;
 	SolersPMAIView *provider_settings_view = nullptr;
 	SolersSelectChip *model_chip = nullptr;
+	PanelContainer *plugin_mention_popup = nullptr;
+	ScrollContainer *plugin_mention_scroll = nullptr;
+	VBoxContainer *plugin_mention_list = nullptr;
+	Vector<Button *> plugin_mention_rows;
+	int plugin_mention_line = -1;
+	int plugin_mention_start_column = -1;
+	int plugin_mention_selected = 0;
 	Control *model_popup_overlay = nullptr;
 	// Cascading model menu: a compact root menu (Model / Effort / actions)
 	// plus one lazily built submenu that opens beside the hovered row.
@@ -160,6 +168,10 @@ class SolersDock : public PanelContainer {
 	void _on_auto_approve_chip_pressed();
 	void _on_chat_input_gui_input(const Ref<InputEvent> &p_event);
 	void _on_chat_input_text_changed();
+	void _refresh_plugin_mention_popup();
+	void _hide_plugin_mention_popup();
+	void _select_plugin_mention(const String &p_id);
+	void _move_plugin_mention_selection(int p_delta);
 	void _on_add_context_pressed();
 	void _on_attachment_file_selected(const String &p_file);
 	bool _add_image_attachment_from_path(const String &p_path);

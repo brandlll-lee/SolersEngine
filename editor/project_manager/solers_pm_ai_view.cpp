@@ -28,62 +28,73 @@
 #include "modules/solers_ai/core/solers_secret_store.h"
 #include "modules/solers_ai/core/solers_settings_service.h"
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
+#include "modules/solers_ai/plugins/solers_plugin.h"
 #endif
 
 // Lucide glyph bodies (24x24 viewBox; ISC license, see solers_ai/UI_ICON_LICENSE.txt).
 static const char *SOLERS_AI_LUCIDE_CLOUD = "<path d=\"M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z\"/>";
 static const char *SOLERS_AI_LUCIDE_EYE = "<path d=\"M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0\"/><circle cx=\"12\" cy=\"12\" r=\"3\"/>";
 static const char *SOLERS_AI_LUCIDE_BOX = "<path d=\"m21 8-9-5-9 5 9 5 9-5Z\"/><path d=\"M3 8v8l9 5 9-5V8\"/><path d=\"M12 13v8\"/>";
-static const char *SOLERS_AI_LUCIDE_AUDIO = "<path d=\"M9 18V5l12-2v13\"/><circle cx=\"6\" cy=\"18\" r=\"3\"/><circle cx=\"18\" cy=\"16\" r=\"3\"/>";
 
 // Soft UE-toned status hues (muted, not toy-bright).
 static const Color SOLERS_AI_COL_BLOCKER = Color(0.83f, 0.32f, 0.34f);
 static const Color SOLERS_AI_COL_WARNING = Color(0.88f, 0.66f, 0.26f);
 static const Color SOLERS_AI_COL_OK = Color(0.33f, 0.65f, 0.38f);
 
-String SolersPMAIView::_asset_setting_path(const String &p_kind, const String &p_key) const {
-	return "solers/ai_assets/" + p_kind + "/" + p_key;
+String SolersPMAIView::_asset_setting_path(const String &p_plugin_id, const String &p_key) const {
+	return "solers/plugins/" + p_plugin_id + "/" + p_key;
 }
 
-String SolersPMAIView::_stored_asset_string(const String &p_kind, const String &p_key, const String &p_default) const {
+String SolersPMAIView::_stored_asset_string(const String &p_plugin_id, const String &p_key, const String &p_default) const {
 	EditorSettings *settings = EditorSettings::get_singleton();
-	if (settings && settings->has_setting(_asset_setting_path(p_kind, p_key))) {
-		return settings->get_setting(_asset_setting_path(p_kind, p_key));
+	if (settings && settings->has_setting(_asset_setting_path(p_plugin_id, p_key))) {
+		return settings->get_setting(_asset_setting_path(p_plugin_id, p_key));
 	}
 	return p_default;
 }
 
+Dictionary SolersPMAIView::_asset_plugin_profile(const String &p_id) const {
+#ifdef MODULE_SOLERS_AI_ENABLED
+	SolersPlugin *plugin = SolersPluginRegistry::get_plugin(p_id);
+	return plugin ? plugin->get_profile() : Dictionary();
+#else
+	return Dictionary();
+#endif
+}
+
 bool SolersPMAIView::_is_asset_provider(const String &p_id) const {
-	return p_id == "asset_3d" || p_id == "asset_audio";
+	return selected_category != "llm" && !_asset_plugin_profile(p_id).is_empty();
 }
 
 bool SolersPMAIView::_uses_codex_auth(const String &p_id) const {
 	return registry && String(registry->get_provider_profile(p_id).get("oauth_kind", String())) == "codex";
 }
 
-String SolersPMAIView::_asset_kind_from_provider(const String &p_id) const {
-	return p_id == "asset_3d" ? "3d" : "music";
-}
-
 void SolersPMAIView::_build_nav() {
 #ifdef MODULE_SOLERS_AI_ENABLED
-	struct CategoryDef {
-		const char *id;
-		const char *title;
-		const char *glyph;
-	};
-	static const CategoryDef categories[] = {
-		{ "3d", "3D Models", SOLERS_AI_LUCIDE_BOX },
-		{ "music", "Music", SOLERS_AI_LUCIDE_AUDIO },
-		{ "llm", "LLM Provider", SOLERS_AI_LUCIDE_CLOUD },
-	};
-	for (const CategoryDef &category : categories) {
+	Array categories;
+	for (SolersPlugin *plugin : SolersPluginRegistry::get_plugins()) {
+		const Array kinds = plugin->get_profile().get("kinds", Array());
+		for (int i = 0; i < kinds.size(); i++) {
+			const String kind = String(kinds[i]).to_lower();
+			if (!categories.has(kind)) {
+				categories.push_back(kind);
+			}
+		}
+	}
+	for (int i = 0; i < categories.size(); i++) {
+		const String category = categories[i];
 		SolersCategoryCard *card = memnew(SolersCategoryCard);
-		card->configure(TTR(category.title), SolersPMTheme::lucide_icon(category.glyph, 16), Color());
-		card->set_meta("category_id", category.id);
-		card->set_pressed_callback(callable_mp(this, &SolersPMAIView::_select_category).bind(String(category.id)));
+		card->configure(category.capitalize(), SolersPMTheme::lucide_icon(SOLERS_AI_LUCIDE_BOX, 16), Color());
+		card->set_meta("category_id", category);
+		card->set_pressed_callback(callable_mp(this, &SolersPMAIView::_select_category).bind(category));
 		nav_list->add_child(card);
 	}
+	SolersCategoryCard *llm = memnew(SolersCategoryCard);
+	llm->configure(TTR("LLM Provider"), SolersPMTheme::lucide_icon(SOLERS_AI_LUCIDE_CLOUD, 16), Color());
+	llm->set_meta("category_id", "llm");
+	llm->set_pressed_callback(callable_mp(this, &SolersPMAIView::_select_category).bind(String("llm")));
+	nav_list->add_child(llm);
 #endif
 }
 
@@ -121,16 +132,17 @@ void SolersPMAIView::_build_provider_list() {
 		local_models_only_check->set_pressed_no_signal(settings_service->get_local_models_only());
 	}
 
-	if (selected_category == "3d") {
-		provider_list_title->set_text(TTR("3D Models"));
-		provider_list_notes->set_text(TTR("Connect providers that generate reusable local 3D assets."));
-		_add_provider_row("asset_3d", "Meshy", SolersPMTheme::lucide_icon(SOLERS_AI_LUCIDE_BOX, 16));
-		return;
-	}
-	if (selected_category == "music") {
-		provider_list_title->set_text(TTR("Music"));
-		provider_list_notes->set_text(TTR("Connect providers that generate reusable local music and sound effects."));
-		_add_provider_row("asset_audio", "ElevenLabs", SolersPMTheme::lucide_icon(SOLERS_AI_LUCIDE_AUDIO, 16));
+	if (!llm_category) {
+		provider_list_title->set_text(selected_category.capitalize());
+		provider_list_notes->set_text(TTR("Connect Solers plugins that provide this project asset kind."));
+		for (SolersPlugin *plugin : SolersPluginRegistry::get_plugins()) {
+			const Dictionary profile = plugin->get_profile();
+			if (!Array(profile.get("kinds", Array())).has(selected_category)) {
+				continue;
+			}
+			const String id = profile.get("id", String());
+			_add_provider_row(id, String(profile.get("label", id)), SolersPMTheme::lucide_icon(SOLERS_AI_LUCIDE_BOX, 16));
+		}
 		return;
 	}
 
@@ -192,25 +204,35 @@ void SolersPMAIView::_refresh_form(bool p_load_stored) {
 	base_url_label->show();
 	base_url_edit->show();
 	api_key_label->show();
+	api_key_edit->set_editable(true);
+	api_key_reveal->show();
 
 	if (_is_asset_provider(selected_provider)) {
-		const String kind = _asset_kind_from_provider(selected_provider);
-		const String provider = selected_provider == "asset_3d" ? "Meshy" : "ElevenLabs";
-		const String default_base_url = selected_provider == "asset_3d" ? "https://api.meshy.ai" : "https://api.elevenlabs.io";
-		const String env_name = selected_provider == "asset_3d" ? "MESHY_API_KEY" : "ELEVENLABS_API_KEY";
-		provider_title->set_text(vformat(TTR("Connect %s"), provider));
-		provider_notes->set_text(selected_provider == "asset_3d" ? TTR("Generates reusable local 3D assets for the Solers Library.") : TTR("Generates reusable local music and sound effects for the Solers Library."));
+		const Dictionary profile = _asset_plugin_profile(selected_provider);
+		const String label = profile.get("label", selected_provider);
+		const String default_base_url = profile.get("base_url", String());
+		const String env_name = profile.get("api_key_env", String());
+		const bool requires_api_key = profile.get("requires_api_key", false);
+		provider_title->set_text(vformat(TTR("Connect %s"), label));
+		provider_notes->set_text(String(profile.get("description", String())));
 		model_label->hide();
 		model_edit->hide();
-		base_url_label->hide();
-		base_url_edit->hide();
-		base_url_edit->set_text(default_base_url);
-		api_key_edit->set_text(String());
-		const bool key_stored = !_stored_asset_string(kind, "api_key").is_empty();
-		api_key_edit->set_placeholder(key_stored ? TTR("Configured - leave blank to keep the current key") : TTR("Paste your API key"));
-		const bool env_set = OS::get_singleton()->has_environment(env_name) && !OS::get_singleton()->get_environment(env_name).is_empty();
-		env_hint->set_text(vformat(env_set ? TTR("Environment fallback %s is set and will be used when no key is stored.") : TTR("Environment fallback: %s (not set)"), env_name));
-		env_hint->show();
+		base_url_edit->set_placeholder(default_base_url);
+		if (p_load_stored) {
+			base_url_edit->set_text(_stored_asset_string(selected_provider, "base_url", default_base_url));
+			api_key_edit->set_text(String());
+		}
+		api_key_edit->set_editable(requires_api_key);
+		api_key_reveal->set_visible(requires_api_key);
+		const bool key_stored = !_stored_asset_string(selected_provider, "api_key").is_empty();
+		api_key_edit->set_placeholder(!requires_api_key ? TTR("No API key required") : (key_stored ? TTR("Configured - leave blank to keep the current key") : TTR("Paste your API key")));
+		if (env_name.is_empty()) {
+			env_hint->hide();
+		} else {
+			const bool env_set = OS::get_singleton()->has_environment(env_name) && !OS::get_singleton()->get_environment(env_name).is_empty();
+			env_hint->set_text(vformat(env_set ? TTR("Environment fallback %s is set and will be used when no key is stored.") : TTR("Environment fallback: %s (not set)"), env_name));
+			env_hint->show();
+		}
 		return;
 	}
 
@@ -269,7 +291,7 @@ void SolersPMAIView::_refresh_form(bool p_load_stored) {
 	if (env_name.is_empty()) {
 		env_hint->hide();
 	} else {
-		const bool env_set = OS::get_singleton()->has_environment(env_name) && !OS::get_singleton()->get_environment(env_name).is_empty();
+		const bool env_set = !env_name.is_empty() && OS::get_singleton()->has_environment(env_name) && !OS::get_singleton()->get_environment(env_name).is_empty();
 		env_hint->set_text(vformat(env_set ? TTR("Environment fallback %s is set and will be used when no key is stored.") : TTR("Environment fallback: %s (not set)"), env_name));
 		env_hint->show();
 	}
@@ -303,12 +325,13 @@ void SolersPMAIView::_refresh_status() {
 	}
 
 	if (_is_asset_provider(selected_provider)) {
-		const String kind = _asset_kind_from_provider(selected_provider);
-		const String env_name = selected_provider == "asset_3d" ? "MESHY_API_KEY" : "ELEVENLABS_API_KEY";
+		const Dictionary profile = _asset_plugin_profile(selected_provider);
+		const String env_name = profile.get("api_key_env", String());
+		const bool requires_api_key = profile.get("requires_api_key", false);
 		const bool key_pending = !api_key_edit->get_text().strip_edges().is_empty();
-		const bool key_stored = !_stored_asset_string(kind, "api_key").is_empty();
-		const bool env_set = OS::get_singleton()->has_environment(env_name) && !OS::get_singleton()->get_environment(env_name).is_empty();
-		if (key_pending || key_stored || env_set) {
+		const bool key_stored = !_stored_asset_string(selected_provider, "api_key").is_empty();
+		const bool env_set = !env_name.is_empty() && OS::get_singleton()->has_environment(env_name) && !OS::get_singleton()->get_environment(env_name).is_empty();
+		if (!requires_api_key || key_pending || key_stored || env_set) {
 			_add_status_row(TTR("Configuration is valid and ready to use."), SOLERS_AI_COL_OK);
 		} else {
 			_add_status_row(TTR("API key is missing."), SOLERS_AI_COL_BLOCKER);
@@ -418,30 +441,24 @@ void SolersPMAIView::_save() {
 		return;
 	}
 	if (_is_asset_provider(selected_provider)) {
-		const String kind = _asset_kind_from_provider(selected_provider);
-		const String default_base_url = selected_provider == "asset_3d" ? "https://api.meshy.ai" : "https://api.elevenlabs.io";
-		const String provider = selected_provider == "asset_3d" ? "meshy" : "elevenlabs";
-		settings->set_manually(_asset_setting_path(kind, "provider"), provider);
-		settings->set_manually(_asset_setting_path(kind, "base_url"), default_base_url);
+		const Dictionary profile = _asset_plugin_profile(selected_provider);
+		const String default_base_url = profile.get("base_url", String());
+		const String base_url = base_url_edit->get_text().strip_edges();
+		settings->set_manually(_asset_setting_path(selected_provider, "base_url"), base_url.is_empty() ? default_base_url : base_url);
 		const String new_key = api_key_edit->get_text().strip_edges();
 		if (!new_key.is_empty()) {
-			settings->set_manually(_asset_setting_path(kind, "api_key"), SolersSecretStore::protect(new_key));
-			if (selected_provider == "asset_audio") {
-				settings->set_manually(_asset_setting_path("sfx", "api_key"), SolersSecretStore::protect(new_key));
+			settings->set_manually(_asset_setting_path(selected_provider, "api_key"), SolersSecretStore::protect(new_key));
+		}
+		if ((bool)profile.get("supports_generation", false)) {
+			const Array kinds = profile.get("kinds", Array());
+			for (int i = 0; i < kinds.size(); i++) {
+				const String path = "solers/plugins/default/" + String(kinds[i]).to_lower();
+				settings->set_manually(path, selected_provider);
+				settings->mark_setting_changed(path);
 			}
 		}
-		if (selected_provider == "asset_audio") {
-			settings->set_manually(_asset_setting_path("sfx", "provider"), provider);
-			settings->set_manually(_asset_setting_path("sfx", "base_url"), default_base_url);
-		}
-		settings->mark_setting_changed(_asset_setting_path(kind, "provider"));
-		settings->mark_setting_changed(_asset_setting_path(kind, "base_url"));
-		settings->mark_setting_changed(_asset_setting_path(kind, "api_key"));
-		if (selected_provider == "asset_audio") {
-			settings->mark_setting_changed(_asset_setting_path("sfx", "provider"));
-			settings->mark_setting_changed(_asset_setting_path("sfx", "base_url"));
-			settings->mark_setting_changed(_asset_setting_path("sfx", "api_key"));
-		}
+		settings->mark_setting_changed(_asset_setting_path(selected_provider, "base_url"));
+		settings->mark_setting_changed(_asset_setting_path(selected_provider, "api_key"));
 		settings->emit_signal(SNAME("settings_changed"));
 		settings->notify_changes();
 		EditorSettings::save();

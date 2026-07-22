@@ -42,6 +42,7 @@
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
 #include "modules/solers_ai/llm/solers_llm_message.h"
 #include "modules/solers_ai/llm/solers_models_dev.h"
+#include "modules/solers_ai/plugins/solers_plugin.h"
 #include "modules/solers_ai/protocol/solers_mcp_adapter.h"
 #include "modules/solers_ai/protocol/solers_rpc_server.h"
 #include "scene/gui/box_container.h"
@@ -685,6 +686,7 @@ void SolersDock::_on_send_chat_pressed() {
 	if (!chat_input) {
 		return;
 	}
+	_hide_plugin_mention_popup();
 	const String prompt = chat_input->get_text().strip_edges();
 	if (agent_session && agent_session->is_running()) {
 		// Typing while the agent works steers the running turn; an empty
@@ -1074,6 +1076,7 @@ void SolersDock::start_new_chat() {
 	}
 	_clear_chat_view(true);
 	if (chat_input) {
+		_hide_plugin_mention_popup();
 		chat_input->set_text("");
 		_update_chat_input_height();
 		_update_send_enabled();
@@ -1133,6 +1136,10 @@ void SolersDock::_submit_chat_prompt(const String &p_prompt, const Array &p_atta
 	// signals wired in set_agent_session(); no mock, no hardcoded provider.
 	Dictionary args;
 	args["prompt"] = prompt;
+	const Array mentions = SolersPluginRegistry::parse_mentions(prompt);
+	if (!mentions.is_empty()) {
+		args["mentions"] = mentions;
+	}
 	if (!p_attachments.is_empty()) {
 		args["attachments"] = p_attachments.duplicate(true);
 	}
@@ -1148,6 +1155,10 @@ void SolersDock::_submit_chat_prompt(const String &p_prompt, const Array &p_atta
 void SolersDock::_submit_steering(const String &p_prompt, const Array &p_attachments) {
 	Dictionary args;
 	args["prompt"] = p_prompt;
+	const Array mentions = SolersPluginRegistry::parse_mentions(p_prompt);
+	if (!mentions.is_empty()) {
+		args["mentions"] = mentions;
+	}
 	if (!p_attachments.is_empty()) {
 		args["attachments"] = p_attachments.duplicate(true);
 	}
@@ -1168,6 +1179,25 @@ void SolersDock::_on_chat_input_gui_input(const Ref<InputEvent> &p_event) {
 	}
 
 	const Key keycode = key->get_keycode();
+	if (plugin_mention_popup && plugin_mention_popup->is_visible()) {
+		if (keycode == Key::ESCAPE) {
+			_hide_plugin_mention_popup();
+			chat_input->accept_event();
+			return;
+		}
+		if (keycode == Key::UP || keycode == Key::DOWN) {
+			_move_plugin_mention_selection(keycode == Key::UP ? -1 : 1);
+			chat_input->accept_event();
+			return;
+		}
+		if (keycode == Key::TAB || keycode == Key::ENTER || keycode == Key::KP_ENTER) {
+			if (!plugin_mention_rows.is_empty()) {
+				_select_plugin_mention(plugin_mention_rows[plugin_mention_selected]->get_meta("plugin_id"));
+			}
+			chat_input->accept_event();
+			return;
+		}
+	}
 	if ((key->is_command_or_control_pressed() || key->is_meta_pressed()) && keycode == Key::V && _add_image_attachment_from_clipboard()) {
 		chat_input->accept_event();
 		return;
@@ -1196,6 +1226,98 @@ void SolersDock::_on_chat_input_gui_input(const Ref<InputEvent> &p_event) {
 void SolersDock::_on_chat_input_text_changed() {
 	_update_chat_input_height();
 	_update_send_enabled();
+	_refresh_plugin_mention_popup();
+}
+
+void SolersDock::_refresh_plugin_mention_popup() {
+	if (!chat_input || !plugin_mention_popup || !plugin_mention_list) {
+		return;
+	}
+
+	const int line = chat_input->get_caret_line();
+	const int column = chat_input->get_caret_column();
+	int mention_start = -1;
+	const String query = SolersPluginRegistry::mention_query_at(chat_input->get_line(line), column, mention_start);
+	if (mention_start < 0) {
+		_hide_plugin_mention_popup();
+		return;
+	}
+
+	solers_clear_children(plugin_mention_list);
+	plugin_mention_rows.clear();
+	for (SolersPlugin *plugin : SolersPluginRegistry::get_plugins()) {
+		const Dictionary profile = plugin->get_profile();
+		const String id = String(profile.get("id", String())).strip_edges().to_lower();
+		const String label = String(profile.get("label", id)).strip_edges();
+		if (id.is_empty() || (!query.is_empty() && !id.begins_with(query) && !label.to_lower().begins_with(query))) {
+			continue;
+		}
+
+		Button *row = memnew(Button);
+		solers_style_model_popup_row(row);
+		row->set_text("@" + id + (label == id ? String() : "  " + label));
+		row->set_tooltip_text(String(profile.get("description", String())));
+		row->set_meta("plugin_id", id);
+		row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_select_plugin_mention).bind(id));
+		plugin_mention_list->add_child(row);
+		plugin_mention_rows.push_back(row);
+	}
+	if (plugin_mention_rows.is_empty()) {
+		_hide_plugin_mention_popup();
+		return;
+	}
+
+	plugin_mention_line = line;
+	plugin_mention_start_column = mention_start;
+	plugin_mention_selected = 0;
+	solers_style_model_popup_row(plugin_mention_rows[0], true);
+
+	const Rect2 input_rect = chat_input->get_global_rect();
+	const Vector2 dock_origin = get_global_position();
+	const float width = MIN(360.0f * EDSCALE, MAX(220.0f * EDSCALE, input_rect.size.x));
+	const float height = MIN(188.0f * EDSCALE, (plugin_mention_rows.size() * 30.0f + 12.0f) * EDSCALE);
+	const float x = CLAMP(input_rect.position.x - dock_origin.x, 6.0f * EDSCALE, MAX(6.0f * EDSCALE, get_size().x - width - 6.0f * EDSCALE));
+	const float y = MAX(6.0f * EDSCALE, input_rect.position.y - dock_origin.y - height - 6.0f * EDSCALE);
+	plugin_mention_popup->set_position(Point2(x, y));
+	plugin_mention_popup->set_size(Size2(width, height));
+	plugin_mention_popup->show();
+	plugin_mention_popup->move_to_front();
+}
+
+void SolersDock::_hide_plugin_mention_popup() {
+	if (plugin_mention_popup) {
+		plugin_mention_popup->hide();
+	}
+	plugin_mention_rows.clear();
+	plugin_mention_line = -1;
+	plugin_mention_start_column = -1;
+	plugin_mention_selected = 0;
+}
+
+void SolersDock::_select_plugin_mention(const String &p_id) {
+	if (!chat_input || plugin_mention_line < 0 || plugin_mention_start_column < 0 || chat_input->get_caret_line() != plugin_mention_line) {
+		_hide_plugin_mention_popup();
+		return;
+	}
+	chat_input->select(plugin_mention_line, plugin_mention_start_column, plugin_mention_line, chat_input->get_caret_column());
+	chat_input->insert_text_at_caret("@" + p_id + " ");
+	_hide_plugin_mention_popup();
+	chat_input->grab_focus();
+	_update_chat_input_height();
+	_update_send_enabled();
+}
+
+void SolersDock::_move_plugin_mention_selection(int p_delta) {
+	if (plugin_mention_rows.is_empty()) {
+		return;
+	}
+	plugin_mention_selected = (plugin_mention_selected + p_delta + plugin_mention_rows.size()) % plugin_mention_rows.size();
+	for (int i = 0; i < plugin_mention_rows.size(); i++) {
+		solers_style_model_popup_row(plugin_mention_rows[i], i == plugin_mention_selected);
+	}
+	if (plugin_mention_scroll) {
+		plugin_mention_scroll->ensure_control_visible(plugin_mention_rows[plugin_mention_selected]);
+	}
 }
 
 void SolersDock::_on_add_context_pressed() {
@@ -1738,6 +1860,7 @@ SolersDock::SolersDock() {
 	chat_input->add_theme_font_size_override(SceneStringName(font_size), 14 * EDSCALE);
 	chat_input->connect(SceneStringName(gui_input), callable_mp(this, &SolersDock::_on_chat_input_gui_input));
 	chat_input->connect(SceneStringName(text_changed), callable_mp(this, &SolersDock::_on_chat_input_text_changed));
+	chat_input->connect(SNAME("caret_changed"), callable_mp(this, &SolersDock::_refresh_plugin_mention_popup));
 	composer->add_child(chat_input);
 
 	attachment_bar = memnew(HBoxContainer);
@@ -1779,6 +1902,22 @@ SolersDock::SolersDock() {
 	send_chat_button->set_pressed_callback(callable_mp(this, &SolersDock::_on_send_chat_pressed));
 	send_chat_button->set_enabled(false);
 	composer_toolbar->add_child(send_chat_button);
+
+	plugin_mention_popup = memnew(PanelContainer);
+	plugin_mention_popup->set_mouse_filter(Control::MOUSE_FILTER_STOP);
+	plugin_mention_popup->add_theme_style_override(SceneStringName(panel), solers_make_stylebox(SOLERS_POPUP_BG, Color(0, 0, 0, 0), 10, 6, true));
+	plugin_mention_popup->hide();
+	add_child(plugin_mention_popup);
+
+	plugin_mention_scroll = memnew(ScrollContainer);
+	plugin_mention_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
+	plugin_mention_scroll->set_vertical_scroll_mode(ScrollContainer::SCROLL_MODE_AUTO);
+	plugin_mention_scroll->add_theme_style_override(SceneStringName(panel), memnew(StyleBoxEmpty));
+	plugin_mention_popup->add_child(plugin_mention_scroll);
+	plugin_mention_list = memnew(VBoxContainer);
+	plugin_mention_list->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	plugin_mention_list->add_theme_constant_override("separation", 2 * EDSCALE);
+	plugin_mention_scroll->add_child(plugin_mention_list);
 
 	model_popup_overlay = memnew(Control);
 	model_popup_overlay->set_mouse_filter(Control::MOUSE_FILTER_STOP);

@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include "core/variant/dictionary.h"
 #include "scene/gui/box_container.h"
 
 class Button;
@@ -73,11 +74,11 @@ class SolersPMAIView : public HBoxContainer {
 	Button *disconnect_btn = nullptr;
 	Label *saved_feedback = nullptr;
 
-	String _asset_setting_path(const String &p_kind, const String &p_key) const;
-	String _stored_asset_string(const String &p_kind, const String &p_key, const String &p_default = String()) const;
+	String _asset_setting_path(const String &p_plugin_id, const String &p_key) const;
+	String _stored_asset_string(const String &p_plugin_id, const String &p_key, const String &p_default = String()) const;
+	Dictionary _asset_plugin_profile(const String &p_id) const;
 	bool _is_asset_provider(const String &p_id) const;
 	bool _uses_codex_auth(const String &p_id) const;
-	String _asset_kind_from_provider(const String &p_id) const;
 
 	void _build_nav();
 	void _select_category(const String &p_id);
