@@ -79,6 +79,7 @@ class SolersDock : public PanelContainer {
 	int plugin_mention_line = -1;
 	int plugin_mention_start_column = -1;
 	int plugin_mention_selected = 0;
+	String mention_section; // empty = root; otherwise section id (plugins/files/scenes/selection)
 	Control *model_popup_overlay = nullptr;
 	// Cascading model menu: a compact root menu (Model / Effort / actions)
 	// plus one lazily built submenu that opens beside the hovered row.
@@ -90,7 +91,6 @@ class SolersDock : public PanelContainer {
 	ScrollContainer *model_submenu_scroll = nullptr;
 	VBoxContainer *model_submenu_box = nullptr;
 	int model_submenu_kind = 0; // 0 = closed, 1 = model, 2 = effort.
-	SolersSelectChip *context_chip = nullptr;
 	SolersSelectChip *approval_mode_chip = nullptr;
 	MarginContainer *approval_overlay_inset = nullptr;
 	PanelContainer *approval_overlay_card = nullptr;
@@ -168,10 +168,16 @@ class SolersDock : public PanelContainer {
 	void _on_auto_approve_chip_pressed();
 	void _on_chat_input_gui_input(const Ref<InputEvent> &p_event);
 	void _on_chat_input_text_changed();
-	void _refresh_plugin_mention_popup();
-	void _hide_plugin_mention_popup();
-	void _select_plugin_mention(const String &p_id);
-	void _move_plugin_mention_selection(int p_delta);
+	Array _mention_inline_parse(const String &p_line_text);
+	void _mention_inline_draw(const Dictionary &p_info, const Rect2 &p_rect);
+	void _mention_inline_click(const Dictionary &p_info, const Rect2 &p_rect);
+	bool _try_delete_mention_span(int p_direction);
+	void _refresh_mention_popup();
+	void _hide_mention_popup();
+	void _select_mention(const Dictionary &p_mention);
+	void _open_mention_section(const String &p_section_id);
+	void _activate_mention_selection();
+	void _move_mention_selection(int p_delta);
 	void _on_add_context_pressed();
 	void _on_attachment_file_selected(const String &p_file);
 	bool _add_image_attachment_from_path(const String &p_path);

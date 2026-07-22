@@ -24,15 +24,22 @@
 #include "core/io/file_access.h"
 #include "core/io/image.h"
 #include "core/io/json.h"
+#include "core/io/resource_loader.h"
+#include "core/io/resource_uid.h"
 #include "core/os/time.h"
 #include "core/templates/hash_set.h"
 #include "core/version.h"
+#include "editor/editor_node.h"
+#include "editor/editor_string_names.h"
+#include "editor/file_system/editor_file_system.h"
 #include "editor/gui/editor_file_dialog.h"
+#include "editor/inspector/editor_resource_preview.h"
 #include "editor/project_manager/solers_pm_ai_view.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
 #include "modules/solers_ai/core/solers_action_timeline.h"
 #include "modules/solers_ai/core/solers_agent_session.h"
+#include "modules/solers_ai/core/solers_mention.h"
 #include "modules/solers_ai/core/solers_observation_service.h"
 #include "modules/solers_ai/core/solers_permission_manager.h"
 #include "modules/solers_ai/core/solers_settings_service.h"
@@ -42,7 +49,6 @@
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
 #include "modules/solers_ai/llm/solers_llm_message.h"
 #include "modules/solers_ai/llm/solers_models_dev.h"
-#include "modules/solers_ai/plugins/solers_plugin.h"
 #include "modules/solers_ai/protocol/solers_mcp_adapter.h"
 #include "modules/solers_ai/protocol/solers_rpc_server.h"
 #include "scene/gui/box_container.h"
@@ -56,10 +62,12 @@
 #include "scene/gui/separator.h"
 #include "scene/gui/text_edit.h"
 #include "scene/gui/texture_rect.h"
+#include "scene/resources/font.h"
 #include "scene/resources/image_texture.h"
 #include "scene/resources/style_box.h"
 #include "scene/resources/style_box_flat.h"
 #include "servers/display/display_server.h"
+#include "servers/rendering/rendering_server.h"
 
 constexpr float SOLERS_COMPOSER_TEXT_MIN_HEIGHT = 48.0f;
 constexpr float SOLERS_COMPOSER_TEXT_MAX_HEIGHT = 220.0f;
@@ -82,6 +90,9 @@ static const Color SOLERS_TEXT_BODY = Color(0.918, 0.929, 0.945);
 static const Color SOLERS_TEXT_DIM = Color(0.667, 0.690, 0.733);
 // Placeholder text: subtle cue in the input field.
 static const Color SOLERS_TEXT_PLACEHOLDER = Color(0.345, 0.357, 0.388);
+// Inline @ mention chip (Cursor-like pill over format_token spans).
+static const Color SOLERS_CHIP_BG = Color(0.145, 0.175, 0.235, 0.95);
+static const Color SOLERS_CHIP_TEXT = Color(0.55, 0.82, 0.98);
 
 static Ref<StyleBoxFlat> solers_make_stylebox(const Color &p_bg, const Color &p_border, int p_radius, int p_padding, bool p_shadow = false) {
 	Ref<StyleBoxFlat> style(memnew(StyleBoxFlat));
@@ -686,7 +697,7 @@ void SolersDock::_on_send_chat_pressed() {
 	if (!chat_input) {
 		return;
 	}
-	_hide_plugin_mention_popup();
+	_hide_mention_popup();
 	const String prompt = chat_input->get_text().strip_edges();
 	if (agent_session && agent_session->is_running()) {
 		// Typing while the agent works steers the running turn; an empty
@@ -1076,7 +1087,7 @@ void SolersDock::start_new_chat() {
 	}
 	_clear_chat_view(true);
 	if (chat_input) {
-		_hide_plugin_mention_popup();
+		_hide_mention_popup();
 		chat_input->set_text("");
 		_update_chat_input_height();
 		_update_send_enabled();
@@ -1136,7 +1147,7 @@ void SolersDock::_submit_chat_prompt(const String &p_prompt, const Array &p_atta
 	// signals wired in set_agent_session(); no mock, no hardcoded provider.
 	Dictionary args;
 	args["prompt"] = prompt;
-	const Array mentions = SolersPluginRegistry::parse_mentions(prompt);
+	const Array mentions = SolersMention::parse(prompt);
 	if (!mentions.is_empty()) {
 		args["mentions"] = mentions;
 	}
@@ -1155,7 +1166,7 @@ void SolersDock::_submit_chat_prompt(const String &p_prompt, const Array &p_atta
 void SolersDock::_submit_steering(const String &p_prompt, const Array &p_attachments) {
 	Dictionary args;
 	args["prompt"] = p_prompt;
-	const Array mentions = SolersPluginRegistry::parse_mentions(p_prompt);
+	const Array mentions = SolersMention::parse(p_prompt);
 	if (!mentions.is_empty()) {
 		args["mentions"] = mentions;
 	}
@@ -1179,21 +1190,33 @@ void SolersDock::_on_chat_input_gui_input(const Ref<InputEvent> &p_event) {
 	}
 
 	const Key keycode = key->get_keycode();
+	if (keycode == Key::BACKSPACE && _try_delete_mention_span(-1)) {
+		chat_input->accept_event();
+		return;
+	}
+	if (keycode == Key::KEY_DELETE && _try_delete_mention_span(1)) {
+		chat_input->accept_event();
+		return;
+	}
+
 	if (plugin_mention_popup && plugin_mention_popup->is_visible()) {
 		if (keycode == Key::ESCAPE) {
-			_hide_plugin_mention_popup();
+			if (!mention_section.is_empty()) {
+				mention_section = String();
+				_refresh_mention_popup();
+			} else {
+				_hide_mention_popup();
+			}
 			chat_input->accept_event();
 			return;
 		}
 		if (keycode == Key::UP || keycode == Key::DOWN) {
-			_move_plugin_mention_selection(keycode == Key::UP ? -1 : 1);
+			_move_mention_selection(keycode == Key::UP ? -1 : 1);
 			chat_input->accept_event();
 			return;
 		}
 		if (keycode == Key::TAB || keycode == Key::ENTER || keycode == Key::KP_ENTER) {
-			if (!plugin_mention_rows.is_empty()) {
-				_select_plugin_mention(plugin_mention_rows[plugin_mention_selected]->get_meta("plugin_id"));
-			}
+			_activate_mention_selection();
 			chat_input->accept_event();
 			return;
 		}
@@ -1226,10 +1249,330 @@ void SolersDock::_on_chat_input_gui_input(const Ref<InputEvent> &p_event) {
 void SolersDock::_on_chat_input_text_changed() {
 	_update_chat_input_height();
 	_update_send_enabled();
-	_refresh_plugin_mention_popup();
+	_refresh_mention_popup();
 }
 
-void SolersDock::_refresh_plugin_mention_popup() {
+static Ref<Texture2D> solers_mention_section_icon(const String &p_section_id) {
+	const int size = int(Math::round(13.0f * EDSCALE));
+	if (p_section_id == "plugins") {
+		return SolersChatGlyphs::get(SNAME("tool_export"), size, 2.0f);
+	}
+	if (p_section_id == "files") {
+		return SolersChatGlyphs::get(SNAME("tool_file"), size, 2.0f);
+	}
+	if (p_section_id == "scenes") {
+		return SolersChatGlyphs::get(SNAME("tool_scene"), size, 2.0f);
+	}
+	if (p_section_id == "selection") {
+		return SolersChatGlyphs::get(SNAME("tool_observe"), size, 2.0f);
+	}
+	return SolersChatGlyphs::get(SNAME("plus"), size, 2.0f);
+}
+
+// Same authority chain as FileSystem dock / Quick Open: preview cache, then
+// EditorFileSystem type + class icon. No extension-name tables.
+static Ref<Texture2D> solers_mention_path_icon(const String &p_path) {
+	EditorNode *editor = EditorNode::get_singleton();
+	if (!editor) {
+		return Ref<Texture2D>();
+	}
+	String path = ResourceUID::ensure_path(p_path.strip_edges());
+	if (path.is_empty()) {
+		return Ref<Texture2D>();
+	}
+	if (path.ends_with("/")) {
+		return editor->get_editor_theme()->get_icon(SNAME("Folder"), EditorStringName(EditorIcons));
+	}
+
+	if (EditorResourcePreview *previewer = EditorResourcePreview::get_singleton()) {
+		const EditorResourcePreview::PreviewItem item = previewer->get_resource_preview_if_available(path);
+		if (item.small_preview.is_valid()) {
+			return item.small_preview;
+		}
+		if (item.preview.is_valid()) {
+			return item.preview;
+		}
+	}
+
+	String type;
+	String icon_path;
+	bool import_ok = true;
+	if (EditorFileSystem *efs = EditorFileSystem::get_singleton()) {
+		int idx = -1;
+		if (EditorFileSystemDirectory *dir = efs->find_file(path, &idx)) {
+			type = dir->get_file_type(idx);
+			icon_path = dir->get_file_icon_path(idx);
+			import_ok = dir->get_file_import_is_valid(idx);
+		}
+		if (type.is_empty()) {
+			type = efs->get_file_type(path);
+		}
+	}
+	if (type.is_empty()) {
+		type = ResourceLoader::get_resource_type(path);
+	}
+	if (!import_ok) {
+		return editor->get_editor_theme()->get_icon(SNAME("ImportFail"), EditorStringName(EditorIcons));
+	}
+	if (!icon_path.is_empty()) {
+		const Ref<Texture2D> custom = ResourceLoader::load(icon_path);
+		if (custom.is_valid()) {
+			return custom;
+		}
+	}
+	if (!type.is_empty()) {
+		const Ref<Texture2D> icon = editor->get_class_icon(type, "File");
+		if (icon.is_valid()) {
+			return icon;
+		}
+	}
+	return editor->get_class_icon("File");
+}
+
+static Ref<Texture2D> solers_mention_row_icon(const Dictionary &p_mention, int p_px) {
+	const String source = String(p_mention.get("source", "plugin")).strip_edges().to_lower();
+	if (source == "plugin") {
+		const String id = String(p_mention.get("id", String())).strip_edges().to_lower();
+		const Ref<Texture2D> color = SolersChatGlyphs::provider_logo_color(id, p_px);
+		return color.is_valid() ? color : SolersChatGlyphs::provider_logo(id, p_px);
+	}
+	if (source == "node") {
+		if (EditorNode *editor = EditorNode::get_singleton()) {
+			const String type = String(p_mention.get("type", "Node")).strip_edges();
+			return editor->get_class_icon(type.is_empty() ? String("Node") : type, "Node");
+		}
+		return Ref<Texture2D>();
+	}
+	return solers_mention_path_icon(String(p_mention.get("path", p_mention.get("id", String()))));
+}
+
+static void solers_set_mention_row_selected(Button *p_row, bool p_selected) {
+	solers_style_model_popup_row(p_row, p_selected);
+	if (p_row->get_child_count() == 0) {
+		return;
+	}
+	// Unified row: HBox [icon?][name][path?]. Recolor name only.
+	HBoxContainer *box = Object::cast_to<HBoxContainer>(p_row->get_child(0));
+	if (!box) {
+		return;
+	}
+	const bool path_like = bool(p_row->get_meta("mention_path_like", false));
+	for (int i = 0; i < box->get_child_count(); i++) {
+		if (Label *name = Object::cast_to<Label>(box->get_child(i))) {
+			if (String(name->get_meta("mention_slot", String())) == "name") {
+				name->add_theme_color_override(SceneStringName(font_color),
+						(p_selected || path_like) ? SOLERS_TEXT_PRIMARY : SOLERS_TEXT_BODY);
+			}
+			break;
+		}
+	}
+}
+
+static void solers_style_mention_item_row(Button *p_row, const Dictionary &p_mention, bool p_selected = false) {
+	solers_style_model_popup_row(p_row, p_selected);
+	p_row->set_text(String());
+
+	const String source = String(p_mention.get("source", "plugin")).strip_edges().to_lower();
+	const String id = String(p_mention.get("id", String())).strip_edges();
+	const String label = String(p_mention.get("label", id)).strip_edges();
+	const String path = String(p_mention.get("path", id)).strip_edges();
+	const bool path_like = source == "file" || source == "scene" || source == "node";
+	p_row->set_meta("mention_path_like", path_like);
+
+	String name_text;
+	String secondary;
+	if (source == "plugin") {
+		name_text = "@" + id;
+		if (!label.is_empty() && label != id) {
+			secondary = label;
+		}
+	} else {
+		name_text = label.is_empty() ? id.get_file() : label;
+		if (source == "node") {
+			secondary = path;
+		} else if (!path.is_empty()) {
+			secondary = path.get_base_dir();
+		}
+	}
+
+	const int icon_px = int(Math::round(14.0f * EDSCALE));
+	const Ref<Texture2D> icon_tex = solers_mention_row_icon(p_mention, icon_px);
+
+	HBoxContainer *box = memnew(HBoxContainer);
+	box->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
+	box->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
+	box->set_offset(SIDE_LEFT, 8 * EDSCALE);
+	box->set_offset(SIDE_RIGHT, -8 * EDSCALE);
+	box->add_theme_constant_override("separation", int(6 * EDSCALE));
+	p_row->add_child(box);
+
+	if (icon_tex.is_valid()) {
+		TextureRect *icon = memnew(TextureRect);
+		icon->set_texture(icon_tex);
+		icon->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
+		icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+		icon->set_custom_minimum_size(Size2(icon_px, icon_px));
+		icon->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
+		icon->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
+		box->add_child(icon);
+	}
+
+	Label *name = memnew(Label(name_text));
+	name->set_meta("mention_slot", "name");
+	name->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
+	// Do NOT enable text overrun on the name label. Label::get_minimum_size
+	// collapses width to 1px when overrun is on; an EXPAND sibling then steals
+	// the row and the basename disappears (only base_dir remains visible).
+	name->add_theme_font_size_override(SceneStringName(font_size), int(13 * EDSCALE));
+	name->add_theme_color_override(SceneStringName(font_color),
+			(p_selected || path_like) ? SOLERS_TEXT_PRIMARY : SOLERS_TEXT_BODY);
+	name->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
+	box->add_child(name);
+
+	if (!secondary.is_empty()) {
+		Label *sub = memnew(Label(secondary));
+		sub->set_meta("mention_slot", "path");
+		sub->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
+		sub->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		sub->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+		sub->add_theme_font_size_override(SceneStringName(font_size), int(11 * EDSCALE));
+		sub->add_theme_color_override(SceneStringName(font_color), SOLERS_TEXT_DIM);
+		sub->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
+		if (!path.is_empty() && path_like) {
+			sub->set_tooltip_text(path);
+		}
+		box->add_child(sub);
+	} else {
+		name->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	}
+}
+
+Array SolersDock::_mention_inline_parse(const String &p_line_text) {
+	Array objects;
+	if (!chat_input) {
+		return objects;
+	}
+	const Ref<Font> font = chat_input->get_theme_font(SceneStringName(font), SNAME("TextEdit"));
+	const int font_size = chat_input->get_theme_font_size(SceneStringName(font_size), SNAME("TextEdit"));
+	// width_ratio is relative to the TextEdit line font height (object box height).
+	const float line_font_h = font.is_valid() ? font->get_height(font_size) : float(MAX(1, font_size));
+	const int icon_px = int(Math::round(13.0f * EDSCALE));
+	const float pad_x = 6.0f * EDSCALE;
+	const float gap = 4.0f * EDSCALE;
+
+	const Array spans = SolersMention::scan_line_spans(p_line_text);
+	for (int i = 0; i < spans.size(); i++) {
+		const Dictionary span = spans[i];
+		const Dictionary mention = span.get("mention", Dictionary());
+		const String label = String(mention.get("label", mention.get("id", String()))).strip_edges();
+		if (label.is_empty()) {
+			continue;
+		}
+		const float text_w = font.is_valid() ? font->get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x : float(label.length() * font_size * 0.55f);
+		const float chip_w = pad_x + icon_px + gap + text_w + pad_x;
+
+		Dictionary info = span.duplicate();
+		info["width_ratio"] = chip_w / MAX(1.0f, line_font_h);
+		info["chip_label"] = label;
+		objects.push_back(info);
+	}
+	return objects;
+}
+
+void SolersDock::_mention_inline_draw(const Dictionary &p_info, const Rect2 &p_rect) {
+	if (!chat_input || !p_info.has("mention")) {
+		return;
+	}
+	const Dictionary mention = p_info.get("mention", Dictionary());
+	const String label = String(p_info.get("chip_label", mention.get("label", String())));
+	if (label.is_empty()) {
+		return;
+	}
+
+	const RID ci = chat_input->get_text_canvas_item();
+	const float pad_x = 5.0f * EDSCALE;
+	const float gap = 4.0f * EDSCALE;
+	const int icon_px = int(Math::round(13.0f * EDSCALE));
+	const Rect2 pill = p_rect.grow_individual(-1.0f * EDSCALE, -2.0f * EDSCALE, -1.0f * EDSCALE, -2.0f * EDSCALE);
+
+	Ref<StyleBoxFlat> style;
+	style.instantiate();
+	style->set_bg_color(SOLERS_CHIP_BG);
+	style->set_corner_radius_all(int(Math::round(6.0f * EDSCALE)));
+	style->draw(ci, pill);
+
+	const Ref<Texture2D> icon = solers_mention_row_icon(mention, icon_px);
+	float x = pill.position.x + pad_x;
+	const float mid_y = pill.position.y + pill.size.y * 0.5f;
+	if (icon.is_valid()) {
+		const Rect2 icon_rect(x, mid_y - icon_px * 0.5f, icon_px, icon_px);
+		icon->draw_rect(ci, icon_rect, false);
+		x += icon_px + gap;
+	}
+
+	const Ref<Font> font = chat_input->get_theme_font(SceneStringName(font), SNAME("TextEdit"));
+	const int font_size = chat_input->get_theme_font_size(SceneStringName(font_size), SNAME("TextEdit"));
+	if (font.is_valid()) {
+		// Font::draw_string treats p_pos.y as baseline, then subtracts line ascent
+		// internally. Godot's own vertical-center contract for that API is:
+		//   y = top + (box_h - font_h) / 2 + ascent
+		// (see editor_resource_picker / animation_track_editor). Do not invent a
+		// mid_y ± (ascent-descent) formula — that places the baseline wrong and
+		// lifts glyphs out of the pill.
+		const float text_y = pill.position.y + (pill.size.y - font->get_height(font_size)) * 0.5f + font->get_ascent(font_size);
+		font->draw_string(ci, Point2(x, text_y), label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, SOLERS_CHIP_TEXT);
+	}
+}
+
+void SolersDock::_mention_inline_click(const Dictionary &p_info, const Rect2 &p_rect) {
+	if (!chat_input || !p_info.has("column") || !p_info.has("length")) {
+		return;
+	}
+	const int line = chat_input->get_caret_line();
+	const int start = int(p_info["column"]);
+	int end = start + int(p_info["length"]);
+	const String text = chat_input->get_line(line);
+	if (end < text.length() && text[end] == ' ') {
+		end++;
+	}
+	chat_input->select(line, start, line, end);
+	chat_input->grab_focus();
+}
+
+bool SolersDock::_try_delete_mention_span(int p_direction) {
+	if (!chat_input || chat_input->has_selection() || p_direction == 0) {
+		return false;
+	}
+	const int line = chat_input->get_caret_line();
+	const int col = chat_input->get_caret_column();
+	const String text = chat_input->get_line(line);
+	const Array spans = SolersMention::scan_line_spans(text);
+	for (int i = 0; i < spans.size(); i++) {
+		const Dictionary span = spans[i];
+		const int start = int(span.get("column", -1));
+		const int len = int(span.get("length", 0));
+		if (start < 0 || len <= 0) {
+			continue;
+		}
+		int extent = start + len;
+		if (extent < text.length() && text[extent] == ' ') {
+			extent++;
+		}
+		const bool hit = (p_direction < 0) ? (col > start && col <= extent) : (col >= start && col < extent);
+		if (!hit) {
+			continue;
+		}
+		chat_input->select(line, start, line, extent);
+		chat_input->delete_selection();
+		_update_chat_input_height();
+		_update_send_enabled();
+		_refresh_mention_popup();
+		return true;
+	}
+	return false;
+}
+
+void SolersDock::_refresh_mention_popup() {
 	if (!chat_input || !plugin_mention_popup || !plugin_mention_list) {
 		return;
 	}
@@ -1237,83 +1580,164 @@ void SolersDock::_refresh_plugin_mention_popup() {
 	const int line = chat_input->get_caret_line();
 	const int column = chat_input->get_caret_column();
 	int mention_start = -1;
-	const String query = SolersPluginRegistry::mention_query_at(chat_input->get_line(line), column, mention_start);
+	const String query = SolersMention::query_at(chat_input->get_line(line), column, mention_start);
 	if (mention_start < 0) {
-		_hide_plugin_mention_popup();
+		_hide_mention_popup();
 		return;
+	}
+
+	// Typing a filter leaves the section stack and searches across sources.
+	if (!query.is_empty()) {
+		mention_section = String();
 	}
 
 	solers_clear_children(plugin_mention_list);
 	plugin_mention_rows.clear();
-	for (SolersPlugin *plugin : SolersPluginRegistry::get_plugins()) {
-		const Dictionary profile = plugin->get_profile();
-		const String id = String(profile.get("id", String())).strip_edges().to_lower();
-		const String label = String(profile.get("label", id)).strip_edges();
-		if (id.is_empty() || (!query.is_empty() && !id.begins_with(query) && !label.to_lower().begins_with(query))) {
-			continue;
-		}
 
-		Button *row = memnew(Button);
-		solers_style_model_popup_row(row);
-		row->set_text("@" + id + (label == id ? String() : "  " + label));
-		row->set_tooltip_text(String(profile.get("description", String())));
-		row->set_meta("plugin_id", id);
-		row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_select_plugin_mention).bind(id));
-		plugin_mention_list->add_child(row);
-		plugin_mention_rows.push_back(row);
+	const bool filtered = !query.is_empty();
+	if (filtered) {
+		const Array items = SolersMention::collect_section_items(String(), observation_service, query);
+		String last_source;
+		for (int i = 0; i < items.size(); i++) {
+			const Dictionary mention = items[i];
+			const String source = String(mention.get("source", "plugin"));
+			if (source != last_source) {
+				last_source = source;
+				plugin_mention_list->add_child(solers_make_model_popup_group(source.capitalize()));
+			}
+			Button *row = memnew(Button);
+			solers_style_mention_item_row(row, mention);
+			row->set_meta("mention_kind", "item");
+			row->set_meta("mention", mention);
+			row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_select_mention).bind(mention));
+			plugin_mention_list->add_child(row);
+			plugin_mention_rows.push_back(row);
+		}
+	} else if (mention_section.is_empty()) {
+		const Array sections = SolersMention::collect_root_sections(observation_service, String());
+		for (int i = 0; i < sections.size(); i++) {
+			const Dictionary section = sections[i];
+			const String section_id = String(section.get("id", String()));
+			const String label = String(section.get("label", section_id));
+			const int count = (int)section.get("count", 0);
+			Button *row = solers_make_model_menu_parent_row(solers_mention_section_icon(section_id), label, itos(count));
+			row->set_meta("mention_kind", "section");
+			row->set_meta("section_id", section_id);
+			row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_open_mention_section).bind(section_id));
+			plugin_mention_list->add_child(row);
+			plugin_mention_rows.push_back(row);
+		}
+	} else {
+		Button *back = memnew(Button);
+		solers_style_model_popup_row(back);
+		back->set_text(String::utf8("\u2190 ") + TTR("Back"));
+		back->set_meta("mention_kind", "back");
+		back->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_open_mention_section).bind(String()));
+		plugin_mention_list->add_child(back);
+		plugin_mention_rows.push_back(back);
+
+		const Array items = SolersMention::collect_section_items(mention_section, observation_service, String());
+		for (int i = 0; i < items.size(); i++) {
+			const Dictionary mention = items[i];
+			Button *row = memnew(Button);
+			solers_style_mention_item_row(row, mention);
+			row->set_meta("mention_kind", "item");
+			row->set_meta("mention", mention);
+			row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_select_mention).bind(mention));
+			plugin_mention_list->add_child(row);
+			plugin_mention_rows.push_back(row);
+		}
 	}
+
 	if (plugin_mention_rows.is_empty()) {
-		_hide_plugin_mention_popup();
+		_hide_mention_popup();
 		return;
 	}
 
 	plugin_mention_line = line;
 	plugin_mention_start_column = mention_start;
 	plugin_mention_selected = 0;
-	solers_style_model_popup_row(plugin_mention_rows[0], true);
+	solers_set_mention_row_selected(plugin_mention_rows[0], true);
 
 	const Rect2 input_rect = chat_input->get_global_rect();
-	const Vector2 dock_origin = get_global_position();
+	const Rect2 dock_rect = get_global_rect();
 	const float width = MIN(360.0f * EDSCALE, MAX(220.0f * EDSCALE, input_rect.size.x));
-	const float height = MIN(188.0f * EDSCALE, (plugin_mention_rows.size() * 30.0f + 12.0f) * EDSCALE);
-	const float x = CLAMP(input_rect.position.x - dock_origin.x, 6.0f * EDSCALE, MAX(6.0f * EDSCALE, get_size().x - width - 6.0f * EDSCALE));
-	const float y = MAX(6.0f * EDSCALE, input_rect.position.y - dock_origin.y - height - 6.0f * EDSCALE);
-	plugin_mention_popup->set_position(Point2(x, y));
+	const float estimated = (plugin_mention_list->get_child_count() * 30.0f + 12.0f) * EDSCALE;
+	const float measured = plugin_mention_list->get_combined_minimum_size().y + 12.0f * EDSCALE;
+	const float content_height = MAX(estimated, measured);
+	const float max_height = MIN(280.0f * EDSCALE, MAX(120.0f * EDSCALE, get_size().y * 0.45f));
+	const float height = MIN(max_height, MAX(48.0f * EDSCALE, content_height));
+	const float x = CLAMP(input_rect.position.x, dock_rect.position.x + 6.0f * EDSCALE, MAX(dock_rect.position.x + 6.0f * EDSCALE, dock_rect.position.x + dock_rect.size.x - width - 6.0f * EDSCALE));
+	const float y = MAX(dock_rect.position.y + 6.0f * EDSCALE, input_rect.position.y - height - 6.0f * EDSCALE);
 	plugin_mention_popup->set_size(Size2(width, height));
+	plugin_mention_popup->set_global_position(Point2(x, y));
 	plugin_mention_popup->show();
 	plugin_mention_popup->move_to_front();
 }
 
-void SolersDock::_hide_plugin_mention_popup() {
+void SolersDock::_hide_mention_popup() {
 	if (plugin_mention_popup) {
 		plugin_mention_popup->hide();
+	}
+	if (plugin_mention_list) {
+		solers_clear_children(plugin_mention_list);
 	}
 	plugin_mention_rows.clear();
 	plugin_mention_line = -1;
 	plugin_mention_start_column = -1;
 	plugin_mention_selected = 0;
+	mention_section = String();
 }
 
-void SolersDock::_select_plugin_mention(const String &p_id) {
+void SolersDock::_open_mention_section(const String &p_section_id) {
+	mention_section = p_section_id;
+	_refresh_mention_popup();
+}
+
+void SolersDock::_select_mention(const Dictionary &p_mention) {
 	if (!chat_input || plugin_mention_line < 0 || plugin_mention_start_column < 0 || chat_input->get_caret_line() != plugin_mention_line) {
-		_hide_plugin_mention_popup();
+		_hide_mention_popup();
+		return;
+	}
+	const String token = SolersMention::format_token(p_mention);
+	if (token.is_empty()) {
+		_hide_mention_popup();
 		return;
 	}
 	chat_input->select(plugin_mention_line, plugin_mention_start_column, plugin_mention_line, chat_input->get_caret_column());
-	chat_input->insert_text_at_caret("@" + p_id + " ");
-	_hide_plugin_mention_popup();
+	chat_input->insert_text_at_caret(token + " ");
+	_hide_mention_popup();
 	chat_input->grab_focus();
 	_update_chat_input_height();
 	_update_send_enabled();
 }
 
-void SolersDock::_move_plugin_mention_selection(int p_delta) {
+void SolersDock::_activate_mention_selection() {
+	if (plugin_mention_rows.is_empty() || plugin_mention_selected < 0 || plugin_mention_selected >= plugin_mention_rows.size()) {
+		return;
+	}
+	Button *row = plugin_mention_rows[plugin_mention_selected];
+	const String kind = String(row->get_meta("mention_kind", String()));
+	if (kind == "section") {
+		_open_mention_section(String(row->get_meta("section_id", String())));
+		return;
+	}
+	if (kind == "back") {
+		_open_mention_section(String());
+		return;
+	}
+	if (kind == "item") {
+		_select_mention(row->get_meta("mention", Dictionary()));
+	}
+}
+
+void SolersDock::_move_mention_selection(int p_delta) {
 	if (plugin_mention_rows.is_empty()) {
 		return;
 	}
 	plugin_mention_selected = (plugin_mention_selected + p_delta + plugin_mention_rows.size()) % plugin_mention_rows.size();
 	for (int i = 0; i < plugin_mention_rows.size(); i++) {
-		solers_style_model_popup_row(plugin_mention_rows[i], i == plugin_mention_selected);
+		solers_set_mention_row_selected(plugin_mention_rows[i], i == plugin_mention_selected);
 	}
 	if (plugin_mention_scroll) {
 		plugin_mention_scroll->ensure_control_visible(plugin_mention_rows[plugin_mention_selected]);
@@ -1860,7 +2284,11 @@ SolersDock::SolersDock() {
 	chat_input->add_theme_font_size_override(SceneStringName(font_size), 14 * EDSCALE);
 	chat_input->connect(SceneStringName(gui_input), callable_mp(this, &SolersDock::_on_chat_input_gui_input));
 	chat_input->connect(SceneStringName(text_changed), callable_mp(this, &SolersDock::_on_chat_input_text_changed));
-	chat_input->connect(SNAME("caret_changed"), callable_mp(this, &SolersDock::_refresh_plugin_mention_popup));
+	chat_input->connect(SNAME("caret_changed"), callable_mp(this, &SolersDock::_refresh_mention_popup));
+	chat_input->set_inline_object_handlers(
+			callable_mp(this, &SolersDock::_mention_inline_parse),
+			callable_mp(this, &SolersDock::_mention_inline_draw),
+			callable_mp(this, &SolersDock::_mention_inline_click));
 	composer->add_child(chat_input);
 
 	attachment_bar = memnew(HBoxContainer);
@@ -1905,6 +2333,9 @@ SolersDock::SolersDock() {
 
 	plugin_mention_popup = memnew(PanelContainer);
 	plugin_mention_popup->set_mouse_filter(Control::MOUSE_FILTER_STOP);
+	// Escape PanelContainer's SORT_CHILDREN fit_child_in_rect — otherwise the
+	// mention sheet is stretched to the entire SolersDock on every layout pass.
+	plugin_mention_popup->set_as_top_level(true);
 	plugin_mention_popup->add_theme_style_override(SceneStringName(panel), solers_make_stylebox(SOLERS_POPUP_BG, Color(0, 0, 0, 0), 10, 6, true));
 	plugin_mention_popup->hide();
 	add_child(plugin_mention_popup);
