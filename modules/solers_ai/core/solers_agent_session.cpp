@@ -44,6 +44,7 @@
 #include "modules/solers_ai/core/solers_action_timeline.h"
 #include "modules/solers_ai/core/solers_asset_service.h"
 #include "modules/solers_ai/core/solers_context_manager.h"
+#include "modules/solers_ai/core/solers_mention.h"
 #include "modules/solers_ai/core/solers_observation_service.h"
 #include "modules/solers_ai/core/solers_permission_manager.h"
 #include "modules/solers_ai/core/solers_reflection_service.h"
@@ -771,7 +772,7 @@ bool SolersAgentSession::_poll_state_observation() {
 }
 
 static String _solers_mention_context(const Array &p_mentions) {
-	return p_mentions.is_empty() ? String() : "\n\n[Selected Solers plugins]\n" + JSON::stringify(p_mentions);
+	return SolersMention::prompt_block(p_mentions);
 }
 
 Dictionary SolersAgentSession::queue_user_message(const Dictionary &p_args) {
@@ -809,16 +810,17 @@ bool SolersAgentSession::_flush_pending_steering() {
 		const Dictionary message = pending_steering_messages[i];
 		const Array mentions = message.get("mentions", Array());
 		for (int mention_index = 0; mention_index < mentions.size(); mention_index++) {
-			const String id = String(Dictionary(mentions[mention_index]).get("id", String()));
+			const Dictionary mention = mentions[mention_index];
+			const String key = SolersMention::dedupe_key(mention);
 			bool present = false;
 			for (int active_index = 0; active_index < turn_mentions.size(); active_index++) {
-				if (String(Dictionary(turn_mentions[active_index]).get("id", String())) == id) {
+				if (SolersMention::dedupe_key(turn_mentions[active_index]) == key) {
 					present = true;
 					break;
 				}
 			}
-			if (!id.is_empty() && !present) {
-				turn_mentions.push_back(mentions[mention_index]);
+			if (!key.is_empty() && !present) {
+				turn_mentions.push_back(mention);
 			}
 		}
 		messages.push_back(message);

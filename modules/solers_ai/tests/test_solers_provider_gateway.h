@@ -50,6 +50,7 @@
 
 #include "modules/solers_ai/core/solers_agent_session.h"
 #include "modules/solers_ai/core/solers_asset_service.h"
+#include "modules/solers_ai/core/solers_mention.h"
 #include "modules/solers_ai/plugins/solers_plugin.h"
 #include "modules/solers_ai/plugins/solers_plugin_meshy.h"
 #include "modules/solers_ai/plugins/solers_plugin_polyhaven.h"
@@ -1026,12 +1027,35 @@ TEST_CASE("[SolersPluginRegistry] an unknown connector extends every registry-dr
 
 	const String partial = "Create with @synthetic-fut";
 	int mention_start = -1;
-	CHECK(SolersPluginRegistry::mention_query_at(partial, partial.length(), mention_start) == "synthetic-fut");
+	CHECK(SolersMention::query_at(partial, partial.length(), mention_start) == "synthetic-fut");
 	CHECK(mention_start == 12);
-	const Array mentions = SolersPluginRegistry::parse_mentions("Use @synthetic-future, not @synthetic-future-extra.");
+	const Array mentions = SolersMention::parse("Use @synthetic-future, not @synthetic-future-extra.");
 	CHECK(mentions.size() == 1);
 	if (mentions.size() == 1) {
 		CHECK(Dictionary(mentions[0]).get("id", String()) == "synthetic-future");
+		CHECK(Dictionary(mentions[0]).get("source", String()) == "plugin");
+	}
+
+	const Array generators = SolersMention::collect_section_items("plugins", nullptr, String());
+	bool found_synthetic_generator = false;
+	for (int i = 0; i < generators.size(); i++) {
+		if (String(Dictionary(generators[i]).get("id", String())) == "synthetic-future") {
+			found_synthetic_generator = true;
+			break;
+		}
+	}
+	CHECK(found_synthetic_generator);
+
+	Dictionary file_mention;
+	file_mention["source"] = "file";
+	file_mention["id"] = "res://does-not-need-to-exist-for-format.tscn";
+	file_mention["path"] = file_mention["id"];
+	file_mention["label"] = "does-not-need-to-exist-for-format.tscn";
+	CHECK(SolersMention::format_token(file_mention) == "@file:res://does-not-need-to-exist-for-format.tscn");
+	CHECK(SolersMention::parse("@file:res://does-not-need-to-exist-for-format.tscn").is_empty());
+	if (mentions.size() == 1) {
+		CHECK(SolersMention::prompt_block(mentions).contains("[Selected Solers context]"));
+		CHECK(SolersMention::dedupe_key(mentions[0]) != SolersMention::dedupe_key(file_mention));
 	}
 
 	Ref<SolersPluginJob> job;

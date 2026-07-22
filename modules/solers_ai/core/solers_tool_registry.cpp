@@ -1365,6 +1365,10 @@ static Dictionary _solers_apply_plugin_mention(const SolersToolContext &p_contex
 	const String kind = String(p_args.get("kind", String())).strip_edges().to_lower();
 	for (int i = 0; i < p_context.mentions.size(); i++) {
 		const Dictionary mention = p_context.mentions[i];
+		const String source = String(mention.get("source", "plugin")).strip_edges().to_lower();
+		if (!source.is_empty() && source != "plugin") {
+			continue;
+		}
 		SolersPlugin *plugin = SolersPluginRegistry::get_plugin(mention.get("id", String()));
 		const Dictionary profile = plugin ? plugin->get_profile() : Dictionary();
 		if (!plugin || !(bool)profile.get(p_capability, false) || (!kind.is_empty() && !Array(profile.get("kinds", Array())).has(kind))) {

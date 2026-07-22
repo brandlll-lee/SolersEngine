@@ -145,8 +145,6 @@ public:
 	static void unregister_plugin(SolersPlugin *p_plugin);
 	static SolersPlugin *get_plugin(const String &p_id);
 	static const Vector<SolersPlugin *> &get_plugins();
-	static String mention_query_at(const String &p_text, int p_caret, int &r_mention_start);
-	static Array parse_mentions(const String &p_text);
 	// The default generator for a kind: the EditorSettings override when it
 	// names a registered connector, otherwise the first registered connector
 	// that generates this kind.

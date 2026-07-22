@@ -213,53 +213,6 @@ static bool _solers_plugin_id_char(char32_t p_char) {
 	return (p_char >= 'a' && p_char <= 'z') || (p_char >= 'A' && p_char <= 'Z') || (p_char >= '0' && p_char <= '9') || p_char == '-' || p_char == '_' || p_char == '.';
 }
 
-String SolersPluginRegistry::mention_query_at(const String &p_text, int p_caret, int &r_mention_start) {
-	r_mention_start = -1;
-	if (p_caret < 0 || p_caret > p_text.length()) {
-		return String();
-	}
-	int start = p_caret;
-	while (start > 0 && _solers_plugin_id_char(p_text[start - 1])) {
-		start--;
-	}
-	if (start == 0 || p_text[start - 1] != '@') {
-		return String();
-	}
-	const int at = start - 1;
-	if (at > 0 && _solers_plugin_id_char(p_text[at - 1])) {
-		return String();
-	}
-	r_mention_start = at;
-	return p_text.substr(start, p_caret - start).to_lower();
-}
-
-Array SolersPluginRegistry::parse_mentions(const String &p_text) {
-	Array mentions;
-	HashSet<String> seen;
-	for (int i = 0; i < p_text.length(); i++) {
-		if (p_text[i] != '@' || (i > 0 && _solers_plugin_id_char(p_text[i - 1]))) {
-			continue;
-		}
-		int end = i + 1;
-		while (end < p_text.length() && _solers_plugin_id_char(p_text[end])) {
-			end++;
-		}
-		const String id = p_text.substr(i + 1, end - i - 1).to_lower();
-		SolersPlugin *plugin = get_plugin(id);
-		if (!plugin || seen.has(id)) {
-			continue;
-		}
-		seen.insert(id);
-		const Dictionary profile = plugin->get_profile();
-		Dictionary mention;
-		mention["id"] = id;
-		mention["label"] = profile.get("label", id);
-		mention["kinds"] = profile.get("kinds", Array());
-		mentions.push_back(mention);
-	}
-	return mentions;
-}
-
 void SolersPluginRegistry::register_builtins() {
 	if (!builtins.is_empty()) {
 		return;
