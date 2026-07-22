@@ -1,10 +1,14 @@
 """Build-time compiler for Solers provider logos.
 
-Each SVG under assets/provider_logos/ is a monochrome provider mark fetched
-from models.dev/logos/{id}.svg (the same source opencode's icon spritesheet
-uses). The FILENAME is the contract: it must equal the provider profile's
-`catalog_provider` id. Adding a new provider logo is a pure data change --
-drop `{catalog_id}.svg` in the assets directory, no code edits.
+Dual-track contract under assets/provider_logos/:
+
+- `{id}.svg` — monochrome chrome mark (models.dev / Lucide-style).
+  Build bakes `currentColor` → `#ffffff`; callers tint via modulate.
+- `{id}.color.svg` — official multicolor mark. Fills are preserved;
+  callers must draw without theme/Button icon tint.
+
+The FILENAME is the authority: mono id equals the provider/plugin id;
+color id is the stem before `.color.svg`. No per-brand code tables.
 """
 
 from __future__ import annotations
@@ -24,34 +28,60 @@ def _escape_c_string(value: str) -> str:
     )
 
 
-def _load_logo(svg_path: Path) -> dict[str, str]:
-    logo_id = svg_path.stem
+def _parse_logo_path(svg_path: Path) -> tuple[str, str]:
+    """Return (logo_id, track) where track is 'mono' or 'color'."""
+    name = svg_path.name
+    if name.endswith(".color.svg"):
+        logo_id = name[: -len(".color.svg")]
+        track = "color"
+    elif name.endswith(".svg"):
+        logo_id = svg_path.stem
+        track = "mono"
+    else:
+        raise ValueError(f"{svg_path}: expected .svg or .color.svg")
     if not _ID_RE.match(logo_id):
         raise ValueError(f"{svg_path}: filename must be a lowercase provider id, got '{logo_id}'")
+    return logo_id, track
 
+
+def _load_logo(svg_path: Path) -> dict[str, str]:
+    logo_id, track = _parse_logo_path(svg_path)
     content = svg_path.read_text(encoding="utf-8").strip()
     if "<svg" not in content:
         raise ValueError(f"{svg_path}: not an SVG document")
 
-    # models.dev logos paint with the CSS `currentColor` keyword. The runtime
-    # rasterizer (thorvg) has no CSS color context, so bake the marks white
-    # here; callers tint via draw modulate exactly like the Lucide glyph cache.
-    content = content.replace("currentColor", "#ffffff")
+    if track == "mono":
+        # models.dev logos paint with CSS `currentColor`. thorvg has no CSS
+        # color context, so bake white; callers tint via draw modulate.
+        content = content.replace("currentColor", "#ffffff")
 
-    return {"id": logo_id, "svg": content}
+    return {"id": logo_id, "track": track, "svg": content}
+
+
+def _write_table(file, table_name: str, count_name: str, logos: list[dict[str, str]]) -> None:
+    file.write(f"static const SolersProviderLogoRecord {table_name}[] = {{\n")
+    for logo in logos:
+        file.write("\t{\n")
+        file.write(f'\t\t"{_escape_c_string(logo["id"])}",\n')
+        file.write(f'\t\t"{_escape_c_string(logo["svg"])}",\n')
+        file.write("\t},\n")
+    file.write("};\n\n")
+    file.write(f"static const int {count_name} = {len(logos)};\n")
 
 
 def make_provider_logos_header(target, source, env):
     del env
 
     logos = [_load_logo(Path(str(src))) for src in source]
-    logos.sort(key=lambda logo: logo["id"])
+    mono = sorted((logo for logo in logos if logo["track"] == "mono"), key=lambda logo: logo["id"])
+    color = sorted((logo for logo in logos if logo["track"] == "color"), key=lambda logo: logo["id"])
 
-    seen: set[str] = set()
-    for logo in logos:
-        if logo["id"] in seen:
-            raise ValueError(f"duplicate provider logo id: {logo['id']}")
-        seen.add(logo["id"])
+    for track_name, track_logos in (("mono", mono), ("color", color)):
+        seen: set[str] = set()
+        for logo in track_logos:
+            if logo["id"] in seen:
+                raise ValueError(f"duplicate provider {track_name} logo id: {logo['id']}")
+            seen.add(logo["id"])
 
     with methods.generated_wrapper(str(target[0])) as file:
         file.write(
@@ -60,15 +90,9 @@ def make_provider_logos_header(target, source, env):
             "\tconst char *svg;\n"
             "};\n\n"
         )
-
-        file.write("static const SolersProviderLogoRecord SOLERS_PROVIDER_LOGOS[] = {\n")
-        for logo in logos:
-            file.write("\t{\n")
-            file.write(f'\t\t"{_escape_c_string(logo["id"])}",\n')
-            file.write(f'\t\t"{_escape_c_string(logo["svg"])}",\n')
-            file.write("\t},\n")
-        file.write("};\n\n")
-        file.write(f"static const int SOLERS_PROVIDER_LOGO_COUNT = {len(logos)};\n")
+        _write_table(file, "SOLERS_PROVIDER_LOGOS", "SOLERS_PROVIDER_LOGO_COUNT", mono)
+        file.write("\n")
+        _write_table(file, "SOLERS_PROVIDER_COLOR_LOGOS", "SOLERS_PROVIDER_COLOR_LOGO_COUNT", color)
 
 
 if __name__ == "__main__":
@@ -76,7 +100,8 @@ if __name__ == "__main__":
         print("usage: solers_provider_logos_builder.py <output.gen.h>", file=sys.stderr)
         sys.exit(1)
     logos_root = Path(__file__).resolve().parent / "assets" / "provider_logos"
-    sources = sorted(logos_root.glob("*.svg"))
+    # Skip underscore helper scripts' accidental .svg matches; only real marks.
+    sources = sorted(p for p in logos_root.glob("*.svg") if not p.name.startswith("_"))
     if not sources:
         print(f"no provider logos found under {logos_root}", file=sys.stderr)
         sys.exit(1)

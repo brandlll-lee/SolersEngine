@@ -39,6 +39,10 @@ public:
 	// `catalog_provider`), from the build-time vendored logo table. Unknown
 	// ids fall back to the generic "synthetic" mark, mirroring opencode.
 	static Ref<Texture2D> provider_logo(const String &p_catalog_id, int p_size_px);
+	// Multicolor official mark when `{id}.color.svg` exists. Empty Ref if the
+	// color track is absent — callers fall back to provider_logo and may tint.
+	// Color textures must be drawn without Button/theme icon modulate.
+	static Ref<Texture2D> provider_logo_color(const String &p_catalog_id, int p_size_px);
 	static void clear_cache();
 };
 

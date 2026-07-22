@@ -151,45 +151,31 @@ Ref<Texture2D> SolersChatGlyphs::get(const StringName &p_name, int p_size_px, fl
 	return texture;
 }
 
-Ref<Texture2D> SolersChatGlyphs::provider_logo(const String &p_catalog_id, int p_size_px) {
-	const int size_px = MAX(2, p_size_px);
-	const String id = p_catalog_id.strip_edges().to_lower();
+static const char *_solers_find_provider_logo_svg(const SolersProviderLogoRecord *p_table, int p_count, const String &p_id) {
+	for (int i = 0; i < p_count; i++) {
+		if (p_id == p_table[i].id) {
+			return p_table[i].svg;
+		}
+	}
+	return nullptr;
+}
 
-	const char *svg = nullptr;
-	String cache_id = id;
-	for (int i = 0; i < SOLERS_PROVIDER_LOGO_COUNT && !svg; i++) {
-		if (id == SOLERS_PROVIDER_LOGOS[i].id) {
-			svg = SOLERS_PROVIDER_LOGOS[i].svg;
-		}
-	}
-	if (!svg) {
-		cache_id = "synthetic";
-		for (int i = 0; i < SOLERS_PROVIDER_LOGO_COUNT && !svg; i++) {
-			if (cache_id == SOLERS_PROVIDER_LOGOS[i].id) {
-				svg = SOLERS_PROVIDER_LOGOS[i].svg;
-			}
-		}
-	}
-	if (!svg) {
+static Ref<Texture2D> _solers_raster_provider_logo(const char *p_svg, const String &p_cache_key, int p_size_px) {
+	if (!p_svg) {
 		return Ref<Texture2D>();
 	}
-
-	const String key = "logo:" + cache_id + "@" + itos(size_px);
-	if (const Ref<Texture2D> *found = g_solers_glyph_cache.getptr(key)) {
+	if (const Ref<Texture2D> *found = g_solers_glyph_cache.getptr(p_cache_key)) {
 		return *found;
 	}
 
 	Ref<Texture2D> texture;
 #ifdef MODULE_SVG_ENABLED
-	// Logos are baked white at build time (currentColor -> #ffffff); callers
-	// tint via draw modulate, same contract as the Lucide glyph cache. The
-	// intrinsic document size varies per mark (24 or 40 px), so probe at 1x
-	// once, then rasterize at the exact scale. Both results are cached.
-	const String svg_string = String::utf8(svg);
+	// Intrinsic document size varies per mark; probe at 1x, then rasterize.
+	const String svg_string = String::utf8(p_svg);
 	Ref<Image> probe;
 	probe.instantiate();
 	if (ImageLoaderSVG::create_image_from_string(probe, svg_string, 1.0f, false, HashMap<Color, Color>()) == OK && probe.is_valid() && probe->get_width() > 0) {
-		const float scale = float(size_px) / float(MAX(probe->get_width(), probe->get_height()));
+		const float scale = float(p_size_px) / float(MAX(probe->get_width(), probe->get_height()));
 		Ref<Image> image;
 		image.instantiate();
 		if (ImageLoaderSVG::create_image_from_string(image, svg_string, scale, false, HashMap<Color, Color>()) == OK && image.is_valid() && !image->is_empty()) {
@@ -197,8 +183,33 @@ Ref<Texture2D> SolersChatGlyphs::provider_logo(const String &p_catalog_id, int p
 		}
 	}
 #endif
-	g_solers_glyph_cache.insert(key, texture);
+	g_solers_glyph_cache.insert(p_cache_key, texture);
 	return texture;
+}
+
+Ref<Texture2D> SolersChatGlyphs::provider_logo(const String &p_catalog_id, int p_size_px) {
+	const int size_px = MAX(2, p_size_px);
+	const String id = p_catalog_id.strip_edges().to_lower();
+
+	// Mono track is baked white at build time; callers tint via modulate.
+	const char *svg = _solers_find_provider_logo_svg(SOLERS_PROVIDER_LOGOS, SOLERS_PROVIDER_LOGO_COUNT, id);
+	String cache_id = id;
+	if (!svg) {
+		cache_id = "synthetic";
+		svg = _solers_find_provider_logo_svg(SOLERS_PROVIDER_LOGOS, SOLERS_PROVIDER_LOGO_COUNT, cache_id);
+	}
+	return _solers_raster_provider_logo(svg, "logo:" + cache_id + "@" + itos(size_px), size_px);
+}
+
+Ref<Texture2D> SolersChatGlyphs::provider_logo_color(const String &p_catalog_id, int p_size_px) {
+	const int size_px = MAX(2, p_size_px);
+	const String id = p_catalog_id.strip_edges().to_lower();
+	const char *svg = _solers_find_provider_logo_svg(SOLERS_PROVIDER_COLOR_LOGOS, SOLERS_PROVIDER_COLOR_LOGO_COUNT, id);
+	if (!svg) {
+		return Ref<Texture2D>();
+	}
+	// Color track preserves official fills — do not theme-tint at draw time.
+	return _solers_raster_provider_logo(svg, "logo-color:" + id + "@" + itos(size_px), size_px);
 }
 
 void SolersChatGlyphs::clear_cache() {
