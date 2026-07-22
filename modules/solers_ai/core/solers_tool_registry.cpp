@@ -33,6 +33,7 @@
 #include "modules/solers_ai/core/solers_secret_store.h"
 #include "modules/solers_ai/core/solers_script_service.h"
 #include "modules/solers_ai/core/solers_trace.h"
+#include "modules/solers_ai/plugins/solers_plugin.h"
 #include "scene/main/node.h"
 
 void SolersToolRegistry::_bind_methods() {
@@ -261,6 +262,24 @@ static bool _validate_tool_schema_value(const Variant &p_value, const Dictionary
 			return false;
 		}
 		return true;
+	}
+	const Array any_of = p_schema.get("anyOf", Array());
+	if (!any_of.is_empty()) {
+		String first_error;
+		for (int i = 0; i < any_of.size(); i++) {
+			if (any_of[i].get_type() != Variant::DICTIONARY) {
+				continue;
+			}
+			String branch_error;
+			if (_validate_tool_schema_value(p_value, any_of[i], p_path, branch_error)) {
+				return true;
+			}
+			if (first_error.is_empty()) {
+				first_error = branch_error;
+			}
+		}
+		r_error = first_error.is_empty() ? vformat("%s does not match any supported schema.", p_path) : first_error;
+		return false;
 	}
 
 	const String type = p_schema.get("type", String());
@@ -630,7 +649,7 @@ void SolersToolRegistry::_clear_tools() {
 	}
 	tools.clear();
 	model_name_index.clear();
-	delivered_plugin_contracts.clear();
+	delivered_addon_contracts.clear();
 }
 
 void SolersToolRegistry::_register(SolersTool *p_tool) {
@@ -964,7 +983,7 @@ Dictionary SolersToolRegistry::_revert_latest(const SolersToolContext &p_context
 	return _ok(data);
 }
 
-Dictionary SolersToolRegistry::_compact_plugin_contract(const SolersToolContext &p_context, const Dictionary &p_result) {
+Dictionary SolersToolRegistry::_compact_addon_contract(const SolersToolContext &p_context, const Dictionary &p_result) {
 	if (!(bool)p_result.get("ok", false)) {
 		return p_result;
 	}
@@ -976,7 +995,7 @@ Dictionary SolersToolRegistry::_compact_plugin_contract(const SolersToolContext 
 		return result;
 	}
 	const String delivery_key = p_context.session_id + ":" + contract_id;
-	if (delivered_plugin_contracts.has(delivery_key)) {
+	if (delivered_addon_contracts.has(delivery_key)) {
 		Dictionary compact;
 		compact["contract_id"] = contract_id;
 		compact["unchanged"] = true;
@@ -984,7 +1003,7 @@ Dictionary SolersToolRegistry::_compact_plugin_contract(const SolersToolContext 
 		result["data"] = data;
 		return result;
 	}
-	delivered_plugin_contracts.insert(delivery_key);
+	delivered_addon_contracts.insert(delivery_key);
 	return result;
 }
 
@@ -1339,15 +1358,163 @@ void SolersToolRegistry::_register_runtime_tools() {
 			[this](const SolersToolContext &, const Dictionary &a) { return _is_runtime_control_ready(a); });
 }
 
+static Dictionary _solers_apply_plugin_mention(const SolersToolContext &p_context, const Dictionary &p_args, const String &p_capability) {
+	if (!String(p_args.get("provider", String())).strip_edges().is_empty()) {
+		return p_args;
+	}
+	const String kind = String(p_args.get("kind", String())).strip_edges().to_lower();
+	for (int i = 0; i < p_context.mentions.size(); i++) {
+		const Dictionary mention = p_context.mentions[i];
+		SolersPlugin *plugin = SolersPluginRegistry::get_plugin(mention.get("id", String()));
+		const Dictionary profile = plugin ? plugin->get_profile() : Dictionary();
+		if (!plugin || !(bool)profile.get(p_capability, false) || (!kind.is_empty() && !Array(profile.get("kinds", Array())).has(kind))) {
+			continue;
+		}
+		Dictionary args = p_args.duplicate(true);
+		args["provider"] = profile.get("id", String());
+		return args;
+	}
+	return p_args;
+}
+
 void SolersToolRegistry::_register_asset_tools() {
 	if (!asset_service) {
 		return;
 	}
 	SolersAssetService *svc = asset_service;
-	_add("asset.catalog.search", "Search cached lightweight metadata from one official CC0 catalog. ambientCG and Poly Haven both support materials, HDRIs, and 3D models. Terms use coverage matching instead of strict AND; results explain matched_terms and matched_fields. Search never resolves files or downloads previews. Inspect one selected result before acquire.",
-			R"({"type":"object","properties":{"provider":{"type":"string","enum":["ambientcg","polyhaven"],"description":"Official catalog to search."},"query":{"type":"string","description":"Material, HDRI, or 3D model search terms. Multiple terms broaden candidate coverage and improve ranking; they do not all have to match."},"kind":{"type":"string","enum":["material","hdri","3d"],"description":"Asset kind supported by both catalogs."},"limit":{"type":"integer","description":"Maximum returned results; default 20, maximum 50."},"offset":{"type":"integer","description":"Zero-based result offset."},"refresh":{"type":"boolean","description":"Explicitly refresh the provider's cached lightweight directory."}},"required":["provider","query","kind"]})",
+	Array generation_plugin_ids;
+	Array generation_kinds;
+	Array catalog_plugin_ids;
+	Array catalog_kinds;
+	Dictionary option_schemas_by_name;
+	String generation_labels;
+	String catalog_labels;
+	auto append_unique = [](Array &r_values, const Variant &p_value) {
+		if (!r_values.has(p_value)) {
+			r_values.push_back(p_value);
+		}
+	};
+
+	for (SolersPlugin *plugin : SolersPluginRegistry::get_plugins()) {
+		const Dictionary profile = plugin->get_profile();
+		const String id = String(profile.get("id", String())).strip_edges().to_lower();
+		const String label = String(profile.get("label", id));
+		const Array kinds = profile.get("kinds", Array());
+		if ((bool)profile.get("supports_generation", false)) {
+			append_unique(generation_plugin_ids, id);
+			generation_labels += generation_labels.is_empty() ? label : ", " + label;
+			for (int i = 0; i < kinds.size(); i++) {
+				const String kind = String(kinds[i]).to_lower();
+				append_unique(generation_kinds, kind);
+				const Dictionary schema = plugin->get_generation_options_schema(kind);
+				for (const Variant *key = schema.next(nullptr); key; key = schema.next(key)) {
+					const String name = String(*key);
+					Dictionary option = Dictionary(schema[*key]).duplicate(true);
+					const String description = String(option.get("description", String()));
+					option["description"] = description.is_empty() ? label : label + ": " + description;
+					Array variants = option_schemas_by_name.get(name, Array());
+					const String encoded = JSON::stringify(option);
+					bool duplicate = false;
+					for (int variant = 0; variant < variants.size(); variant++) {
+						if (JSON::stringify(variants[variant]) == encoded) {
+							duplicate = true;
+							break;
+						}
+					}
+					if (!duplicate) {
+						variants.push_back(option);
+						option_schemas_by_name[name] = variants;
+					}
+				}
+			}
+		}
+		if ((bool)profile.get("supports_catalog", false)) {
+			append_unique(catalog_plugin_ids, id);
+			catalog_labels += catalog_labels.is_empty() ? label : ", " + label;
+			for (int i = 0; i < kinds.size(); i++) {
+				append_unique(catalog_kinds, String(kinds[i]).to_lower());
+			}
+		}
+	}
+
+	Dictionary provider_option_properties;
+	for (const Variant *key = option_schemas_by_name.next(nullptr); key; key = option_schemas_by_name.next(key)) {
+		const Array variants = option_schemas_by_name[*key];
+		if (variants.size() == 1) {
+			provider_option_properties[*key] = variants[0];
+		} else {
+			Dictionary union_schema;
+			union_schema["anyOf"] = variants;
+			provider_option_properties[*key] = union_schema;
+		}
+	}
+	Dictionary provider_options_schema;
+	provider_options_schema["type"] = "object";
+	provider_options_schema["description"] = "Options defined by the selected Solers plugin.";
+	provider_options_schema["properties"] = provider_option_properties;
+	provider_options_schema["additionalProperties"] = true;
+
+	Dictionary import_profile_schema;
+	import_profile_schema["type"] = "string";
+	Array import_profiles;
+	import_profiles.push_back("runtime");
+	import_profiles.push_back("baked_static");
+	import_profile_schema["enum"] = import_profiles;
+	import_profile_schema["description"] = "Godot import intent. baked_static enables native lightmap UV2 generation for 3D assets.";
+	Dictionary target_dir_schema;
+	target_dir_schema["type"] = "string";
+	target_dir_schema["description"] = "Optional res:// destination. Defaults to res://assets/<kind>/<name>-<job suffix>.";
+	Dictionary max_triangles_schema;
+	max_triangles_schema["type"] = "integer";
+	max_triangles_schema["minimum"] = 0;
+	max_triangles_schema["description"] = "Optional 3D source triangle budget. Zero disables the budget only when the project ceiling permits it.";
+	Dictionary map_types_schema;
+	map_types_schema["type"] = "array";
+	Dictionary map_type_item;
+	map_type_item["type"] = "string";
+	map_types_schema["items"] = map_type_item;
+	map_types_schema["uniqueItems"] = true;
+	map_types_schema["description"] = "Optional exact material map roles to import; omitted roles are not copied.";
+
+	Dictionary catalog_search_schema;
+	catalog_search_schema["type"] = "object";
+	Dictionary catalog_search_properties;
+	Dictionary catalog_provider_schema;
+	catalog_provider_schema["type"] = "string";
+	catalog_provider_schema["enum"] = catalog_plugin_ids;
+	catalog_provider_schema["description"] = "Registered catalog plugin.";
+	catalog_search_properties["provider"] = catalog_provider_schema;
+	Dictionary catalog_kind_schema;
+	catalog_kind_schema["type"] = "string";
+	catalog_kind_schema["enum"] = catalog_kinds;
+	catalog_search_properties["kind"] = catalog_kind_schema;
+	Dictionary query_schema;
+	query_schema["type"] = "string";
+	query_schema["minLength"] = 1;
+	catalog_search_properties["query"] = query_schema;
+	Dictionary limit_schema;
+	limit_schema["type"] = "integer";
+	limit_schema["minimum"] = 1;
+	limit_schema["maximum"] = 50;
+	catalog_search_properties["limit"] = limit_schema;
+	Dictionary offset_schema;
+	offset_schema["type"] = "integer";
+	offset_schema["minimum"] = 0;
+	catalog_search_properties["offset"] = offset_schema;
+	Dictionary refresh_schema;
+	refresh_schema["type"] = "boolean";
+	catalog_search_properties["refresh"] = refresh_schema;
+	catalog_search_schema["properties"] = catalog_search_properties;
+	Array catalog_search_required;
+	catalog_search_required.push_back("query");
+	catalog_search_required.push_back("kind");
+	catalog_search_schema["required"] = catalog_search_required;
+	catalog_search_schema["additionalProperties"] = false;
+	const CharString catalog_search_json = JSON::stringify(catalog_search_schema).utf8();
+	const CharString catalog_search_description = vformat("Search lightweight metadata through a registered catalog plugin (%s). Inspect a selected result before acquiring it.", catalog_labels).utf8();
+	_add("asset.catalog.search", catalog_search_description.get_data(), catalog_search_json.get_data(),
 			SolersPermissionManager::PERMISSION_NETWORK, SolersToolMutationPolicy::READ_ONLY, Vector<String>(), SolersToolExposure::DIRECT,
-			[svc](const SolersToolContext &ctx, const Dictionary &a) { return svc->catalog_search(a, ctx.cancel_requested); }, SolersToolExecution::WORKER_THREAD,
+			[svc](const SolersToolContext &ctx, const Dictionary &a) { return svc->catalog_search(_solers_apply_plugin_mention(ctx, a, "supports_catalog"), ctx.cancel_requested); }, SolersToolExecution::WORKER_THREAD,
 			[](const Dictionary &a) {
 				Array accesses;
 				Dictionary access;
@@ -1356,10 +1523,27 @@ void SolersToolRegistry::_register_asset_tools() {
 				accesses.push_back(access);
 				return accesses;
 			});
-	_add("asset.catalog.inspect", "Resolve one exact search result against the provider's current official detail/files metadata. Returns versioned variants, dependencies and available checksums. This is the only source of arguments accepted by asset.catalog.acquire.",
-			R"({"type":"object","properties":{"provider":{"type":"string","enum":["ambientcg","polyhaven"]},"kind":{"type":"string","enum":["material","hdri","3d"]},"asset_id":{"type":"string","description":"Exact asset_id returned by asset.catalog.search."},"refresh":{"type":"boolean","description":"Explicitly refresh this asset's cached official detail metadata."}},"required":["provider","kind","asset_id"]})",
-			SolersPermissionManager::PERMISSION_NETWORK, SolersToolMutationPolicy::READ_ONLY, Vector<String>(), SolersToolExposure::DIRECT,
-			[svc](const SolersToolContext &ctx, const Dictionary &a) { return svc->catalog_inspect(a, ctx.cancel_requested); }, SolersToolExecution::WORKER_THREAD,
+
+	Dictionary catalog_inspect_schema;
+	catalog_inspect_schema["type"] = "object";
+	Dictionary catalog_inspect_properties;
+	catalog_inspect_properties["provider"] = catalog_provider_schema;
+	catalog_inspect_properties["kind"] = catalog_kind_schema;
+	Dictionary source_asset_schema;
+	source_asset_schema["type"] = "string";
+	source_asset_schema["minLength"] = 1;
+	catalog_inspect_properties["asset_id"] = source_asset_schema;
+	catalog_inspect_properties["refresh"] = refresh_schema;
+	catalog_inspect_schema["properties"] = catalog_inspect_properties;
+	Array catalog_inspect_required;
+	catalog_inspect_required.push_back("kind");
+	catalog_inspect_required.push_back("asset_id");
+	catalog_inspect_schema["required"] = catalog_inspect_required;
+	catalog_inspect_schema["additionalProperties"] = false;
+	const CharString catalog_inspect_json = JSON::stringify(catalog_inspect_schema).utf8();
+	_add("asset.catalog.inspect", "Resolve one exact catalog result into authoritative variants, dependencies, licensing, and checksums. asset.catalog.acquire accepts only a previously inspected variant.",
+			catalog_inspect_json.get_data(), SolersPermissionManager::PERMISSION_NETWORK, SolersToolMutationPolicy::READ_ONLY, Vector<String>(), SolersToolExposure::DIRECT,
+			[svc](const SolersToolContext &ctx, const Dictionary &a) { return svc->catalog_inspect(_solers_apply_plugin_mention(ctx, a, "supports_catalog"), ctx.cancel_requested); }, SolersToolExecution::WORKER_THREAD,
 			[](const Dictionary &a) {
 				Array accesses;
 				Dictionary access;
@@ -1368,37 +1552,137 @@ void SolersToolRegistry::_register_asset_tools() {
 				accesses.push_back(access);
 				return accesses;
 			});
-	_add("asset.generate", "Queue one reusable local asset generation job and return its manifest immediately. Solers observes progress and resumes this Agent session when the job reaches a terminal state. kind=3d uses Meshy by default; music/sfx use ElevenLabs by default. For 3D props, call only when the user authorized generation, after project, local Library, and catalog reuse were considered and the architectural shell was visually verified. One prop per job; after terminal resume, import_to_project and place the asset — do not re-generate on missing feel. Keep 3D prompts faithful and concise: describe only the isolated object's identity, shape, material, and requested style. Omit input_attachments for Text-to-3D. Pass input_attachments only when the user explicitly supplied isolated-object reference images for this exact asset; never pass a room, scene, composition, or general mood reference. Put generation controls in provider_options, not in the prompt. For a game-scene prop, explicitly request should_remesh=true, topology, and an integer target_polycount; import validates the real result rather than trusting the request. Provider-native options pass through provider_options.",
-			R"({"type":"object","properties":{"kind":{"type":"string","description":"3d, music, or sfx."},"prompt":{"type":"string","description":"Asset generation prompt. Required unless input_attachments supplies explicit isolated-object references."},"input_attachments":{"type":"array","items":{"type":"string"},"description":"Explicit isolated-object image attachment ids only. Omit for Text-to-3D. One id uses Image-to-3D; two to four use Multi-Image-to-3D. Never pass a room or scene reference."},"name":{"type":"string","description":"Optional local asset display name."},"profile":{"type":"string","description":"game_default, high_quality, or custom. game_default uses standard 3D generation; set provider_options.model_type=\"lowpoly\" only when the user explicitly asks for low-poly."},"provider":{"type":"string","description":"Optional provider id. Defaults by kind."},"provider_options":{"type":"object","description":"Provider-native generation parameters. Meshy Image-to-3D supports image/texturing/remesh controls here.","properties":{"model_type":{"type":"string","enum":["standard","lowpoly"],"description":"Meshy model type. Default is standard; use lowpoly only if user asks for low-poly."},"ai_model":{"type":"string","enum":["meshy-5","meshy-6","latest"],"description":"Meshy model id. Defaults to meshy-6."},"pose_mode":{"type":"string","enum":["a-pose","t-pose"],"description":"Humanoid pose control when supported by the provider."},"should_texture":{"type":"boolean","description":"Generate textures. Meshy default is true."},"enable_pbr":{"type":"boolean","description":"Generate PBR maps. Requires should_texture=true."},"hd_texture":{"type":"boolean","description":"Request higher quality textures when Meshy supports it."},"texture_prompt":{"type":"string","description":"Guide Meshy texturing with text. Do not use together with texture_image_url."},"texture_image_url":{"type":"string","description":"Guide Meshy texturing with an image URL or data URI. Do not use together with texture_prompt."},"should_remesh":{"type":"boolean","description":"Enable Meshy remesh phase."},"topology":{"type":"string","enum":["triangle","quad"],"description":"Mesh topology when remeshing."},"target_polycount":{"type":"integer","description":"Target polygon count when remeshing."},"image_enhancement":{"type":"boolean","description":"Ask Meshy to enhance the input image before generation."},"remove_lighting":{"type":"boolean","description":"Ask Meshy to reduce baked lighting in generated textures when supported."},"moderation":{"type":"boolean","description":"Ask Meshy to screen input content before generation."},"auto_size":{"type":"boolean","description":"Ask Meshy to estimate physical size when supported."},"origin_at":{"type":"string","enum":["bottom","center"],"description":"Generated model origin placement when supported."},"save_pre_remeshed_model":{"type":"boolean","description":"Ask Meshy to keep the pre-remesh output when supported."},"alpha_thumbnail":{"type":"boolean","description":"Ask Meshy for transparent thumbnail when supported."},"target_formats":{"type":"array","items":{"type":"string","enum":["glb","obj","fbx","stl","usdz","3mf"]},"description":"Output formats to generate. Solers imports GLB best."}}}},"required":["kind"]})",
-			SolersPermissionManager::PERMISSION_NETWORK, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DIRECT,
-			[svc](const SolersToolContext &ctx, const Dictionary &a) { return svc->generate_for_session(a, ctx.session_id); });
-	_add("asset.catalog.acquire", "Queue one exact variant returned by asset.catalog.inspect. The task revalidates official metadata, downloads the selected package, verifies available checksums, and stores licensing and attribution under one stable job id.",
-			R"({"type":"object","properties":{"provider":{"type":"string","enum":["ambientcg","polyhaven"],"description":"Provider returned by asset.catalog.inspect."},"kind":{"type":"string","enum":["material","hdri","3d"],"description":"Kind returned by asset.catalog.inspect."},"asset_id":{"type":"string","description":"Exact official provider asset id."},"variant":{"type":"string","description":"Exact variants[].id returned by asset.catalog.inspect; never guess a format."},"source_version":{"type":"string","description":"Optional pin. When present it must equal the source_version of the cached asset.catalog.inspect result; when omitted, the cached inspection's current source_version is used automatically."},"name":{"type":"string","description":"Optional local display name."}},"required":["provider","kind","asset_id","variant"]})",
-			SolersPermissionManager::PERMISSION_NETWORK, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DIRECT,
-			[svc](const SolersToolContext &ctx, const Dictionary &a) { return svc->catalog_acquire(a, ctx.session_id); },
+
+	Dictionary generate_schema;
+	generate_schema["type"] = "object";
+	Dictionary generate_properties;
+	Dictionary generation_kind_schema;
+	generation_kind_schema["type"] = "string";
+	generation_kind_schema["enum"] = generation_kinds;
+	generate_properties["kind"] = generation_kind_schema;
+	Dictionary prompt_schema;
+	prompt_schema["type"] = "string";
+	prompt_schema["description"] = "Generation prompt. A plugin may also accept explicit input attachments.";
+	generate_properties["prompt"] = prompt_schema;
+	Dictionary attachments_schema;
+	attachments_schema["type"] = "array";
+	Dictionary attachment_item;
+	attachment_item["type"] = "string";
+	attachments_schema["items"] = attachment_item;
+	attachments_schema["uniqueItems"] = true;
+	attachments_schema["description"] = "Attachment ids from the current conversation, when supported by the selected plugin.";
+	generate_properties["input_attachments"] = attachments_schema;
+	Dictionary name_schema;
+	name_schema["type"] = "string";
+	generate_properties["name"] = name_schema;
+	Dictionary profile_schema;
+	profile_schema["type"] = "string";
+	generate_properties["profile"] = profile_schema;
+	Dictionary generation_provider_schema;
+	generation_provider_schema["type"] = "string";
+	generation_provider_schema["enum"] = generation_plugin_ids;
+	generation_provider_schema["description"] = "Optional registered generation plugin. Explicit selection overrides @mention and configured defaults.";
+	generate_properties["provider"] = generation_provider_schema;
+	generate_properties["provider_options"] = provider_options_schema;
+	generate_properties["target_dir"] = target_dir_schema;
+	generate_properties["import_profile"] = import_profile_schema;
+	generate_properties["max_triangles"] = max_triangles_schema;
+	generate_properties["map_types"] = map_types_schema;
+	generate_schema["properties"] = generate_properties;
+	Array generate_required;
+	generate_required.push_back("kind");
+	generate_schema["required"] = generate_required;
+	generate_schema["additionalProperties"] = false;
+	const CharString generate_json = JSON::stringify(generate_schema).utf8();
+	const CharString generate_description = vformat("Generate an asset through a registered Solers plugin (%s), stage provider output under user://solers_jobs, then import it directly into the requested res:// project folder. The returned job becomes terminal only after Godot verifies the imported resources.", generation_labels).utf8();
+	_add("asset.generate", generate_description.get_data(), generate_json.get_data(),
+			SolersPermissionManager::PERMISSION_EDIT_FILES, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DIRECT,
+			[svc](const SolersToolContext &ctx, const Dictionary &a) { return svc->generate_for_session(_solers_apply_plugin_mention(ctx, a, "supports_generation"), ctx.session_id); },
 			SolersToolExecution::MAIN_THREAD, [](const Dictionary &a) {
 				Array accesses;
-				Dictionary access;
-				access["mode"] = "write";
-				access["key"] = "asset-library-entry:" + String(a.get("provider", String())).to_lower() + ":" + String(a.get("asset_id", String())) + ":" + String(a.get("variant", String()));
-				accesses.push_back(access);
+				Dictionary job;
+				job["mode"] = "write";
+				job["key"] = "asset-job:" + String(a.get("provider", String())).to_lower() + ":" + String(a.get("kind", String())).to_lower() + ":" + String(a.get("name", String())).to_lower();
+				accesses.push_back(job);
+				Dictionary project;
+				project["mode"] = "write";
+				const String target = String(a.get("target_dir", String())).strip_edges();
+				project["key"] = "project:" + (target.is_empty() ? "res://assets/" + String(a.get("kind", "asset")) : target.replace_char('\\', '/').simplify_path());
+				accesses.push_back(project);
 				return accesses;
 			});
-	_add_observe_exposed("asset.capabilities", "List the operations currently available for a Solers Library asset, including option schemas, provider documentation links, and provider action catalogs such as Meshy animation_actions.",
-			R"({"type":"object","properties":{"asset_id":{"type":"string","description":"Local Solers asset id."}},"required":["asset_id"]})",
+
+	Dictionary acquire_schema;
+	acquire_schema["type"] = "object";
+	Dictionary acquire_properties;
+	acquire_properties["provider"] = catalog_provider_schema;
+	acquire_properties["kind"] = catalog_kind_schema;
+	acquire_properties["asset_id"] = source_asset_schema;
+	Dictionary variant_schema;
+	variant_schema["type"] = "string";
+	variant_schema["minLength"] = 1;
+	acquire_properties["variant"] = variant_schema;
+	Dictionary source_version_schema;
+	source_version_schema["type"] = "string";
+	acquire_properties["source_version"] = source_version_schema;
+	acquire_properties["name"] = name_schema;
+	acquire_properties["target_dir"] = target_dir_schema;
+	acquire_properties["import_profile"] = import_profile_schema;
+	acquire_properties["max_triangles"] = max_triangles_schema;
+	acquire_properties["map_types"] = map_types_schema;
+	acquire_schema["properties"] = acquire_properties;
+	Array acquire_required;
+	acquire_required.push_back("kind");
+	acquire_required.push_back("asset_id");
+	acquire_required.push_back("variant");
+	acquire_schema["required"] = acquire_required;
+	acquire_schema["additionalProperties"] = false;
+	const CharString acquire_json = JSON::stringify(acquire_schema).utf8();
+	_add("asset.catalog.acquire", "Acquire one exact inspected catalog variant, verify its source metadata and checksums, then import it directly into res:// and write project-local license/attribution metadata.",
+			acquire_json.get_data(), SolersPermissionManager::PERMISSION_EDIT_FILES, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DIRECT,
+			[svc](const SolersToolContext &ctx, const Dictionary &a) { return svc->catalog_acquire(_solers_apply_plugin_mention(ctx, a, "supports_catalog"), ctx.session_id); },
+			SolersToolExecution::MAIN_THREAD, [](const Dictionary &a) {
+				Array accesses;
+				Dictionary job;
+				job["mode"] = "write";
+				job["key"] = "asset-job:" + String(a.get("provider", String())).to_lower() + ":" + String(a.get("asset_id", String())) + ":" + String(a.get("variant", String()));
+				accesses.push_back(job);
+				Dictionary project;
+				project["mode"] = "write";
+				const String target = String(a.get("target_dir", String())).strip_edges();
+				project["key"] = "project:" + (target.is_empty() ? "res://assets/" + String(a.get("kind", "asset")) : target.replace_char('\\', '/').simplify_path());
+				accesses.push_back(project);
+				return accesses;
+			});
+
+	_add_observe_exposed("asset.capabilities", "List operations exposed by the plugin that created a project asset. asset_id accepts a job id or a res:// .solers.json sidecar path.",
+			R"({"type":"object","properties":{"asset_id":{"type":"string","minLength":1,"description":"Job id or res:// .solers.json sidecar path."}},"required":["asset_id"],"additionalProperties":false})",
 			SolersToolExposure::DIRECT,
 			[svc](const SolersToolContext &, const Dictionary &a) { return svc->capabilities(a); });
-	_add("asset.run_operation", "Queue one available operation on an existing Solers Library asset. The operation creates a new derived asset, never overwrites the source, and Solers resumes this Agent session when it reaches a terminal state.",
-			R"({"type":"object","properties":{"asset_id":{"type":"string","description":"Local Solers asset id."},"operation_id":{"type":"string","description":"Operation id returned by asset.capabilities."},"options":{"type":"object","description":"Operation options that match the schema returned by asset.capabilities."},"raw_provider_options":{"type":"object","description":"Advanced provider-native options. Requires raw_confirmed=true."},"raw_confirmed":{"type":"boolean","description":"Set true only after the user explicitly confirms raw provider options."}},"required":["asset_id","operation_id"]})",
-			SolersPermissionManager::PERMISSION_NETWORK, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DIRECT,
-			[svc](const SolersToolContext &ctx, const Dictionary &a) { return svc->run_operation_for_session(a, ctx.session_id); });
-	_add_observe_exposed("asset.status", "Read a local asset generation task or generated asset manifest by asset_id.",
-			R"({"type":"object","properties":{"asset_id":{"type":"string","description":"Local Solers asset id returned by asset.generate or asset.list_local."}},"required":["asset_id"]})",
+	_add("asset.run_operation", "Run an operation advertised by asset.capabilities and import the derived result directly into the project. The source may be a current job id or a res:// .solers.json sidecar.",
+			R"({"type":"object","properties":{"asset_id":{"type":"string","minLength":1,"description":"Source job id or res:// .solers.json sidecar path."},"operation_id":{"type":"string","minLength":1},"options":{"type":"object"},"raw_provider_options":{"type":"object","description":"Advanced plugin-native options. Requires raw_confirmed=true."},"raw_confirmed":{"type":"boolean"},"target_dir":{"type":"string","description":"Optional res:// destination for the derived asset."},"import_profile":{"type":"string","enum":["runtime","baked_static"]},"max_triangles":{"type":"integer","minimum":0},"map_types":{"type":"array","items":{"type":"string"},"uniqueItems":true}},"required":["asset_id","operation_id"],"additionalProperties":false})",
+			SolersPermissionManager::PERMISSION_EDIT_FILES, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DIRECT,
+			[svc](const SolersToolContext &ctx, const Dictionary &a) { return svc->run_operation_for_session(a, ctx.session_id); }, SolersToolExecution::MAIN_THREAD,
+			[](const Dictionary &a) {
+				Array accesses;
+				Dictionary source;
+				source["mode"] = "read";
+				source["key"] = "asset:" + String(a.get("asset_id", String()));
+				accesses.push_back(source);
+				Dictionary project;
+				project["mode"] = "write";
+				const String target = String(a.get("target_dir", String())).strip_edges();
+				project["key"] = target.is_empty() ? String("*") : "project:" + target.replace_char('\\', '/').simplify_path();
+				accesses.push_back(project);
+				return accesses;
+			});
+	_add_observe_exposed("asset.status", "Read one generation, acquisition, operation, or project-import job by id.",
+			R"({"type":"object","properties":{"asset_id":{"type":"string","minLength":1,"description":"Stable id returned by an asset job."}},"required":["asset_id"],"additionalProperties":false})",
 			SolersToolExposure::DIRECT,
 			[svc](const SolersToolContext &, const Dictionary &a) { return svc->status(a); },
 			_access_by_arg("read", "asset:", "asset_id"));
-	_add_observe_exposed("job.wait", "Declare the background asset job ids needed before the Agent can continue. This returns their current terminal or pending states immediately. Keep doing conflict-free work when possible; when nothing remains, call this once and stop issuing tools so the same Agent turn waits until any requested job reaches a terminal state.",
-			R"({"type":"object","properties":{"ids":{"type":"array","items":{"type":"string"},"description":"Stable job ids returned by asset.generate, asset.catalog.acquire, or asset.run_operation."}},"required":["ids"]})",
+	_add_observe_exposed("job.wait", "Declare background asset jobs required before the Agent can continue. When no conflict-free work remains, call once and stop issuing tools; the same turn resumes after a requested job reaches its project-import terminal state.",
+			R"({"type":"object","properties":{"ids":{"type":"array","minItems":1,"items":{"type":"string","minLength":1},"uniqueItems":true}},"required":["ids"],"additionalProperties":false})",
 			SolersToolExposure::DIRECT,
 			[svc](const SolersToolContext &ctx, const Dictionary &a) { return svc->wait_jobs(a, ctx.session_id); },
 			[](const Dictionary &a) {
@@ -1412,77 +1696,41 @@ void SolersToolRegistry::_register_asset_tools() {
 				}
 				return accesses;
 			});
-	_add_observe_exposed("asset.list_local", "List reusable assets in the local Solers Library. Optional kind/query filters search manifests only.",
-			R"({"type":"object","properties":{"kind":{"type":"string","description":"Optional 3d, material, hdri, music, or sfx."},"query":{"type":"string","description":"Optional text search over name and prompt."},"limit":{"type":"integer","description":"Maximum assets to return. Default 128."}}})",
-			SolersToolExposure::DIRECT,
-			[svc](const SolersToolContext &, const Dictionary &a) { return svc->list_local(a); },
-			[](const Dictionary &) {
-				Array accesses;
-				Dictionary access;
-				access["mode"] = "read";
-				access["key"] = "asset-library:";
-				accesses.push_back(access);
-				return accesses;
-			});
-	_add("asset.import_to_project", "Copy a ready Solers Library asset into res://, then import it through the editor's frame-budgeted incremental pipeline (the editor stays responsive) and resume once every selected dependency actually loads. 3D imports enforce a source triangle budget from glTF metadata before any file is copied; oversized assets are rejected with TOPOLOGY_BUDGET_EXCEEDED so you can pick a smaller variant or remesh first. Declare import_profile=\"baked_static\" only when the scene will bake lightmaps — it configures Godot's native Static Lightmaps mode (UV2 unwrap), which is expensive on dense meshes. Texture-set materials require map_types chosen from the manifest's exact map roles, so unused alternatives are not imported.",
-			R"({"type":"object","properties":{"asset_id":{"type":"string","description":"Local Solers asset id."},"target_dir":{"type":"string","description":"Optional res:// destination directory. Defaults to res://solers_assets/<kind>/<name>."},"import_profile":{"type":"string","enum":["runtime","baked_static"],"description":"3D import intent. \"runtime\" (default) imports geometry as-is; \"baked_static\" additionally configures Godot's Static Lightmaps mode with UV2 unwrap for lightmap baking."},"max_triangles":{"type":"integer","minimum":0,"description":"Source triangle budget for 3D imports. Defaults to the asset's remesh target or the project's solers/ai_assets/import/max_source_triangles setting. Declarations above that project setting (or 0 to disable it) are rejected while the setting is non-zero; raise the setting through project.edit settings first when the project can truly afford more density."},"map_types":{"type":"array","items":{"type":"string"},"description":"For texture-set materials, exact map role names from manifest.map_files that the final material will reference. Omit for native materials, HDRIs, and 3D assets."}},"required":["asset_id"]})",
-			SolersPermissionManager::PERMISSION_EDIT_FILES, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DIRECT,
-			[svc](const SolersToolContext &, const Dictionary &a) { return svc->import_to_project(a); },
-			SolersToolExecution::WORKER_THREAD, [](const Dictionary &a) {
-				Array accesses;
-				Dictionary asset;
-				asset["mode"] = "read";
-				asset["key"] = "asset:" + String(a.get("asset_id", String()));
-				accesses.push_back(asset);
-				String target_dir = String(a.get("target_dir", String())).strip_edges();
-				if (target_dir.is_empty()) {
-					target_dir = "res://solers_assets/";
-				}
-				Dictionary target;
-				target["mode"] = "write";
-				target["key"] = "project:" + target_dir.replace_char('\\', '/').simplify_path();
-				accesses.push_back(target);
-				return accesses;
-			}, false,
-			[svc](const SolersToolContext &, const Dictionary &a) { return svc->poll_project_import(a); }, false,
-			[svc](const SolersToolContext &, const Dictionary &a) { return svc->is_project_import_ready(a); },
-			[svc](const SolersToolContext &, const Dictionary &a, const Dictionary &r) { svc->release_project_import(a, r); });
 }
-
-void SolersToolRegistry::_register_plugin_tools() {
+void SolersToolRegistry::_register_addon_tools() {
 	if (!asset_service) {
 		return;
 	}
 	SolersAssetService *service = asset_service;
-	_add("plugin.search", "Search installable Godot editor plugins. Verified Solers bundles are ranked first; remaining results come from the official Godot Asset Library.",
+	_add("addon.search", "Search installable Godot addons. Verified Solers bundles are ranked first; remaining results come from the official Godot Asset Library.",
 			R"({"type":"object","properties":{"query":{"type":"string","minLength":1,"description":"Plugin name or capability."},"limit":{"type":"integer","minimum":1,"maximum":50,"description":"Maximum results. Default 20."}},"required":["query"]})",
 			SolersPermissionManager::PERMISSION_NETWORK, SolersToolMutationPolicy::READ_ONLY, Vector<String>(), SolersToolExposure::DIRECT,
-			[service](const SolersToolContext &ctx, const Dictionary &args) { return service->plugin_search(args, ctx.cancel_requested); },
+			[service](const SolersToolContext &ctx, const Dictionary &args) { return service->addon_search(args, ctx.cancel_requested); },
 			SolersToolExecution::WORKER_THREAD, [](const Dictionary &) {
 				Array accesses;
 				Dictionary access;
 				access["mode"] = "write";
-				access["key"] = "plugin-catalog:";
+				access["key"] = "addon-catalog:";
 				accesses.push_back(access);
 				return accesses;
 			});
-	_add("plugin.inspect", "Inspect one exact plugin before installation. Returns inert package facts plus an optional bounded, data-only Agent Contract; repeated identical contracts are returned by id without reinjecting their full content.",
-			R"({"type":"object","properties":{"source":{"type":"string","enum":["bundled","assetlib"]},"plugin_id":{"type":"string","minLength":1,"description":"Exact plugin_id returned by plugin.search."},"refresh":{"type":"boolean","description":"Redownload Asset Library metadata and archive instead of reusing the inert cache."}},"required":["source","plugin_id"]})",
+	_add("addon.inspect", "Inspect one exact Godot addon before installation. Returns inert package facts plus an optional bounded, data-only Agent Contract; repeated identical contracts are returned by id without reinjecting their full content.",
+			R"({"type":"object","properties":{"source":{"type":"string","enum":["bundled","assetlib"]},"plugin_id":{"type":"string","minLength":1,"description":"Exact package plugin_id returned by addon.search."},"refresh":{"type":"boolean","description":"Redownload Asset Library metadata and archive instead of reusing the inert cache."}},"required":["source","plugin_id"]})",
 			SolersPermissionManager::PERMISSION_NETWORK, SolersToolMutationPolicy::READ_ONLY, Vector<String>(), SolersToolExposure::DIRECT,
-			[this, service](const SolersToolContext &ctx, const Dictionary &args) { return _compact_plugin_contract(ctx, service->plugin_inspect(args, ctx.cancel_requested)); },
+			[this, service](const SolersToolContext &ctx, const Dictionary &args) { return _compact_addon_contract(ctx, service->addon_inspect(args, ctx.cancel_requested)); },
 			SolersToolExecution::WORKER_THREAD, [](const Dictionary &args) {
 				Array accesses;
 				Dictionary access;
 				access["mode"] = "write";
-				access["key"] = "plugin-cache:" + String(args.get("source", String())) + ":" + String(args.get("plugin_id", String()));
+				access["key"] = "addon-cache:" + String(args.get("source", String())) + ":" + String(args.get("plugin_id", String()));
 				accesses.push_back(access);
 				return accesses;
 			}, false, {}, false, {}, {}, [](const Dictionary &args) {
-				return SolersAssetService::is_trusted_plugin(args) ? SolersPermissionManager::PERMISSION_OBSERVE : SolersPermissionManager::PERMISSION_NETWORK;
+				return SolersAssetService::is_trusted_addon(args) ? SolersPermissionManager::PERMISSION_OBSERVE : SolersPermissionManager::PERMISSION_NETWORK;
 			});
-	_add_observe_exposed("plugin.list", "List plugins installed through Solers, including pinned version, source, package hash, enabled state, registered ClassDB types, missing files, restart requirements, and load errors.",
+	_add_observe_exposed("addon.list", "List Godot addons installed through Solers, including pinned version, source, package hash, enabled state, registered ClassDB types, missing files, restart requirements, and load errors.",
 			R"({"type":"object","properties":{}})", SolersToolExposure::DIRECT,
-			[service](const SolersToolContext &, const Dictionary &args) { return service->plugin_list(args); },
+			[service](const SolersToolContext &, const Dictionary &args) { return service->addon_list(args); },
 			[](const Dictionary &) {
 				Array accesses;
 				Dictionary access;
@@ -1491,10 +1739,10 @@ void SolersToolRegistry::_register_plugin_tools() {
 				accesses.push_back(access);
 				return accesses;
 			});
-	_add("plugin.ensure", "Install and enable one inspected exact plugin version. Completes after the editor filesystem scan has registered the plugin's classes; success means files exist, extensions are loaded, editor plugins are enabled, and all Contract entry classes are registered.",
+	_add("addon.ensure", "Install and enable one inspected exact Godot addon version. Completes after the editor filesystem scan has registered the addon's classes; success means files exist, extensions are loaded, editor plugins are enabled, and all Contract entry classes are registered.",
 			R"({"type":"object","properties":{"source":{"type":"string","enum":["bundled","assetlib"]},"plugin_id":{"type":"string","minLength":1},"version":{"type":"string","minLength":1},"sha256":{"type":"string","pattern":"^[0-9a-fA-F]{64}$"}},"required":["source","plugin_id","version","sha256"],"additionalProperties":false})",
 			SolersPermissionManager::PERMISSION_INSTALL_PLUGIN, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DIRECT,
-			[service](const SolersToolContext &, const Dictionary &args) { return service->plugin_ensure(args); },
+			[service](const SolersToolContext &, const Dictionary &args) { return service->addon_ensure(args); },
 			SolersToolExecution::MAIN_THREAD, [](const Dictionary &args) {
 				Array accesses;
 				Dictionary access;
@@ -1507,10 +1755,10 @@ void SolersToolRegistry::_register_plugin_tools() {
 				accesses.push_back(lock);
 				return accesses;
 			}, false,
-			[service](const SolersToolContext &, const Dictionary &args) { return service->plugin_ensure_finalize(args); }, false,
-			[service](const SolersToolContext &, const Dictionary &args) { return service->plugin_ensure_ready(args); }, {},
+			[service](const SolersToolContext &, const Dictionary &args) { return service->addon_ensure_finalize(args); }, false,
+			[service](const SolersToolContext &, const Dictionary &args) { return service->addon_ensure_ready(args); }, {},
 			[](const Dictionary &args) {
-				return SolersAssetService::is_trusted_plugin(args) ? SolersPermissionManager::PERMISSION_EDIT_FILES : SolersPermissionManager::PERMISSION_INSTALL_PLUGIN;
+				return SolersAssetService::is_trusted_addon(args) ? SolersPermissionManager::PERMISSION_EDIT_FILES : SolersPermissionManager::PERMISSION_INSTALL_PLUGIN;
 			});
 }
 
@@ -1694,7 +1942,7 @@ void SolersToolRegistry::register_default_tools() {
 	_register_script_tools();
 	_register_runtime_tools();
 	_register_asset_tools();
-	_register_plugin_tools();
+	_register_addon_tools();
 	_register_search_tools();
 }
 
@@ -2104,13 +2352,13 @@ void SolersToolRegistry::clear_task_state(const String &p_session_id) {
 	}
 	Vector<String> delivery_keys;
 	const String delivery_prefix = p_session_id + ":";
-	for (const String &key : delivered_plugin_contracts) {
+	for (const String &key : delivered_addon_contracts) {
 		if (key.begins_with(delivery_prefix)) {
 			delivery_keys.push_back(key);
 		}
 	}
 	for (const String &key : delivery_keys) {
-		delivered_plugin_contracts.erase(key);
+		delivered_addon_contracts.erase(key);
 	}
 }
 
@@ -2141,5 +2389,5 @@ SolersToolRegistry::~SolersToolRegistry() {
 	_clear_tools();
 	reversals.clear();
 	latest_reversal_by_session.clear();
-	delivered_plugin_contracts.clear();
+	delivered_addon_contracts.clear();
 }

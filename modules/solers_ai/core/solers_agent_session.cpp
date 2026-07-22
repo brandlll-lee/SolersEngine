@@ -770,19 +770,27 @@ bool SolersAgentSession::_poll_state_observation() {
 	return false;
 }
 
+static String _solers_mention_context(const Array &p_mentions) {
+	return p_mentions.is_empty() ? String() : "\n\n[Selected Solers plugins]\n" + JSON::stringify(p_mentions);
+}
+
 Dictionary SolersAgentSession::queue_user_message(const Dictionary &p_args) {
 	const String prompt = String(p_args.get("prompt", String())).strip_edges();
 	const Array attachments = p_args.get("attachments", Array()).duplicate(true);
+	const Array mentions = p_args.get("mentions", Array()).duplicate(true);
 	if (prompt.is_empty() && attachments.is_empty()) {
 		return _error("EMPTY_PROMPT", "Prompt is empty.");
 	}
 	if (!running) {
 		return _error("AGENT_IDLE", "No agent turn is running; start a new turn instead.");
 	}
-	Dictionary message = SolersLLMMessage::user(prompt);
+	Dictionary message = SolersLLMMessage::user(prompt + _solers_mention_context(mentions));
 	message["origin"] = "user_steering";
 	if (!attachments.is_empty()) {
 		message["attachments"] = attachments;
+	}
+	if (!mentions.is_empty()) {
+		message["mentions"] = mentions;
 	}
 	pending_steering_messages.push_back(message);
 	Dictionary payload;
@@ -799,6 +807,20 @@ bool SolersAgentSession::_flush_pending_steering() {
 	}
 	for (int i = 0; i < pending_steering_messages.size(); i++) {
 		const Dictionary message = pending_steering_messages[i];
+		const Array mentions = message.get("mentions", Array());
+		for (int mention_index = 0; mention_index < mentions.size(); mention_index++) {
+			const String id = String(Dictionary(mentions[mention_index]).get("id", String()));
+			bool present = false;
+			for (int active_index = 0; active_index < turn_mentions.size(); active_index++) {
+				if (String(Dictionary(turn_mentions[active_index]).get("id", String())) == id) {
+					present = true;
+					break;
+				}
+			}
+			if (!id.is_empty() && !present) {
+				turn_mentions.push_back(mentions[mention_index]);
+			}
+		}
 		messages.push_back(message);
 		_write_transcript_message("user", message.get("content", String()));
 	}
@@ -894,31 +916,31 @@ Dictionary SolersAgentSession::_environment_context_message(bool p_include_obser
 	context["platform"] = OS::get_singleton()->get_name();
 	context["runtime"] = observation->get_runtime_status();
 	context["enabled_plugins"] = ProjectSettings::get_singleton()->has_setting("editor_plugins/enabled") ? GLOBAL_GET("editor_plugins/enabled") : Variant(PackedStringArray());
-	// Plugin health up front: a half-loaded plugin (missing classes, load
+	// Addon health up front: a half-loaded addon (missing classes, load
 	// errors, pending restart) is the model's first fact, not something it has
 	// to rediscover through failing tool calls.
 	if (tool_registry->asset_service) {
-		const Dictionary plugin_report = tool_registry->asset_service->plugin_list(Dictionary());
-		const Array plugins = Dictionary(plugin_report.get("data", Dictionary())).get("plugins", Array());
-		Array plugin_health;
-		for (const Variant &value : plugins) {
-			const Dictionary plugin = value;
+		const Dictionary addon_report = tool_registry->asset_service->addon_list(Dictionary());
+		const Array addons = Dictionary(addon_report.get("data", Dictionary())).get("plugins", Array());
+		Array addon_health;
+		for (const Variant &value : addons) {
+			const Dictionary addon = value;
 			Dictionary summary;
-			summary["id"] = plugin.get("key", String());
-			summary["version"] = plugin.get("version", String());
-			const bool ready = plugin.get("ready", false);
+			summary["id"] = addon.get("key", String());
+			summary["version"] = addon.get("version", String());
+			const bool ready = addon.get("ready", false);
 			summary["ready"] = ready;
 			if (!ready) {
-				summary["installed"] = plugin.get("installed", false);
-				summary["enabled"] = plugin.get("enabled", false);
-				summary["restart_required"] = plugin.get("restart_required", false);
-				summary["missing_classes"] = plugin.get("missing_classes", Array());
-				summary["load_errors"] = plugin.get("load_errors", Array());
+				summary["installed"] = addon.get("installed", false);
+				summary["enabled"] = addon.get("enabled", false);
+				summary["restart_required"] = addon.get("restart_required", false);
+				summary["missing_classes"] = addon.get("missing_classes", Array());
+				summary["load_errors"] = addon.get("load_errors", Array());
 			}
-			plugin_health.push_back(summary);
+			addon_health.push_back(summary);
 		}
-		if (!plugin_health.is_empty()) {
-			context["installed_plugins_health"] = plugin_health;
+		if (!addon_health.is_empty()) {
+			context["installed_addons_health"] = addon_health;
 		}
 	}
 	EditorInterface *editor_interface = EditorInterface::get_singleton();
@@ -1495,6 +1517,7 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 
 	const String prompt = String(p_args.get("prompt", String())).strip_edges();
 	turn_attachments = p_args.get("attachments", Array()).duplicate(true);
+	turn_mentions = p_args.get("mentions", Array()).duplicate(true);
 	if (prompt.is_empty() && turn_attachments.is_empty()) {
 		return _error("EMPTY_PROMPT", "Prompt is empty.");
 	}
@@ -1552,7 +1575,7 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 	if (system_prompt.is_empty()) {
 		system_prompt = _default_system_prompt();
 	}
-	String model_prompt = prompt;
+	String model_prompt = prompt + _solers_mention_context(turn_mentions);
 	if (!turn_attachments.is_empty()) {
 		model_prompt += model_prompt.is_empty() ? String() : "\n\n";
 		model_prompt += "[Attached images available for tools]\n";
@@ -1564,6 +1587,9 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 	Dictionary user_message = SolersLLMMessage::user(model_prompt);
 	if (!turn_attachments.is_empty()) {
 		user_message["attachments"] = turn_attachments.duplicate(true);
+	}
+	if (!turn_mentions.is_empty()) {
+		user_message["mentions"] = turn_mentions.duplicate(true);
 	}
 	messages.push_back(user_message);
 	current_text = String();
@@ -1806,6 +1832,7 @@ void SolersAgentSession::_on_model_turn_complete() {
 				context.call_id = call.get("id", String());
 				context.session_id = session_id;
 				context.project_path = project_path;
+				context.mentions = turn_mentions;
 				context.authored_revision = authored_revision;
 				Dictionary normalized_args;
 				preflight_result = tool_registry->_preflight_tool_call(StringName(canonical_name), parsed_args, context, normalized_args);
@@ -1939,6 +1966,7 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	current_text = String();
 	current_reasoning = String();
 	turn_attachments.clear();
+	turn_mentions.clear();
 	waiting_background_asset_ids.clear();
 	turn_runtime_owned = false;
 	if (p_outcome == "aborted") {
@@ -2261,6 +2289,7 @@ void SolersAgentSession::_execute_deferred_tool(uint64_t p_token) {
 	context.call_id = deferred_call_id;
 	context.session_id = session_id;
 	context.project_path = project_path;
+	context.mentions = turn_mentions;
 	context.authored_revision = authored_revision;
 	context.cancel_requested = &tool_cancel_requested;
 	if (!deferred_prepared_call) {

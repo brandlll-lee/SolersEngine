@@ -100,7 +100,7 @@ void SolersAgentRuntime::poll() {
 	}
 	// The session admission pass runs first so every independent pending call
 	// from one model response can enter its service queue. Services then
-	// advance once, which gives import_to_project a single native scan wave
+	// advance once, which gives the direct project import a native scan wave
 	// instead of starting a wave after the first call only.
 	if (agent_session && agent_session->is_running()) {
 		agent_session->poll();

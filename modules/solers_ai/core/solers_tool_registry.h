@@ -43,7 +43,7 @@ class SolersToolRegistry : public Object {
 	HashMap<StringName, StringName> model_name_index;
 	HashMap<String, Dictionary> reversals;
 	HashMap<String, String> latest_reversal_by_session;
-	HashSet<String> delivered_plugin_contracts;
+	HashSet<String> delivered_addon_contracts;
 
 	SolersObservationService *observation_service = nullptr;
 	SolersAssetService *asset_service = nullptr;
@@ -87,13 +87,13 @@ class SolersToolRegistry : public Object {
 	void _register_script_tools();
 	void _register_runtime_tools();
 	void _register_asset_tools();
-	void _register_plugin_tools();
+	void _register_addon_tools();
 	void _register_reflection_tools();
 	void _register_skill_tools();
 	void _register_search_tools();
 	Dictionary _inspect_engine(const Dictionary &p_args);
 	Dictionary _execute_engine(const Dictionary &p_args);
-	Dictionary _compact_plugin_contract(const SolersToolContext &p_context, const Dictionary &p_result);
+	Dictionary _compact_addon_contract(const SolersToolContext &p_context, const Dictionary &p_result);
 	Dictionary _run_control(const Dictionary &p_args) const;
 	Dictionary _poll_runtime_control(const Dictionary &p_args) const;
 	bool _is_runtime_control_ready(const Dictionary &p_args) const;

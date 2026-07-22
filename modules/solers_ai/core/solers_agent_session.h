@@ -100,6 +100,7 @@ class SolersAgentSession : public Object {
 	HashMap<String, Dictionary> readonly_cache;
 	HashSet<StringName> task_deferred_tools;
 	Array turn_attachments;
+	Array turn_mentions;
 	int tool_queue_index = 0; // next provider-ordered call to start
 	int tool_delivery_index = 0; // next provider-ordered terminal result to deliver
 	HashMap<int, Dictionary> completed_tool_results;

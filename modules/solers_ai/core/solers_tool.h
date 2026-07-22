@@ -91,6 +91,7 @@ struct SolersToolContext {
 	String call_id;
 	String session_id;
 	String project_path;
+	Array mentions;
 	uint64_t authored_revision = 0;
 	int approval_id = 0;
 	const SafeFlag *cancel_requested = nullptr;
