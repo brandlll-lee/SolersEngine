@@ -42,12 +42,20 @@ String solers_summarize_tool_args(const String &p_arguments_json);
 class SolersUserBubble : public Control {
 	GDCLASS(SolersUserBubble, Control);
 
+	struct Seg {
+		bool is_chip = false;
+		String text;
+		Dictionary mention;
+		float width = 0.0f;
+	};
+
 	String text;
 	Array attachments;
 	Vector<Ref<Texture2D>> attachment_textures;
-	Ref<TextParagraph> paragraph;
+	Vector<Vector<Seg>> shaped_lines;
 	float shaped_for_width = -1.0f;
 	Size2 text_size;
+	float line_height = 0.0f;
 	float cell_height = 0.0f;
 
 	Callable content_changed;

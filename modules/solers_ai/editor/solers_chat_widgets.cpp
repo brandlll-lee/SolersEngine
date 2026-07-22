@@ -12,9 +12,13 @@
 
 #include "core/input/input_event.h"
 #include "core/os/keyboard.h"
+#include "core/variant/dictionary.h"
+#include "editor/editor_node.h"
+#include "editor/editor_string_names.h"
 #include "editor/themes/editor_scale.h"
 #include "modules/modules_enabled.gen.h"
 #include "modules/solers_ai/generated/solers_provider_logos.gen.h"
+#include "scene/resources/font.h"
 #include "scene/resources/image_texture.h"
 #include "scene/resources/style_box_flat.h"
 #include "scene/theme/theme_db.h"
@@ -693,4 +697,68 @@ void SolersSurface::_notification(int p_what) {
 			}
 		} break;
 	}
+}
+
+/* ------------------------------------------------------------------ */
+/* Shared mention chip paint                                           */
+/* ------------------------------------------------------------------ */
+
+String solers_mention_chip_label(const Dictionary &p_mention) {
+	return String(p_mention.get("label", p_mention.get("id", String()))).strip_edges();
+}
+
+float solers_mention_chip_width(const String &p_label, const Ref<Font> &p_font, int p_font_size, bool p_has_icon) {
+	const float pad_x = 6.0f * EDSCALE;
+	const float gap = 4.0f * EDSCALE;
+	const int icon_px = int(Math::round(13.0f * EDSCALE));
+	const float text_w = p_font.is_valid() ? p_font->get_string_size(p_label, HORIZONTAL_ALIGNMENT_LEFT, -1, p_font_size).x : float(p_label.length() * p_font_size * 0.55f);
+	return pad_x + (p_has_icon ? icon_px + gap : 0.0f) + text_w + pad_x;
+}
+
+void solers_draw_mention_chip(RID p_ci, const Rect2 &p_pill, const String &p_label, const Ref<Font> &p_font, int p_font_size, const Ref<Texture2D> &p_icon) {
+	if (p_label.is_empty()) {
+		return;
+	}
+	const float pad_x = 5.0f * EDSCALE;
+	const float gap = 4.0f * EDSCALE;
+	const int icon_px = int(Math::round(13.0f * EDSCALE));
+
+	Ref<StyleBoxFlat> style;
+	style.instantiate();
+	style->set_bg_color(solers_chip_bg());
+	style->set_corner_radius_all(int(Math::round(6.0f * EDSCALE)));
+	style->draw(p_ci, p_pill);
+
+	float x = p_pill.position.x + pad_x;
+	const float mid_y = p_pill.position.y + p_pill.size.y * 0.5f;
+	if (p_icon.is_valid()) {
+		const Rect2 icon_rect(x, mid_y - icon_px * 0.5f, icon_px, icon_px);
+		p_icon->draw_rect(p_ci, icon_rect, false);
+		x += icon_px + gap;
+	}
+	if (p_font.is_valid()) {
+		const float text_y = p_pill.position.y + (p_pill.size.y - p_font->get_height(p_font_size)) * 0.5f + p_font->get_ascent(p_font_size);
+		p_font->draw_string(p_ci, Point2(x, text_y), p_label, HORIZONTAL_ALIGNMENT_LEFT, -1, p_font_size, solers_chip_text());
+	}
+}
+
+Ref<Texture2D> solers_mention_chip_icon(const Dictionary &p_mention, int p_px) {
+	const String source = String(p_mention.get("source", "plugin")).strip_edges().to_lower();
+	if (source == "plugin") {
+		const String id = String(p_mention.get("id", String())).strip_edges().to_lower();
+		const Ref<Texture2D> color = SolersChatGlyphs::provider_logo_color(id, p_px);
+		return color.is_valid() ? color : SolersChatGlyphs::provider_logo(id, p_px);
+	}
+	EditorNode *editor = EditorNode::get_singleton();
+	if (!editor) {
+		return Ref<Texture2D>();
+	}
+	if (source == "addon") {
+		return editor->get_editor_theme()->get_icon(SNAME("PluginScript"), EditorStringName(EditorIcons));
+	}
+	if (source == "node") {
+		const String type = String(p_mention.get("type", "Node")).strip_edges();
+		return editor->get_class_icon(type.is_empty() ? String("Node") : type, "Node");
+	}
+	return editor->get_class_icon("File");
 }

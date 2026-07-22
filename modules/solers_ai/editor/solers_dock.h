@@ -28,7 +28,9 @@ class Control;
 class AcceptDialog;
 class EditorFileDialog;
 class HBoxContainer;
+class HSplitContainer;
 class Label;
+class LineEdit;
 class MarginContainer;
 class PanelContainer;
 class ScrollContainer;
@@ -61,6 +63,12 @@ class SolersDock : public PanelContainer {
 	Control *empty_state = nullptr;
 	VBoxContainer *empty_home = nullptr;
 	VBoxContainer *root_box = nullptr;
+	HSplitContainer *body_split = nullptr;
+	PanelContainer *session_sidebar = nullptr;
+	VBoxContainer *chat_column = nullptr;
+	LineEdit *session_filter = nullptr;
+	ScrollContainer *session_scroll = nullptr;
+	VBoxContainer *session_list = nullptr;
 	MarginContainer *composer_inset = nullptr;
 	TextEdit *chat_input = nullptr;
 	SolersGlyphButton *panel_button = nullptr;
@@ -79,7 +87,7 @@ class SolersDock : public PanelContainer {
 	int plugin_mention_line = -1;
 	int plugin_mention_start_column = -1;
 	int plugin_mention_selected = 0;
-	String mention_section; // empty = root; otherwise section id (plugins/files/scenes/selection)
+	String mention_section; // empty = root; otherwise section id (solers/addons/files/scenes/selection)
 	Control *model_popup_overlay = nullptr;
 	// Cascading model menu: a compact root menu (Model / Effort / actions)
 	// plus one lazily built submenu that opens beside the hovered row.
@@ -117,6 +125,9 @@ class SolersDock : public PanelContainer {
 
 	String chat_log;
 	Array pending_attachments;
+	String session_project_path;
+	String session_current_id;
+	String session_filter_text;
 
 	SolersObservationService *observation_service = nullptr;
 	SolersToolRegistry *tool_registry = nullptr;
@@ -127,7 +138,8 @@ class SolersDock : public PanelContainer {
 	SolersRpcServer *rpc_server = nullptr;
 	SolersSettingsService *settings_service = nullptr;
 	Callable workspace_toggle_callback;
-	Callable session_menu_callback;
+	Callable session_select_callback;
+	Callable new_session_callback;
 
 	void _refresh_status();
 	void _refresh_model_chip();
@@ -135,7 +147,12 @@ class SolersDock : public PanelContainer {
 	void _on_send_chat_pressed();
 	void _on_stop_chat_pressed();
 	void _on_workspace_toggle_pressed();
-	void _on_session_menu_pressed();
+	void _toggle_session_sidebar();
+	void _refresh_session_list();
+	void _apply_session_filter();
+	void _on_session_filter_changed(const String &p_text);
+	void _on_session_row_pressed(const String &p_session_id);
+	void _on_new_agent_pressed();
 	void _on_model_chip_pressed();
 	void _position_model_menu();
 	void _open_model_submenu(int p_kind);
@@ -214,8 +231,10 @@ public:
 	void start_new_chat();
 	void load_chat_history(const Array &p_messages);
 	void set_workspace_toggle_callback(const Callable &p_callback);
-	void set_session_menu_callback(const Callable &p_callback);
-	Rect2 get_session_menu_anchor_rect() const;
+	void set_session_select_callback(const Callable &p_callback);
+	void set_new_session_callback(const Callable &p_callback);
+	void set_session_context(const String &p_project_path, const String &p_session_id);
+	void notify_sessions_changed();
 
 	SolersDock();
 	~SolersDock();

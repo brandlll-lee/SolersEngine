@@ -25,8 +25,10 @@
 #pragma once
 
 #include "core/variant/callable.h"
+#include "core/variant/dictionary.h"
 #include "scene/gui/control.h"
 #include "scene/gui/margin_container.h"
+#include "scene/resources/font.h"
 #include "scene/resources/texture.h"
 
 // One-shot Lucide glyph rasterizer with a process-lifetime texture cache.
@@ -171,3 +173,24 @@ public:
 
 	SolersSurface();
 };
+
+// Shared Solers chrome: composer / chip / user-bubble (one authority for colors).
+inline Color solers_composer_bg() {
+	return Color(0.086f, 0.088f, 0.092f);
+}
+inline Color solers_cell_bubble_bg() {
+	return solers_composer_bg().lightened(0.04f);
+}
+inline Color solers_chip_bg() {
+	return Color(0.145f, 0.175f, 0.235f, 0.95f);
+}
+inline Color solers_chip_text() {
+	return Color(0.55f, 0.82f, 0.98f);
+}
+
+String solers_mention_chip_label(const Dictionary &p_mention);
+float solers_mention_chip_width(const String &p_label, const Ref<Font> &p_font, int p_font_size, bool p_has_icon);
+void solers_draw_mention_chip(RID p_ci, const Rect2 &p_pill, const String &p_label, const Ref<Font> &p_font, int p_font_size, const Ref<Texture2D> &p_icon);
+// Compact chip icon (plugin logos + class/file fallbacks). Composer popup may
+// still use richer path previews locally.
+Ref<Texture2D> solers_mention_chip_icon(const Dictionary &p_mention, int p_px);

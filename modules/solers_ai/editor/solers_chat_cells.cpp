@@ -15,6 +15,7 @@
 #include "core/io/json.h"
 #include "core/os/os.h"
 #include "editor/themes/editor_scale.h"
+#include "modules/solers_ai/core/solers_mention.h"
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
 #include "modules/solers_ai/editor/solers_markdown_view.h"
 #include "scene/gui/box_container.h"
@@ -30,8 +31,8 @@ static const Color SOLERS_CELL_TEXT_PRIMARY = Color(0.961, 0.969, 0.984);
 static const Color SOLERS_CELL_TEXT_DIM = Color(0.667, 0.690, 0.733);
 static const Color SOLERS_CELL_TEXT_FAINT = Color(0.667, 0.690, 0.733, 0.78f);
 static const Color SOLERS_CELL_ERROR = Color(0.875, 0.478, 0.420);
-// User bubble: Cursor-style accent-blue (#3b82f6) wash over the dark canvas.
-static const Color SOLERS_CELL_BUBBLE_BG = Color(0.231, 0.510, 0.965, 0.26f);
+// User bubble: composer-family gray, slightly lighter (shared solers_composer_bg).
+#define SOLERS_CELL_BUBBLE_BG solers_cell_bubble_bg()
 
 // Shimmer sweep period for "Thinking"/status headers, seconds.
 static constexpr float SOLERS_SHIMMER_PERIOD = 1.6f;
@@ -179,8 +180,6 @@ String solers_summarize_tool_args(const String &p_arguments_json) {
 SolersUserBubble::SolersUserBubble() {
 	set_mouse_filter(MOUSE_FILTER_IGNORE);
 	set_h_size_flags(SIZE_EXPAND_FILL);
-	paragraph.instantiate();
-	paragraph->set_break_flags(TextServer::BREAK_MANDATORY | TextServer::BREAK_WORD_BOUND | TextServer::BREAK_ADAPTIVE);
 }
 
 void SolersUserBubble::set_message(const String &p_text) {
@@ -216,19 +215,126 @@ void SolersUserBubble::_shape(float p_cell_width) {
 
 	const Ref<Font> font = solers_cell_font(this);
 	const int font_size = int(14 * ed);
-	paragraph->clear();
-	if (font.is_valid() && !text.is_empty()) {
-		paragraph->set_line_spacing(3.0f * ed);
-		// Measure unwrapped first; only cap the width when the prompt is
-		// actually wider than the readable column.
-		paragraph->set_width(-1);
-		paragraph->add_string(text, font, font_size);
-		const float natural_width = paragraph->get_non_wrapped_size().x;
-		const float max_text_width = MIN(cell_width * 0.78f, 380.0f * ed);
-		paragraph->set_width(MIN(natural_width + 1.0f, max_text_width));
-		text_size = paragraph->get_size();
-	} else {
-		text_size = Size2();
+	line_height = font.is_valid() ? font->get_height(font_size) + 3.0f * ed : float(font_size) + 3.0f * ed;
+	const float max_text_width = MIN(cell_width * 0.78f, 380.0f * ed);
+	const int icon_px = int(Math::round(13.0f * ed));
+
+	shaped_lines.clear();
+	text_size = Size2();
+
+	const String display = SolersMention::strip_prompt_block(text);
+	if (font.is_valid() && !display.is_empty()) {
+		const PackedStringArray paragraphs = display.split("\n", true);
+		for (int p = 0; p < paragraphs.size(); p++) {
+			const String paragraph = paragraphs[p];
+			Vector<Seg> pending;
+
+			const Array spans = SolersMention::scan_line_spans(paragraph);
+			int cursor = 0;
+			for (int i = 0; i < spans.size(); i++) {
+				const Dictionary span = spans[i];
+				const int start = int(span.get("column", -1));
+				const int len = int(span.get("length", 0));
+				if (start < cursor || len <= 0) {
+					continue;
+				}
+				if (start > cursor) {
+					Seg text_seg;
+					text_seg.text = paragraph.substr(cursor, start - cursor);
+					text_seg.width = font->get_string_size(text_seg.text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
+					pending.push_back(text_seg);
+				}
+				const Dictionary mention = span.get("mention", Dictionary());
+				const String label = solers_mention_chip_label(mention);
+				if (!label.is_empty()) {
+					Seg chip;
+					chip.is_chip = true;
+					chip.text = label;
+					chip.mention = mention;
+					const Ref<Texture2D> icon = solers_mention_chip_icon(mention, icon_px);
+					chip.width = solers_mention_chip_width(label, font, font_size, icon.is_valid());
+					pending.push_back(chip);
+				}
+				cursor = start + len;
+			}
+			if (cursor < paragraph.length() || pending.is_empty()) {
+				Seg text_seg;
+				text_seg.text = paragraph.substr(cursor);
+				text_seg.width = text_seg.text.is_empty() ? 0.0f : font->get_string_size(text_seg.text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
+				pending.push_back(text_seg);
+			}
+
+			Vector<Seg> line;
+			float line_w = 0.0f;
+			auto flush_line = [&]() {
+				shaped_lines.push_back(line);
+				text_size.x = MAX(text_size.x, line_w);
+				text_size.y += line_height;
+				line.clear();
+				line_w = 0.0f;
+			};
+
+			for (int i = 0; i < pending.size(); i++) {
+				Seg seg = pending[i];
+				if (seg.is_chip) {
+					if (!line.is_empty() && line_w + seg.width > max_text_width) {
+						flush_line();
+					}
+					line.push_back(seg);
+					line_w += seg.width;
+					continue;
+				}
+				// Wrap plain text on spaces when needed.
+				String rest = seg.text;
+				while (!rest.is_empty()) {
+					const float room = max_text_width - line_w;
+					const float rest_w = font->get_string_size(rest, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
+					if (line.is_empty() || rest_w <= room) {
+						Seg piece;
+						piece.text = rest;
+						piece.width = rest_w;
+						line.push_back(piece);
+						line_w += rest_w;
+						rest = String();
+						break;
+					}
+					// Find a break that fits the remaining room on this line.
+					int fit = 0;
+					for (int c = 0; c < rest.length(); c++) {
+						const float next_w = font->get_string_size(rest.substr(0, c + 1), HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
+						if (!line.is_empty() && next_w > room) {
+							break;
+						}
+						if (line.is_empty() && next_w > max_text_width && c > 0) {
+							break;
+						}
+						fit = c + 1;
+					}
+					if (fit <= 0) {
+						flush_line();
+						continue;
+					}
+					// Prefer last whitespace in the fitted range.
+					int break_at = fit;
+					for (int c = fit - 1; c > 0; c--) {
+						if (rest[c] == ' ' || rest[c] == '\t') {
+							break_at = c + 1;
+							break;
+						}
+					}
+					Seg piece;
+					piece.text = rest.substr(0, break_at);
+					piece.width = font->get_string_size(piece.text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
+					line.push_back(piece);
+					line_w += piece.width;
+					rest = rest.substr(break_at);
+					flush_line();
+				}
+			}
+			if (!line.is_empty() || paragraph.is_empty()) {
+				flush_line();
+			}
+		}
 	}
 
 	const float pad_v = 8.0f * ed;
@@ -270,6 +376,9 @@ void SolersUserBubble::_notification(int p_what) {
 			const float pad_v = 8.0f * ed;
 			const float thumb = 56.0f * ed;
 			const float gap = 8.0f * ed;
+			const int font_size = int(14 * ed);
+			const int icon_px = int(Math::round(13.0f * ed));
+			const Ref<Font> font = solers_cell_font(this);
 			const int attachment_count = attachment_textures.size();
 			const float attachments_width = attachment_count > 0 ? attachment_count * thumb + MAX(0, attachment_count - 1) * gap : 0.0f;
 			const float attachments_height = attachment_count > 0 ? thumb + (text_size.y > 0.0f ? gap : 0.0f) : 0.0f;
@@ -293,8 +402,27 @@ void SolersUserBubble::_notification(int p_what) {
 				}
 				y += attachments_height;
 			}
-			if (!text.is_empty()) {
-				paragraph->draw(get_canvas_item(), Point2(bubble.position.x + pad_h, y), SOLERS_CELL_TEXT_PRIMARY);
+			if (!shaped_lines.is_empty() && font.is_valid()) {
+				const RID ci = get_canvas_item();
+				for (int li = 0; li < shaped_lines.size(); li++) {
+					float x = bubble.position.x + pad_h;
+					const Vector<Seg> &line = shaped_lines[li];
+					for (int si = 0; si < line.size(); si++) {
+						const Seg &seg = line[si];
+						if (seg.is_chip) {
+							const float pill_h = font->get_height(font_size);
+							const Rect2 pill(Point2(x, y + (line_height - pill_h) * 0.5f), Size2(seg.width, pill_h));
+							const Ref<Texture2D> icon = solers_mention_chip_icon(seg.mention, icon_px);
+							solers_draw_mention_chip(ci, pill, seg.text, font, font_size, icon);
+							x += seg.width;
+						} else if (!seg.text.is_empty()) {
+							const float baseline = y + (line_height - font->get_height(font_size)) * 0.5f + font->get_ascent(font_size);
+							font->draw_string(ci, Point2(x, baseline), seg.text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, SOLERS_CELL_TEXT_PRIMARY);
+							x += seg.width;
+						}
+					}
+					y += line_height;
+				}
 			}
 		} break;
 	}
