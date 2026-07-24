@@ -352,12 +352,34 @@ static void solers_add_unique_model(Array &r_models, HashSet<String> &r_seen, co
 	r_models.push_back(model);
 }
 
-static String solers_compact_model_label(const String &p_model) {
-	const String model = p_model.strip_edges();
-	if (model.length() <= 28) {
-		return model;
+static String solers_model_display_label(const String &p_model_id, const Dictionary &p_model_info, const Dictionary &p_model_labels) {
+	const String catalog_name = String(p_model_info.get("name", String())).strip_edges();
+	if (!catalog_name.is_empty()) {
+		return catalog_name;
 	}
-	return model.substr(0, 25) + "...";
+	const String labeled = String(p_model_labels.get(p_model_id, String())).strip_edges();
+	if (!labeled.is_empty()) {
+		return labeled;
+	}
+	// Catalog is the authority; slug humanization is only the last resort.
+	return p_model_id.replace("-", " ").replace("_", " ").strip_edges().capitalize();
+}
+
+static String solers_compact_label(const String &p_label) {
+	const String label = p_label.strip_edges();
+	if (label.length() <= 28) {
+		return label;
+	}
+	return label.substr(0, 25) + "...";
+}
+
+static String solers_resolve_model_display(SolersAgentSession *p_session, const Dictionary &p_provider_data, const String &p_model) {
+	const Dictionary profile = p_provider_data.get("profile", Dictionary());
+	const String provider = String(p_provider_data.get("provider", String())).strip_edges();
+	const String catalog_id = profile.get("catalog_provider", provider);
+	const Dictionary catalog = p_session ? p_session->get_model_provider(catalog_id, p_provider_data.get("base_url", String())) : Dictionary();
+	const Dictionary model_info = Dictionary(catalog.get("models", Dictionary())).get(p_model, Dictionary());
+	return solers_model_display_label(p_model, model_info, profile.get("model_labels", Dictionary()));
 }
 
 static String solers_reasoning_effort_label(const String &p_effort) {
@@ -615,12 +637,12 @@ void SolersDock::_refresh_model_chip() {
 	model_chip->set_leading_texture(SolersChatGlyphs::provider_logo(catalog_id, int(Math::round(13.0f * EDSCALE))));
 
 	if (!available) {
-		model_chip->set_texts(solers_compact_model_label(model), TTR("Local only"));
+		model_chip->set_texts(solers_compact_label(solers_resolve_model_display(agent_session, provider_data, model)), TTR("Local only"));
 		model_chip->set_tooltip_text(TTR("Local Models Only blocks this remote provider. Choose a local model or disable Local Models Only in Provider Settings."));
 		return;
 	}
 
-	model_chip->set_texts(solers_compact_model_label(model), solers_reasoning_effort_label(reasoning_effort));
+	model_chip->set_texts(solers_compact_label(solers_resolve_model_display(agent_session, provider_data, model)), solers_reasoning_effort_label(reasoning_effort));
 
 	String tooltip = vformat(TTR("Model: %s\nEffort: %s\nProvider: %s"), model, solers_reasoning_effort_label(reasoning_effort), provider.is_empty() ? TTR("unknown") : provider);
 	if (!base_url.is_empty()) {
@@ -799,9 +821,11 @@ void SolersDock::_clear_chat_view(bool p_show_empty) {
 	active_text_cell = nullptr;
 	status_cell = nullptr;
 	active_tool_group = nullptr;
-	active_plan_cell = nullptr;
 	tool_cells_by_id.clear();
 	last_started_tool_cell = nullptr;
+	if (plan_capsule) {
+		plan_capsule->clear_plan();
+	}
 	if (message_list) {
 		while (message_list->get_child_count() > 0) {
 			Node *child = message_list->get_child(0);
@@ -1088,7 +1112,7 @@ void SolersDock::_on_model_chip_pressed() {
 	model_menu_model_row = solers_make_model_menu_parent_row(
 			active_provider.is_empty() ? Ref<Texture2D>() : SolersChatGlyphs::provider_logo(active_catalog_id, int(Math::round(14.0f * EDSCALE))),
 			TTR("Model"),
-			active_model.is_empty() ? TTR("None") : solers_compact_model_label(active_model));
+			active_model.is_empty() ? TTR("None") : solers_compact_label(solers_resolve_model_display(agent_session, provider_data, active_model)));
 	model_menu_model_row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_open_model_submenu).bind(SOLERS_SUBMENU_MODEL));
 	model_menu_model_row->connect(SceneStringName(mouse_entered), callable_mp(this, &SolersDock::_open_model_submenu).bind(SOLERS_SUBMENU_MODEL));
 	model_menu_box->add_child(model_menu_model_row);
@@ -1398,13 +1422,50 @@ void SolersDock::load_chat_history(const Array &p_messages) {
 		if (String(message.get("origin", String())) == "compaction_summary") {
 			continue;
 		}
-		if (content.is_empty()) {
-			continue;
-		}
 		if (role == SolersLLMRole::USER) {
+			if (content.is_empty()) {
+				continue;
+			}
+			_settle_tool_group();
 			_append_user_message(SolersMention::strip_prompt_block(content));
 		} else if (role == SolersLLMRole::ASSISTANT) {
-			_on_agent_assistant_message(content);
+			_settle_tool_group();
+			const String reasoning = String(message.get("reasoning", String())).strip_edges();
+			if (!reasoning.is_empty()) {
+				_clear_empty_state();
+				SolersThinkingCell *thinking = memnew(SolersThinkingCell);
+				thinking->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
+				message_list->add_child(thinking);
+				thinking->set_settled_reasoning(reasoning);
+			}
+			if (!content.is_empty()) {
+				_on_agent_assistant_message(content);
+			}
+			const Array tool_calls = message.get("tool_calls", Array());
+			for (int t = 0; t < tool_calls.size(); t++) {
+				const Dictionary call = tool_calls[t];
+				_on_agent_tool_started(call.get("id", String()), call.get("name", String()), call.get("arguments", String()));
+			}
+		} else if (role == SolersLLMRole::TOOL) {
+			const String call_id = message.get("tool_call_id", String());
+			const String tool_name = message.get("name", String());
+			if (call_id.is_empty() || !tool_cells_by_id.has(call_id)) {
+				_on_agent_tool_started(call_id, tool_name, "{}");
+			}
+			Dictionary result;
+			result["ok"] = true;
+			const String raw = content.strip_edges();
+			if (!raw.is_empty()) {
+				Ref<JSON> json;
+				json.instantiate();
+				if (json->parse(raw) == OK && json->get_data().get_type() == Variant::DICTIONARY) {
+					result = json->get_data();
+				}
+			}
+			if (message.has("ok")) {
+				result["ok"] = message.get("ok", true);
+			}
+			_on_agent_tool_finished(call_id, tool_name, result, (int)message.get("duration_msec", 0));
 		}
 	}
 	if (agent_session) {
@@ -2595,11 +2656,20 @@ SolersDock::SolersDock() {
 	composer_inset->add_theme_constant_override("margin_bottom", 13 * EDSCALE);
 	empty_home->add_child(composer_inset);
 
+	VBoxContainer *composer_stack = memnew(VBoxContainer);
+	composer_stack->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	composer_stack->set_alignment(BoxContainer::ALIGNMENT_CENTER);
+	composer_stack->add_theme_constant_override("separation", 8 * EDSCALE);
+	composer_inset->add_child(composer_stack);
+
+	plan_capsule = memnew(SolersPlanCapsule);
+	composer_stack->add_child(plan_capsule);
+
 	SolersSurface *composer_card = memnew(SolersSurface);
 	composer_card->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	composer_card->configure(SOLERS_COMPOSER_BG, SOLERS_COMPOSER_BORDER, 19, 14, true);
 	composer_card->set_custom_minimum_size(Size2(0, (SOLERS_COMPOSER_TEXT_MIN_HEIGHT + SOLERS_COMPOSER_TOOLBAR_HEIGHT + SOLERS_COMPOSER_VERTICAL_CHROME) * EDSCALE));
-	composer_inset->add_child(composer_card);
+	composer_stack->add_child(composer_card);
 
 	VBoxContainer *composer = memnew(VBoxContainer);
 	composer->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -2658,6 +2728,7 @@ SolersDock::SolersDock() {
 
 	approval_mode_chip = memnew(SolersSelectChip);
 	approval_mode_chip->configure(SNAME("shield"), TTR("Manual"), String(), TTR("Ask before mutating tool calls."));
+	approval_mode_chip->set_filled(true);
 	approval_mode_chip->set_pressed_callback(callable_mp(this, &SolersDock::_on_auto_approve_chip_pressed));
 	composer_toolbar->add_child(approval_mode_chip);
 
@@ -2788,6 +2859,7 @@ void SolersDock::set_agent_session(SolersAgentSession *p_agent_session) {
 	agent_session->connect(SNAME("turn_completed"), callable_mp(this, &SolersDock::_on_agent_turn_completed));
 	agent_session->connect(SNAME("turn_failed"), callable_mp(this, &SolersDock::_on_agent_turn_failed));
 	agent_session->connect(SNAME("turn_retrying"), callable_mp(this, &SolersDock::_on_agent_turn_retrying));
+	agent_session->connect(SNAME("turn_waiting"), callable_mp(this, &SolersDock::_on_agent_turn_waiting));
 	agent_session->connect(SNAME("plan_updated"), callable_mp(this, &SolersDock::_on_agent_plan_updated));
 }
 
@@ -2939,6 +3011,10 @@ void SolersDock::_on_agent_tool_finished(const String &p_id, const String &p_nam
 
 void SolersDock::_on_agent_turn_completed(const Dictionary &p_result) {
 	_finish_turn_cells();
+	if (agent_session) {
+		const Dictionary plan = agent_session->get_plan();
+		_on_agent_plan_updated(plan.get("explanation", String()), plan.get("plan", Array()));
+	}
 	_refresh_status();
 	_update_send_enabled();
 	notify_sessions_changed();
@@ -2959,19 +3035,25 @@ void SolersDock::_on_agent_turn_retrying(int p_attempt, const String &p_message)
 	_update_send_enabled();
 }
 
+void SolersDock::_on_agent_turn_waiting(const Dictionary &p_waiting) {
+	_settle_thinking_cell();
+	_settle_tool_group();
+	const Array pending_ids = p_waiting.get("pending_ids", Array());
+	if (pending_ids.size() <= 1) {
+		_ensure_status_cell(TTR("Waiting for background job..."));
+	} else {
+		_ensure_status_cell(vformat(TTR("Waiting for %d background jobs..."), pending_ids.size()));
+	}
+	_update_send_enabled();
+}
+
 void SolersDock::_on_agent_plan_updated(const String &p_explanation, const Array &p_plan) {
-	if (!message_list) {
+	if (!plan_capsule) {
 		return;
 	}
-	_clear_empty_state();
-	if (!active_plan_cell) {
-		active_plan_cell = memnew(SolersPlanCell);
-		active_plan_cell->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
-		message_list->add_child(active_plan_cell);
+	if (p_plan.is_empty()) {
+		plan_capsule->clear_plan();
+		return;
 	}
-	active_plan_cell->set_plan(p_explanation, p_plan);
-	if (status_cell) {
-		message_list->move_child(status_cell, message_list->get_child_count() - 1);
-	}
-	_on_cell_content_changed();
+	plan_capsule->set_plan(p_explanation, p_plan);
 }

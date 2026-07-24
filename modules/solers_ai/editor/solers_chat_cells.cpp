@@ -596,6 +596,17 @@ void SolersThinkingCell::append_reasoning(const String &p_text) {
 	queue_redraw();
 }
 
+void SolersThinkingCell::set_settled_reasoning(const String &p_text) {
+	reasoning = p_text;
+	active = false;
+	thought_msec = 0;
+	set_process_internal(false);
+	shaped_chars = -1;
+	shaped_for_width = -1.0f;
+	_shape(get_size().x);
+	queue_redraw();
+}
+
 void SolersThinkingCell::set_done() {
 	if (!active) {
 		return;
@@ -742,21 +753,10 @@ void SolersThinkingCell::_notification(int p_what) {
 }
 
 /* ------------------------------------------------------------------ */
-/* SolersPlanCell                                                      */
+/* Plan text formatter                                                 */
 /* ------------------------------------------------------------------ */
 
-SolersPlanCell::SolersPlanCell() {
-	set_mouse_filter(MOUSE_FILTER_IGNORE);
-	set_h_size_flags(SIZE_EXPAND_FILL);
-	body.instantiate();
-	body->set_break_flags(TextServer::BREAK_MANDATORY | TextServer::BREAK_WORD_BOUND | TextServer::BREAK_ADAPTIVE);
-}
-
-String SolersPlanCell::_body_text() const {
-	return format_plan_text(explanation, plan);
-}
-
-String SolersPlanCell::format_plan_text(const String &p_explanation, const Array &p_plan) {
+String solers_format_plan_text(const String &p_explanation, const Array &p_plan) {
 	String text = p_explanation.strip_edges();
 	for (int i = 0; i < p_plan.size(); i++) {
 		const Dictionary item = p_plan[i];
@@ -770,79 +770,6 @@ String SolersPlanCell::format_plan_text(const String &p_explanation, const Array
 		text += marker + String(item.get("step", String()));
 	}
 	return text;
-}
-
-void SolersPlanCell::set_plan(const String &p_explanation, const Array &p_plan) {
-	explanation = p_explanation.strip_edges();
-	plan = p_plan.duplicate(true);
-	shaped_for_width = -1.0f;
-	_shape(get_size().x);
-	queue_redraw();
-}
-
-void SolersPlanCell::_shape(float p_cell_width) {
-	const float ed = EDSCALE;
-	const float width = MAX(p_cell_width, 60.0f * ed);
-	if (Math::is_equal_approx(shaped_for_width, width)) {
-		return;
-	}
-	shaped_for_width = width;
-
-	body->clear();
-	const String text = _body_text();
-	const Ref<Font> font = solers_cell_font(this);
-	float body_height = 0.0f;
-	if (font.is_valid() && !text.is_empty()) {
-		body->set_line_spacing(3.0f * ed);
-		body->set_width(MAX(20.0f * ed, width - 24.0f * ed));
-		body->add_string(text, font, int(12 * ed));
-		body_height = body->get_size().y;
-	} else if (!text.is_empty()) {
-		body_height = (plan.size() + (explanation.is_empty() ? 0 : 1)) * 18.0f * ed;
-	}
-
-	const float old_height = cell_height;
-	cell_height = 36.0f * ed + body_height + 10.0f * ed;
-	if (!Math::is_equal_approx(old_height, cell_height)) {
-		update_minimum_size();
-		if (content_changed.is_valid()) {
-			content_changed.call();
-		}
-	}
-}
-
-Size2 SolersPlanCell::get_minimum_size() const {
-	return Size2(0, cell_height);
-}
-
-void SolersPlanCell::_notification(int p_what) {
-	switch (p_what) {
-		case NOTIFICATION_RESIZED: {
-			shaped_for_width = -1.0f;
-			_shape(get_size().x);
-		} break;
-		case NOTIFICATION_THEME_CHANGED: {
-			shaped_for_width = -1.0f;
-			_shape(get_size().x);
-			queue_redraw();
-		} break;
-		case NOTIFICATION_DRAW: {
-			_shape(get_size().x);
-			const float ed = EDSCALE;
-			const Rect2 card(Point2(), get_size());
-			solers_cell_fill(this, card, Color(0.12f, 0.14f, 0.18f, 0.72f), 10.0f * ed, Color(1, 1, 1, 0.08f));
-			const Ref<Font> font = solers_cell_font(this);
-			if (font.is_null()) {
-				break;
-			}
-			const int header_size = int(12 * ed);
-			const float baseline = 12.0f * ed + font->get_ascent(header_size);
-			draw_string(font, Point2(12.0f * ed, baseline).floor(), TTR("Plan"), HORIZONTAL_ALIGNMENT_LEFT, -1, header_size, SOLERS_CELL_TEXT_PRIMARY);
-			if (body->get_line_count() > 0) {
-				body->draw(get_canvas_item(), Point2(12.0f * ed, 34.0f * ed), SOLERS_CELL_TEXT_DIM);
-			}
-		} break;
-	}
 }
 
 /* ------------------------------------------------------------------ */

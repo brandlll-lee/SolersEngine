@@ -156,6 +156,7 @@ public:
 	virtual void gui_input(const Ref<InputEvent> &p_event) override;
 
 	void append_reasoning(const String &p_text);
+	void set_settled_reasoning(const String &p_text);
 	void set_done();
 	bool is_active() const { return active; }
 
@@ -164,37 +165,9 @@ public:
 	SolersThinkingCell();
 };
 
-// One live execution plan. The dock creates a single cell and replaces this
-// snapshot on every update_plan call, so long tasks do not accumulate cards.
-class SolersPlanCell : public Control {
-	GDCLASS(SolersPlanCell, Control);
-
-	String explanation;
-	Array plan;
-	Ref<TextParagraph> body;
-	float shaped_for_width = -1.0f;
-	float cell_height = 0.0f;
-
-	Callable content_changed;
-
-	String _body_text() const;
-	void _shape(float p_cell_width);
-
-protected:
-	void _notification(int p_what);
-	static void _bind_methods() {}
-
-public:
-	virtual Size2 get_minimum_size() const override;
-
-	static String format_plan_text(const String &p_explanation, const Array &p_plan);
-	void set_plan(const String &p_explanation, const Array &p_plan);
-	String get_explanation() const { return explanation; }
-	Array get_plan() const { return plan.duplicate(true); }
-	void set_content_changed_callback(const Callable &p_cb) { content_changed = p_cb; }
-
-	SolersPlanCell();
-};
+// Plan snapshots are rendered by SolersPlanCapsule above the composer, not as
+// chat timeline cells. Keep a pure formatter for tests / audit text.
+String solers_format_plan_text(const String &p_explanation, const Array &p_plan);
 
 // One tool invocation, updated in place across its lifecycle. Running rows
 // use shimmer text; settled rows keep only the tool icon, label and duration.

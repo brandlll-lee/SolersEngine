@@ -82,12 +82,12 @@ void initialize_solers_ai_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(SolersDock);
 		GDREGISTER_CLASS(SolersGlyphButton);
 		GDREGISTER_CLASS(SolersSelectChip);
+		GDREGISTER_CLASS(SolersPlanCapsule);
 		GDREGISTER_CLASS(SolersToolbarDivider);
 		GDREGISTER_CLASS(SolersSurface);
 		GDREGISTER_CLASS(SolersUserBubble);
 		GDREGISTER_CLASS(SolersAssistantCell);
 		GDREGISTER_CLASS(SolersThinkingCell);
-		GDREGISTER_CLASS(SolersPlanCell);
 		GDREGISTER_CLASS(SolersToolCell);
 		GDREGISTER_CLASS(SolersToolGroupCell);
 		GDREGISTER_CLASS(SolersStatusCell);

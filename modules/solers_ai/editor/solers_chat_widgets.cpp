@@ -18,6 +18,9 @@
 #include "editor/themes/editor_scale.h"
 #include "modules/modules_enabled.gen.h"
 #include "modules/solers_ai/generated/solers_provider_logos.gen.h"
+#include "scene/gui/box_container.h"
+#include "scene/gui/label.h"
+#include "scene/gui/panel_container.h"
 #include "scene/resources/font.h"
 #include "scene/resources/image_texture.h"
 #include "scene/resources/style_box_flat.h"
@@ -441,6 +444,14 @@ void SolersSelectChip::set_show_chevron(bool p_show) {
 	queue_redraw();
 }
 
+void SolersSelectChip::set_filled(bool p_filled) {
+	if (filled == p_filled) {
+		return;
+	}
+	filled = p_filled;
+	queue_redraw();
+}
+
 Size2 SolersSelectChip::get_minimum_size() const {
 	const float ed = EDSCALE;
 	const Ref<Font> font = get_theme_font(SceneStringName(font), SNAME("Label"));
@@ -531,7 +542,8 @@ void SolersSelectChip::_notification(int p_what) {
 			const Rect2 r(Point2(), get_size());
 			const float ed = EDSCALE;
 
-			solers_draw_wash(this, r, 0.055f * anim + (pressing ? 0.04f : 0.0f), 12.0f * ed);
+			const float wash = filled ? (0.085f + 0.04f * anim + (pressing ? 0.03f : 0.0f)) : (0.055f * anim + (pressing ? 0.04f : 0.0f));
+			solers_draw_wash(this, r, wash, 12.0f * ed);
 
 			const bool accented = solers_has_accent(accent);
 			const Color strong_idle = accented ? accent : SOLERS_TEXT_STRONG;
@@ -761,4 +773,201 @@ Ref<Texture2D> solers_mention_chip_icon(const Dictionary &p_mention, int p_px) {
 		return editor->get_class_icon(type.is_empty() ? String("Node") : type, "Node");
 	}
 	return editor->get_class_icon("File");
+}
+
+/* ------------------------------------------------------------------ */
+/* SolersPlanCapsule                                                   */
+/* ------------------------------------------------------------------ */
+
+SolersPlanCapsule::SolersPlanCapsule() {
+	set_mouse_filter(MOUSE_FILTER_STOP);
+	set_h_size_flags(SIZE_SHRINK_CENTER);
+	set_v_size_flags(SIZE_SHRINK_CENTER);
+	hide();
+
+	detail_panel = memnew(PanelContainer);
+	detail_panel->set_mouse_filter(MOUSE_FILTER_STOP);
+	detail_panel->set_as_top_level(true);
+	detail_panel->hide();
+	add_child(detail_panel);
+
+	Ref<StyleBoxFlat> detail_style;
+	detail_style.instantiate();
+	detail_style->set_bg_color(Color(0.11f, 0.115f, 0.125f, 0.96f));
+	detail_style->set_border_width_all(0);
+	detail_style->set_corner_radius_all(10);
+	detail_style->set_content_margin_all(10);
+	detail_panel->add_theme_style_override("panel", detail_style);
+
+	detail_list = memnew(VBoxContainer);
+	detail_list->add_theme_constant_override("separation", 6);
+	detail_panel->add_child(detail_list);
+	detail_panel->connect(SceneStringName(mouse_entered), callable_mp(this, &SolersPlanCapsule::_on_detail_mouse).bind(true));
+	detail_panel->connect(SceneStringName(mouse_exited), callable_mp(this, &SolersPlanCapsule::_on_detail_mouse).bind(false));
+}
+
+int SolersPlanCapsule::_current_step_index() const {
+	int first_open = -1;
+	for (int i = 0; i < plan.size(); i++) {
+		const String status = Dictionary(plan[i]).get("status", "pending");
+		if (status == "in_progress") {
+			return i + 1;
+		}
+		if (first_open < 0 && status != "completed") {
+			first_open = i + 1;
+		}
+	}
+	if (first_open > 0) {
+		return first_open;
+	}
+	return plan.is_empty() ? 0 : plan.size();
+}
+
+bool SolersPlanCapsule::_has_open_work() const {
+	if (plan.is_empty()) {
+		return false;
+	}
+	for (int i = 0; i < plan.size(); i++) {
+		if (String(Dictionary(plan[i]).get("status", "pending")) != "completed") {
+			return true;
+		}
+	}
+	return false;
+}
+
+Size2 SolersPlanCapsule::_chip_size() const {
+	const float ed = EDSCALE;
+	if (!_has_open_work()) {
+		return Size2();
+	}
+	const Ref<Font> font = get_theme_font(SceneStringName(font), SNAME("Label"));
+	const int font_size = int(12 * ed);
+	const String label = vformat("Step %d / %d", _current_step_index(), plan.size());
+	float width = 28.0f * ed;
+	if (font.is_valid()) {
+		width += font->get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
+	} else {
+		width += 72.0f * ed;
+	}
+	return Size2(width, 28.0f * ed);
+}
+
+void SolersPlanCapsule::_rebuild_detail() {
+	if (!detail_list) {
+		return;
+	}
+	while (detail_list->get_child_count() > 0) {
+		Node *child = detail_list->get_child(0);
+		detail_list->remove_child(child);
+		child->queue_free();
+	}
+	for (int i = 0; i < plan.size(); i++) {
+		const Dictionary item = plan[i];
+		const String status = item.get("status", "pending");
+		const String marker = status == "completed" ? String::utf8("✓ ") :
+				status == "in_progress" ? String::utf8("→ ") :
+										  String::utf8("○ ");
+		Label *row = memnew(Label(marker + String(item.get("step", String()))));
+		row->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+		row->set_custom_minimum_size(Size2(220 * EDSCALE, 0));
+		row->add_theme_color_override("font_color", status == "completed" ? Color(0.55f, 0.58f, 0.62f) : Color(0.82f, 0.84f, 0.88f));
+		detail_list->add_child(row);
+	}
+}
+
+void SolersPlanCapsule::_on_detail_mouse(bool p_entered) {
+	detail_hovering = p_entered;
+	_sync_detail_visibility();
+}
+
+void SolersPlanCapsule::_sync_detail_visibility() {
+	if (!detail_panel) {
+		return;
+	}
+	const bool show = (hovering || detail_hovering) && _has_open_work() && !plan.is_empty();
+	if (!show) {
+		detail_panel->hide();
+		return;
+	}
+	const Size2 popup_size = detail_panel->get_combined_minimum_size();
+	const Vector2 origin = get_global_transform_with_canvas().get_origin();
+	const Size2 chip = get_size();
+	detail_panel->set_size(popup_size);
+	detail_panel->set_position(origin + Vector2((chip.x - popup_size.x) * 0.5f, -popup_size.y - 8.0f * EDSCALE));
+	detail_panel->show();
+}
+
+void SolersPlanCapsule::set_plan(const String &p_explanation, const Array &p_plan) {
+	explanation = p_explanation.strip_edges();
+	plan = p_plan.duplicate(true);
+	_rebuild_detail();
+	set_visible(_has_open_work());
+	update_minimum_size();
+	queue_redraw();
+	_sync_detail_visibility();
+}
+
+void SolersPlanCapsule::clear_plan() {
+	explanation = String();
+	plan.clear();
+	hovering = false;
+	detail_hovering = false;
+	_rebuild_detail();
+	hide();
+	if (detail_panel) {
+		detail_panel->hide();
+	}
+	update_minimum_size();
+	queue_redraw();
+}
+
+Size2 SolersPlanCapsule::get_minimum_size() const {
+	return _chip_size();
+}
+
+void SolersPlanCapsule::_notification(int p_what) {
+	switch (p_what) {
+		case NOTIFICATION_MOUSE_ENTER: {
+			hovering = true;
+			_sync_detail_visibility();
+			queue_redraw();
+		} break;
+		case NOTIFICATION_MOUSE_EXIT: {
+			hovering = false;
+			_sync_detail_visibility();
+			queue_redraw();
+		} break;
+		case NOTIFICATION_THEME_CHANGED:
+		case NOTIFICATION_RESIZED: {
+			update_minimum_size();
+			queue_redraw();
+		} break;
+		case NOTIFICATION_VISIBILITY_CHANGED: {
+			if (!is_visible_in_tree() && detail_panel) {
+				detail_panel->hide();
+			}
+		} break;
+		case NOTIFICATION_DRAW: {
+			if (!_has_open_work()) {
+				break;
+			}
+			const float ed = EDSCALE;
+			const Rect2 r(Point2(), get_size());
+			solers_draw_wash(this, r, 0.09f, 14.0f * ed);
+
+			const Ref<Font> font = get_theme_font(SceneStringName(font), SNAME("Label"));
+			if (font.is_null()) {
+				break;
+			}
+			const int font_size = int(12 * ed);
+			const String label = vformat("Step %d / %d", _current_step_index(), plan.size());
+			const Color text = Color(0.86f, 0.88f, 0.92f);
+			const float ring = 8.0f * ed;
+			const Point2 ring_c(10.0f * ed + ring * 0.5f, r.size.y * 0.5f);
+			draw_arc(ring_c, ring * 0.5f, -Math::PI * 0.5f, Math::PI * 1.2f, 24, Color(0.45f, 0.72f, 0.95f, 0.9f), 1.5f * ed, true);
+			const float ascent = font->get_ascent(font_size);
+			const float baseline = (r.size.y - font->get_height(font_size)) * 0.5f + ascent;
+			draw_string(font, Point2(10.0f * ed + ring + 6.0f * ed, baseline).floor(), label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, text);
+		} break;
+	}
 }

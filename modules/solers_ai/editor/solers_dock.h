@@ -43,7 +43,7 @@ class SolersGlyphButton;
 class SolersMCPAdapter;
 class SolersPermissionManager;
 class SolersPMAIView;
-class SolersPlanCell;
+class SolersPlanCapsule;
 class SolersObservationService;
 class SolersRpcServer;
 class SolersSelectChip;
@@ -70,6 +70,7 @@ class SolersDock : public PanelContainer {
 	ScrollContainer *session_scroll = nullptr;
 	VBoxContainer *session_list = nullptr;
 	MarginContainer *composer_inset = nullptr;
+	SolersPlanCapsule *plan_capsule = nullptr;
 	TextEdit *chat_input = nullptr;
 	SolersGlyphButton *panel_button = nullptr;
 	SolersGlyphButton *session_button = nullptr;
@@ -114,7 +115,6 @@ class SolersDock : public PanelContainer {
 	SolersAssistantCell *active_text_cell = nullptr;
 	SolersStatusCell *status_cell = nullptr;
 	SolersToolGroupCell *active_tool_group = nullptr;
-	SolersPlanCell *active_plan_cell = nullptr;
 	HashMap<String, SolersToolCell *> tool_cells_by_id;
 	SolersToolCell *last_started_tool_cell = nullptr;
 	String approval_choice = "once";
@@ -177,6 +177,7 @@ class SolersDock : public PanelContainer {
 	void _on_agent_turn_completed(const Dictionary &p_result);
 	void _on_agent_turn_failed(const Dictionary &p_error);
 	void _on_agent_turn_retrying(int p_attempt, const String &p_message);
+	void _on_agent_turn_waiting(const Dictionary &p_waiting);
 	void _on_agent_plan_updated(const String &p_explanation, const Array &p_plan);
 	void _sync_approval_panel();
 	void _set_approval_choice(const String &p_choice);

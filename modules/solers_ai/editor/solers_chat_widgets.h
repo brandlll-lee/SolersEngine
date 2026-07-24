@@ -24,10 +24,13 @@
 
 #pragma once
 
+#include "core/variant/array.h"
 #include "core/variant/callable.h"
 #include "core/variant/dictionary.h"
+#include "scene/gui/box_container.h"
 #include "scene/gui/control.h"
 #include "scene/gui/margin_container.h"
+#include "scene/gui/panel_container.h"
 #include "scene/resources/font.h"
 #include "scene/resources/texture.h"
 
@@ -106,6 +109,7 @@ class SolersSelectChip : public Control {
 	String muted_text;
 	Color accent = Color(0, 0, 0, 0); // Transparent means neutral gray ramp.
 	bool show_chevron = true; // Trailing dropdown chevron (false for static pills).
+	bool filled = false; // Idle capsule wash (Cursor Agent chip); model chip stays ghost.
 
 	bool hovering = false;
 	bool pressing = false;
@@ -130,9 +134,43 @@ public:
 	void set_texts(const String &p_strong, const String &p_muted);
 	void set_leading_texture(const Ref<Texture2D> &p_texture);
 	void set_show_chevron(bool p_show);
+	void set_filled(bool p_filled);
 	void set_pressed_callback(const Callable &p_cb) { pressed_callback = p_cb; }
 
 	SolersSelectChip();
+};
+
+// Composer-adjacent plan chip: "Step N / M" capsule; hover reveals the todo list.
+class SolersPlanCapsule : public Control {
+	GDCLASS(SolersPlanCapsule, Control);
+
+	String explanation;
+	Array plan;
+	bool hovering = false;
+	bool detail_hovering = false;
+	PanelContainer *detail_panel = nullptr;
+	VBoxContainer *detail_list = nullptr;
+
+	void _rebuild_detail();
+	void _sync_detail_visibility();
+	int _current_step_index() const;
+	bool _has_open_work() const;
+	Size2 _chip_size() const;
+	void _on_detail_mouse(bool p_entered);
+
+protected:
+	void _notification(int p_what);
+	static void _bind_methods() {}
+
+public:
+	virtual Size2 get_minimum_size() const override;
+
+	void set_plan(const String &p_explanation, const Array &p_plan);
+	void clear_plan();
+	bool is_visible_for_plan() const { return _has_open_work(); }
+	Array get_plan() const { return plan.duplicate(true); }
+
+	SolersPlanCapsule();
 };
 
 // Self-drawn 1px hairline vertical divider used between composer toolbar groups.
