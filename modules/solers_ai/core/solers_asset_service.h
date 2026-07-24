@@ -53,6 +53,7 @@ class SolersAssetService : public Object {
 	static Dictionary _error_data(const String &p_code, const String &p_message);
 	static void _run_task(Task *p_task);
 
+	static bool _is_project_import_terminal_status(const String &p_status);
 	Dictionary _ok(const Variant &p_data) const;
 	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
 	Dictionary _provider_config(const String &p_kind, const String &p_provider) const;

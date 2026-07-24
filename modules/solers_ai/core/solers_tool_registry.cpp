@@ -1566,7 +1566,7 @@ void SolersToolRegistry::_register_asset_tools() {
 	generate_properties["kind"] = generation_kind_schema;
 	Dictionary prompt_schema;
 	prompt_schema["type"] = "string";
-	prompt_schema["description"] = "Generation prompt. A plugin may also accept explicit input attachments.";
+	prompt_schema["description"] = "Generation prompt. With reference images prefer one short sentence (identity/style/pose only); long multi-constraint essays dilute Image-to-3D. Text-to-3D may be slightly richer but stay concise.";
 	generate_properties["prompt"] = prompt_schema;
 	Dictionary attachments_schema;
 	attachments_schema["type"] = "array";
@@ -1598,7 +1598,7 @@ void SolersToolRegistry::_register_asset_tools() {
 	generate_schema["required"] = generate_required;
 	generate_schema["additionalProperties"] = false;
 	const CharString generate_json = JSON::stringify(generate_schema).utf8();
-	const CharString generate_description = vformat("Generate an asset through a registered Solers plugin (%s), stage provider output under user://solers_jobs, then import it directly into the requested res:// project folder. The returned job becomes terminal only after Godot verifies the imported resources.", generation_labels).utf8();
+	const CharString generate_description = vformat("Generate an asset through a registered Solers plugin (%s), stage provider output under user://solers_jobs, then import it directly into the requested res:// project folder. The returned job becomes terminal only after Godot verifies the imported resources. For Meshy Image-to-3D hero quality use provider_options model_type=standard and ai_model=meshy-6 (or latest), optionally should_remesh=false; use smart-topology/meshy-t2 only when an explicit low-poly budget is required. Keep prompts short when input_attachments are set.", generation_labels).utf8();
 	_add("asset.generate", generate_description.get_data(), generate_json.get_data(),
 			SolersPermissionManager::PERMISSION_EDIT_FILES, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DIRECT,
 			[svc](const SolersToolContext &ctx, const Dictionary &a) { return svc->generate_for_session(_solers_apply_plugin_mention(ctx, a, "supports_generation"), ctx.session_id); },
@@ -1680,12 +1680,12 @@ void SolersToolRegistry::_register_asset_tools() {
 				accesses.push_back(project);
 				return accesses;
 			});
-	_add_observe_exposed("asset.status", "Read one generation, acquisition, operation, or project-import job by id.",
+	_add_observe_exposed("asset.status", "Read one asset job that has already reached a project-import terminal state (imported, draft, failed, cancelled, or interrupted). Returns ASSET_NOT_READY while the job is still processing — do not retry this call to poll progress; call job.wait once and stop issuing tools so Solers can park and resume this turn.",
 			R"({"type":"object","properties":{"asset_id":{"type":"string","minLength":1,"description":"Stable id returned by an asset job."}},"required":["asset_id"],"additionalProperties":false})",
 			SolersToolExposure::DIRECT,
 			[svc](const SolersToolContext &, const Dictionary &a) { return svc->status(a); },
 			_access_by_arg("read", "asset:", "asset_id"));
-	_add_observe_exposed("job.wait", "Declare background asset jobs required before the Agent can continue. When no conflict-free work remains, call once and stop issuing tools; the same turn resumes after a requested job reaches its project-import terminal state.",
+	_add_observe_exposed("job.wait", "Declare background asset jobs required before the Agent can continue. When no conflict-free work remains, call once and stop issuing tools; Solers parks this turn and resumes it after a requested job reaches its project-import terminal state.",
 			R"({"type":"object","properties":{"ids":{"type":"array","minItems":1,"items":{"type":"string","minLength":1},"uniqueItems":true}},"required":["ids"],"additionalProperties":false})",
 			SolersToolExposure::DIRECT,
 			[svc](const SolersToolContext &ctx, const Dictionary &a) { return svc->wait_jobs(a, ctx.session_id); },

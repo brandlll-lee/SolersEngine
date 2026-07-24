@@ -396,6 +396,10 @@ Dictionary SolersAssetService::_ok(const Variant &p_data) const {
 	return result;
 }
 
+bool SolersAssetService::_is_project_import_terminal_status(const String &p_status) {
+	return p_status == "imported" || p_status == "draft" || p_status == "failed" || p_status == "cancelled" || p_status == "interrupted";
+}
+
 Dictionary SolersAssetService::_error(const String &p_code, const String &p_message, bool p_recoverable) const {
 	Dictionary error;
 	error["code"] = p_code;
@@ -1780,7 +1784,7 @@ Dictionary SolersAssetService::wait_jobs(const Dictionary &p_args, const String 
 			return _error("JOB_SESSION_MISMATCH", vformat("Background job belongs to another Agent session: %s", id), false);
 		}
 		const String status = String(manifest.get("status", String())).to_lower();
-		if (status == "imported" || status == "draft" || status == "failed" || status == "cancelled" || status == "interrupted") {
+		if (_is_project_import_terminal_status(status)) {
 			Dictionary state;
 			state["id"] = id;
 			state["status"] = status;
@@ -1799,6 +1803,13 @@ Dictionary SolersAssetService::wait_jobs(const Dictionary &p_args, const String 
 	data["pending_ids"] = pending_ids;
 	data["terminal"] = terminal;
 	data["waiting"] = !pending_ids.is_empty();
+	if (!pending_ids.is_empty()) {
+		// Host authority: the session parks after this tool result and resumes
+		// via background_job_delta. This text describes that fact; it does not
+		// replace the PHASE_WAITING gate.
+		data["host_parked"] = true;
+		data["next_step"] = "Solers parks this turn now. Do not call asset.status or re-issue job.wait; completion arrives automatically as a background job delta.";
+	}
 	return _ok(data);
 }
 
@@ -2086,6 +2097,23 @@ Dictionary SolersAssetService::status(const Dictionary &p_args) const {
 		return _error("NOT_FOUND", "Asset task was not found.");
 	}
 	_cleanup_finished_task(asset_id);
+	const String status = String(manifest.get("status", String())).to_lower();
+	if (!_is_project_import_terminal_status(status)) {
+		const String stage = String(manifest.get("stage", String()));
+		const Variant progress = manifest.get("progress", Variant());
+		Dictionary error = _error("ASSET_NOT_READY",
+				vformat("Asset %s is still %s (stage: %s, progress: %s). Call job.wait once with this asset id and stop issuing tools; Solers parks this turn and resumes with a background job delta when the job reaches a project-import terminal state. Do not retry asset.status to poll progress.",
+						asset_id,
+						status.is_empty() ? "processing" : status,
+						stage.is_empty() ? "processing" : stage,
+						progress.get_type() == Variant::NIL ? String("unknown") : String(progress)));
+		Dictionary data;
+		data["status"] = status;
+		data["stage"] = stage;
+		data["progress"] = progress;
+		error["data"] = data;
+		return error;
+	}
 	return _ok(manifest);
 }
 
@@ -2104,9 +2132,9 @@ Dictionary SolersAssetService::start_project_import(const Dictionary &p_args) {
 		const int progress = (int)manifest.get("progress", 0);
 		Dictionary error;
 		if (status == "queued" || status == "running") {
-			error = _error("ASSET_NOT_READY", vformat("Asset %s is still %s (stage: %s, %d%%). Do other work, then call job.wait with this asset id; Solers resumes you when it is ready.", asset_id, status, stage.is_empty() ? "processing" : stage, progress));
+			error = _error("ASSET_NOT_READY", vformat("Asset %s is still %s (stage: %s, %d%%). Call job.wait once with this asset id and stop issuing tools; Solers resumes you when it reaches a project-import terminal state.", asset_id, status, stage.is_empty() ? "processing" : stage, progress));
 		} else {
-			error = _error("ASSET_NOT_READY", vformat("Asset %s is in status \"%s\" and cannot be imported. Inspect it with asset.status, or acquire it again.", asset_id, status));
+			error = _error("ASSET_NOT_READY", vformat("Asset %s is in status \"%s\" and cannot be imported. Call job.wait if the job is still processing, or acquire it again.", asset_id, status));
 		}
 		Dictionary data;
 		data["status"] = status;
