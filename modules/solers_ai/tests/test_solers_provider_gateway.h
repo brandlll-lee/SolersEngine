@@ -770,33 +770,75 @@ TEST_CASE("[SolersTool] pending work has a distinct continuation callback") {
 	CHECK(polls == 1);
 }
 
-TEST_CASE("[SolersBuiltinSkills] compiled index exposes catalog summary without full content") {
-	CHECK(SolersBuiltinSkills::get_count() == 14);
-
-	SolersBuiltinSkillView skill;
-	REQUIRE(SolersBuiltinSkills::find_by_name("godot-3d-rendering", skill));
-	CHECK(skill.name == "godot-3d-rendering");
-	CHECK(!skill.description.is_empty());
-	CHECK(skill.content.contains("Use ClassDB only for an unknown current-engine API"));
-	CHECK(skill.content.contains("one authoritative final GI path"));
-	REQUIRE(SolersBuiltinSkills::find_by_name("godot-project-editor-assets", skill));
-	CHECK(skill.content.contains("Preserve standard Godot paths"));
-	REQUIRE(SolersBuiltinSkills::find_by_name("godot-plugins-terrain", skill));
-	CHECK(skill.content.contains("never invent a `terrain.*` API"));
-	REQUIRE(SolersBuiltinSkills::find_by_name("photorealism-pipeline", skill));
-	CHECK(skill.content.contains("physical_light_units"));
-	REQUIRE(SolersBuiltinSkills::find_by_name("destruction-vfx", skill));
-	CHECK(skill.content.contains("decompress"));
+TEST_CASE("[SolersBuiltinSkills] registry catalog and content stay consistent without pinned name lists") {
+	const int count = SolersBuiltinSkills::get_count();
+	REQUIRE(count > 0);
 
 	const String catalog = SolersBuiltinSkills::build_catalog_prompt();
-	CHECK(catalog.contains("godot-3d-rendering"));
-	CHECK(catalog.contains("godot-xr-mobile-platforms"));
-	CHECK(catalog.contains("photorealism-pipeline"));
-	CHECK(catalog.contains("destruction-vfx"));
-	CHECK_FALSE(catalog.contains("one authoritative final GI path"));
+	CHECK(catalog.contains("Built-in Solers skills"));
+	CHECK_FALSE(catalog.contains("## Laws"));
+
+	Vector<String> catalog_names;
+	const PackedStringArray lines = catalog.split("\n");
+	for (int i = 0; i < lines.size(); i++) {
+		const String line = String(lines[i]).strip_edges();
+		if (!line.begins_with("- ") || !line.contains(":")) {
+			continue;
+		}
+		catalog_names.push_back(line.substr(2, line.find(":") - 2).strip_edges());
+	}
+	CHECK(catalog_names.size() == count);
+
+	for (int i = 0; i < catalog_names.size(); i++) {
+		const String name = catalog_names[i];
+		SolersBuiltinSkillView skill;
+		REQUIRE(SolersBuiltinSkills::find_by_name(name, skill));
+		CHECK(skill.name == name);
+		CHECK(!skill.description.is_empty());
+		CHECK(skill.content.contains("## When to use"));
+		CHECK(skill.content.contains("## Verify"));
+		CHECK_FALSE(skill.content.contains("photorealism-pipeline"));
+		CHECK_FALSE(skill.name == "photorealism-pipeline");
+		CHECK_FALSE(skill.name == "destruction-vfx");
+		CHECK_FALSE(skill.name == "godot-plugins-terrain");
+	}
+
+	SolersBuiltinSkillView rendering;
+	REQUIRE(SolersBuiltinSkills::find_by_name("godot-3d-rendering", rendering));
+	CHECK(rendering.content.contains("one authoritative final GI path") || rendering.content.contains("One authoritative final GI path") || rendering.content.contains("one final GI"));
+	CHECK(rendering.content.contains("physical_light_units"));
+	CHECK(rendering.description.to_lower().contains("photoreal"));
+
+	SolersBuiltinSkillView camera;
+	REQUIRE(SolersBuiltinSkills::find_by_name("godot-camera-cinematography", camera));
+	CHECK(camera.content.contains("interpolate_with"));
+	CHECK(camera.content.contains("make_current"));
+	CHECK(camera.content.contains("godot-3d-rendering"));
+	CHECK_FALSE(camera.content.contains("photorealism-pipeline"));
+
+	SolersBuiltinSkillView terrain;
+	REQUIRE(SolersBuiltinSkills::find_by_name("godot-procedural-terrain", terrain));
+	CHECK(terrain.content.contains("addon.inspect"));
+	CHECK_FALSE(terrain.content.contains("Terrain3D"));
+
+	SolersBuiltinSkillView vfx;
+	REQUIRE(SolersBuiltinSkills::find_by_name("godot-vfx-particles", vfx));
+	CHECK(vfx.content.contains("decompress"));
+
+	SolersBuiltinSkillView shaders;
+	REQUIRE(SolersBuiltinSkills::find_by_name("godot-shaders", shaders));
+	CHECK(shaders.content.contains("shader_type"));
+
+	SolersBuiltinSkillView assets;
+	REQUIRE(SolersBuiltinSkills::find_by_name("godot-project-editor-assets", assets));
+	CHECK(assets.content.contains(".import"));
+	CHECK(assets.content.contains("asset.capabilities"));
+	CHECK_FALSE(assets.content.contains("meshy-6"));
+	CHECK_FALSE(assets.content.contains("job.wait"));
 
 	SolersBuiltinSkillView missing;
 	CHECK_FALSE(SolersBuiltinSkills::find_by_name("synthetic-never-registered-skill", missing));
+	CHECK_FALSE(SolersBuiltinSkills::find_by_name("photorealism-pipeline", missing));
 }
 
 TEST_CASE("[SolersToolRegistry] skill.read serves compiled builtin skills") {
@@ -813,7 +855,7 @@ TEST_CASE("[SolersToolRegistry] skill.read serves compiled builtin skills") {
 	const Dictionary data = result.get("data", Dictionary());
 	CHECK(data.get("name", String()) == "godot-3d-rendering");
 	CHECK(!String(data.get("content", String())).is_empty());
-	CHECK(String(data.get("content", String())).contains("one authoritative final GI path"));
+	CHECK(String(data.get("content", String())).contains("physical_light_units"));
 	CHECK_FALSE(data.has("required_tools"));
 }
 
@@ -1964,14 +2006,34 @@ TEST_CASE("[SolersObservationService] structured search and runtime observations
 
 	Dictionary observe_args;
 	observe_args["since_cursor"] = 0;
-	observe_args["max_events"] = 2;
 	const Dictionary runtime = observation_service.observe_runtime(observe_args);
 	CHECK(runtime.has("cursor"));
 	CHECK(runtime.has("runtime_epoch"));
-	CHECK(Array(runtime.get("events", Array())).size() <= 2);
+	CHECK(runtime.has("error_digest"));
+	CHECK(runtime.has("epoch_error_count"));
+	CHECK(Array(runtime.get("events", Array())).is_empty());
+
+	Dictionary include_events_args;
+	include_events_args["include_events"] = true;
+	include_events_args["max_events"] = 2;
+	const Dictionary with_events = observation_service.observe_runtime(include_events_args);
+	CHECK(Array(with_events.get("events", Array())).size() <= 2);
 	Ref<DirAccess> project_root = DirAccess::open("res://");
 	REQUIRE(project_root.is_valid());
 	CHECK(project_root->remove(path.get_file()) == OK);
+}
+
+TEST_CASE("[SolersObservationService] runtime capture waits for visual readiness") {
+	SolersObservationService observation_service;
+	Dictionary args;
+	args["target"] = "runtime";
+	const Dictionary pending = observation_service.capture_viewport(args);
+	REQUIRE((bool)pending.get("ok", false));
+	const Dictionary data = pending.get("data", Dictionary());
+	CHECK(data.get("status", String()) == "pending");
+	CHECK((bool)data.get("awaiting_runtime_ready", false));
+	const Dictionary poll_args = data.get("poll_args", Dictionary());
+	CHECK_FALSE(observation_service.is_viewport_capture_ready(poll_args));
 }
 
 TEST_CASE("[SolersToolRegistry] project.search rejects incomplete requests before execution") {
@@ -2180,6 +2242,73 @@ TEST_CASE("[SolersAssetService][SceneTree] direct texture-set import follows req
 	DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(target_dir));
 }
 
+TEST_CASE("[SolersPluginMeshy] enhancement options require standard meshy-6 pipeline") {
+	SolersPluginMeshy meshy;
+	Dictionary attachment;
+	attachment["id"] = "img_contract";
+	Array source_attachments;
+	source_attachments.push_back(attachment);
+
+	auto make_manifest = [&](const Dictionary &p_options, bool p_with_image) {
+		Dictionary manifest;
+		manifest["provider_options"] = p_options.duplicate(true);
+		manifest["source_attachments"] = p_with_image ? source_attachments : Array();
+		return manifest;
+	};
+
+	Dictionary smart_options;
+	smart_options["model_type"] = "smart-topology";
+	smart_options["ai_model"] = "meshy-t2";
+	smart_options["image_enhancement"] = true;
+	Dictionary rejected = meshy.prepare_generate("3d", Dictionary(), make_manifest(smart_options, true));
+	CHECK_FALSE(rejected.is_empty());
+	CHECK(rejected.get("code", String()) == "INVALID_ARGUMENT");
+	CHECK(String(rejected.get("message", String())).contains("image_enhancement"));
+
+	smart_options.erase("image_enhancement");
+	smart_options["remove_lighting"] = true;
+	rejected = meshy.prepare_generate("3d", Dictionary(), make_manifest(smart_options, true));
+	CHECK_FALSE(rejected.is_empty());
+	CHECK(String(rejected.get("message", String())).contains("remove_lighting"));
+
+	smart_options.erase("remove_lighting");
+	smart_options["hd_texture"] = true;
+	rejected = meshy.prepare_generate("3d", Dictionary(), make_manifest(smart_options, true));
+	CHECK_FALSE(rejected.is_empty());
+	CHECK(String(rejected.get("message", String())).contains("hd_texture"));
+
+	smart_options.erase("hd_texture");
+	smart_options["topology"] = "quad";
+	rejected = meshy.prepare_generate("3d", Dictionary(), make_manifest(smart_options, true));
+	CHECK_FALSE(rejected.is_empty());
+	CHECK(String(rejected.get("message", String())).contains("triangle-only"));
+
+	smart_options.erase("topology");
+	CHECK(meshy.prepare_generate("3d", Dictionary(), make_manifest(smart_options, true)).is_empty());
+
+	Dictionary meshy5_options;
+	meshy5_options["model_type"] = "standard";
+	meshy5_options["ai_model"] = "meshy-5";
+	meshy5_options["hd_texture"] = true;
+	rejected = meshy.prepare_generate("3d", Dictionary(), make_manifest(meshy5_options, false));
+	CHECK_FALSE(rejected.is_empty());
+	CHECK(String(rejected.get("message", String())).contains("hd_texture"));
+
+	Dictionary hero_options;
+	hero_options["model_type"] = "standard";
+	hero_options["ai_model"] = "meshy-6";
+	hero_options["image_enhancement"] = true;
+	hero_options["remove_lighting"] = true;
+	hero_options["hd_texture"] = true;
+	CHECK(meshy.prepare_generate("3d", Dictionary(), make_manifest(hero_options, false)).is_empty());
+
+	const Dictionary schema = meshy.get_generation_options_schema("3d");
+	CHECK(String(Dictionary(schema.get("model_type", Dictionary())).get("description", String())).contains("standard"));
+	CHECK(String(Dictionary(schema.get("hd_texture", Dictionary())).get("description", String())).contains("meshy-6"));
+	CHECK(String(Dictionary(schema.get("image_enhancement", Dictionary())).get("description", String())).contains("meshy-6"));
+	CHECK(String(Dictionary(schema.get("remove_lighting", Dictionary())).get("description", String())).contains("meshy-6"));
+}
+
 TEST_CASE("[SolersPluginMeshy] offline operation contracts") {
 	SolersPluginMeshy meshy;
 	const Array operations = meshy.get_operation_defs();
@@ -2262,6 +2391,67 @@ TEST_CASE("[SolersAssetService] Meshy topology target is an integer contract for
 	const Dictionary remesh_contract = asset_service.generate(args);
 	CHECK_FALSE((bool)remesh_contract.get("ok", true));
 	CHECK(String(Dictionary(remesh_contract.get("error", Dictionary())).get("message", String())).contains("should_remesh=true"));
+}
+
+TEST_CASE("[SolersAssetService] non-terminal asset.status rejects progress polling; job.wait declares host park") {
+	const String asset_id = ".solers_background_wait_contract";
+	const String asset_dir = "user://solers_jobs/" + asset_id;
+	const String manifest_path = asset_dir.path_join("manifest.json");
+	auto remove_job = [&]() {
+		if (FileAccess::exists(manifest_path)) {
+			DirAccess::remove_file_or_error(ProjectSettings::get_singleton()->globalize_path(manifest_path));
+		}
+		DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(asset_dir));
+	};
+	remove_job();
+	REQUIRE(DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(asset_dir)) == OK);
+
+	Dictionary running_manifest;
+	running_manifest["id"] = asset_id;
+	running_manifest["session_id"] = "contract-session";
+	running_manifest["kind"] = "3d";
+	running_manifest["status"] = "running";
+	running_manifest["stage"] = "generating";
+	running_manifest["progress"] = 1.0;
+	String write_error;
+	REQUIRE(SolersPlugin::write_json_atomic(manifest_path, running_manifest, write_error));
+
+	SolersAssetService assets;
+	Dictionary status_args;
+	status_args["asset_id"] = asset_id;
+	const Dictionary running_status = assets.status(status_args);
+	CHECK_FALSE((bool)running_status.get("ok", true));
+	CHECK(Dictionary(running_status.get("error", Dictionary())).get("code", String()) == "ASSET_NOT_READY");
+	CHECK(String(Dictionary(running_status.get("error", Dictionary())).get("message", String())).contains("job.wait"));
+	CHECK_FALSE(String(Dictionary(running_status.get("error", Dictionary())).get("message", String())).contains("Inspect it with asset.status"));
+
+	Dictionary wait_args;
+	Array ids;
+	ids.push_back(asset_id);
+	wait_args["ids"] = ids;
+	const Dictionary waiting = assets.wait_jobs(wait_args, "contract-session");
+	CHECK((bool)waiting.get("ok", false));
+	const Dictionary waiting_data = waiting.get("data", Dictionary());
+	CHECK((bool)waiting_data.get("waiting", false));
+	CHECK((bool)waiting_data.get("host_parked", false));
+	CHECK(String(waiting_data.get("next_step", String())).contains("background job delta"));
+	CHECK(Array(waiting_data.get("pending_ids", Array())).size() == 1);
+
+	running_manifest["status"] = "imported";
+	running_manifest["stage"] = "imported";
+	REQUIRE(SolersPlugin::write_json_atomic(manifest_path, running_manifest, write_error));
+	const Dictionary terminal_status = assets.status(status_args);
+	CHECK((bool)terminal_status.get("ok", false));
+	CHECK(Dictionary(terminal_status.get("data", Dictionary())).get("status", String()) == "imported");
+
+	const Dictionary terminal_wait = assets.wait_jobs(wait_args, "contract-session");
+	CHECK((bool)terminal_wait.get("ok", false));
+	const Dictionary terminal_data = terminal_wait.get("data", Dictionary());
+	CHECK_FALSE((bool)terminal_data.get("waiting", true));
+	CHECK(Array(terminal_data.get("terminal", Array())).size() == 1);
+	CHECK_FALSE(terminal_data.has("host_parked"));
+
+	remove_job();
 }
 
 TEST_CASE("[SolersAssetService][SceneTree] baked_static imports use Godot native lightmap import UV2") {
@@ -2751,11 +2941,11 @@ TEST_CASE("[SolersContextManager] estimates ASCII and non-ASCII text like Kimi C
 TEST_CASE("[SolersContextManager] compaction strategy honors ratio and reserved context") {
 	SolersContextManager context;
 
-	CHECK_FALSE(context.should_compact(149999, 200000));
-	CHECK(context.should_compact(150000, 200000));
+	CHECK_FALSE(context.should_compact(119999, 200000));
+	CHECK(context.should_compact(120000, 200000));
 	CHECK(context.should_compact(170000, 200000));
-	CHECK_FALSE(context.should_compact(42499, 50000));
-	CHECK(context.should_compact(42500, 50000));
+	CHECK_FALSE(context.should_compact(29999, 50000));
+	CHECK(context.should_compact(30000, 50000));
 }
 
 TEST_CASE("[SolersContextManager] compaction requires context growth after the last compaction") {
@@ -2769,10 +2959,9 @@ TEST_CASE("[SolersContextManager] compaction requires context growth after the l
 	CHECK(context.should_compact(tokens_after + 1, tokens_after + 1));
 }
 
-TEST_CASE("[SolersContextManager] request projection is append-only pass-through") {
-	// Durable history must reach the provider byte-identical between
-	// compactions: any per-request rewrite would invalidate the provider's
-	// prefix cache and reprocess the entire conversation.
+TEST_CASE("[SolersContextManager] request projection stays byte-identical under working-set budget") {
+	// Small histories must reach the provider unchanged so the prefix cache
+	// stays valid until projection actually has to reclaim tool bodies.
 	SolersContextManager context;
 	Dictionary capture;
 	capture["id"] = "capture_1";
@@ -2789,18 +2978,46 @@ TEST_CASE("[SolersContextManager] request projection is append-only pass-through
 	messages.push_back(SolersLLMMessage::assistant("Applying the observation.", Array()));
 	messages.push_back(SolersLLMMessage::tool_result("call_current", "scene.inspect", "current observation"));
 
-	const Array projected = context.prepare_request(messages, String(), Array());
+	const Array projected = context.prepare_request(messages, String(), Array(), 200000);
 	REQUIRE(projected.size() == messages.size());
 	for (int i = 0; i < messages.size(); i++) {
 		CHECK(Dictionary(projected[i]) == Dictionary(messages[i]));
 	}
 	CHECK(Dictionary(projected[2]).get("content", String()) == "old observation");
 	CHECK(Array(Dictionary(projected[2]).get("attachments", Array())).size() == 1);
-	// The projection is a copy: appending the per-request environment message
-	// must not leak into durable history.
 	Array mutable_projection = projected;
 	mutable_projection.push_back(SolersLLMMessage::user("environment"));
 	CHECK(messages.size() == 5);
+}
+
+TEST_CASE("[SolersContextManager] request projection stubs oldest tool bodies over working-set budget") {
+	SolersContextManager context;
+	const String fat = String("x").repeat(4000); // ~1000 estimated tokens each
+	Array messages;
+	messages.push_back(SolersLLMMessage::user("Start."));
+	messages.push_back(SolersLLMMessage::assistant("Working.", Array()));
+	messages.push_back(SolersLLMMessage::tool_result("call_old", "scene.inspect", fat));
+	messages.push_back(SolersLLMMessage::assistant("Next.", Array()));
+	messages.push_back(SolersLLMMessage::tool_result("call_new", "scene.inspect", fat));
+
+	// 0.45 * 3000 = 1350 working-set budget: one ~1k tool body fits from the
+	// tail, the older one must be stubbed.
+	const Array projected = context.prepare_request(messages, String(), Array(), 3000);
+	REQUIRE(projected.size() == 5);
+	CHECK(Dictionary(projected[0]).get("content", String()) == "Start.");
+	CHECK(Dictionary(projected[1]).get("content", String()) == "Working.");
+	CHECK(Dictionary(projected[3]).get("content", String()) == "Next.");
+	const Dictionary old_tool = projected[2];
+	const Dictionary new_tool = projected[4];
+	CHECK(String(old_tool.get("role", String())) == String(SolersLLMRole::TOOL));
+	CHECK(String(old_tool.get("tool_call_id", String())) == "call_old");
+	CHECK(String(old_tool.get("name", String())) == "scene.inspect");
+	CHECK(String(old_tool.get("content", String())).contains("call_old"));
+	CHECK_FALSE(String(old_tool.get("content", String())).contains(fat));
+	CHECK(String(new_tool.get("tool_call_id", String())) == "call_new");
+	// Newest tool is protected from the tail while budget remains for one fat body.
+	CHECK(String(new_tool.get("content", String())) == fat);
+	CHECK(Dictionary(messages[2]).get("content", String()) == fat);
 }
 
 TEST_CASE("[SolersContextManager] full compaction keeps real user prompts and one plan-aware summary") {
@@ -2907,11 +3124,11 @@ TEST_CASE("[SolersContextManager] full compaction drops per-request harness stat
 TEST_CASE("[SolersContextManager] tool result budget clamps to a fixed band") {
 	// Window fraction applies between the floor and the ceiling; a giant
 	// window must not let one observation displace working history.
-	CHECK(SolersContextManager::tool_result_token_budget(0) == 16000);
+	CHECK(SolersContextManager::tool_result_token_budget(0) == 8000);
 	CHECK(SolersContextManager::tool_result_token_budget(8000) == 4000);
-	CHECK(SolersContextManager::tool_result_token_budget(40000) == 10000);
-	CHECK(SolersContextManager::tool_result_token_budget(200000) == 16000);
-	CHECK(SolersContextManager::tool_result_token_budget(1000000) == 16000);
+	CHECK(SolersContextManager::tool_result_token_budget(40000) == 8000);
+	CHECK(SolersContextManager::tool_result_token_budget(200000) == 8000);
+	CHECK(SolersContextManager::tool_result_token_budget(1000000) == 8000);
 }
 
 TEST_CASE("[SolersResourceService] nearest names rank containment above similarity") {
@@ -3296,20 +3513,20 @@ TEST_CASE("[SolersModelsDev] reasoning effort options are model-declared with a 
 	CHECK(custom_efforts[1] == "xhigh");
 }
 
-TEST_CASE("[SolersPlanCell] replaces its plan snapshot in place") {
+TEST_CASE("[solers_format_plan_text] replaces its plan snapshot in place") {
 	Array first_plan;
 	Dictionary first_step;
 	first_step["step"] = "Whitebox";
 	first_step["status"] = "in_progress";
 	first_plan.push_back(first_step);
-	const String first_text = SolersPlanCell::format_plan_text("Starting geometry", first_plan);
+	const String first_text = solers_format_plan_text("Starting geometry", first_plan);
 
 	Array second_plan;
 	Dictionary second_step;
 	second_step["step"] = "Whitebox";
 	second_step["status"] = "completed";
 	second_plan.push_back(second_step);
-	const String second_text = SolersPlanCell::format_plan_text("Geometry verified", second_plan);
+	const String second_text = solers_format_plan_text("Geometry verified", second_plan);
 
 	CHECK(first_text.contains("Starting geometry"));
 	CHECK(second_text.contains("Geometry verified"));
