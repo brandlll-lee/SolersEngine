@@ -1,26 +1,45 @@
 ---
 name: godot-debugging-performance-export
-description: Diagnose Godot runtime failures, profile measured bottlenecks, optimize native systems, validate export presets, and smoke-test packaged builds.
+description: Reproduce Godot failures with runtime.observe, profile one bottleneck, apply native fixes, validate export presets, and smoke-test packaged builds.
 ---
 
 # Debugging, Performance, and Export
 
 ## When to use
-Use for runtime errors, breakpoints, remote state, profiler work, optimization, export configuration, packaging, or release checks.
+Use for runtime errors, profiling, optimization, export presets, packaging, or release smoke tests.
 
-## Inspect first
-- Define one reproducible scenario, target platform/build, expected result, performance budget if supplied, and required artifact.
-- Read incremental runtime observations and project ownership before changing code or settings.
+## Facts
+| Piece | Role |
+|-------|------|
+| Reproduce | Same `runtime.control` scenario every time |
+| Observe | `runtime.observe` errors, output, optional performance samples |
+| Profiler | Godot profiler / Debugger — measure before changing |
+| Bottleneck classes | CPU script, draw calls, GPU fill, physics, loading spikes |
+| Export | Editor export presets + platform features; editor play ≠ device proof |
+| Native levers | LOD, occlusion, pooling, baked lighting, fewer materials, thread imports |
 
-## Recommended order
-1. Reproduce through `runtime.control`; use `runtime.observe` for errors, output, remote changes, and requested performance samples.
-2. Fix deterministic failures at their owner and rerun the same scenario.
-3. For performance, establish a comparable baseline and change only the measured bottleneck with native scaling features.
-4. Validate the exact export preset before producing an explicitly requested artifact.
-5. Smoke-test the packaged build outside the editor on its target environment.
+## Laws
+- One reproducible scenario; fix the owner of the failure first.
+- Performance: baseline → change **one** measured bottleneck → remeasure.
+- Do not claim platform readiness from editor FPS alone.
+- Export only with an explicit preset that matches the target renderer/features.
 
-## Validate
-Compare the same scenario before/after; confirm errors are gone, metrics improve without visual/gameplay regressions, preset validation passes, and the artifact launches.
+## Recipes
+**Crash/error loop:** reproduce → read observe stack → fix owner → same scenario green.
+**Perf loop:** capture time/draw stats → identify top cost → apply one native mitigation → compare.
+**Export loop:** validate preset → export → run artifact on target → smoke input/render/audio.
 
-## Common failures
-Diagnosing from FPS alone, checklist optimization, changing several bottlenecks at once, treating editor play as export proof, and claiming target readiness without hardware evidence.
+## Traps
+| Wrong | Correct |
+|-------|---------|
+| Optimizing from FPS folklore | Instrument + single change |
+| Changing five systems at once | Isolate variables |
+| “Works in editor” as shipping proof | Packaged build on target |
+| Ignoring first-load stutters | Measure load/import/compile separately |
+| Disabling features randomly | Tie change to measured cost |
+
+## Verify
+1. Same scenario before/after via `runtime.control` + `runtime.observe`.
+2. Optional `viewport.capture` if visual regression risk.
+3. Export preset validation; artifact launch checklist.
+4. Stop when scenario passes and metrics meet the stated budget (or report the remaining gap truthfully).

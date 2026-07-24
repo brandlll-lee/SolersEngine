@@ -1,26 +1,66 @@
 ---
 name: godot-3d-rendering
-description: Build and render Godot 3D scenes with real scale, native assets, PBR materials, cameras, lighting, GI, shadows, fog, and visual verification.
+description: Godot 4 3D layout, PBR, lighting, single GI path, Environment tonemap (ACES/AgX), physical light units, fog, lightmaps, and photoreal verification. Prefer this over a separate photorealism skill.
 ---
 
-# 3D Scenes, Materials, and Rendering
+# 3D Scenes, Materials, Lighting, and Photoreal Look
 
 ## When to use
-Use for 3D layout, reference matching, imported models, materials, shaders, lighting, environment, GI, baking, or cameras.
+Use for 3D layout, imported models, PBR materials, lights, Environment/GI, shadows, fog, baking, or “photorealistic / cinematic / like a photo” look. Camera **motion** → `godot-camera-cinematography`. Custom `.gdshader` → `godot-shaders`. Terrain meshes → `godot-procedural-terrain` / addons via Contract.
 
-## Inspect first
-- Read renderer, physical-light-unit setting, scene scale, environment, camera, GI, asset geometry, UV2, and material/import ownership.
-- Use ClassDB only for an unknown current-engine API; never infer model dimensions from a thumbnail.
+## Facts
+| Piece | Role |
+|-------|------|
+| Renderer | Project setting: Forward+ / Mobile / Compatibility — features differ (SDFGI/volumetrics mainly Forward+) |
+| Scale | 1 unit ≈ 1 meter; measure bounds before placing |
+| `WorldEnvironment` + `Environment` | Tonemap, background/sky, ambient, SDFGI/SSAO/SSIL/SSR, fog, glow |
+| Lights | `DirectionalLight3D` / `OmniLight3D` / `SpotLight3D`; physical lux/lumen when `physical_light_units` on |
+| GI (pick **one** final) | SDFGI (dynamic/large) **or** `LightmapGI` (static) **or** `VoxelGI` — not two finals |
+| Materials | One PBR map family (albedo/normal/roughness); `StandardMaterial3D` / `ORMMaterial3D` |
+| CSG | Whitebox only — bake to MeshInstance3D for shipping (`scene.bake_csg`) |
+| UV2 / lightmaps | `mesh.unwrap_uv2` then `lightmap.bake` after topology stable |
+| Exposure | `CameraAttributesPhysical` / `Practical` on `Camera3D` when using physical units |
 
-## Recommended order
-1. Lock scale, structure, traversal, openings, and camera composition; CSG is for whiteboxing, not final asset modeling.
-2. Place real project/catalog assets from measured bounds and keep collision simpler than render geometry.
-3. Build coherent PBR materials with calibrated texture scale and one map family per surface.
-4. Configure one renderer and one authoritative final GI path; seal geometry before diagnosing light leaks.
-5. Bake UV2/lightmaps only after topology is stable, then add reflections, fog, and post effects where evidence requires them.
+## Laws
+- One authoritative final GI path; seal leaks before blaming lights.
+- Never invent model size from thumbnails — measure geometry.
+- With physical units: raise real lights or camera exposure — not `ambient_light_energy` / emissive fill as “brightness”.
+- CSG is not final art; importers own `.import` — do not hand-edit import caches.
 
-## Validate
-Run and capture stable camera views; check geometry, scale, material response, luminance, shadows, GI convergence, reflections, runtime logs, and performance.
+## Recipes
+**Project (physical look):**
+- `rendering/lights_and_shadows/physical_light_units` = `true`
+- Directional shadow size `4096`, soft filter quality ≥ `3`
+- MSAA 3D `2` (4×) and/or TAA for foliage
 
-## Common failures
-Exposure loops hiding bad lighting, emission used as fill, mixed PBR map families, stale bake data, duplicate GI paths, and unmeasured asset placement.
+**Environment (photoreal starting point):**
+- `tonemap_mode` = `3` (ACES) or `4` (AgX where available); `tonemap_white` ≈ `6`
+- Sky: `PhysicalSkyMaterial` or HDRI; SDFGI for exteriors (`cascades` 4–6, `min_cell_size` ~0.15 human scale)
+- Interiors that never move: prefer baked `LightmapGI` instead of SDFGI as the final path
+- SSAO/SSIL/SSR as needed; glow keep low (`intensity` ~0.4, `hdr_threshold` ~1.2) — high glow reads “gamey”
+- Depth fog subtle (`density` ~0.001–0.01)
+
+**Sun (physical):**
+- Noon lux ~`100000`, overcast ~`35000`, sunset ~`400`; temperature 5500–6500 K; `light_angular_distance` ~`0.53`; 4-split shadows
+
+**Camera exposure:**
+- Exterior: aperture ~16, shutter 1/100, ISO 100; interior: aperture ~2.8, ISO 400–800
+- DOF via focal length / focus distance on close-ups only
+
+## Traps
+| Wrong | Correct |
+|-------|---------|
+| SDFGI **and** LightmapGI both as final | One final GI path |
+| Brighten with ambient/emission | Raise lux/lumens or exposure |
+| Mixed albedo/normal from unrelated sets | One map family + matched UV scale |
+| Guessing meters from preview images | Measure AABB / importer stats |
+| Hand-editing `.import` | Change importer settings / reimport |
+| Compatibility renderer + expecting SDFGI | Check renderer feature matrix via project settings / docs |
+| Property name `tonemapper` | `tonemap_mode` on `Environment` |
+
+## Verify
+1. `scene.inspect` / `resource.inspect` Environment, lights, materials.
+2. `runtime.control` play → `viewport.capture` from the composition camera (not top-down).
+3. Check readable shadows, no accidental white clip, soft shadow growth with distance.
+4. Fix sources (light/GI/material), re-capture; 2–3 loops minimum for photoreal goals.
+5. After UV2/lightmap work: `mesh.unwrap_uv2` / `lightmap.bake` then capture again.
