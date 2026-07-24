@@ -257,6 +257,7 @@ static bool init_expand_to_title_found = false;
 #endif
 static bool use_custom_res = true;
 static bool force_res = false;
+static String init_stretch_aspect_override; // From --stretch-aspect; empty = use project setting.
 
 // Debug
 
@@ -631,6 +632,7 @@ void Main::print_help(const char *p_binary) {
 	print_help_option("--resolution <W>x<H>", "Request window resolution.\n");
 	print_help_option("--position <X>,<Y>", "Request window position.\n");
 	print_help_option("--screen <N>", "Request window screen.\n");
+	print_help_option("--stretch-aspect <mode>", "Override display/window/stretch/aspect [\"ignore\", \"keep\", \"keep_width\", \"keep_height\", \"expand\"].\n");
 	print_help_option("--single-window", "Use a single window (no separate subwindows).\n");
 #ifndef _3D_DISABLED
 	print_help_option("--xr-mode <mode>", "Select XR (Extended Reality) mode [\"default\", \"off\", \"on\"].\n");
@@ -1384,6 +1386,20 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 		} else if (arg == "-t" || arg == "--always-on-top") { // force always-on-top window
 
 			init_always_on_top = true;
+		} else if (arg == "--stretch-aspect") { // override project stretch aspect
+			if (N) {
+				const String mode = N->get();
+				if (mode != "ignore" && mode != "keep" && mode != "keep_width" && mode != "keep_height" && mode != "expand") {
+					OS::get_singleton()->print("Invalid stretch aspect '%s', expected ignore|keep|keep_width|keep_height|expand.\n",
+							mode.utf8().get_data());
+					goto error;
+				}
+				init_stretch_aspect_override = mode;
+				N = N->next();
+			} else {
+				OS::get_singleton()->print("Missing <mode> argument for --stretch-aspect <mode>.\n");
+				goto error;
+			}
 		} else if (arg == "--resolution") { // force resolution
 
 			if (N) {
@@ -4527,6 +4543,11 @@ int Main::start() {
 
 			String stretch_mode = GLOBAL_GET("display/window/stretch/mode");
 			String stretch_aspect = GLOBAL_GET("display/window/stretch/aspect");
+			if (!init_stretch_aspect_override.is_empty()) {
+				// CLI is the authority when the editor launches an embedded Stretch-to-Fit game
+				// (or any other caller that needs to override project letterboxing).
+				stretch_aspect = init_stretch_aspect_override;
+			}
 			Size2i stretch_size = Size2i(GLOBAL_GET("display/window/size/viewport_width"),
 					GLOBAL_GET("display/window/size/viewport_height"));
 			real_t stretch_scale = GLOBAL_GET("display/window/stretch/scale");

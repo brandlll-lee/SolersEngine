@@ -1063,7 +1063,10 @@ void GameView::_notification(int p_what) {
 						make_floating_on_play = EditorSettings::get_singleton()->get_project_metadata("game_view", "make_floating_on_play", false);
 					} break;
 				}
-				embed_size_mode = (EmbedSizeMode)(int)EditorSettings::get_singleton()->get_project_metadata("game_view", "embed_size_mode", SIZE_MODE_FIXED);
+				// Default to Stretch so the embedded game uses the Game workspace
+				// as size authority (panel rect). Fixed / Keep Aspect remain available
+				// in Embedding Options for project-resolution preview.
+				embed_size_mode = (EmbedSizeMode)(int)EditorSettings::get_singleton()->get_project_metadata("game_view", "embed_size_mode", SIZE_MODE_STRETCH);
 				_update_embed_menu_options();
 
 				EditorRunBar::get_singleton()->connect("play_pressed", callable_mp(this, &GameView::_play_pressed));
@@ -1253,7 +1256,15 @@ void GameView::_update_arguments_for_instance(int p_idx, List<String> &r_argumen
 	N = r_arguments.insert_after(N, "--position");
 	N = r_arguments.insert_after(N, itos(rect.position.x) + "," + itos(rect.position.y));
 	N = r_arguments.insert_after(N, "--resolution");
-	r_arguments.insert_after(N, itos(rect.size.x) + "x" + itos(rect.size.y));
+	N = r_arguments.insert_after(N, itos(rect.size.x) + "x" + itos(rect.size.y));
+
+	// Stretch-to-Fit fills the Game workspace HWND. Project stretch aspect defaults to
+	// "keep", which letterboxes *inside* that HWND when the panel aspect differs from
+	// viewport_width/height. Pass an authoritative override so content fills too.
+	if (embed_size_mode == SIZE_MODE_STRETCH) {
+		N = r_arguments.insert_after(N, "--stretch-aspect");
+		r_arguments.insert_after(N, "ignore");
+	}
 }
 
 void GameView::_window_close_request() {
@@ -1510,7 +1521,7 @@ GameView::GameView(Ref<GameViewDebugger> p_debugger, EmbeddedProcessBase *p_embe
 	menu->add_radio_check_item(TTRC("Keep Aspect Ratio"), SIZE_MODE_KEEP_ASPECT);
 	menu->set_item_tooltip(menu->get_item_index(SIZE_MODE_KEEP_ASPECT), TTRC("Keep the aspect ratio of the embedded game."));
 	menu->add_radio_check_item(TTRC("Stretch to Fit"), SIZE_MODE_STRETCH);
-	menu->set_item_tooltip(menu->get_item_index(SIZE_MODE_STRETCH), TTRC("Embedded game size stretches to fit the Game Workspace."));
+	menu->set_item_tooltip(menu->get_item_index(SIZE_MODE_STRETCH), TTRC("Embedded game fills the Game Workspace (window and content). Restart play to apply."));
 
 	game_size_label = memnew(Label());
 	embedding_hb->add_child(game_size_label);

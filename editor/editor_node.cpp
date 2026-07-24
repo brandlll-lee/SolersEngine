@@ -9934,7 +9934,8 @@ EditorNode::EditorNode() {
 
 #ifdef MODULE_SOLERS_AI_ENABLED
 	if (solers_home_dock) {
-		project_run_bar->hide();
+		// Keep EditorRunBar visible: it is the sole Play/Pause/Stop authority.
+		// Hiding it left Embedded Game runs with no on-screen stop control.
 		main_editor_button_hb->show();
 		main_editor_button_hb->add_theme_constant_override("separation", 2 * EDSCALE);
 		_solers_style_main_screen_buttons(main_editor_button_hb);
