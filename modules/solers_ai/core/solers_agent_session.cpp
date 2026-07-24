@@ -151,6 +151,7 @@ void SolersAgentSession::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("turn_completed", PropertyInfo(Variant::DICTIONARY, "result")));
 	ADD_SIGNAL(MethodInfo("turn_failed", PropertyInfo(Variant::DICTIONARY, "error")));
 	ADD_SIGNAL(MethodInfo("turn_retrying", PropertyInfo(Variant::INT, "attempt"), PropertyInfo(Variant::STRING, "message")));
+	ADD_SIGNAL(MethodInfo("turn_waiting", PropertyInfo(Variant::DICTIONARY, "waiting")));
 	ADD_SIGNAL(MethodInfo("plan_updated", PropertyInfo(Variant::STRING, "explanation"), PropertyInfo(Variant::ARRAY, "plan")));
 	ADD_SIGNAL(MethodInfo("compaction_started"));
 	ADD_SIGNAL(MethodInfo("compaction_completed", PropertyInfo(Variant::DICTIONARY, "result")));
@@ -336,6 +337,33 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 			continue;
 		}
 		if (event_type == "tool_result") {
+			String tool_content = String(event.get("content", String()));
+			if (tool_content.is_empty()) {
+				const String replay = event.get("result_replay", String());
+				if (SolersSecretStore::is_protected(replay)) {
+					tool_content = SolersSecretStore::unprotect(replay);
+				} else {
+					Dictionary fallback;
+					fallback["ok"] = event.get("ok", false);
+					if (event.has("error")) {
+						fallback["error"] = event["error"];
+					}
+					if (event.has("result_summary")) {
+						fallback["summary"] = event["result_summary"];
+					}
+					tool_content = JSON::stringify(fallback, "", false, true);
+				}
+			}
+			Dictionary tool_message = SolersLLMMessage::tool_result(
+					event.get("call_id", String()),
+					event.get("tool", String()),
+					tool_content);
+			tool_message["ok"] = event.get("ok", false);
+			tool_message["duration_msec"] = event.get("duration_msec", event.get("run_msec", 0));
+			if (event.has("error")) {
+				tool_message["error"] = event["error"];
+			}
+			restored.push_back(tool_message);
 			continue;
 		}
 		if (event_type == "plan_updated") {
@@ -374,10 +402,12 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 
 		const String role = event.get("role", String());
 		const String content = event.get("content", String());
-		if (content.is_empty()) {
-			continue;
-		}
+		const Array tool_calls = event.get("tool_calls", Array());
+		const String reasoning = event.get("reasoning", String());
 		if (role == SolersLLMRole::USER) {
+			if (content.is_empty()) {
+				continue;
+			}
 			Array mentions = event.get("mentions", Array());
 			const bool had_block = content.find("[Selected Solers context]") >= 0;
 			const String display = SolersMention::strip_prompt_block(content);
@@ -393,7 +423,14 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 			}
 			restored.push_back(user_message);
 		} else if (role == SolersLLMRole::ASSISTANT) {
-			restored.push_back(SolersLLMMessage::assistant(content, Array()));
+			if (content.is_empty() && tool_calls.is_empty() && reasoning.is_empty()) {
+				continue;
+			}
+			Dictionary assistant_message = SolersLLMMessage::assistant(content, tool_calls);
+			if (!reasoning.is_empty()) {
+				assistant_message["reasoning"] = reasoning;
+			}
+			restored.push_back(assistant_message);
 		}
 	}
 
@@ -427,7 +464,7 @@ void SolersAgentSession::_write_transcript_event(const String &p_type, const Dic
 	solers_transcript_write(event);
 }
 
-void SolersAgentSession::_write_transcript_message(const String &p_role, const String &p_content, const Array &p_mentions) const {
+void SolersAgentSession::_write_transcript_message(const String &p_role, const String &p_content, const Array &p_mentions, const Array &p_tool_calls, const String &p_reasoning) const {
 	Dictionary event;
 	event["event_type"] = "message";
 	event["turn_id"] = turn_id;
@@ -435,6 +472,12 @@ void SolersAgentSession::_write_transcript_message(const String &p_role, const S
 	event["content"] = p_content;
 	if (!p_mentions.is_empty()) {
 		event["mentions"] = p_mentions;
+	}
+	if (!p_tool_calls.is_empty()) {
+		event["tool_calls"] = p_tool_calls.duplicate(true);
+	}
+	if (!p_reasoning.is_empty()) {
+		event["reasoning"] = p_reasoning;
 	}
 	event["wall"] = Time::get_singleton()->get_unix_time_from_system();
 	_stamp_transcript_event(event);
@@ -462,6 +505,9 @@ void SolersAgentSession::_write_transcript_tool(const String &p_call_id, const S
 	event["run_msec"] = tool_completed_msec >= tool_started_msec ? (int64_t)(tool_completed_msec - tool_started_msec) : 0;
 	event["delivery_msec"] = tool_completed_msec ? (int64_t)(OS::get_singleton()->get_ticks_msec() - tool_completed_msec) : 0;
 	event["duration_msec"] = event["run_msec"];
+	event["content"] = SolersContextManager::middle_truncate(
+			JSON::stringify(p_result, "", false, true),
+			SolersContextManager::tool_result_token_budget(context_window));
 	if (tool_registry) {
 		event["args"] = tool_registry->protect_tool_args_for_replay(StringName(p_canonical_name), p_args);
 		event["result_summary"] = tool_registry->summarize_tool_result_for_audit(p_result);
@@ -909,7 +955,7 @@ String SolersAgentSession::_default_system_prompt() const {
 			"- Keep scene edits undoable and authored in scene/resources. Write or patch code only when native composition cannot express the requested behavior.\n"
 			"- When context reports current_scene_unsaved, the edited scene exists only in memory. Save it to a res:// path early (EditorInterface.save_scene_as via engine.execute editor_call) so authored work is durable; Solers also commits it automatically when the turn ends.\n"
 			"- For algorithmic or bulk work (procedural data, batch changes), run a one-shot @tool script through script.run instead of attaching temporary scripts to the scene or playing it. Declare func run(host) when nodes need scene-tree access. Everything parented under host is discarded when the call ends unless you pass persist_host_children=true, which hands those nodes to the edited scene as one undoable action - that handover (or scene.edit) is the only way scripted content becomes part of the scene.\n"
-			"- Background tools return stable job ids immediately. Continue independent work; when nothing else is runnable, call job.wait once with the required ids. Solers resumes this same task when any requested job reaches a terminal state.\n"
+			"- Background tools return stable job ids immediately. Continue independent work; when nothing else is runnable, call job.wait once with the required ids and stop issuing tools. Solers parks this turn and resumes it with a background job delta when any requested job reaches a project-import terminal state; do not poll asset.status for progress.\n"
 			"- Tool errors carry the native cause; read it, change what it names, and retry. Repeating an identical failed call wastes a step.\n"
 			"- Before each non-trivial tool call or group of related calls, write one short sentence saying what you are about to do and why. Group related actions under one preamble; skip it for trivial reads. This narration is how the user follows your progress.\n"
 			"- Use update_plan only as a concise optional progress display. Text without tool calls ends the task, so keep progress notes attached to tool-calling turns and finish with a clear final summary.";
@@ -982,11 +1028,12 @@ Dictionary SolersAgentSession::_environment_context_message(bool p_include_obser
 	if (p_include_observation_delta) {
 		Dictionary observe_args;
 		observe_args["since_cursor"] = (int64_t)runtime_observation_cursor;
-		observe_args["max_events"] = 32;
 		const Dictionary runtime_observations = observation->observe_runtime(observe_args);
 		runtime_observation_cursor = (int64_t)runtime_observations.get("cursor", runtime_observation_cursor);
-		if (!Array(runtime_observations.get("events", Array())).is_empty()) {
-			context["runtime_events"] = runtime_observations.get("events", Array());
+		const Dictionary error_digest = runtime_observations.get("error_digest", Dictionary());
+		if (!error_digest.is_empty()) {
+			context["runtime_error_digest"] = error_digest;
+			context["runtime_epoch_error_count"] = runtime_observations.get("epoch_error_count", 0);
 		}
 	}
 	Dictionary message = SolersLLMMessage::user(
@@ -1206,7 +1253,8 @@ Error SolersAgentSession::_dispatch_model_request(bool p_skip_compaction) {
 		request_messages = context_manager->prepare_request(
 				messages,
 				system_prompt,
-				tools);
+				tools,
+				context_window);
 	}
 	// The dynamic engine facts ride at the end of the projection instead of
 	// inside the system prompt, so every request keeps a byte-stable prefix
@@ -1286,7 +1334,8 @@ Error SolersAgentSession::_dispatch_compaction_request() {
 	history = context_manager->prepare_request(
 			history,
 			system_prompt,
-			Array());
+			Array(),
+			context_window);
 	String instruction = SolersContextManager::COMPACTION_INSTRUCTION;
 	if (!current_plan.is_empty()) {
 		instruction += "\n\nCurrent plan:\n" + JSON::stringify(current_plan, "  ", false, true);
@@ -1801,8 +1850,8 @@ void SolersAgentSession::_on_model_turn_complete() {
 		operation_ids.insert(operation_id);
 	}
 	messages.push_back(SolersLLMMessage::assistant(current_text, pending_tool_calls, current_provider_metadata));
-	if (!current_text.is_empty() || !pending_tool_calls.is_empty()) {
-		_write_transcript_message("assistant", current_text);
+	if (!current_text.is_empty() || !pending_tool_calls.is_empty() || !current_reasoning.is_empty()) {
+		_write_transcript_message("assistant", current_text, Array(), pending_tool_calls, current_reasoning);
 	}
 	if (pending_tool_calls.is_empty()) {
 		const String final_text = current_text;
@@ -2023,6 +2072,21 @@ void SolersAgentSession::_poll_tool_queue() {
 		tool_delivery_index = 0;
 		tool_started_announced = false;
 		retry_attempt = 0;
+		// job.wait recorded outstanding ids: park the host silently until a
+		// project-import terminal delivery resumes this same turn. Without this
+		// gate the model re-enters and busy-polls asset.status in the foreground.
+		if (!waiting_background_asset_ids.is_empty()) {
+			phase = PHASE_WAITING;
+			Array pending_ids;
+			for (const String &asset_id : waiting_background_asset_ids) {
+				pending_ids.push_back(asset_id);
+			}
+			Dictionary parked;
+			parked["pending_ids"] = pending_ids;
+			_write_transcript_event("background_wait_parked", parked);
+			emit_signal(SNAME("turn_waiting"), parked);
+			return;
+		}
 		const Error err = _dispatch_model_request();
 		if (err != OK) {
 			current_reasoning = String();
@@ -2590,6 +2654,13 @@ void SolersAgentSession::_deliver_tool_result(const String &p_id, const String &
 		data["task_tools"] = task_tools;
 		result["data"] = data;
 	}
+	// Model view for runtime.observe: digest is authoritative. Raw event lists
+	// stay available only when the caller opted into include_events.
+	if ((bool)result.get("ok", false) && p_canonical_name == "runtime.observe" && !(bool)p_args.get("include_events", false)) {
+		Dictionary data = result.get("data", Dictionary());
+		data["events"] = Array();
+		result["data"] = data;
+	}
 	const Array accesses = tool_registry && !p_canonical_name.is_empty() ? tool_registry->resolve_resource_access(StringName(p_canonical_name), p_args) : Array();
 	const Dictionary diagnostics = _take_godot_diagnostics();
 	if (!diagnostics.is_empty()) {
@@ -2884,7 +2955,7 @@ bool SolersAgentSession::_append_background_asset_deltas(bool p_waited_only) {
 		return false;
 	}
 	pending_background_assets = remaining;
-	Dictionary message = SolersLLMMessage::user("Background job terminal delta. Continue the original task using these persisted facts; query asset.status by id only if more detail is needed:\n" + JSON::stringify(deliveries, "", false, true));
+	Dictionary message = SolersLLMMessage::user("Background job terminal delta. Continue the original task using these persisted facts; call asset.status only if you need more detail from a job that has already reached a project-import terminal state:\n" + JSON::stringify(deliveries, "", false, true));
 	message["origin"] = "background_job_delta";
 	messages.push_back(message);
 	return true;
@@ -2915,6 +2986,8 @@ Dictionary SolersAgentSession::get_status() const {
 	status["project_path"] = project_path;
 	status["session_id"] = session_id;
 	status["compacting"] = phase == PHASE_COMPACTING;
+	status["waiting_for_background"] = is_waiting_for_background_assets();
+	status["waiting_background_asset_count"] = waiting_background_asset_ids.size();
 	status["plan"] = current_plan.duplicate(true);
 	status["last_outcome"] = last_outcome;
 	status["pending_background_asset_count"] = pending_background_assets.size();

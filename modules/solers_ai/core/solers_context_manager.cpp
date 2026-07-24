@@ -84,6 +84,17 @@ int SolersContextManager::tool_result_token_budget(int p_context_window) {
 	return CLAMP(p_context_window / TOOL_RESULT_WINDOW_FRACTION, TOOL_RESULT_MIN_TOKENS, TOOL_RESULT_MAX_TOKENS);
 }
 
+int SolersContextManager::_working_set_budget(int p_context_window) {
+	if (p_context_window <= 0) {
+		return WORKING_SET_FALLBACK_TOKENS;
+	}
+	return MAX(1, (int)((double)p_context_window * WORKING_SET_RATIO));
+}
+
+String SolersContextManager::_omitted_tool_stub(const Dictionary &p_message) {
+	return vformat("[Solers: prior tool result omitted; re-run tool if needed. call_id=%s]", String(p_message.get("tool_call_id", String())));
+}
+
 // Suffix of p_text whose estimated token count is at most p_max_tokens.
 static String _tail_by_tokens(const String &p_text, int p_max_tokens) {
 	if (p_max_tokens <= 0) {
@@ -219,9 +230,49 @@ bool SolersContextManager::is_overflow(const Array &p_messages, const String &p_
 	return p_context_window > 0 && get_token_count_with_pending(p_messages, p_system_prompt, p_tools) >= p_context_window;
 }
 
-Array SolersContextManager::prepare_request(const Array &p_messages, const String &p_system_prompt, const Array &p_tools) {
-	last_estimated_tokens = get_token_count_with_pending(p_messages, p_system_prompt, p_tools);
-	return p_messages.duplicate();
+Array SolersContextManager::prepare_request(const Array &p_messages, const String &p_system_prompt, const Array &p_tools, int p_context_window) {
+	Array projected;
+	projected.resize(p_messages.size());
+	for (int i = 0; i < p_messages.size(); i++) {
+		projected[i] = Dictionary(p_messages[i]).duplicate(true);
+	}
+
+	const int overhead = estimate_tokens(p_system_prompt) + estimate_tokens(JSON::stringify(p_tools, "", false, true));
+	const int budget = _working_set_budget(p_context_window);
+	int total = overhead + estimate_messages_tokens(projected);
+	last_estimated_tokens = total;
+	if (total <= budget) {
+		return projected;
+	}
+
+	// Non-tool messages always stay; only tool bodies are eligible to stub.
+	int non_tool_tokens = 0;
+	for (int i = 0; i < projected.size(); i++) {
+		const Dictionary message = projected[i];
+		if (String(message.get("role", String())) != String(SolersLLMRole::TOOL)) {
+			non_tool_tokens += _estimate_message_tokens(message);
+		}
+	}
+	int tool_budget = budget - overhead - non_tool_tokens;
+
+	// Protect newest tool results from the tail while budget remains; stub the rest.
+	for (int i = projected.size() - 1; i >= 0; i--) {
+		Dictionary message = projected[i];
+		if (String(message.get("role", String())) != String(SolersLLMRole::TOOL)) {
+			continue;
+		}
+		const int tool_tokens = _estimate_message_tokens(message);
+		if (tool_budget >= tool_tokens) {
+			tool_budget -= tool_tokens;
+			continue;
+		}
+		message["content"] = _omitted_tool_stub(message);
+		message.erase("attachments");
+		projected[i] = message;
+	}
+
+	last_estimated_tokens = overhead + estimate_messages_tokens(projected);
+	return projected;
 }
 
 Dictionary SolersContextManager::apply_compaction(const Array &p_messages, const String &p_summary, const Dictionary &p_plan) {
