@@ -530,20 +530,41 @@ Dictionary SolersObservationService::_poll_pending_capture(const String &p_captu
 	if (!entry) {
 		return _capture_error("CAPTURE_NOT_FOUND", vformat("Unknown capture_id: %s", p_capture_id), true);
 	}
-	const Dictionary result = *entry;
-	const Dictionary data = result.get("data", Dictionary());
+	Dictionary result = *entry;
+	Dictionary data = result.get("data", Dictionary());
 	if (!(bool)result.get("ok", false) || String(data.get("status", String())) == "complete") {
 		pending_captures.erase(p_capture_id);
 		return result;
 	}
 
 	const String target = data.get("target", String());
+	const bool deadline_reached = OS::get_singleton()->get_ticks_msec() >= (uint64_t)(int64_t)data.get("deadline_msec", 0);
+
+	if (target == "runtime" && (bool)data.get("awaiting_runtime_ready", false)) {
+		if (_is_runtime_visual_ready()) {
+			data["awaiting_runtime_ready"] = false;
+			result["data"] = data;
+			pending_captures[p_capture_id] = result;
+			if (!_request_runtime_screenshot(p_capture_id)) {
+				pending_captures.erase(p_capture_id);
+				return _capture_error("RUNTIME_NOT_RUNNING", "No active runtime debugger session can capture the game root viewport.", true);
+			}
+			entry = pending_captures.getptr(p_capture_id);
+			return entry ? *entry : result;
+		}
+		if (deadline_reached) {
+			pending_captures.erase(p_capture_id);
+			return _capture_error("CAPTURE_TIMEOUT", "The runtime viewport was not visually ready before the capture deadline.", true);
+		}
+		return result;
+	}
+
 	if (target != "runtime" && Engine::get_singleton()->get_frames_drawn() >= (uint64_t)(int64_t)data.get("ready_frame", 0)) {
 		const Dictionary final_result = _finish_frame_gated_capture(p_capture_id, data);
 		pending_captures.erase(p_capture_id);
 		return final_result;
 	}
-	if (OS::get_singleton()->get_ticks_msec() >= (uint64_t)(int64_t)data.get("deadline_msec", 0)) {
+	if (deadline_reached) {
 		_solers_free_capture_viewport(data);
 		pending_captures.erase(p_capture_id);
 		return _capture_error("CAPTURE_TIMEOUT", vformat("The %s viewport did not produce a frame before the capture deadline.", target), true);
@@ -729,9 +750,16 @@ Dictionary SolersObservationService::capture_viewport(const Dictionary &p_args) 
 		return _begin_scene_view_capture(target, p_args);
 	}
 	if (target == "runtime") {
+		// Same pending/poll contract as editor captures: do not request a
+		// screenshot until runtime visual readiness is an authoritative fact.
+		if (!_is_runtime_visual_ready()) {
+			Dictionary extra;
+			extra["awaiting_runtime_ready"] = true;
+			return _register_pending_capture("runtime", extra);
+		}
 		const Dictionary pending = _register_pending_capture("runtime", Dictionary());
 		const String capture_id = Dictionary(pending.get("data", Dictionary())).get("capture_id", String());
-		if (!GameViewDebugger::request_root_viewport_screenshot(callable_mp(this, &SolersObservationService::_runtime_screenshot_ready).bind(capture_id))) {
+		if (!_request_runtime_screenshot(capture_id)) {
 			pending_captures.erase(capture_id);
 			return _capture_error("RUNTIME_NOT_RUNNING", "No active runtime debugger session can capture the game root viewport.", true);
 		}
@@ -761,8 +789,14 @@ bool SolersObservationService::is_viewport_capture_ready(const Dictionary &p_arg
 	if (OS::get_singleton()->get_ticks_msec() >= (uint64_t)(int64_t)data.get("deadline_msec", 0)) {
 		return true;
 	}
-	const bool ready = String(data.get("target", String())) != "runtime" && Engine::get_singleton()->get_frames_drawn() >= (uint64_t)(int64_t)data.get("ready_frame", 0);
-	if (!ready && String(data.get("target", String())) != "runtime") {
+	const String target = data.get("target", String());
+	if (target == "runtime") {
+		// Wake the poll loop when readiness becomes true so the screenshot
+		// request can start; after that, wait for the callback or deadline.
+		return (bool)data.get("awaiting_runtime_ready", false) && _is_runtime_visual_ready();
+	}
+	const bool ready = Engine::get_singleton()->get_frames_drawn() >= (uint64_t)(int64_t)data.get("ready_frame", 0);
+	if (!ready) {
 		_solers_request_editor_redraw();
 	}
 	return ready;
@@ -1472,29 +1506,26 @@ void SolersObservationService::_append_runtime_event(const StringName &p_type, c
 	}
 }
 
-void SolersObservationService::_restore_runtime_events() {
-	ProjectSettings *project_settings = ProjectSettings::get_singleton();
-	const String project_path = project_settings ? project_settings->get_resource_path() : String();
-	if (project_path.is_empty()) {
-		return;
+bool SolersObservationService::_is_runtime_visual_ready() const {
+	EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
+	ScriptEditorDebugger *debugger = debugger_node ? debugger_node->get_current_debugger() : nullptr;
+	if (!debugger || !debugger->is_session_active()) {
+		return false;
 	}
-	const Vector<String> lines = solers_transcript_read_snapshot();
-	for (const String &line : lines) {
-		Dictionary audit;
-		if (!solers_transcript_parse_record(line, audit) || String(audit.get("event_type", String())) != "runtime_observation" || String(audit.get("project_path", String())) != project_path) {
+	for (int i = runtime_events.size() - 1; i >= 0; i--) {
+		const Dictionary event = runtime_events[i];
+		if ((uint64_t)(int64_t)event.get("runtime_epoch", 0) != runtime_epoch) {
 			continue;
 		}
-		const Dictionary event = audit.get("observation", Dictionary());
-		if (event.is_empty()) {
-			continue;
-		}
-		runtime_cursor = MAX(runtime_cursor, (uint64_t)(int64_t)event.get("cursor", 0));
-		runtime_epoch = MAX(runtime_epoch, (uint64_t)(int64_t)event.get("runtime_epoch", 0));
-		runtime_events.push_back(event.duplicate(true));
-		if (runtime_events.size() > SOLERS_RUNTIME_EVENT_LIMIT) {
-			runtime_events.remove_at(0);
+		if (StringName(event.get("type", String())) == SNAME("started")) {
+			return true;
 		}
 	}
+	return false;
+}
+
+bool SolersObservationService::_request_runtime_screenshot(const String &p_capture_id) {
+	return GameViewDebugger::request_root_viewport_screenshot(callable_mp(this, &SolersObservationService::_runtime_screenshot_ready).bind(p_capture_id));
 }
 
 void SolersObservationService::_runtime_started() {
@@ -1514,7 +1545,8 @@ void SolersObservationService::_runtime_output(const String &p_message, int p_le
 	data["message"] = p_message.left(4096);
 	data["level"] = p_level;
 	data["truncated"] = p_message.length() > 4096;
-	_append_runtime_event(SNAME("output"), data, p_level != 0);
+	// Ring keeps the evidence; transcript does not need per-line floods.
+	_append_runtime_event(SNAME("output"), data, false);
 }
 
 void SolersObservationService::_runtime_breaked(bool p_breaked, bool p_can_debug, const String &p_reason, bool p_has_stackdump) {
@@ -1523,7 +1555,7 @@ void SolersObservationService::_runtime_breaked(bool p_breaked, bool p_can_debug
 	data["can_debug"] = p_can_debug;
 	data["reason"] = p_reason;
 	data["has_stackdump"] = p_has_stackdump;
-	_append_runtime_event(SNAME("break"), data, true);
+	_append_runtime_event(SNAME("break"), data, false);
 }
 
 static Variant _solers_bounded_runtime_value(const Variant &p_value) {
@@ -1552,7 +1584,7 @@ void SolersObservationService::_runtime_debug_data(const String &p_message, cons
 			event["source_function"] = output_error.source_func;
 			event["source_line"] = output_error.source_line;
 			event["warning"] = output_error.warning;
-			_append_runtime_event(SNAME("error"), event, !output_error.warning);
+			_append_runtime_event(SNAME("error"), event, false);
 			return;
 		}
 	}
@@ -1664,7 +1696,12 @@ bool SolersObservationService::is_runtime_observation_ready(const Dictionary &p_
 
 Dictionary SolersObservationService::observe_runtime(const Dictionary &p_args) {
 	const uint64_t since_cursor = (int64_t)p_args.get("since_cursor", 0);
-	const int max_events = CLAMP((int)p_args.get("max_events", 128), 1, 256);
+	const bool include_prior_epochs = (bool)p_args.get("include_prior_epochs", false);
+	const uint64_t min_epoch = p_args.has("since_epoch")
+			? (uint64_t)(int64_t)p_args.get("since_epoch", 0)
+			: (include_prior_epochs ? 0 : runtime_epoch);
+	const bool include_events = (bool)p_args.get("include_events", false);
+	const int max_events = CLAMP((int)p_args.get("max_events", include_events ? 32 : 0), 0, 256);
 	const Array requested_types = p_args.get("types", Array());
 	HashSet<StringName> types;
 	for (int i = 0; i < requested_types.size(); i++) {
@@ -1672,30 +1709,67 @@ Dictionary SolersObservationService::observe_runtime(const Dictionary &p_args) {
 	}
 
 	Array events;
+	Dictionary error_digest;
 	uint64_t consumed_cursor = since_cursor;
 	bool truncated = false;
+	int64_t epoch_error_count = 0;
+
 	for (int i = 0; i < runtime_events.size(); i++) {
 		const Dictionary event = runtime_events[i];
 		const uint64_t event_cursor = (int64_t)event.get("cursor", 0);
+		const uint64_t event_epoch = (int64_t)event.get("runtime_epoch", 0);
 		if (event_cursor <= since_cursor) {
+			continue;
+		}
+		if (event_epoch < min_epoch) {
+			consumed_cursor = event_cursor;
 			continue;
 		}
 		if (!types.is_empty() && !types.has(StringName(event.get("type", String())))) {
 			consumed_cursor = event_cursor;
 			continue;
 		}
-		if (events.size() >= max_events) {
-			truncated = true;
-			break;
-		}
-		events.push_back(event);
 		consumed_cursor = event_cursor;
+
+		const StringName event_type = StringName(event.get("type", String()));
+		if (event_type == SNAME("error") && !(bool)event.get("warning", false)) {
+			epoch_error_count++;
+			const String message = String(event.get("error", String())) + "\n" + String(event.get("details", String()));
+			const String fingerprint = String::num_uint64((String(event_type) + String::chr(0x1f) + message.strip_edges()).hash64());
+			Dictionary entry = error_digest.has(fingerprint) ? Dictionary(error_digest[fingerprint]) : Dictionary();
+			const int64_t count = (int64_t)entry.get("count", 0) + 1;
+			entry["fingerprint"] = fingerprint;
+			entry["count"] = count;
+			entry["last_cursor"] = (int64_t)event_cursor;
+			if (!entry.has("first_cursor")) {
+				entry["first_cursor"] = (int64_t)event_cursor;
+				Dictionary sample;
+				sample["error"] = event.get("error", String());
+				sample["details"] = event.get("details", String());
+				sample["source_file"] = event.get("source_file", String());
+				sample["source_line"] = event.get("source_line", 0);
+				sample["warning"] = event.get("warning", false);
+				entry["sample"] = sample;
+			}
+			error_digest[fingerprint] = entry;
+		}
+
+		if (include_events && max_events > 0) {
+			if (events.size() >= max_events) {
+				truncated = true;
+			} else {
+				events.push_back(event);
+			}
+		}
 	}
 
 	Dictionary result;
 	result["runtime"] = get_runtime_status();
 	result["cursor"] = (int64_t)consumed_cursor;
 	result["runtime_epoch"] = (int64_t)runtime_epoch;
+	result["min_epoch"] = (int64_t)min_epoch;
+	result["error_digest"] = error_digest;
+	result["epoch_error_count"] = epoch_error_count;
 	result["events"] = events;
 	result["truncated"] = truncated;
 	result["earliest_cursor"] = runtime_events.is_empty() ? Variant((int64_t)runtime_cursor) : runtime_events[0].get("cursor", 0);
@@ -1805,5 +1879,4 @@ Dictionary SolersObservationService::get_editor_snapshot(int p_max_scene_depth, 
 }
 
 SolersObservationService::SolersObservationService() {
-	_restore_runtime_events();
 }

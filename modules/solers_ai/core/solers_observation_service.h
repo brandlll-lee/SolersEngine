@@ -71,7 +71,6 @@ class SolersObservationService : public Object {
 	Dictionary _editor_3d_viewport_state() const;
 	void _runtime_screenshot_ready(int64_t p_width, int64_t p_height, const String &p_path, const Rect2i &p_rect, const String &p_capture_id);
 	void _append_runtime_event(const StringName &p_type, const Dictionary &p_data = Dictionary(), bool p_persist = false);
-	void _restore_runtime_events();
 	void _bind_runtime_debugger();
 	void _runtime_started();
 	void _runtime_stopped();
@@ -80,6 +79,8 @@ class SolersObservationService : public Object {
 	void _runtime_debug_data(const String &p_message, const Array &p_data);
 	void _runtime_tree_updated();
 	bool _has_runtime_event_after(const StringName &p_type, uint64_t p_cursor) const;
+	bool _is_runtime_visual_ready() const;
+	bool _request_runtime_screenshot(const String &p_capture_id);
 
 protected:
 	static void _bind_methods();
