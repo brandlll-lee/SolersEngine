@@ -571,7 +571,7 @@ Control *SolersDock::_create_empty_state() const {
 	title->set_h_size_flags(Control::SIZE_SHRINK_CENTER);
 	title->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
 	title->add_theme_color_override(SceneStringName(font_color), SOLERS_TEXT_PRIMARY);
-	title->add_theme_font_size_override(SceneStringName(font_size), 28 * EDSCALE);
+	title->add_theme_font_size_override(SceneStringName(font_size), 18 * EDSCALE);
 	state->add_child(title);
 
 	return state;
@@ -1387,10 +1387,22 @@ void SolersDock::_reset_model_defaults_from_popup() {
 
 void SolersDock::_open_model_settings_from_popup() {
 	_hide_model_popup();
-	if (provider_settings_dialog && provider_settings_view) {
-		provider_settings_view->refresh();
-		provider_settings_dialog->popup_centered(Size2(980, 640) * EDSCALE);
+	open_provider_settings("plugins");
+}
+
+void SolersDock::open_provider_settings(const String &p_category) {
+	if (!provider_settings_dialog || !provider_settings_view) {
+		return;
 	}
+	provider_settings_view->refresh();
+	if (!p_category.is_empty()) {
+		provider_settings_view->select_category(p_category);
+	}
+	provider_settings_dialog->popup_centered(Size2(980, 640) * EDSCALE);
+}
+
+SolersPMAIView *SolersDock::get_provider_settings_view() const {
+	return provider_settings_view;
 }
 
 void SolersDock::start_new_chat() {
@@ -2783,7 +2795,7 @@ SolersDock::SolersDock() {
 	add_child(attachment_file_dialog);
 
 	provider_settings_dialog = memnew(AcceptDialog);
-	provider_settings_dialog->set_title(TTR("Provider Settings"));
+	provider_settings_dialog->set_title(TTR("Settings"));
 	provider_settings_dialog->set_min_size(Size2(980, 640) * EDSCALE);
 	SolersPMTheme::configure_settings_host(provider_settings_dialog);
 	add_child(provider_settings_dialog);

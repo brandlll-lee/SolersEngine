@@ -142,20 +142,17 @@ class ProjectManager : public Control {
 	void _shell_session_pressed(const String &p_session_id);
 	void _shell_new_session_pressed();
 	void _shell_asset_pressed();
-	void _shell_ai_pressed();
 	void _set_shell_session(const String &p_project_path, const String &p_session_id);
 	void _load_shell_editor(const String &p_project_path);
 
 	VBoxContainer *local_projects_vb = nullptr;
 	EditorAssetLibrary *asset_library = nullptr;
 	Control *shell_asset_view = nullptr;
-	Control *shell_ai_view = nullptr;
 	Control *shell_global_overlay_view = nullptr;
 	SolersAgentRuntime *solers_agent_runtime = nullptr;
 	SolersDock *solers_home_dock = nullptr;
 
 	EditorAbout *about_dialog = nullptr;
-	AcceptDialog *ai_settings_dialog = nullptr;
 
 	void _show_about();
 	void _open_asset_library_confirmed();

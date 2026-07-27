@@ -270,9 +270,13 @@ void ProjectManager::_update_size_limits() {
 		// We try to set it to half the screen resolution, but no smaller than the minimum window size.
 		Size2 half_screen_rect = (screen_rect.size * EDSCALE) / 2;
 		Size2 maximum_popup_size = MAX(half_screen_rect, minimum_size);
-		if (SolersPMAIView *ai_view = Object::cast_to<SolersPMAIView>(shell_ai_view)) {
-			ai_view->update_quick_popup_size_limits(maximum_popup_size);
+#ifdef MODULE_SOLERS_AI_ENABLED
+		if (solers_home_dock) {
+			if (SolersPMAIView *ai_view = solers_home_dock->get_provider_settings_view()) {
+				ai_view->update_quick_popup_size_limits(maximum_popup_size);
+			}
 		}
+#endif
 	}
 }
 
@@ -998,13 +1002,6 @@ void ProjectManager::_shell_asset_pressed() {
 	_open_asset_library_confirmed();
 }
 
-void ProjectManager::_shell_ai_pressed() {
-	if (ai_settings_dialog) {
-		Object::cast_to<SolersPMAIView>(shell_ai_view)->refresh();
-		ai_settings_dialog->popup_centered(Size2(980, 640) * EDSCALE);
-	}
-}
-
 void ProjectManager::_load_shell_editor(const String &p_project_path) {
 	if (!main_view_container) {
 		return;
@@ -1138,15 +1135,14 @@ void ProjectManager::_dim_window() {
 	set_modulate(dim_color);
 }
 
-// Quick settings (hosted inside Provider Settings as the "quick" rail).
+// Quick settings — same Settings host as Manage providers (SolersDock).
 
 void ProjectManager::_show_quick_settings() {
-	if (ai_settings_dialog) {
-		if (SolersPMAIView *ai_view = Object::cast_to<SolersPMAIView>(shell_ai_view)) {
-			ai_view->select_category("quick");
-		}
-		ai_settings_dialog->popup_centered(Size2(980, 640) * EDSCALE);
+#ifdef MODULE_SOLERS_AI_ENABLED
+	if (solers_home_dock) {
+		solers_home_dock->open_provider_settings("quick");
 	}
+#endif
 }
 
 void ProjectManager::_restart_confirmed() {
@@ -2159,6 +2155,9 @@ ProjectManager::ProjectManager() {
 		solers_home_dock->set_new_session_callback(callable_mp(this, &ProjectManager::_shell_new_session_pressed));
 		solers_agent_runtime->bind_dock(solers_home_dock);
 		shell_chat_panel->add_child(solers_home_dock);
+		if (SolersPMAIView *settings_view = solers_home_dock->get_provider_settings_view()) {
+			settings_view->connect("restart_required", callable_mp(this, &ProjectManager::_restart_confirmed));
+		}
 
 		set_process(true);
 	}
@@ -2458,20 +2457,6 @@ ProjectManager::ProjectManager() {
 		error_dialog = memnew(AcceptDialog);
 		error_dialog->set_title(TTRC("Error"));
 		add_child(error_dialog);
-
-		ai_settings_dialog = memnew(AcceptDialog);
-		ai_settings_dialog->set_title(TTRC("Settings"));
-		ai_settings_dialog->set_min_size(Size2(980, 640) * EDSCALE);
-		SolersPMTheme::configure_settings_host(ai_settings_dialog);
-		add_child(ai_settings_dialog);
-
-		SolersPMAIView *ai_view = memnew(SolersPMAIView);
-		ai_view->set_name("ProviderSettings");
-		ai_view->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		ai_view->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-		ai_view->connect("restart_required", callable_mp(this, &ProjectManager::_restart_confirmed));
-		ai_settings_dialog->add_child(ai_view);
-		shell_ai_view = ai_view;
 
 		about_dialog = memnew(EditorAbout);
 		add_child(about_dialog);

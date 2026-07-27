@@ -236,6 +236,9 @@ public:
 	void set_new_session_callback(const Callable &p_callback);
 	void set_session_context(const String &p_project_path, const String &p_session_id);
 	void notify_sessions_changed();
+	// Sole settings host (Editor + Project Manager). Category: plugins|llm|quick.
+	void open_provider_settings(const String &p_category = "plugins");
+	SolersPMAIView *get_provider_settings_view() const;
 
 	SolersDock();
 	~SolersDock();

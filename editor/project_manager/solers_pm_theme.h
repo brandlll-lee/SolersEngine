@@ -61,7 +61,8 @@ public:
 	// Safe to call repeatedly (idempotent) after every theme (re)generation.
 	static void apply(const Ref<Theme> &p_theme);
 
-	// Flat settings host: one Solers fill, no AcceptDialog picture-frame margins.
+	// Flat settings host: installs panel chrome on the dialog itself (not only a
+	// type variation that requires SolersPMTheme::apply on a parent theme).
 	static void configure_settings_host(AcceptDialog *p_dialog);
 
 	// Convert a (possibly colored) editor icon into a neutral monochrome glyph.

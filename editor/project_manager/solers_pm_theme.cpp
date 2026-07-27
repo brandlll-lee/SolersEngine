@@ -160,9 +160,20 @@ SolersPMTheme::Tokens SolersPMTheme::make_tokens(const Ref<Theme> &p_theme) {
 	return t;
 }
 
+// Flat settings AcceptDialog fill — zero picture-frame margins. Shared by the
+// PM theme overlay and configure_settings_host so any host (Editor dock, PM)
+// gets the same chrome without depending on ambient ProjectManager theme.
+static Ref<StyleBoxFlat> _settings_host_panel(const Color &p_bg) {
+	return _solers_flat(p_bg, 0, Color(), 0, 0);
+}
+
 void SolersPMTheme::configure_settings_host(AcceptDialog *p_dialog) {
 	ERR_FAIL_NULL(p_dialog);
 	p_dialog->set_theme_type_variation("PMSettingsDialog");
+	// Self-contained: do not require SolersPMTheme::apply() on a parent theme.
+	const Tokens t = make_tokens(Ref<Theme>());
+	p_dialog->add_theme_style_override(SNAME("panel"), _settings_host_panel(t.bg));
+	p_dialog->add_theme_constant_override(SNAME("buttons_separation"), 0);
 	if (Button *ok = p_dialog->get_ok_button()) {
 		ok->hide();
 		if (CanvasItem *bar = Object::cast_to<CanvasItem>(ok->get_parent())) {
@@ -205,9 +216,7 @@ void SolersPMTheme::apply(const Ref<Theme> &p_theme) {
 	// Flat settings AcceptDialog — one Solers fill, zero picture-frame margins.
 	{
 		p_theme->set_type_variation("PMSettingsDialog", "AcceptDialog");
-		Ref<StyleBoxFlat> panel = _solers_flat(t.bg, 0, Color(), 0, 0);
-		panel->set_content_margin_all(0);
-		p_theme->set_stylebox(SNAME("panel"), "PMSettingsDialog", panel);
+		p_theme->set_stylebox(SNAME("panel"), "PMSettingsDialog", _settings_host_panel(t.bg));
 		p_theme->set_constant(SNAME("buttons_separation"), "PMSettingsDialog", 0);
 	}
 
