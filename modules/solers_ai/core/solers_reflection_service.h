@@ -20,6 +20,7 @@
 #include "scene/resources/mesh.h"
 
 class Node;
+class Node3D;
 class Environment;
 class SolersActionTimeline;
 struct MethodInfo;
@@ -61,6 +62,14 @@ class SolersReflectionService : public Object {
 	static bool _safe_node_path(Node *p_node, String &r_out);
 
 	Array _spatial_digest_for_results(const Array &p_results) const;
+	Dictionary _spatial_facts(Node3D *p_node) const;
+	// Facts a subsystem computes and no property dump contains: bone poses,
+	// playback state, live particle bounds, the resolved material, the
+	// environment actually in force. Dispatch is on the node's engine type,
+	// which is the authority on which of these exist for it.
+	Dictionary _subsystem_facts(Node *p_node) const;
+	String _instance_scene_path(Node *p_node) const;
+	Array _nested_instance_scenes(const Array &p_results) const;
 
 	Dictionary _create_node(const Dictionary &p_args);
 	Dictionary _validate_scene_placements(const Vector<Node *> &p_structure_roots, const Dictionary &p_args) const;

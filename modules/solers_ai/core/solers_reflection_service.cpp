@@ -32,19 +32,29 @@
 #ifdef MODULE_CSG_ENABLED
 #include "modules/csg/csg_shape.h"
 #endif
+#include "scene/3d/bone_attachment_3d.h"
 #include "scene/3d/camera_3d.h"
+#include "scene/3d/cpu_particles_3d.h"
+#include "scene/3d/gpu_particles_3d.h"
 #include "scene/3d/light_3d.h"
 #include "scene/3d/lightmap_gi.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/multimesh_instance_3d.h"
 #include "scene/3d/node_3d.h"
+#include "scene/3d/skeleton_3d.h"
 #include "scene/3d/visual_instance_3d.h"
 #include "scene/3d/world_environment.h"
+#include "scene/animation/animation_mixer.h"
+#include "scene/animation/animation_node_state_machine.h"
+#include "scene/animation/animation_player.h"
+#include "scene/animation/animation_tree.h"
 #include "scene/main/node.h"
 #include "scene/resources/packed_scene.h"
 #include "scene/resources/3d/primitive_meshes.h"
 #include "scene/resources/environment.h"
+#include "scene/resources/material.h"
 #include "scene/resources/mesh.h"
+#include "servers/rendering/rendering_server.h"
 
 static constexpr int SOLERS_INTROSPECT_METHOD_CAP = 400;
 static constexpr int SOLERS_INTROSPECT_PROPERTY_CAP = 400;
@@ -852,7 +862,9 @@ Dictionary SolersReflectionService::inspect_nodes(const Dictionary &p_args) {
 	if (paths.is_empty()) {
 		paths.push_back(".");
 	}
-	const bool include_properties = p_args.get("include_properties", true);
+	// Property dumps are the single largest observation payload, so they are
+	// opt-in: identity, class, and structure answer most inspect calls.
+	const bool include_properties = p_args.get("include_properties", false);
 	const bool include_connections = p_args.get("include_connections", false);
 	const int max_properties = CLAMP((int)p_args.get("max_properties", 128), 1, 512);
 	Array nodes;
@@ -872,6 +884,22 @@ Dictionary SolersReflectionService::inspect_nodes(const Dictionary &p_args) {
 		item["class_name"] = node->get_class();
 		item["child_count"] = node->get_child_count();
 		item["scene_file_path"] = node->get_scene_file_path();
+		// Measurable facts by default: where the node actually is, how big it
+		// actually is, and whether it is actually drawn. These are what decide
+		// a spatial question; an image can only suggest an answer.
+		const Dictionary spatial = _spatial_facts(Object::cast_to<Node3D>(node));
+		if (!spatial.is_empty()) {
+			item.merge(spatial);
+		}
+		const Dictionary subsystem = _subsystem_facts(node);
+		if (!subsystem.is_empty()) {
+			item.merge(subsystem);
+		}
+		const String instance_scene = _instance_scene_path(node);
+		if (!instance_scene.is_empty()) {
+			item["instance_scene_path"] = instance_scene;
+			item["owned_by_instance"] = true;
+		}
 		if (include_properties) {
 			Dictionary property_args;
 			property_args["node_path"] = safe_path;
@@ -1605,6 +1633,20 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 		const Array affected = _spatial_digest_for_results(results);
 		if (!affected.is_empty()) {
 			data["affected_nodes"] = affected;
+		}
+	}
+	if (has_mutation && error_count == 0) {
+		// UndoRedo only moves the live tree; naming who writes the file keeps
+		// the model from either claiming a saved file or spending calls saving
+		// one the session already commits for it.
+		Node *root = has_scene_slot ? editor_node->get_edited_scene() : nullptr;
+		data["committed_to_disk"] = false;
+		data["commit_owner"] = "Solers commits target_scene_path on every terminal path of this turn, and the engine saves it before playback. Do not save it yourself.";
+		data["target_scene_path"] = root ? root->get_scene_file_path() : String();
+		const Array nested = _nested_instance_scenes(results);
+		if (!nested.is_empty()) {
+			data["nested_instance_scenes"] = nested;
+			data["nested_instance_warning"] = "These operations changed nodes owned by instanced sub-scenes. Godot records that as an instance override inside target_scene_path, and the listed sub-scene files stay untouched. Open the sub-scene and edit it directly if the change has to live in that file.";
 		}
 	}
 	if (error_count > 0) {
@@ -3684,6 +3726,275 @@ Array SolersReflectionService::resolve_batch_resource_access(const Dictionary &p
 // the model sees the resulting global transforms and bounds without a
 // follow-up snapshot round-trip (local-vs-global confusion was the top source
 // of misplaced geometry).
+// Where a node is, how big it is, and whether it is drawn: the engine's own
+// answers, shared by every read that needs them so no caller has to rebuild
+// (and drift on) the shape.
+Dictionary SolersReflectionService::_spatial_facts(Node3D *p_node) const {
+	Dictionary facts;
+	if (!p_node || !p_node->is_inside_tree()) {
+		return facts;
+	}
+	facts["global_position"] = _solers_vector3_array(p_node->get_global_position());
+	facts["global_rotation_degrees"] = _solers_vector3_array(p_node->get_global_rotation_degrees());
+	facts["global_scale"] = _solers_vector3_array(p_node->get_global_basis().get_scale());
+	facts["visible_in_tree"] = p_node->is_visible_in_tree();
+	const Dictionary geometry = solers_describe_geometry(p_node, true);
+	if (geometry.has("aabb")) {
+		facts["world_aabb"] = geometry["aabb"];
+		facts["geometry"] = geometry;
+	}
+	return facts;
+}
+
+static Array _solers_color_array(const Color &p_color) {
+	Array values;
+	values.push_back(p_color.r);
+	values.push_back(p_color.g);
+	values.push_back(p_color.b);
+	values.push_back(p_color.a);
+	return values;
+}
+
+static String _solers_resource_id(const Ref<Resource> &p_resource) {
+	if (p_resource.is_null()) {
+		return String();
+	}
+	const String path = p_resource->get_path();
+	return path.is_empty() ? p_resource->get_class() : vformat("%s (%s)", path, p_resource->get_class());
+}
+
+static Dictionary _solers_skeleton_facts(Skeleton3D *p_skeleton) {
+	Dictionary facts;
+	const Transform3D skeleton_to_world = p_skeleton->get_global_transform();
+	Array bones;
+	for (int i = 0; i < p_skeleton->get_bone_count(); i++) {
+		Dictionary bone;
+		bone["index"] = i;
+		bone["name"] = p_skeleton->get_bone_name(i);
+		bone["parent"] = p_skeleton->get_bone_parent(i);
+		// The posed world position is what decides where an attachment lands;
+		// the rest pose alone answers nothing once an animation is applied.
+		const Transform3D pose = skeleton_to_world * p_skeleton->get_bone_global_pose(i);
+		const Vector3 euler = pose.basis.get_euler();
+		bone["global_position"] = _solers_vector3_array(pose.origin);
+		bone["global_rotation_degrees"] = _solers_vector3_array(Vector3(Math::rad_to_deg(euler.x), Math::rad_to_deg(euler.y), Math::rad_to_deg(euler.z)));
+		bone["posed"] = !p_skeleton->get_bone_pose(i).is_equal_approx(p_skeleton->get_bone_rest(i));
+		bones.push_back(bone);
+	}
+	facts["bone_count"] = p_skeleton->get_bone_count();
+	facts["bones"] = bones;
+	return facts;
+}
+
+static Dictionary _solers_animation_facts(AnimationMixer *p_mixer) {
+	Dictionary facts;
+	facts["animation_active"] = p_mixer->is_active();
+	facts["animation_root_node"] = String(p_mixer->get_root_node());
+	List<StringName> animation_names;
+	p_mixer->get_animation_list(&animation_names);
+	Array animations;
+	for (const StringName &name : animation_names) {
+		animations.push_back(String(name));
+	}
+	facts["animations"] = animations;
+	if (AnimationPlayer *player = Object::cast_to<AnimationPlayer>(p_mixer)) {
+		facts["playing"] = player->is_playing();
+		facts["current_animation"] = String(player->get_current_animation());
+		facts["assigned_animation"] = String(player->get_assigned_animation());
+		facts["autoplay"] = String(player->get_autoplay());
+		facts["position"] = player->get_current_animation_position();
+		facts["length"] = player->get_current_animation_length();
+		facts["speed_scale"] = player->get_speed_scale();
+	}
+	if (AnimationTree *tree = Object::cast_to<AnimationTree>(p_mixer)) {
+		// An invalid tree silently drives nothing; the engine already knows why.
+		facts["tree_state_invalid"] = tree->is_state_invalid();
+		if (tree->is_state_invalid()) {
+			facts["tree_invalid_reason"] = tree->get_invalid_state_reason();
+		}
+		facts["tree_root"] = _solers_resource_id(tree->get_root_animation_node());
+		const Ref<AnimationNodeStateMachinePlayback> state_machine = tree->get(SNAME("parameters/playback"));
+		if (state_machine.is_valid()) {
+			facts["state_machine_playing"] = state_machine->is_playing();
+			facts["state_machine_current_node"] = String(state_machine->get_current_node());
+		}
+	}
+	return facts;
+}
+
+static Dictionary _solers_particles_facts(GeometryInstance3D *p_particles) {
+	Dictionary facts;
+	if (GPUParticles3D *gpu = Object::cast_to<GPUParticles3D>(p_particles)) {
+		facts["emitting"] = gpu->is_emitting();
+		facts["one_shot"] = gpu->get_one_shot();
+		facts["amount"] = gpu->get_amount();
+		facts["lifetime"] = gpu->get_lifetime();
+		facts["local_coords"] = gpu->get_use_local_coordinates();
+		facts["process_material"] = _solers_resource_id(gpu->get_process_material());
+		facts["draw_pass_mesh"] = gpu->get_draw_passes() > 0 ? _solers_resource_id(gpu->get_draw_pass_mesh(0)) : String();
+		facts["visibility_aabb"] = _solers_aabb_data(gpu->get_visibility_aabb());
+		// The server holds the only live answer to "did anything actually
+		// spawn, and where": a configured emitter can still draw nothing.
+		const RID particles = gpu->get_base();
+		facts["simulation_inactive"] = RenderingServer::get_singleton()->particles_is_inactive(particles);
+		facts["live_world_aabb"] = _solers_aabb_data(gpu->get_global_transform().xform(RenderingServer::get_singleton()->particles_get_current_aabb(particles)));
+	} else if (CPUParticles3D *cpu = Object::cast_to<CPUParticles3D>(p_particles)) {
+		facts["emitting"] = cpu->is_emitting();
+		facts["one_shot"] = cpu->get_one_shot();
+		facts["amount"] = cpu->get_amount();
+		facts["lifetime"] = cpu->get_lifetime();
+		facts["local_coords"] = cpu->get_use_local_coordinates();
+		facts["draw_pass_mesh"] = _solers_resource_id(cpu->get_mesh());
+	}
+	return facts;
+}
+
+static Dictionary _solers_material_facts(MeshInstance3D *p_mesh_instance) {
+	Dictionary facts;
+	const Ref<Mesh> mesh = p_mesh_instance->get_mesh();
+	facts["mesh"] = _solers_resource_id(mesh);
+	if (mesh.is_null()) {
+		return facts;
+	}
+	Array surfaces;
+	for (int i = 0; i < mesh->get_surface_count(); i++) {
+		Dictionary surface;
+		surface["index"] = i;
+		// get_active_material resolves Godot's own precedence, so the answer is
+		// what will actually be drawn rather than what a property dump lists.
+		const Ref<Material> active = p_mesh_instance->get_active_material(i);
+		surface["active_material"] = _solers_resource_id(active);
+		const Ref<Material> override_material = p_mesh_instance->get_material_override();
+		if (override_material.is_valid()) {
+			surface["source"] = "material_override";
+		} else if (i < p_mesh_instance->get_surface_override_material_count() && p_mesh_instance->get_surface_override_material(i).is_valid()) {
+			surface["source"] = "surface_override";
+		} else {
+			surface["source"] = "mesh";
+		}
+		if (BaseMaterial3D *base_material = Object::cast_to<BaseMaterial3D>(active.ptr())) {
+			surface["shading_mode"] = (int)base_material->get_shading_mode();
+			surface["albedo"] = _solers_color_array(base_material->get_albedo());
+			surface["albedo_texture"] = _solers_resource_id(base_material->get_texture(BaseMaterial3D::TEXTURE_ALBEDO));
+			surface["metallic"] = base_material->get_metallic();
+			surface["roughness"] = base_material->get_roughness();
+			surface["transparency"] = (int)base_material->get_transparency();
+		}
+		surfaces.push_back(surface);
+	}
+	facts["surfaces"] = surfaces;
+	facts["material_overlay"] = _solers_resource_id(p_mesh_instance->get_material_overlay());
+	return facts;
+}
+
+static Dictionary _solers_light_facts(Light3D *p_light) {
+	Dictionary facts;
+	facts["light_color"] = _solers_color_array(p_light->get_color());
+	facts["light_energy"] = p_light->get_param(Light3D::PARAM_ENERGY);
+	facts["light_indirect_energy"] = p_light->get_param(Light3D::PARAM_INDIRECT_ENERGY);
+	facts["light_specular"] = p_light->get_param(Light3D::PARAM_SPECULAR);
+	facts["shadow_enabled"] = p_light->has_shadow();
+	facts["editor_only"] = p_light->is_editor_only();
+	facts["cull_mask"] = (int64_t)p_light->get_cull_mask();
+	facts["bake_mode"] = (int)p_light->get_bake_mode();
+	if (DirectionalLight3D *directional = Object::cast_to<DirectionalLight3D>(p_light)) {
+		facts["sky_mode"] = (int)directional->get_sky_mode();
+	}
+	return facts;
+}
+
+static Dictionary _solers_environment_facts(const Ref<Environment> &p_environment) {
+	Dictionary facts;
+	facts["background"] = (int)p_environment->get_background();
+	facts["background_color"] = _solers_color_array(p_environment->get_bg_color());
+	facts["background_energy"] = p_environment->get_bg_energy_multiplier();
+	facts["sky"] = _solers_resource_id(p_environment->get_sky());
+	facts["ambient_source"] = (int)p_environment->get_ambient_source();
+	facts["ambient_color"] = _solers_color_array(p_environment->get_ambient_light_color());
+	facts["ambient_energy"] = p_environment->get_ambient_light_energy();
+	facts["reflection_source"] = (int)p_environment->get_reflection_source();
+	facts["tonemapper"] = (int)p_environment->get_tonemapper();
+	facts["tonemap_exposure"] = p_environment->get_tonemap_exposure();
+	facts["tonemap_white"] = p_environment->get_tonemap_white();
+	facts["glow_enabled"] = p_environment->is_glow_enabled();
+	facts["ssao_enabled"] = p_environment->is_ssao_enabled();
+	facts["sdfgi_enabled"] = p_environment->is_sdfgi_enabled();
+	facts["fog_enabled"] = p_environment->is_fog_enabled();
+	return facts;
+}
+
+// Each branch is keyed on the engine's own class, which is the authoritative
+// statement of which subsystem owns this node; there is no generic way to read
+// a bone pose or a resolved material out of a property list.
+Dictionary SolersReflectionService::_subsystem_facts(Node *p_node) const {
+	Dictionary facts;
+	if (Skeleton3D *skeleton = Object::cast_to<Skeleton3D>(p_node)) {
+		facts["skeleton"] = _solers_skeleton_facts(skeleton);
+	} else if (BoneAttachment3D *attachment = Object::cast_to<BoneAttachment3D>(p_node)) {
+		Dictionary bone_attachment;
+		bone_attachment["bone_name"] = attachment->get_bone_name();
+		bone_attachment["bone_index"] = attachment->get_bone_idx();
+		bone_attachment["external_skeleton"] = attachment->get_use_external_skeleton();
+		facts["bone_attachment"] = bone_attachment;
+	} else if (AnimationMixer *mixer = Object::cast_to<AnimationMixer>(p_node)) {
+		facts["animation"] = _solers_animation_facts(mixer);
+	} else if (Object::cast_to<GPUParticles3D>(p_node) || Object::cast_to<CPUParticles3D>(p_node)) {
+		facts["particles"] = _solers_particles_facts(Object::cast_to<GeometryInstance3D>(p_node));
+	} else if (MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(p_node)) {
+		facts["material"] = _solers_material_facts(mesh_instance);
+	} else if (Light3D *light = Object::cast_to<Light3D>(p_node)) {
+		facts["light"] = _solers_light_facts(light);
+	} else if (WorldEnvironment *world_environment = Object::cast_to<WorldEnvironment>(p_node)) {
+		const Ref<Environment> environment = world_environment->get_environment();
+		if (environment.is_valid()) {
+			facts["environment"] = _solers_environment_facts(environment);
+		} else {
+			// An empty WorldEnvironment is the usual reason a scene renders
+			// against the fallback grey instead of the authored sky.
+			facts["environment_missing"] = true;
+		}
+	}
+	return facts;
+}
+
+// The nearest ancestor carrying a scene_file_path is the authority on which
+// file a change did *not* enter: Godot writes edits below an instance root as
+// overrides in the editing scene, never back into the instanced file.
+String SolersReflectionService::_instance_scene_path(Node *p_node) const {
+	EditorInterface *editor_interface = EditorInterface::get_singleton();
+	Node *edited_root = editor_interface ? editor_interface->get_edited_scene_root() : nullptr;
+	for (Node *ancestor = p_node; ancestor && ancestor != edited_root; ancestor = ancestor->get_parent()) {
+		const String scene_path = ancestor->get_scene_file_path();
+		if (!scene_path.is_empty()) {
+			return scene_path;
+		}
+	}
+	return String();
+}
+
+Array SolersReflectionService::_nested_instance_scenes(const Array &p_results) const {
+	Array scenes;
+	HashSet<String> seen;
+	for (int i = 0; i < p_results.size(); i++) {
+		const Dictionary result = Dictionary(p_results[i]).get("result", Dictionary());
+		if (!(bool)result.get("ok", false)) {
+			continue;
+		}
+		const Dictionary result_data = result.get("data", Dictionary());
+		const String path = result_data.has("path") ? String(result_data.get("path", String())) : String(result_data.get("node_path", String()));
+		if (path.is_empty()) {
+			continue;
+		}
+		String resolve_error;
+		const String scene_path = _instance_scene_path(_resolve_node(path, resolve_error));
+		if (!scene_path.is_empty() && !seen.has(scene_path)) {
+			seen.insert(scene_path);
+			scenes.push_back(scene_path);
+		}
+	}
+	return scenes;
+}
+
 Array SolersReflectionService::_spatial_digest_for_results(const Array &p_results) const {
 	Array digest;
 	HashSet<String> seen;
@@ -3701,20 +4012,13 @@ Array SolersReflectionService::_spatial_digest_for_results(const Array &p_result
 		String resolve_error;
 		Node *node = _resolve_node(path, resolve_error);
 		Node3D *node_3d = node ? Object::cast_to<Node3D>(node) : nullptr;
-		if (!node_3d || !node_3d->is_inside_tree()) {
+		const Dictionary facts = _spatial_facts(node_3d);
+		if (facts.is_empty()) {
 			continue;
 		}
-		Dictionary entry;
+		Dictionary entry = facts;
 		entry["path"] = path;
 		entry["type"] = node_3d->get_class();
-		entry["global_position"] = _solers_vector3_array(node_3d->get_global_position());
-		entry["global_rotation_degrees"] = _solers_vector3_array(node_3d->get_global_rotation_degrees());
-		entry["global_scale"] = _solers_vector3_array(node_3d->get_global_basis().get_scale());
-		const Dictionary geometry = solers_describe_geometry(node_3d, true);
-		if (geometry.has("aabb")) {
-			entry["world_aabb"] = geometry["aabb"];
-			entry["geometry"] = geometry;
-		}
 		digest.push_back(entry);
 	}
 	return digest;
