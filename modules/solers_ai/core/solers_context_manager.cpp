@@ -11,6 +11,7 @@
 #include "solers_context_manager.h"
 
 #include "core/io/json.h"
+#include "core/templates/hash_set.h"
 #include "modules/solers_ai/llm/solers_llm_message.h"
 
 const char *SolersContextManager::COMPACTION_SUMMARY_PREFIX =
@@ -18,6 +19,8 @@ const char *SolersContextManager::COMPACTION_SUMMARY_PREFIX =
 const char *SolersContextManager::COMPACTION_INSTRUCTION =
 		"You are about to run out of context. Write a first-person handoff note to yourself so you can seamlessly continue this task after the earlier conversation is cleared.\n\n"
 		"Write the note as your own continuing train of thought, in present tense. Preserve the latest user request verbatim, active constraints, exact files and commands already used, verified results versus uncertainty, and the precise next action. Be concise and self-sufficient. Respond with text only and do not call tools.";
+const char *SolersContextManager::CANCELLED_TOOL_RESULT =
+		"{\"ok\":false,\"error\":{\"code\":\"TOOL_CANCELLED\",\"message\":\"This call never produced a result: the turn ended before it finished. Re-run it if its output is still needed.\",\"recoverable\":true}}";
 
 int SolersContextManager::estimate_tokens(const String &p_text) {
 	int ascii_count = 0;
@@ -84,51 +87,56 @@ int SolersContextManager::tool_result_token_budget(int p_context_window) {
 	return CLAMP(p_context_window / TOOL_RESULT_WINDOW_FRACTION, TOOL_RESULT_MIN_TOKENS, TOOL_RESULT_MAX_TOKENS);
 }
 
-int SolersContextManager::_working_set_budget(int p_context_window) {
-	if (p_context_window <= 0) {
-		return WORKING_SET_FALLBACK_TOKENS;
-	}
-	return MAX(1, (int)((double)p_context_window * WORKING_SET_RATIO));
-}
+Array SolersContextManager::repair_tool_pairing(const Array &p_messages) {
+	Array repaired;
+	Vector<String> open_ids; // calls of the assistant turn currently being answered
+	Vector<String> open_names;
+	HashSet<String> answered;
 
-String SolersContextManager::_omitted_tool_stub(const Dictionary &p_message) {
-	return vformat("[Solers: prior tool result omitted; re-run tool if needed. call_id=%s]", String(p_message.get("tool_call_id", String())));
-}
-
-// Suffix of p_text whose estimated token count is at most p_max_tokens.
-static String _tail_by_tokens(const String &p_text, int p_max_tokens) {
-	if (p_max_tokens <= 0) {
-		return String();
-	}
-	int ascii_count = 0;
-	int non_ascii_count = 0;
-	int start = p_text.length();
-	for (int i = p_text.length() - 1; i >= 0; i--) {
-		if (p_text[i] <= 127) {
-			ascii_count++;
-		} else {
-			non_ascii_count++;
+	// Stubs land immediately after the run of real results, keeping the
+	// assistant turn and its answers adjacent the way providers require.
+	auto close_open_calls = [&]() {
+		for (int i = 0; i < open_ids.size(); i++) {
+			if (!answered.has(open_ids[i])) {
+				repaired.push_back(SolersLLMMessage::tool_result(open_ids[i], open_names[i], String::utf8(CANCELLED_TOOL_RESULT)));
+			}
 		}
-		if ((ascii_count + 3) / 4 + non_ascii_count > p_max_tokens) {
-			break;
-		}
-		start = i;
-	}
-	return p_text.substr(start);
-}
+		open_ids.clear();
+		open_names.clear();
+		answered.clear();
+	};
 
-String SolersContextManager::middle_truncate(const String &p_text, int p_max_tokens) {
-	const int total_tokens = estimate_tokens(p_text);
-	if (p_max_tokens <= 0 || total_tokens <= p_max_tokens) {
-		return p_text;
+	for (int i = 0; i < p_messages.size(); i++) {
+		const Dictionary message = p_messages[i];
+		const String role = message.get("role", String());
+		if (role == String(SolersLLMRole::TOOL)) {
+			const String id = message.get("tool_call_id", String());
+			// A result for an unknown or already-answered id is rejected just
+			// as hard as a missing one, so it is dropped instead of forwarded.
+			if (id.is_empty() || answered.has(id) || open_ids.find(id) < 0) {
+				continue;
+			}
+			answered.insert(id);
+			repaired.push_back(message);
+			continue;
+		}
+		close_open_calls();
+		repaired.push_back(message);
+		if (role != String(SolersLLMRole::ASSISTANT)) {
+			continue;
+		}
+		const Array tool_calls = message.get("tool_calls", Array());
+		for (int call_index = 0; call_index < tool_calls.size(); call_index++) {
+			const Dictionary call = tool_calls[call_index];
+			const String id = call.get("id", String());
+			if (!id.is_empty()) {
+				open_ids.push_back(id);
+				open_names.push_back(call.get("name", String()));
+			}
+		}
 	}
-	const int keep_each_side = p_max_tokens / 2;
-	const String head = _truncate_text(p_text, keep_each_side);
-	const String tail = _tail_by_tokens(p_text, keep_each_side);
-	return head +
-			vformat("\n...[Solers: middle of this output elided, %d of ~%d tokens kept. Re-run the tool with tighter limits for the full data.]...\n",
-					p_max_tokens, total_tokens) +
-			tail;
+	close_open_calls();
+	return repaired;
 }
 
 Array SolersContextManager::_select_recent_user_messages(const Array &p_messages) {
@@ -207,71 +215,31 @@ int SolersContextManager::get_token_count_with_pending(const Array &p_messages, 
 	return estimate_tokens(p_system_prompt) + estimate_tokens(JSON::stringify(p_tools, "", false, true)) + estimate_messages_tokens(p_messages);
 }
 
-bool SolersContextManager::should_compact(int p_used_tokens, int p_context_window) const {
-	if (p_context_window <= 0) {
+bool SolersContextManager::should_compact(int p_used_tokens, int p_context_window, int p_max_output_tokens) const {
+	if (p_context_window <= 0 || p_max_output_tokens <= 0 || p_max_output_tokens >= p_context_window) {
 		return false;
 	}
 	if (last_compacted_token_count >= 0 && p_used_tokens <= last_compacted_token_count) {
 		return false;
 	}
-	if ((double)p_used_tokens >= (double)p_context_window * COMPACTION_TRIGGER_RATIO) {
-		return true;
-	}
-	return RESERVED_CONTEXT_TOKENS > 0 &&
-			RESERVED_CONTEXT_TOKENS < p_context_window &&
-			p_used_tokens + RESERVED_CONTEXT_TOKENS >= p_context_window;
+	return p_used_tokens + p_max_output_tokens >= p_context_window;
 }
 
-bool SolersContextManager::should_compact(const Array &p_messages, const String &p_system_prompt, const Array &p_tools, int p_context_window) const {
-	return should_compact(get_token_count_with_pending(p_messages, p_system_prompt, p_tools), p_context_window);
+bool SolersContextManager::should_compact(const Array &p_messages, const String &p_system_prompt, const Array &p_tools, int p_context_window, int p_max_output_tokens) const {
+	return should_compact(get_token_count_with_pending(p_messages, p_system_prompt, p_tools), p_context_window, p_max_output_tokens);
 }
 
 bool SolersContextManager::is_overflow(const Array &p_messages, const String &p_system_prompt, const Array &p_tools, int p_context_window) const {
 	return p_context_window > 0 && get_token_count_with_pending(p_messages, p_system_prompt, p_tools) >= p_context_window;
 }
 
-Array SolersContextManager::prepare_request(const Array &p_messages, const String &p_system_prompt, const Array &p_tools, int p_context_window) {
-	Array projected;
-	projected.resize(p_messages.size());
-	for (int i = 0; i < p_messages.size(); i++) {
-		projected[i] = Dictionary(p_messages[i]).duplicate(true);
-	}
-
-	const int overhead = estimate_tokens(p_system_prompt) + estimate_tokens(JSON::stringify(p_tools, "", false, true));
-	const int budget = _working_set_budget(p_context_window);
-	int total = overhead + estimate_messages_tokens(projected);
-	last_estimated_tokens = total;
-	if (total <= budget) {
-		return projected;
-	}
-
-	// Non-tool messages always stay; only tool bodies are eligible to stub.
-	int non_tool_tokens = 0;
-	for (int i = 0; i < projected.size(); i++) {
-		const Dictionary message = projected[i];
-		if (String(message.get("role", String())) != String(SolersLLMRole::TOOL)) {
-			non_tool_tokens += _estimate_message_tokens(message);
-		}
-	}
-	int tool_budget = budget - overhead - non_tool_tokens;
-
-	// Protect newest tool results from the tail while budget remains; stub the rest.
-	for (int i = projected.size() - 1; i >= 0; i--) {
-		Dictionary message = projected[i];
-		if (String(message.get("role", String())) != String(SolersLLMRole::TOOL)) {
-			continue;
-		}
-		const int tool_tokens = _estimate_message_tokens(message);
-		if (tool_budget >= tool_tokens) {
-			tool_budget -= tool_tokens;
-			continue;
-		}
-		message["content"] = _omitted_tool_stub(message);
-		message.erase("attachments");
-		projected[i] = message;
-	}
-
-	last_estimated_tokens = overhead + estimate_messages_tokens(projected);
+Array SolersContextManager::prepare_request(const Array &p_messages, const String &p_system_prompt, const Array &p_tools) {
+	// Repairing pairing is the only rewrite a projection may perform, and it
+	// is a pure function of history: the same exchange always projects to the
+	// same bytes, so consecutive requests share a prefix the provider can
+	// keep serving from cache. Shrinking happens at compaction, never here.
+	const Array projected = repair_tool_pairing(p_messages);
+	last_estimated_tokens = estimate_tokens(p_system_prompt) + estimate_tokens(JSON::stringify(p_tools, "", false, true)) + estimate_messages_tokens(projected);
 	return projected;
 }
 

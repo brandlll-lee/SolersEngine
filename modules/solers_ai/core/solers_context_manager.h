@@ -8,10 +8,11 @@
 /* Solers: AI-native game engine.                                        */
 /*                                                                        */
 /* Provider usage is authoritative for messages already sent; a cheap     */
-/* estimator covers pending messages. Durable history stays append-only   */
-/* on disk; prepare_request projects a lean model-facing view by stubbing */
-/* oldest tool bodies when over the working-set budget. Full compaction   */
-/* remains the sole durable rewrite (recent user spine + handoff).        */
+/* estimator covers pending messages. Bytes already sent are immutable:   */
+/* the provider has them cached and they are paid for, so the projection  */
+/* never rewrites them. Eviction happens only at a monotonically          */
+/* advancing cut, where compaction freezes the prefix into one summary    */
+/* that never changes again and history resumes append-only.              */
 /**************************************************************************/
 
 #pragma once
@@ -23,13 +24,7 @@
 
 class SolersContextManager {
 	static constexpr int COMPACT_USER_MESSAGE_MAX_TOKENS = 20000;
-	static constexpr double COMPACTION_TRIGGER_RATIO = 0.60;
-	static constexpr int RESERVED_CONTEXT_TOKENS = 50000;
 	static constexpr int MEDIA_TOKEN_ESTIMATE = 2000;
-	// Model-facing working set: project tool bodies down when the request
-	// estimate exceeds this fraction of the window (fallback when unknown).
-	static constexpr double WORKING_SET_RATIO = 0.45;
-	static constexpr int WORKING_SET_FALLBACK_TOKENS = 80000;
 	// One tool result may claim at most this fraction of the model window,
 	// clamped to a fixed band: the floor keeps small windows usable, the
 	// ceiling stops any single observation from displacing working history
@@ -37,6 +32,13 @@ class SolersContextManager {
 	static constexpr int TOOL_RESULT_WINDOW_FRACTION = 4;
 	static constexpr int TOOL_RESULT_MIN_TOKENS = 4000;
 	static constexpr int TOOL_RESULT_MAX_TOKENS = 8000;
+
+public:
+	// Floor for a window learned from a rejected request, so one pathological
+	// overflow cannot shrink the session down to an unusable budget.
+	static constexpr int MIN_LEARNED_CONTEXT_TOKENS = 16000;
+
+private:
 
 	int authoritative_tokens = 0;
 	int covered_message_count = 0;
@@ -48,32 +50,37 @@ class SolersContextManager {
 	static String _truncate_text(const String &p_text, int p_max_tokens);
 	static Array _select_recent_user_messages(const Array &p_messages);
 	static String _build_summary_text(const String &p_summary, const Dictionary &p_plan);
-	static int _working_set_budget(int p_context_window);
-	static String _omitted_tool_stub(const Dictionary &p_message);
 
 public:
 	static const char *COMPACTION_SUMMARY_PREFIX;
 	static const char *COMPACTION_INSTRUCTION;
+	static const char *CANCELLED_TOOL_RESULT;
+
+	// Provider contract as a pure function over history: every assistant
+	// tool_call is answered by exactly one tool message with the same id, and
+	// no tool message answers a call that was never made. Turns killed
+	// mid-queue break that invariant in durable history permanently, so the
+	// projection repairs it rather than inferring why the turn ended.
+	static Array repair_tool_pairing(const Array &p_messages);
 
 	static int estimate_tokens(const String &p_text);
 	static int estimate_messages_tokens(const Array &p_messages);
 	// Budget for one tool result, resolved from the active model window.
 	static int tool_result_token_budget(int p_context_window);
-	// Keep the head and tail of an oversized payload and elide the middle,
-	// measuring in estimated tokens (mirrors codex/pi middle truncation).
-	static String middle_truncate(const String &p_text, int p_max_tokens);
 
 	void record_usage(int p_input_tokens, int p_covered_message_count);
 	int get_token_count_with_pending(const Array &p_messages, const String &p_system_prompt, const Array &p_tools) const;
-	bool should_compact(int p_used_tokens, int p_context_window) const;
-	bool should_compact(const Array &p_messages, const String &p_system_prompt, const Array &p_tools, int p_context_window) const;
+	// Compact once the next response no longer fits: the model states its own
+	// output ceiling, so the headroom is a declared fact rather than a guessed
+	// fraction of the window.
+	bool should_compact(int p_used_tokens, int p_context_window, int p_max_output_tokens) const;
+	bool should_compact(const Array &p_messages, const String &p_system_prompt, const Array &p_tools, int p_context_window, int p_max_output_tokens) const;
 	bool is_overflow(const Array &p_messages, const String &p_system_prompt, const Array &p_tools, int p_context_window) const;
 
-	// Model-facing projection: durable history is unchanged. When the request
-	// estimate exceeds the working-set budget, oldest tool message bodies are
-	// stubbed (role/tool_call_id/name kept) while user/assistant stay intact
-	// and the newest tool results are protected from the tail inward.
-	Array prepare_request(const Array &p_messages, const String &p_system_prompt, const Array &p_tools, int p_context_window);
+	// Model-facing projection: durable history is unchanged and every message
+	// that has already been sent keeps its bytes, so each request extends the
+	// previous prefix instead of replacing it.
+	Array prepare_request(const Array &p_messages, const String &p_system_prompt, const Array &p_tools);
 	Dictionary apply_compaction(const Array &p_messages, const String &p_summary, const Dictionary &p_plan = Dictionary());
 	Array shrink_compaction_history(const Array &p_messages, int p_attempt) const;
 	void reset();

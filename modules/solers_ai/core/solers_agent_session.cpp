@@ -30,6 +30,7 @@
 
 #include "solers_agent_session.h"
 
+#include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/json.h"
 #include "core/config/project_settings.h"
@@ -495,7 +496,7 @@ void SolersAgentSession::_write_transcript_compaction(const Dictionary &p_result
 	_write_transcript_event("context.apply_compaction", event);
 }
 
-void SolersAgentSession::_write_transcript_tool(const String &p_call_id, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result) const {
+void SolersAgentSession::_write_transcript_tool(const String &p_call_id, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result, const String &p_delivered_content) const {
 	Dictionary event;
 	event["role"] = "tool";
 	event["call_id"] = p_call_id;
@@ -505,9 +506,7 @@ void SolersAgentSession::_write_transcript_tool(const String &p_call_id, const S
 	event["run_msec"] = tool_completed_msec >= tool_started_msec ? (int64_t)(tool_completed_msec - tool_started_msec) : 0;
 	event["delivery_msec"] = tool_completed_msec ? (int64_t)(OS::get_singleton()->get_ticks_msec() - tool_completed_msec) : 0;
 	event["duration_msec"] = event["run_msec"];
-	event["content"] = SolersContextManager::middle_truncate(
-			JSON::stringify(p_result, "", false, true),
-			SolersContextManager::tool_result_token_budget(context_window));
+	event["content"] = p_delivered_content;
 	if (tool_registry) {
 		event["args"] = tool_registry->protect_tool_args_for_replay(StringName(p_canonical_name), p_args);
 		event["result_summary"] = tool_registry->summarize_tool_result_for_audit(p_result);
@@ -807,16 +806,6 @@ Dictionary SolersAgentSession::_take_godot_diagnostics() {
 	return diagnostics;
 }
 
-void SolersAgentSession::_flush_godot_diagnostics() {
-	const Dictionary diagnostics = _take_godot_diagnostics();
-	if (diagnostics.is_empty()) {
-		return;
-	}
-	Dictionary message = SolersLLMMessage::user("Godot emitted these diagnostics since the last model boundary. Treat errors as current evidence and re-verify after fixing them:\n" + JSON::stringify(diagnostics, "", false, true));
-	message["origin"] = "godot_diagnostics";
-	messages.push_back(message);
-}
-
 String SolersAgentSession::_readonly_cache_key(const StringName &p_name, const Dictionary &p_args) const {
 	const Dictionary normalized = tool_registry ? tool_registry->normalize_tool_args(p_name, p_args) : p_args;
 	const uint64_t revision = tool_registry && tool_registry->caches_across_revisions(p_name) ? 0 : authored_revision;
@@ -953,7 +942,7 @@ String SolersAgentSession::_default_system_prompt() const {
 			"- Prefer the smallest coherent native change. Inspect live state before editing; do not guess APIs or scene contents.\n"
 			"- Built-in tools are already available. If tool.search is present, it discovers only external plugin, connector, or MCP tools. Skills provide knowledge and never activate capabilities.\n"
 			"- Keep scene edits undoable and authored in scene/resources. Write or patch code only when native composition cannot express the requested behavior.\n"
-			"- When context reports current_scene_unsaved, the edited scene exists only in memory. Save it to a res:// path early (EditorInterface.save_scene_as via engine.execute editor_call) so authored work is durable; Solers also commits it automatically when the turn ends.\n"
+			"- Scene edits live in the editor's undo history until the scene file is written. Solers commits the edited scene itself on every terminal path of the turn, and the engine saves it before playback, so do not spend tool calls saving it; a commit that fails is reported to you explicitly.\n"
 			"- For algorithmic or bulk work (procedural data, batch changes), run a one-shot @tool script through script.run instead of attaching temporary scripts to the scene or playing it. Declare func run(host) when nodes need scene-tree access. Everything parented under host is discarded when the call ends unless you pass persist_host_children=true, which hands those nodes to the edited scene as one undoable action - that handover (or scene.edit) is the only way scripted content becomes part of the scene.\n"
 			"- Background tools return stable job ids immediately. Continue independent work; when nothing else is runnable, call job.wait once with the required ids and stop issuing tools. Solers parks this turn and resumes it with a background job delta when any requested job reaches a project-import terminal state; do not poll asset.status for progress.\n"
 			"- Tool errors carry the native cause; read it, change what it names, and retry. Repeating an identical failed call wastes a step.\n"
@@ -982,29 +971,32 @@ Dictionary SolersAgentSession::_environment_context_message(bool p_include_obser
 	context["enabled_plugins"] = ProjectSettings::get_singleton()->has_setting("editor_plugins/enabled") ? GLOBAL_GET("editor_plugins/enabled") : Variant(PackedStringArray());
 	// Addon health up front: a half-loaded addon (missing classes, load
 	// errors, pending restart) is the model's first fact, not something it has
-	// to rediscover through failing tool calls.
+	// to rediscover through failing tool calls. Healthy addons are byte-identical
+	// in every request of every turn, so they ride as a count instead.
 	if (tool_registry->asset_service) {
 		const Dictionary addon_report = tool_registry->asset_service->addon_list(Dictionary());
 		const Array addons = Dictionary(addon_report.get("data", Dictionary())).get("plugins", Array());
-		Array addon_health;
+		Array unhealthy;
+		int ready_count = 0;
 		for (const Variant &value : addons) {
 			const Dictionary addon = value;
+			if ((bool)addon.get("ready", false)) {
+				ready_count++;
+				continue;
+			}
 			Dictionary summary;
 			summary["id"] = addon.get("key", String());
 			summary["version"] = addon.get("version", String());
-			const bool ready = addon.get("ready", false);
-			summary["ready"] = ready;
-			if (!ready) {
-				summary["installed"] = addon.get("installed", false);
-				summary["enabled"] = addon.get("enabled", false);
-				summary["restart_required"] = addon.get("restart_required", false);
-				summary["missing_classes"] = addon.get("missing_classes", Array());
-				summary["load_errors"] = addon.get("load_errors", Array());
-			}
-			addon_health.push_back(summary);
+			summary["installed"] = addon.get("installed", false);
+			summary["enabled"] = addon.get("enabled", false);
+			summary["restart_required"] = addon.get("restart_required", false);
+			summary["missing_classes"] = addon.get("missing_classes", Array());
+			summary["load_errors"] = addon.get("load_errors", Array());
+			unhealthy.push_back(summary);
 		}
-		if (!addon_health.is_empty()) {
-			context["installed_addons_health"] = addon_health;
+		context["installed_addons_ready_count"] = ready_count;
+		if (!unhealthy.is_empty()) {
+			context["installed_addons_unhealthy"] = unhealthy;
 		}
 	}
 	EditorInterface *editor_interface = EditorInterface::get_singleton();
@@ -1035,6 +1027,13 @@ Dictionary SolersAgentSession::_environment_context_message(bool p_include_obser
 			context["runtime_error_digest"] = error_digest;
 			context["runtime_epoch_error_count"] = runtime_observations.get("epoch_error_count", 0);
 		}
+	}
+	// Editor diagnostics are current engine facts, so they ride this
+	// per-request message instead of being appended to durable history where
+	// one noisy turn would keep paying for itself on every later request.
+	const Dictionary diagnostics = _take_godot_diagnostics();
+	if (!diagnostics.is_empty()) {
+		context["godot_diagnostics"] = diagnostics;
 	}
 	Dictionary message = SolersLLMMessage::user(
 			"Current engine context (authoritative, bounded, and refreshed for this request):\n" + JSON::stringify(context, "", false, true));
@@ -1090,6 +1089,11 @@ bool SolersAgentSession::_refresh_active_model_limits() {
 	}
 	if (active_provider.has("context_window")) {
 		resolved_context = (int)active_provider["context_window"];
+	}
+	// A rejected request outranks every advertised number: it is the only
+	// statement the endpoint itself has made about its real window.
+	if (learned_context_ceiling > 0) {
+		resolved_context = resolved_context > 0 ? MIN(resolved_context, learned_context_ceiling) : learned_context_ceiling;
 	}
 
 	int resolved_output = (int)profile.get("max_output_tokens", 8192);
@@ -1225,7 +1229,6 @@ Error SolersAgentSession::_dispatch_model_request(bool p_skip_compaction) {
 		return ERR_BUSY;
 	}
 	_append_background_asset_deltas(false);
-	_flush_godot_diagnostics();
 	_flush_pending_steering();
 	if (_refresh_active_model_limits()) {
 		Dictionary limits;
@@ -1244,18 +1247,13 @@ Error SolersAgentSession::_dispatch_model_request(bool p_skip_compaction) {
 		system_prompt = _default_system_prompt();
 	}
 	const Array tools = _collect_tools();
-	if (!p_skip_compaction && context_manager && context_manager->should_compact(messages, system_prompt, tools, context_window)) {
+	if (!p_skip_compaction && context_manager && context_manager->should_compact(messages, system_prompt, tools, context_window, max_output_tokens)) {
 		return _begin_compaction(false);
 	}
 
-	Array request_messages = messages.duplicate();
-	if (context_manager) {
-		request_messages = context_manager->prepare_request(
-				messages,
-				system_prompt,
-				tools,
-				context_window);
-	}
+	Array request_messages = context_manager
+			? context_manager->prepare_request(messages, system_prompt, tools)
+			: SolersContextManager::repair_tool_pairing(messages);
 	// The dynamic engine facts ride at the end of the projection instead of
 	// inside the system prompt, so every request keeps a byte-stable prefix
 	// (system + tools + history) for provider prompt caching.
@@ -1331,11 +1329,7 @@ Error SolersAgentSession::_dispatch_compaction_request() {
 	if (compaction_request_attempt > 0) {
 		history = context_manager->shrink_compaction_history(history, compaction_request_attempt);
 	}
-	history = context_manager->prepare_request(
-			history,
-			system_prompt,
-			Array(),
-			context_window);
+	history = context_manager->prepare_request(history, system_prompt, Array());
 	String instruction = SolersContextManager::COMPACTION_INSTRUCTION;
 	if (!current_plan.is_empty()) {
 		instruction += "\n\nCurrent plan:\n" + JSON::stringify(current_plan, "  ", false, true);
@@ -1370,6 +1364,28 @@ bool SolersAgentSession::_is_context_overflow(const Dictionary &p_error) const {
 		return true;
 	}
 	return (int)p_error.get("http_status", 0) == 413;
+}
+
+// An overflow proves the assumed window is a lie: the request we just sent did
+// not fit. Clamp to what actually failed so compaction breathes against the
+// real limit from here on instead of chasing catalog metadata.
+void SolersAgentSession::_learn_context_ceiling() {
+	const int rejected_tokens = context_manager ? context_manager->get_last_estimated_tokens() : 0;
+	if (rejected_tokens <= 0) {
+		return;
+	}
+	const int ceiling = MAX(SolersContextManager::MIN_LEARNED_CONTEXT_TOKENS, (int)((double)rejected_tokens * 0.9));
+	if (learned_context_ceiling > 0 && learned_context_ceiling <= ceiling) {
+		return;
+	}
+	Dictionary payload;
+	payload["advertised_context_window"] = context_window;
+	payload["rejected_tokens"] = rejected_tokens;
+	learned_context_ceiling = ceiling;
+	_refresh_active_model_limits();
+	payload["context_window"] = context_window;
+	_write_transcript_event("model_context_window_corrected", payload);
+	_record("agent_model_context_window_corrected", payload);
 }
 
 bool SolersAgentSession::_schedule_llm_retry(const Dictionary &p_error) {
@@ -1420,6 +1436,7 @@ void SolersAgentSession::_poll_compaction() {
 	if (client->is_failed()) {
 		const Dictionary error = client->get_error();
 		if (_is_context_overflow(error) && compaction_request_attempt < 3) {
+			_learn_context_ceiling();
 			compaction_request_attempt++;
 			current_text = String();
 			current_reasoning = String();
@@ -1807,6 +1824,7 @@ void SolersAgentSession::poll() {
 	if (client->is_failed()) {
 		const Dictionary error = client->get_error();
 		if (_is_context_overflow(error)) {
+			_learn_context_ceiling();
 			overflow_compaction_attempts++;
 			if (overflow_compaction_attempts <= 3) {
 				_begin_compaction(true);
@@ -1863,6 +1881,9 @@ void SolersAgentSession::_on_model_turn_complete() {
 		current_reasoning = String();
 		pending_tool_calls.clear();
 		streamed_tool_calls.clear();
+		if (_demand_scene_validation()) {
+			return;
+		}
 		_finish_turn("completed", final_text);
 		return;
 	}
@@ -1924,16 +1945,45 @@ void SolersAgentSession::_on_model_turn_complete() {
 	SOLERS_TRACE("session.tools", vformat("entering tool queue (%d call(s))", tool_queue.size()));
 }
 
+// geometry_revision is advanced by the engine when an edit actually moves
+// geometry; scene_validation_revision only by a tool that measured it. A gap
+// between them is unverified authored work, stated as a fact rather than
+// inferred from what the model said it did. The door asks once per gap: the
+// model gets one more step to measure, and the turn outcome carries the debt
+// either way, so this can never become a retry loop.
+bool SolersAgentSession::_demand_scene_validation() {
+	if (geometry_revision == 0 || geometry_revision <= scene_validation_revision) {
+		return false;
+	}
+	if (scene_validation_demanded_revision == geometry_revision) {
+		return false;
+	}
+	scene_validation_demanded_revision = geometry_revision;
+	const String demand = "This turn moved scene geometry that no native measurement has checked. Run scene.validate against the nodes you changed (mode \"spatial\" for the relations you intended, mode \"structure\" for support and layout) and fix whatever it reports before you report this work done. A viewport capture cannot substitute for it: an image does not measure position, containment, or support.";
+	Dictionary message = SolersLLMMessage::user(demand);
+	message["origin"] = "solers_continuation";
+	messages.push_back(message);
+	_write_transcript_message("user", demand, Array());
+	Dictionary payload;
+	payload["geometry_revision"] = (int64_t)geometry_revision;
+	payload["scene_validation_revision"] = (int64_t)scene_validation_revision;
+	_write_transcript_event("scene_validation_demanded", payload);
+	_dispatch_model_request();
+	return true;
+}
+
 void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_message, const Dictionary &p_error) {
 	if (tool_thread_state) {
 		tool_cancel_requested.set();
 		_collect_tool_thread_result(true);
 	}
+	_cancel_undelivered_tools();
 	// Steering that never reached a dispatch still belongs to the
 	// conversation; the next turn's model request will carry it.
 	_flush_pending_steering();
+	String outcome = p_outcome;
+	Dictionary error = p_error;
 	Dictionary data;
-	data["outcome"] = p_outcome;
 	data["text"] = p_message;
 	data["reasoning"] = current_reasoning;
 	data["stop_reason"] = last_stop_reason;
@@ -1948,16 +1998,30 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 			// native cause into history so the next turn acts on it instead of
 			// assuming the scene was saved.
 			const String commit_path = scene_commit.get("path", String());
-			Dictionary message = SolersLLMMessage::user(vformat("Solers could not save the edited scene when this turn ended (path: %s, error %d). The scene is still unsaved and its authored work exists only in memory; save it to a res:// path (EditorInterface.save_scene_as) before relying on it.", commit_path.is_empty() ? String("<unassigned>") : commit_path, (int)scene_commit.get("error", 0)));
+			const String commit_message = vformat("Solers could not commit the edited scene when this turn ended (path: %s, error %d). The scene is still unsaved and its authored work exists only in memory; Solers will retry the commit on the next terminal path.", commit_path.is_empty() ? String("<unassigned>") : commit_path, (int)scene_commit.get("error", 0));
+			Dictionary message = SolersLLMMessage::user(commit_message);
 			message["origin"] = "godot_diagnostics";
 			messages.push_back(message);
+			// Authored work that never reached disk is not a completed turn,
+			// whatever the model claimed in its closing message.
+			if (outcome == "completed") {
+				outcome = "failed";
+				error = _error("SCENE_COMMIT_FAILED", commit_message).get("error", Dictionary());
+			}
 		}
+	}
+	data["outcome"] = outcome;
+	// Unmeasured authored geometry is reported, never hidden, even when the
+	// turn is allowed to end with it outstanding.
+	const bool scene_validation_pending = geometry_revision > scene_validation_revision;
+	if (scene_validation_pending) {
+		data["scene_validation_pending"] = true;
 	}
 	if (!last_usage.is_empty()) {
 		data["usage"] = last_usage;
 	}
-	if (!p_error.is_empty()) {
-		data["error"] = p_error;
+	if (!error.is_empty()) {
+		data["error"] = error;
 	}
 	if (turn_runtime_owned) {
 		EditorInterface *editor_interface = EditorInterface::get_singleton();
@@ -1968,8 +2032,11 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	}
 
 	Dictionary transcript;
-	transcript["outcome"] = p_outcome;
+	transcript["outcome"] = outcome;
 	transcript["message"] = p_message;
+	if (scene_validation_pending) {
+		transcript["scene_validation_pending"] = true;
+	}
 	transcript["stop_reason"] = last_stop_reason;
 	{
 		MutexLock lock(godot_log_mutex);
@@ -1982,12 +2049,12 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	if (!last_usage.is_empty()) {
 		transcript["usage"] = last_usage;
 	}
-	if (!p_error.is_empty()) {
-		transcript["error"] = p_error;
+	if (!error.is_empty()) {
+		transcript["error"] = error;
 	}
 	_write_transcript_event("turn_outcome", transcript);
 	godot_log_turn_active = false;
-	last_outcome = p_outcome;
+	last_outcome = outcome;
 	running = false;
 	phase = PHASE_STREAMING;
 	pending_tool_calls.clear();
@@ -2036,12 +2103,12 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	turn_mentions.clear();
 	waiting_background_asset_ids.clear();
 	turn_runtime_owned = false;
-	if (p_outcome == "aborted") {
+	if (outcome == "aborted") {
 		background_resume_suppressed = true;
 	}
-	if (p_outcome == "failed") {
+	if (outcome == "failed") {
 		_record("agent_turn_failed", data);
-		emit_signal(SNAME("turn_failed"), p_error);
+		emit_signal(SNAME("turn_failed"), error);
 	} else {
 		_record("agent_turn_completed", data);
 		emit_signal(SNAME("turn_completed"), data);
@@ -2291,12 +2358,15 @@ bool SolersAgentSession::_flush_tool_results() {
 	return false;
 }
 
-void SolersAgentSession::_clear_pending_tools(const Dictionary &p_terminal_result) {
+// A parked execution never reaches its own terminal result, so the registry is
+// told once, here, and releases whatever per-task state it was holding.
+void SolersAgentSession::_clear_pending_tools() {
+	const Dictionary cancelled = _tool_denied_result("TOOL_CANCELLED", "The turn ended while this tool was still parked.");
 	for (int i = 0; i < pending_tool_executions.size(); i++) {
 		PendingToolExecution *pending = pending_tool_executions[i];
 		if (pending->prepared_call) {
-			if (tool_registry && !p_terminal_result.is_empty()) {
-				tool_registry->_complete_prepared_tool(*pending->prepared_call, p_terminal_result);
+			if (tool_registry) {
+				tool_registry->_complete_prepared_tool(*pending->prepared_call, cancelled);
 			}
 			memdelete(pending->prepared_call);
 		}
@@ -2304,6 +2374,32 @@ void SolersAgentSession::_clear_pending_tools(const Dictionary &p_terminal_resul
 	}
 	pending_tool_executions.clear();
 	_refresh_deferred_window_audit();
+}
+
+// Once a tool_call is in history it must be answered, whatever ended the turn.
+// Terminal paths deliver the results the queue never got around to: the real
+// completion when one already arrived, a cancellation otherwise.
+void SolersAgentSession::_cancel_undelivered_tools() {
+	if (tool_delivery_index >= tool_queue.size()) {
+		return;
+	}
+	const Dictionary cancelled = _tool_denied_result("TOOL_CANCELLED", "The turn ended before this tool produced a result.");
+	for (int i = tool_delivery_index; i < tool_queue.size(); i++) {
+		const Dictionary call = tool_queue[i];
+		const Dictionary *completed = completed_tool_results.getptr(i);
+		const Dictionary entry = completed ? *completed : Dictionary();
+		tool_queued_msec = (uint64_t)(int64_t)entry.get("queued_msec", (int64_t)tool_queued_msec);
+		tool_started_msec = (uint64_t)(int64_t)entry.get("started_msec", (int64_t)tool_started_msec);
+		tool_completed_msec = (uint64_t)(int64_t)entry.get("completed_msec", (int64_t)OS::get_singleton()->get_ticks_msec());
+		const String model_name = call.get("name", String());
+		_deliver_tool_result(
+				call.get("id", String()),
+				model_name,
+				call.get("canonical_name", model_name),
+				call.get("parsed_args", Dictionary()),
+				entry.has("result") ? Dictionary(entry.get("result", cancelled)) : cancelled);
+	}
+	tool_delivery_index = tool_queue.size();
 }
 
 void SolersAgentSession::_schedule_tool_execution(int p_queue_index, const String &p_id, const String &p_model_name, const String &p_canonical_name, const Dictionary &p_args, bool p_is_resume) {
@@ -2626,6 +2722,57 @@ bool SolersAgentSession::_is_awaiting_approval_result(const Dictionary &p_result
 	return String(error.get("code", String())) == "USER_APPROVAL_REQUIRED";
 }
 
+String SolersAgentSession::_spill_tool_result(const String &p_call_id, const String &p_content) {
+	ProjectSettings *project_settings = ProjectSettings::get_singleton();
+	const String name = p_call_id.validate_filename();
+	if (!project_settings || name.is_empty()) {
+		return String();
+	}
+	const String directory = project_settings->get_project_data_path().path_join("solers/tool-results");
+	if (DirAccess::make_dir_recursive_absolute(project_settings->globalize_path(directory)) != OK) {
+		return String();
+	}
+	const String path = directory.path_join(name + ".json");
+	Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
+	if (file.is_null()) {
+		return String();
+	}
+	file->store_string(p_content);
+	return path;
+}
+
+String SolersAgentSession::deliverable_tool_result(const String &p_call_id, const Dictionary &p_result, int p_budget) {
+	const String full_result = JSON::stringify(p_result, "", false, true);
+	const int tokens = SolersContextManager::estimate_tokens(full_result);
+	if (tokens <= p_budget) {
+		return full_result;
+	}
+	// A result that does not fit is replaced by its own envelope, never cut in
+	// the middle: clipping serialized JSON by character count yields a body the
+	// model cannot parse at all, so every measured fact in it is lost.
+	Dictionary envelope;
+	envelope["ok"] = p_result.get("ok", false);
+	if (p_result.has("error")) {
+		envelope["error"] = p_result["error"];
+	}
+	if (p_result.has("diagnostics")) {
+		envelope["diagnostics"] = p_result["diagnostics"];
+	}
+	Dictionary elided;
+	elided["tokens"] = tokens;
+	elided["token_budget"] = p_budget;
+	elided["data_keys"] = Dictionary(p_result.get("data", Dictionary())).keys();
+	const String spill_path = _spill_tool_result(p_call_id, full_result);
+	if (spill_path.is_empty()) {
+		elided["recovery"] = "Re-run this call with narrower arguments; the complete body could not be written to disk.";
+	} else {
+		elided["complete_result_path"] = spill_path;
+		elided["recovery"] = vformat("Read %s for the complete body, or re-run this call with narrower arguments.", spill_path);
+	}
+	envelope["data_elided"] = elided;
+	return JSON::stringify(envelope, "", false, true);
+}
+
 Dictionary SolersAgentSession::_tool_denied_result(const String &p_code, const String &p_message) const {
 	Dictionary error;
 	error["code"] = p_code;
@@ -2640,33 +2787,21 @@ Dictionary SolersAgentSession::_tool_denied_result(const String &p_code, const S
 void SolersAgentSession::_deliver_tool_result(const String &p_id, const String &p_model_name, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result) {
 	Dictionary result = p_result.duplicate(true);
 	result["call_id"] = p_id;
-	if ((bool)result.get("ok", false) && p_canonical_name == "tool.search") {
-		Dictionary data = result.get("data", Dictionary());
-		Array task_tools;
-		const Array tools = data.get("tools", Array());
-		for (int i = 0; i < tools.size(); i++) {
-			const StringName name = StringName(Dictionary(tools[i]).get("name", String()));
-			if (name != StringName()) {
-				task_deferred_tools.insert(name);
-				task_tools.push_back(String(name));
-			}
-		}
-		data["task_tools"] = task_tools;
-		result["data"] = data;
-	}
-	// Model view for runtime.observe: digest is authoritative. Raw event lists
-	// stay available only when the caller opted into include_events.
-	if ((bool)result.get("ok", false) && p_canonical_name == "runtime.observe" && !(bool)p_args.get("include_events", false)) {
-		Dictionary data = result.get("data", Dictionary());
-		data["events"] = Array();
-		result["data"] = data;
+	// A result widens the tool surface by declaring what it unlocks, so this
+	// path never has to recognise which tool produced it.
+	const PackedStringArray unlocked = Dictionary(result.get("data", Dictionary())).get("unlock_tools", PackedStringArray());
+	for (int i = 0; i < unlocked.size(); i++) {
+		task_deferred_tools.insert(StringName(unlocked[i]));
 	}
 	const Array accesses = tool_registry && !p_canonical_name.is_empty() ? tool_registry->resolve_resource_access(StringName(p_canonical_name), p_args) : Array();
 	const Dictionary diagnostics = _take_godot_diagnostics();
 	if (!diagnostics.is_empty()) {
 		result["diagnostics"] = diagnostics;
 	}
-	_write_transcript_tool(p_id, p_canonical_name, p_args, result);
+	// The transcript records exactly the bytes the model was given, so a
+	// restored session rebuilds the same conversation it originally had.
+	const String content = deliverable_tool_result(p_id, result, SolersContextManager::tool_result_token_budget(context_window));
+	_write_transcript_tool(p_id, p_canonical_name, p_args, result, content);
 	const uint64_t duration_msec = tool_completed_msec >= tool_started_msec ? tool_completed_msec - tool_started_msec : 0;
 	if (!_is_session_tool(p_canonical_name)) {
 		emit_signal(SNAME("tool_call_finished"), p_id, p_canonical_name, result, (int64_t)duration_msec);
@@ -2708,11 +2843,6 @@ void SolersAgentSession::_deliver_tool_result(const String &p_id, const String &
 		turn_runtime_owned = false;
 	}
 
-	// Clamp in token units against the active model window; middle truncation
-	// preserves both the envelope head (ok/error/codes) and the payload tail.
-	const String content = SolersContextManager::middle_truncate(
-			JSON::stringify(result, "", false, true),
-			SolersContextManager::tool_result_token_budget(context_window));
 	Dictionary message = SolersLLMMessage::tool_result(p_id, p_model_name, content, result.get("attachments", Array()));
 	messages.push_back(message);
 
@@ -2797,7 +2927,6 @@ void SolersAgentSession::abort() {
 		memdelete(deferred_prepared_call);
 		deferred_prepared_call = nullptr;
 	}
-	_clear_pending_tools(_tool_denied_result("TOOL_CANCELLED", "The turn was aborted while the tool was pending."));
 	_finish_turn("aborted", "Turn aborted.");
 }
 
@@ -2813,6 +2942,7 @@ void SolersAgentSession::_reset_session_derived_state() {
 	camera_capture_revision = 0;
 	runtime_capture_revision = 0;
 	scene_validation_revision = 0;
+	scene_validation_demanded_revision = 0;
 	runtime_observation_cursor = 0;
 	render_artifacts.clear();
 	MutexLock lock(godot_log_mutex);

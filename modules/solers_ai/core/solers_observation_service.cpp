@@ -57,6 +57,7 @@
 #include "editor/run/editor_run_bar.h"
 #include "editor/run/game_view_plugin.h"
 #include "editor/scene/3d/node_3d_editor_plugin.h"
+#include "modules/solers_ai/core/solers_context_manager.h"
 #include "modules/solers_ai/core/solers_resource_service.h"
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/node_3d.h"
@@ -387,13 +388,25 @@ Dictionary SolersObservationService::_editor_3d_viewport_state() const {
 }
 
 void SolersObservationService::_runtime_screenshot_ready(int64_t p_width, int64_t p_height, const String &p_path, const Rect2i &p_rect, const String &p_capture_id) {
-	if (!pending_captures.has(p_capture_id)) {
-		DirAccess::remove_absolute(p_path);
+	const Dictionary *entry = pending_captures.getptr(p_capture_id);
+	// The capture may have been swept at its deadline, or belong to a runtime
+	// that stopped and restarted since the request went out. Either way this
+	// frame is evidence for nothing anyone is still waiting on, and writing it
+	// back would resurrect a dead entry.
+	const uint64_t requested_epoch = entry ? (uint64_t)(int64_t)Dictionary(entry->get("data", Dictionary())).get("runtime_epoch", 0) : 0;
+	if (!entry || requested_epoch != runtime_epoch) {
+		if (!p_path.is_empty()) {
+			DirAccess::remove_absolute(p_path);
+		}
 		return;
 	}
-	Ref<Image> image = Image::load_from_file(p_path);
-	DirAccess::remove_absolute(p_path);
-	if (image.is_null()) {
+	Ref<Image> image = p_path.is_empty() ? Ref<Image>() : Image::load_from_file(p_path);
+	if (!p_path.is_empty()) {
+		DirAccess::remove_absolute(p_path);
+	}
+	// A truncated or compressed payload cannot be sampled: get_pixel and resize
+	// both fail hard on those, so it is rejected as evidence right here.
+	if (image.is_null() || image->is_empty() || image->is_compressed()) {
 		pending_captures[p_capture_id] = _capture_error("RUNTIME_CAPTURE_DECODE_FAILED", "The runtime returned an unreadable screenshot.", true);
 		return;
 	}
@@ -441,6 +454,9 @@ Dictionary SolersObservationService::_register_pending_capture(const String &p_t
 	data["target"] = p_target;
 	data["capture_id"] = capture_id;
 	data["deadline_msec"] = (int64_t)(OS::get_singleton()->get_ticks_msec() + SOLERS_CAPTURE_TIMEOUT_MSEC);
+	// Which runtime this capture belongs to: a screenshot that arrives after a
+	// restart answers a question about a process that no longer exists.
+	data["runtime_epoch"] = (int64_t)runtime_epoch;
 	for (const Variant *key = p_extra.next(nullptr); key; key = p_extra.next(key)) {
 		data[*key] = p_extra[*key];
 	}
@@ -543,6 +559,9 @@ Dictionary SolersObservationService::_poll_pending_capture(const String &p_captu
 	if (target == "runtime" && (bool)data.get("awaiting_runtime_ready", false)) {
 		if (_is_runtime_visual_ready()) {
 			data["awaiting_runtime_ready"] = false;
+			// The epoch is stamped when the request actually goes out, not when
+			// the capture was parked: the runtime only started just now.
+			data["runtime_epoch"] = (int64_t)runtime_epoch;
 			result["data"] = data;
 			pending_captures[p_capture_id] = result;
 			if (!_request_runtime_screenshot(p_capture_id)) {
@@ -925,13 +944,25 @@ void SolersObservationService::_collect_project_files(const String &p_dir, const
 	}
 }
 
-Dictionary SolersObservationService::_serialize_node(Node *p_node, Node *p_edited_root, int p_depth, int p_max_depth, int p_max_children_per_node, int &r_node_budget) const {
+// Nodes a subtree contributes, so an elided branch reports how much of the
+// scene the model is not seeing rather than only its immediate child count.
+static int _solers_subtree_node_count(Node *p_node) {
+	if (!p_node) {
+		return 0;
+	}
+	int total = 1;
+	for (int i = 0; i < p_node->get_child_count(); i++) {
+		total += _solers_subtree_node_count(p_node->get_child(i));
+	}
+	return total;
+}
+
+Dictionary SolersObservationService::_serialize_node(Node *p_node, Node *p_edited_root, int p_depth, int p_max_depth, int p_max_children_per_node, int &r_token_budget, int &r_elided_nodes) const {
 	Dictionary node_data;
 	if (!p_node) {
 		node_data["valid"] = false;
 		return node_data;
 	}
-	r_node_budget--;
 
 	node_data["valid"] = true;
 	node_data["name"] = p_node->get_name();
@@ -1010,6 +1041,10 @@ Dictionary SolersObservationService::_serialize_node(Node *p_node, Node *p_edite
 		node_data["owner_path"] = owner->is_inside_tree() ? String(owner->get_path()) : String(owner->get_name());
 	}
 
+	// This node's own payload is charged before descending, so the budget is
+	// spent on nodes that are actually reported in full.
+	r_token_budget -= SolersContextManager::estimate_tokens(JSON::stringify(node_data, "", false, true));
+
 	if (p_depth >= p_max_depth) {
 		node_data["children_truncated_by_depth"] = p_node->get_child_count() > 0;
 		return node_data;
@@ -1021,10 +1056,10 @@ Dictionary SolersObservationService::_serialize_node(Node *p_node, Node *p_edite
 	const int child_limit = MIN(child_count, max_children);
 	int serialized_children = 0;
 	for (int i = 0; i < child_limit; i++) {
-		if (r_node_budget <= 0) {
+		if (r_token_budget <= 0) {
 			break;
 		}
-		children.push_back(_serialize_node(p_node->get_child(i), p_edited_root, p_depth + 1, p_max_depth, p_max_children_per_node, r_node_budget));
+		children.push_back(_serialize_node(p_node->get_child(i), p_edited_root, p_depth + 1, p_max_depth, p_max_children_per_node, r_token_budget, r_elided_nodes));
 		serialized_children++;
 	}
 	node_data["children"] = children;
@@ -1032,6 +1067,9 @@ Dictionary SolersObservationService::_serialize_node(Node *p_node, Node *p_edite
 		node_data["children_truncated_count"] = child_count - serialized_children;
 		if (serialized_children < child_limit) {
 			node_data["children_truncated_by_budget"] = true;
+			for (int i = serialized_children; i < child_limit; i++) {
+				r_elided_nodes += _solers_subtree_node_count(p_node->get_child(i));
+			}
 		}
 	}
 
@@ -1090,11 +1128,12 @@ static Dictionary _serialize_remote_node(const LocalVector<SceneDebuggerTree::Re
 
 Array SolersObservationService::_serialize_node_array(const TypedArray<Node> &p_nodes, Node *p_edited_root, int p_max_depth, int p_max_children_per_node) const {
 	Array serialized;
-	int node_budget = SCENE_TREE_NODE_BUDGET;
+	int token_budget = SolersContextManager::tool_result_token_budget(0);
+	int elided_nodes = 0;
 	for (int i = 0; i < p_nodes.size(); i++) {
 		Node *node = Object::cast_to<Node>(p_nodes[i]);
 		if (node) {
-			serialized.push_back(_serialize_node(node, p_edited_root, 0, p_max_depth, p_max_children_per_node, node_budget));
+			serialized.push_back(_serialize_node(node, p_edited_root, 0, p_max_depth, p_max_children_per_node, token_budget, elided_nodes));
 		}
 	}
 	return serialized;
@@ -1460,11 +1499,17 @@ Dictionary SolersObservationService::get_scene_tree(int p_max_depth, int p_max_c
 		return result;
 	}
 
-	int node_budget = SCENE_TREE_NODE_BUDGET;
-	result["root"] = _serialize_node(edited_root, edited_root, 0, p_max_depth, p_max_children_per_node, node_budget);
-	if (node_budget <= 0) {
-		result["truncated_by_node_budget"] = true;
-		result["node_budget"] = SCENE_TREE_NODE_BUDGET;
+	const int token_budget_start = SolersContextManager::tool_result_token_budget(0);
+	int token_budget = token_budget_start;
+	int elided_nodes = 0;
+	result["root"] = _serialize_node(edited_root, edited_root, 0, p_max_depth, p_max_children_per_node, token_budget, elided_nodes);
+	result["max_depth"] = p_max_depth;
+	if (elided_nodes > 0) {
+		// The model is told exactly how much of the scene it is not seeing and
+		// how to ask a narrower question that fits.
+		result["elided_nodes"] = elided_nodes;
+		result["token_budget"] = token_budget_start;
+		result["recovery"] = "This tree filled the per-result token budget. Pass node_paths for the nodes that matter, or lower max_depth/max_children, instead of re-reading the whole tree.";
 	}
 	return result;
 }

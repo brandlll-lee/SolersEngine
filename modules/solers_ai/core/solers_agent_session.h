@@ -80,6 +80,9 @@ class SolersAgentSession : public Object {
 
 	int context_window = 0; // Unknown until provider/model metadata says otherwise.
 	int max_output_tokens = 8192;
+	// Upper bound proved by a rejected request. Advertised metadata (gateway
+	// catalogs especially) can promise far more than the endpoint accepts.
+	int learned_context_ceiling = 0;
 
 	Array messages; // canonical conversation history
 	String system_prompt;
@@ -176,6 +179,7 @@ class SolersAgentSession : public Object {
 	uint64_t camera_capture_revision = 0;
 	uint64_t runtime_capture_revision = 0;
 	uint64_t scene_validation_revision = 0;
+	uint64_t scene_validation_demanded_revision = 0; // geometry the door has already asked about
 	uint64_t runtime_observation_cursor = 0;
 	Dictionary render_artifacts; // artifact kind -> versioned native-tool result
 	// Aggregated by (severity, message, call_id) at ingestion: a repeated
@@ -205,11 +209,14 @@ class SolersAgentSession : public Object {
 	void _register_worker_tool_audit(uint64_t p_thread_id, const String &p_call_id, const String &p_tool, const Array &p_resource_accesses);
 	Dictionary _consume_attributable_tool_error(const String &p_call_id);
 	Dictionary _take_godot_diagnostics();
-	void _flush_godot_diagnostics();
 	bool _poll_state_observation();
 	String _readonly_cache_key(const StringName &p_name, const Dictionary &p_args) const;
 	Array _collect_tools() const;
 	bool _refresh_active_model_limits();
+	void _learn_context_ceiling();
+	// Full body of an over-budget tool result, so the complete data stays one
+	// file read away instead of forcing the tool to be run again.
+	static String _spill_tool_result(const String &p_call_id, const String &p_content);
 	int _active_model_input_support(const String &p_modality) const;
 	Dictionary _build_request(const Array &p_messages, const String &p_request_system_prompt) const;
 	Dictionary _redacted_request_graph(const Dictionary &p_request, const Dictionary &p_profile) const;
@@ -226,6 +233,7 @@ class SolersAgentSession : public Object {
 	Dictionary _surface_tool_call(const Dictionary &p_call);
 	Array _attachments_for_ids(const Array &p_ids) const;
 	void _on_model_turn_complete();
+	bool _demand_scene_validation();
 	void _finish_turn(const String &p_outcome, const String &p_message, const Dictionary &p_error = Dictionary());
 	void _poll_tool_queue();
 	void _poll_awaiting_approval();
@@ -236,7 +244,8 @@ class SolersAgentSession : public Object {
 	bool _conflicts_with_pending(const Array &p_accesses) const;
 	void _queue_tool_result(int p_queue_index, const String &p_id, const String &p_model_name, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result, uint64_t p_started_msec);
 	bool _flush_tool_results();
-	void _clear_pending_tools(const Dictionary &p_terminal_result = Dictionary());
+	void _clear_pending_tools();
+	void _cancel_undelivered_tools();
 	void _execute_deferred_tool(uint64_t p_token);
 	static void _tool_thread_func(void *p_userdata);
 	bool _collect_tool_thread_result(bool p_wait);
@@ -249,7 +258,7 @@ class SolersAgentSession : public Object {
 	bool _append_background_asset_deltas(bool p_waited_only);
 	void _resume_next_background_asset();
 	void _write_transcript_message(const String &p_role, const String &p_content, const Array &p_mentions = Array(), const Array &p_tool_calls = Array(), const String &p_reasoning = String()) const;
-	void _write_transcript_tool(const String &p_call_id, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result) const;
+	void _write_transcript_tool(const String &p_call_id, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result, const String &p_delivered_content) const;
 	void _write_transcript_plan() const;
 	void _write_transcript_compaction(const Dictionary &p_result) const;
 	Dictionary _tool_denied_result(const String &p_code, const String &p_message) const;
@@ -267,6 +276,11 @@ public:
 	void set_permission_manager(SolersPermissionManager *p_permission_manager) { permission_manager = p_permission_manager; }
 
 	static Dictionary validate_plan(const Dictionary &p_args);
+	// Exactly what a tool result contributes to the conversation: the whole
+	// serialized result, or — when it exceeds the budget — an envelope naming
+	// what was elided and where the complete body lives. Always valid JSON, so
+	// no measurement the engine made reaches the model as unparsable text.
+	static String deliverable_tool_result(const String &p_call_id, const Dictionary &p_result, int p_budget);
 	Dictionary start_turn(const Dictionary &p_args); // { prompt: String }
 	// Steer the running turn: the message is queued and joins the
 	// conversation after the current tool batch, before the next model

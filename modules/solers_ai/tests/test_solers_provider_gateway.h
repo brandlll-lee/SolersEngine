@@ -805,7 +805,9 @@ TEST_CASE("[SolersBuiltinSkills] registry catalog and content stay consistent wi
 
 	SolersBuiltinSkillView rendering;
 	REQUIRE(SolersBuiltinSkills::find_by_name("godot-3d-rendering", rendering));
-	CHECK(rendering.content.contains("one authoritative final GI path") || rendering.content.contains("One authoritative final GI path") || rendering.content.contains("one final GI"));
+	// Extra parentheses: doctest can only decompose a single comparison, so a
+	// chained condition has to reach it as one already-evaluated bool.
+	CHECK((rendering.content.contains("one authoritative final GI path") || rendering.content.contains("One authoritative final GI path") || rendering.content.contains("one final GI")));
 	CHECK(rendering.content.contains("physical_light_units"));
 	CHECK(rendering.description.to_lower().contains("photoreal"));
 
@@ -2249,48 +2251,50 @@ TEST_CASE("[SolersPluginMeshy] enhancement options require standard meshy-6 pipe
 	Array source_attachments;
 	source_attachments.push_back(attachment);
 
-	auto make_manifest = [&](const Dictionary &p_options, bool p_with_image) {
+	// The manifest is an in/out parameter, so it has to be an lvalue the call
+	// can write back into.
+	auto prepare = [&](const Dictionary &p_options, bool p_with_image) {
 		Dictionary manifest;
 		manifest["provider_options"] = p_options.duplicate(true);
 		manifest["source_attachments"] = p_with_image ? source_attachments : Array();
-		return manifest;
+		return meshy.prepare_generate("3d", Dictionary(), manifest);
 	};
 
 	Dictionary smart_options;
 	smart_options["model_type"] = "smart-topology";
 	smart_options["ai_model"] = "meshy-t2";
 	smart_options["image_enhancement"] = true;
-	Dictionary rejected = meshy.prepare_generate("3d", Dictionary(), make_manifest(smart_options, true));
+	Dictionary rejected = prepare(smart_options, true);
 	CHECK_FALSE(rejected.is_empty());
 	CHECK(rejected.get("code", String()) == "INVALID_ARGUMENT");
 	CHECK(String(rejected.get("message", String())).contains("image_enhancement"));
 
 	smart_options.erase("image_enhancement");
 	smart_options["remove_lighting"] = true;
-	rejected = meshy.prepare_generate("3d", Dictionary(), make_manifest(smart_options, true));
+	rejected = prepare(smart_options, true);
 	CHECK_FALSE(rejected.is_empty());
 	CHECK(String(rejected.get("message", String())).contains("remove_lighting"));
 
 	smart_options.erase("remove_lighting");
 	smart_options["hd_texture"] = true;
-	rejected = meshy.prepare_generate("3d", Dictionary(), make_manifest(smart_options, true));
+	rejected = prepare(smart_options, true);
 	CHECK_FALSE(rejected.is_empty());
 	CHECK(String(rejected.get("message", String())).contains("hd_texture"));
 
 	smart_options.erase("hd_texture");
 	smart_options["topology"] = "quad";
-	rejected = meshy.prepare_generate("3d", Dictionary(), make_manifest(smart_options, true));
+	rejected = prepare(smart_options, true);
 	CHECK_FALSE(rejected.is_empty());
 	CHECK(String(rejected.get("message", String())).contains("triangle-only"));
 
 	smart_options.erase("topology");
-	CHECK(meshy.prepare_generate("3d", Dictionary(), make_manifest(smart_options, true)).is_empty());
+	CHECK(prepare(smart_options, true).is_empty());
 
 	Dictionary meshy5_options;
 	meshy5_options["model_type"] = "standard";
 	meshy5_options["ai_model"] = "meshy-5";
 	meshy5_options["hd_texture"] = true;
-	rejected = meshy.prepare_generate("3d", Dictionary(), make_manifest(meshy5_options, false));
+	rejected = prepare(meshy5_options, false);
 	CHECK_FALSE(rejected.is_empty());
 	CHECK(String(rejected.get("message", String())).contains("hd_texture"));
 
@@ -2300,7 +2304,7 @@ TEST_CASE("[SolersPluginMeshy] enhancement options require standard meshy-6 pipe
 	hero_options["image_enhancement"] = true;
 	hero_options["remove_lighting"] = true;
 	hero_options["hd_texture"] = true;
-	CHECK(meshy.prepare_generate("3d", Dictionary(), make_manifest(hero_options, false)).is_empty());
+	CHECK(prepare(hero_options, false).is_empty());
 
 	const Dictionary schema = meshy.get_generation_options_schema("3d");
 	CHECK(String(Dictionary(schema.get("model_type", Dictionary())).get("description", String())).contains("standard"));
@@ -2406,6 +2410,11 @@ TEST_CASE("[SolersAssetService] non-terminal asset.status rejects progress polli
 	remove_job();
 	REQUIRE(DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(asset_dir)) == OK);
 
+	// Construction adopts unfinished jobs and marks the ones no plugin can
+	// resume as interrupted, so the service has to already exist before a
+	// running manifest lands or recovery makes it terminal behind our back.
+	SolersAssetService assets;
+
 	Dictionary running_manifest;
 	running_manifest["id"] = asset_id;
 	running_manifest["session_id"] = "contract-session";
@@ -2416,7 +2425,6 @@ TEST_CASE("[SolersAssetService] non-terminal asset.status rejects progress polli
 	String write_error;
 	REQUIRE(SolersPlugin::write_json_atomic(manifest_path, running_manifest, write_error));
 
-	SolersAssetService assets;
 	Dictionary status_args;
 	status_args["asset_id"] = asset_id;
 	const Dictionary running_status = assets.status(status_args);
@@ -2931,6 +2939,73 @@ TEST_CASE("[SolersLLMEvent] represents streaming reasoning as canonical events")
 	CHECK(event.get("text", String()) == "Inspecting the scene tree.");
 }
 
+// One assistant tool_call, in the shape the session records it.
+static Array solers_test_tool_calls(const String &p_id, const String &p_name) {
+	Dictionary call;
+	call["id"] = p_id;
+	call["name"] = p_name;
+	call["arguments"] = "{}";
+	Array calls;
+	calls.push_back(call);
+	return calls;
+}
+
+TEST_CASE("[SolersContextManager] pairing repair answers tool calls a killed turn abandoned") {
+	// An aborted or crashed turn leaves assistant tool_calls with no results in
+	// durable history; without repair every later request is rejected forever.
+	Array messages;
+	messages.push_back(SolersLLMMessage::user("Add a light."));
+	messages.push_back(SolersLLMMessage::assistant("Editing.", solers_test_tool_calls("call_killed", "scene.edit")));
+	messages.push_back(SolersLLMMessage::user("Stop, do it differently."));
+
+	const Array repaired = SolersContextManager::repair_tool_pairing(messages);
+	REQUIRE(repaired.size() == 4);
+	const Dictionary stub = repaired[2];
+	CHECK(String(stub.get("role", String())) == String(SolersLLMRole::TOOL));
+	CHECK(String(stub.get("tool_call_id", String())) == "call_killed");
+	CHECK(String(stub.get("name", String())) == "scene.edit");
+	CHECK(String(stub.get("content", String())).contains("TOOL_CANCELLED"));
+	CHECK(String(Dictionary(repaired[3]).get("content", String())) == "Stop, do it differently.");
+}
+
+TEST_CASE("[SolersContextManager] pairing repair keeps a complete exchange byte-identical") {
+	Array messages;
+	messages.push_back(SolersLLMMessage::assistant("Inspecting.", solers_test_tool_calls("call_a", "scene.inspect")));
+	messages.push_back(SolersLLMMessage::tool_result("call_a", "scene.inspect", "observation"));
+
+	const Array repaired = SolersContextManager::repair_tool_pairing(messages);
+	REQUIRE(repaired.size() == messages.size());
+	for (int i = 0; i < messages.size(); i++) {
+		CHECK(Dictionary(repaired[i]) == Dictionary(messages[i]));
+	}
+}
+
+TEST_CASE("[SolersContextManager] pairing repair drops results for calls never made") {
+	// A duplicate or unmatched tool result is rejected by providers just as
+	// hard as a missing one, so the projection must not forward it.
+	Array messages;
+	messages.push_back(SolersLLMMessage::assistant("Inspecting.", solers_test_tool_calls("call_a", "scene.inspect")));
+	messages.push_back(SolersLLMMessage::tool_result("call_a", "scene.inspect", "observation"));
+	messages.push_back(SolersLLMMessage::tool_result("call_a", "scene.inspect", "duplicate"));
+	messages.push_back(SolersLLMMessage::tool_result("call_ghost", "scene.inspect", "orphan"));
+
+	const Array repaired = SolersContextManager::repair_tool_pairing(messages);
+	REQUIRE(repaired.size() == 2);
+	CHECK(String(Dictionary(repaired[1]).get("content", String())) == "observation");
+}
+
+TEST_CASE("[SolersContextManager] request projection repairs pairing before budgeting") {
+	SolersContextManager context;
+	Array messages;
+	messages.push_back(SolersLLMMessage::user("Add a light."));
+	messages.push_back(SolersLLMMessage::assistant("Editing.", solers_test_tool_calls("call_killed", "scene.edit")));
+
+	const Array projected = context.prepare_request(messages, String(), Array());
+	REQUIRE(projected.size() == 3);
+	CHECK(String(Dictionary(projected[2]).get("tool_call_id", String())) == "call_killed");
+	CHECK(messages.size() == 2); // durable history stays append-only
+}
+
 TEST_CASE("[SolersContextManager] estimates ASCII and non-ASCII text like Kimi Code") {
 	CHECK(SolersContextManager::estimate_tokens("abcd") == 1);
 	CHECK(SolersContextManager::estimate_tokens("abcde") == 2);
@@ -2938,14 +3013,19 @@ TEST_CASE("[SolersContextManager] estimates ASCII and non-ASCII text like Kimi C
 	CHECK(SolersContextManager::estimate_tokens(String::utf8("ab白")) == 2);
 }
 
-TEST_CASE("[SolersContextManager] compaction strategy honors ratio and reserved context") {
+TEST_CASE("[SolersContextManager] compaction begins exactly when the next reply stops fitting") {
+	// Headroom is the model's own declared output ceiling, so the trigger
+	// tracks whatever the model says it can emit rather than a fixed fraction.
 	SolersContextManager context;
 
-	CHECK_FALSE(context.should_compact(119999, 200000));
-	CHECK(context.should_compact(120000, 200000));
-	CHECK(context.should_compact(170000, 200000));
-	CHECK_FALSE(context.should_compact(29999, 50000));
-	CHECK(context.should_compact(30000, 50000));
+	CHECK_FALSE(context.should_compact(167999, 200000, 32000));
+	CHECK(context.should_compact(168000, 200000, 32000));
+	// A roomier output ceiling on the same window compacts sooner.
+	CHECK(context.should_compact(150000, 200000, 50000));
+	CHECK_FALSE(context.should_compact(149999, 200000, 50000));
+	// A window that cannot even hold one reply has nothing to reclaim.
+	CHECK_FALSE(context.should_compact(30000, 50000, 50000));
+	CHECK_FALSE(context.should_compact(30000, 0, 8192));
 }
 
 TEST_CASE("[SolersContextManager] compaction requires context growth after the last compaction") {
@@ -2955,13 +3035,38 @@ TEST_CASE("[SolersContextManager] compaction requires context growth after the l
 	const Dictionary result = context.apply_compaction(messages, "Continue from the verified room shell.", Dictionary());
 	const int tokens_after = result.get("tokens_after", 0);
 	REQUIRE(tokens_after > 0);
-	CHECK_FALSE(context.should_compact(tokens_after, tokens_after));
-	CHECK(context.should_compact(tokens_after + 1, tokens_after + 1));
+	CHECK_FALSE(context.should_compact(tokens_after, tokens_after * 2, tokens_after));
+	CHECK(context.should_compact(tokens_after + 1, tokens_after * 2, tokens_after));
 }
 
-TEST_CASE("[SolersContextManager] request projection stays byte-identical under working-set budget") {
-	// Small histories must reach the provider unchanged so the prefix cache
-	// stays valid until projection actually has to reclaim tool bodies.
+TEST_CASE("[SolersContextManager] every request extends the previous prefix byte for byte") {
+	// The invariant prompt caching rests on: whatever a request already sent
+	// must reach the provider identically next time, however large history
+	// grows. Growing the history and re-projecting must only ever append.
+	SolersContextManager context;
+	const String fat = String("x").repeat(40000);
+	Array messages;
+	messages.push_back(SolersLLMMessage::user("Start."));
+
+	Array previous = context.prepare_request(messages, String(), Array());
+	for (int round = 0; round < 8; round++) {
+		const String call_id = "call_" + itos(round);
+		messages.push_back(SolersLLMMessage::assistant("Working.", solers_test_tool_calls(call_id, "scene.inspect")));
+		messages.push_back(SolersLLMMessage::tool_result(call_id, "scene.inspect", fat));
+
+		const Array projected = context.prepare_request(messages, String(), Array());
+		REQUIRE(projected.size() >= previous.size());
+		for (int i = 0; i < previous.size(); i++) {
+			CHECK(Dictionary(projected[i]) == Dictionary(previous[i]));
+		}
+		previous = projected;
+	}
+	// Durable history is never rewritten either, whatever the projection did.
+	CHECK(messages.size() == 17);
+	CHECK(Dictionary(messages[2]).get("content", String()) == fat);
+}
+
+TEST_CASE("[SolersContextManager] projection carries attachments and history through untouched") {
 	SolersContextManager context;
 	Dictionary capture;
 	capture["id"] = "capture_1";
@@ -2973,51 +3078,17 @@ TEST_CASE("[SolersContextManager] request projection stays byte-identical under 
 
 	Array messages;
 	messages.push_back(SolersLLMMessage::user("Inspect the scene."));
-	messages.push_back(SolersLLMMessage::assistant("Inspecting.", Array()));
+	messages.push_back(SolersLLMMessage::assistant("Inspecting.", solers_test_tool_calls("call_old", "scene.inspect")));
 	messages.push_back(old_tool);
-	messages.push_back(SolersLLMMessage::assistant("Applying the observation.", Array()));
+	messages.push_back(SolersLLMMessage::assistant("Applying the observation.", solers_test_tool_calls("call_current", "scene.inspect")));
 	messages.push_back(SolersLLMMessage::tool_result("call_current", "scene.inspect", "current observation"));
 
-	const Array projected = context.prepare_request(messages, String(), Array(), 200000);
+	const Array projected = context.prepare_request(messages, String(), Array());
 	REQUIRE(projected.size() == messages.size());
 	for (int i = 0; i < messages.size(); i++) {
 		CHECK(Dictionary(projected[i]) == Dictionary(messages[i]));
 	}
-	CHECK(Dictionary(projected[2]).get("content", String()) == "old observation");
 	CHECK(Array(Dictionary(projected[2]).get("attachments", Array())).size() == 1);
-	Array mutable_projection = projected;
-	mutable_projection.push_back(SolersLLMMessage::user("environment"));
-	CHECK(messages.size() == 5);
-}
-
-TEST_CASE("[SolersContextManager] request projection stubs oldest tool bodies over working-set budget") {
-	SolersContextManager context;
-	const String fat = String("x").repeat(4000); // ~1000 estimated tokens each
-	Array messages;
-	messages.push_back(SolersLLMMessage::user("Start."));
-	messages.push_back(SolersLLMMessage::assistant("Working.", Array()));
-	messages.push_back(SolersLLMMessage::tool_result("call_old", "scene.inspect", fat));
-	messages.push_back(SolersLLMMessage::assistant("Next.", Array()));
-	messages.push_back(SolersLLMMessage::tool_result("call_new", "scene.inspect", fat));
-
-	// 0.45 * 3000 = 1350 working-set budget: one ~1k tool body fits from the
-	// tail, the older one must be stubbed.
-	const Array projected = context.prepare_request(messages, String(), Array(), 3000);
-	REQUIRE(projected.size() == 5);
-	CHECK(Dictionary(projected[0]).get("content", String()) == "Start.");
-	CHECK(Dictionary(projected[1]).get("content", String()) == "Working.");
-	CHECK(Dictionary(projected[3]).get("content", String()) == "Next.");
-	const Dictionary old_tool = projected[2];
-	const Dictionary new_tool = projected[4];
-	CHECK(String(old_tool.get("role", String())) == String(SolersLLMRole::TOOL));
-	CHECK(String(old_tool.get("tool_call_id", String())) == "call_old");
-	CHECK(String(old_tool.get("name", String())) == "scene.inspect");
-	CHECK(String(old_tool.get("content", String())).contains("call_old"));
-	CHECK_FALSE(String(old_tool.get("content", String())).contains(fat));
-	CHECK(String(new_tool.get("tool_call_id", String())) == "call_new");
-	// Newest tool is protected from the tail while budget remains for one fat body.
-	CHECK(String(new_tool.get("content", String())) == fat);
-	CHECK(Dictionary(messages[2]).get("content", String()) == fat);
 }
 
 TEST_CASE("[SolersContextManager] full compaction keeps real user prompts and one plan-aware summary") {
@@ -3129,6 +3200,59 @@ TEST_CASE("[SolersContextManager] tool result budget clamps to a fixed band") {
 	CHECK(SolersContextManager::tool_result_token_budget(40000) == 8000);
 	CHECK(SolersContextManager::tool_result_token_budget(200000) == 8000);
 	CHECK(SolersContextManager::tool_result_token_budget(1000000) == 8000);
+}
+
+TEST_CASE("[SolersAgentSession] a tool result reaches the model as parsable JSON at any size") {
+	// The contract is on the shape, not on a size: whatever the engine
+	// measured, what the model receives must parse, because an unparsable
+	// body throws away every fact in it.
+	Dictionary measurements;
+	Array nodes;
+	for (int i = 0; i < 400; i++) {
+		Dictionary node;
+		node["path"] = vformat("Root/Prop_%d/Mesh", i);
+		node["world_aabb"] = "position=(1.5,0.25,-3) size=(2,2,2)";
+		node["note"] = String("padding so this result cannot fit any budget ").repeat(4);
+		nodes.push_back(node);
+	}
+	measurements["nodes"] = nodes;
+	Dictionary result;
+	result["ok"] = true;
+	result["data"] = measurements;
+
+	Ref<JSON> parser;
+	parser.instantiate();
+
+	const String whole = SolersAgentSession::deliverable_tool_result("call_fits", result, 1000000);
+	CHECK(parser->parse(whole) == OK);
+	CHECK(Dictionary(parser->get_data()).has("data"));
+
+	const String elided = SolersAgentSession::deliverable_tool_result("call_over_budget", result, 500);
+	REQUIRE(parser->parse(elided) == OK);
+	const Dictionary envelope = parser->get_data();
+	CHECK(envelope.get("ok", false));
+	CHECK_FALSE(envelope.has("data"));
+	const Dictionary reported = envelope.get("data_elided", Dictionary());
+	CHECK((int)reported.get("token_budget", 0) == 500);
+	CHECK((int)reported.get("tokens", 0) > 500);
+	// The model is told which part of the payload it lost, not just that it
+	// lost something.
+	CHECK(Array(reported.get("data_keys", Array())).has("nodes"));
+	CHECK_FALSE(String(reported.get("recovery", String())).is_empty());
+
+	// A failed call keeps its native cause even when the body is elided: the
+	// error is what the next step acts on.
+	Dictionary failure;
+	failure["ok"] = false;
+	Dictionary error;
+	error["code"] = "NODE_NOT_FOUND";
+	error["message"] = "Root/Missing does not exist.";
+	failure["error"] = error;
+	failure["data"] = measurements;
+	REQUIRE(parser->parse(SolersAgentSession::deliverable_tool_result("call_failed", failure, 500)) == OK);
+	const Dictionary failed_envelope = parser->get_data();
+	CHECK_FALSE(failed_envelope.get("ok", true));
+	CHECK(Dictionary(failed_envelope.get("error", Dictionary())).get("code", String()) == "NODE_NOT_FOUND");
 }
 
 TEST_CASE("[SolersResourceService] nearest names rank containment above similarity") {
