@@ -86,19 +86,20 @@ void EditorDebuggerSession::toggle_profiler(const String &p_profiler, bool p_ena
 	debugger->toggle_profiler(p_profiler, p_enable, p_data);
 }
 
+// Detachment is ordinary lifecycle, not caller error: a debugger tab can go
+// away at any time while a plugin still holds the session. These are queries,
+// so a detached session answers with the plain fact and stays silent. Treating
+// it as a failure floods the log every time a plugin polls its own sessions.
 bool EditorDebuggerSession::is_breaked() {
-	ERR_FAIL_NULL_V_MSG(debugger, false, "Plugin is not attached to debugger.");
-	return debugger->is_breaked();
+	return debugger && debugger->is_breaked();
 }
 
 bool EditorDebuggerSession::is_debuggable() {
-	ERR_FAIL_NULL_V_MSG(debugger, false, "Plugin is not attached to debugger.");
-	return debugger->is_debuggable();
+	return debugger && debugger->is_debuggable();
 }
 
 bool EditorDebuggerSession::is_active() {
-	ERR_FAIL_NULL_V_MSG(debugger, false, "Plugin is not attached to debugger.");
-	return debugger->is_session_active();
+	return debugger && debugger->is_session_active();
 }
 
 void EditorDebuggerSession::set_breakpoint(const String &p_path, int p_line, bool p_enabled) {

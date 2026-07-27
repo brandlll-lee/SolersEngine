@@ -318,10 +318,14 @@ bool GameViewDebugger::_msg_get_screenshot(const Array &p_args) {
 	const String &path = p_args[3];
 
 	if (screenshot_callbacks.has(id)) {
-		if (screenshot_callbacks[id].cb.is_valid()) {
-			screenshot_callbacks[id].cb.call(w, h, path, screenshot_callbacks[id].rect);
-		}
+		// The request is taken out of the map before dispatching: a callback is
+		// free to start another capture or tear its session down, and any such
+		// touch rehashes this map and frees the Callable mid-call.
+		const ScreenshotCB request = screenshot_callbacks[id];
 		screenshot_callbacks.erase(id);
+		if (request.cb.is_valid()) {
+			request.cb.call(w, h, path, request.rect);
+		}
 	}
 	return true;
 }
