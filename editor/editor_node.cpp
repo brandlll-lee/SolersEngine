@@ -54,6 +54,7 @@
 #include "modules/modules_enabled.gen.h" // For gdscript, mono, svg.
 
 #ifdef MODULE_SOLERS_AI_ENABLED
+#include "editor/project_manager/solers_pm_theme.h"
 #include "modules/solers_ai/core/solers_trace.h"
 #include "modules/solers_ai/editor/solers_agent_runtime.h"
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
@@ -388,6 +389,10 @@ static void _solers_apply_editor_theme(const Ref<Theme> &p_theme) {
 		p_theme->set_constant("item_end_padding", "PopupMenu", int(8 * EDSCALE));
 		p_theme->set_constant("v_separation", "PopupMenu", int(2 * EDSCALE));
 	}
+
+	// Window / dialog chrome — same authority as PM (title join = t.hairline).
+	SolersPMTheme::apply_window_chrome(p_theme, bg);
+	SolersPMTheme::apply_chrome_edges(p_theme, SolersPMTheme::make_tokens(p_theme).hairline);
 }
 
 static void _solers_style_ghost_button(Button *p_button) {
@@ -402,23 +407,6 @@ static void _solers_style_ghost_button(Button *p_button) {
 	p_button->add_theme_color_override("font_hover_color", Color(0.86, 0.84, 0.76));
 	p_button->add_theme_color_override("font_pressed_color", Color(0.96, 0.84, 0.58));
 	p_button->add_theme_color_override("font_disabled_color", Color(0.47, 0.47, 0.43, 0.72));
-}
-
-static void _solers_style_split_container(SplitContainer *p_split) {
-	Ref<StyleBoxLine> split_bar;
-	split_bar.instantiate();
-	split_bar->set_color(Color(0.95, 0.86, 0.58, 0.075));
-	split_bar->set_thickness(MAX(1, (int)Math::round(EDSCALE)));
-	split_bar->set_vertical(!p_split->is_vertical());
-	split_bar->set_grow_begin(0);
-	split_bar->set_grow_end(0);
-	p_split->add_theme_style_override("split_bar_background", split_bar);
-	p_split->set_dragger_visibility(SplitContainer::DRAGGER_HIDDEN);
-	p_split->add_theme_constant_override("autohide", 1);
-	p_split->add_theme_constant_override("separation", MAX(1, (int)Math::round(EDSCALE)));
-	p_split->add_theme_color_override("touch_dragger_color", Color(0.72, 0.70, 0.62, 0.42));
-	p_split->add_theme_color_override("touch_dragger_hover_color", Color(0.88, 0.82, 0.62, 0.70));
-	p_split->add_theme_color_override("touch_dragger_pressed_color", Color(0.96, 0.84, 0.58, 0.90));
 }
 
 static void _solers_style_main_screen_button(Button *p_button) {
@@ -963,7 +951,8 @@ void EditorNode::_update_theme(bool p_skip_creation) {
 
 		gui_base->add_theme_style_override(SceneStringName(panel), theme->get_stylebox(SNAME("Background"), EditorStringName(EditorStyles)));
 		main_vbox->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT, Control::PRESET_MODE_MINSIZE, theme->get_constant(SNAME("window_border_margin"), EditorStringName(Editor)));
-		main_vbox->add_theme_constant_override("separation", theme->get_constant(SNAME("top_bar_separation"), EditorStringName(Editor)));
+		// Cursor-flat: title↔shell gap is EditorTitleBar hairline only (same as PM).
+		main_vbox->add_theme_constant_override("separation", 0);
 
 		if (main_menu_button != nullptr) {
 			main_menu_button->set_button_icon(theme->get_icon(SNAME("TripleBar"), EditorStringName(EditorIcons)));
@@ -1742,6 +1731,20 @@ void EditorNode::_sources_changed(bool p_exist) {
 		RenderingServer::get_singleton()->global_shader_parameters_load_settings(true);
 
 		_load_editor_layout();
+
+#ifdef MODULE_SOLERS_AI_ENABLED
+		// editor_layout.cfg only restores classic dock slots. Re-apply the Solers
+		// side shell afterward so the SceneTree is hosted there by default; a bare
+		// set(true) is a no-op rebuild when the ctor already opened the shell.
+		if (solers_side_layout) {
+			if (!solers_side_panel_visible) {
+				_set_solers_side_panel_visible(true);
+			} else if (editor_dock_manager) {
+				editor_dock_manager->set_docks_visible(false);
+				_rebuild_solers_side_panel();
+			}
+		}
+#endif
 
 		if (!defer_load_scene.is_empty()) {
 			OS::get_singleton()->benchmark_begin_measure("Editor", "Load Scene");
@@ -9408,7 +9411,7 @@ EditorNode::EditorNode() {
 		solers_editor_root->set_name("SolersEditorRoot");
 		solers_editor_root->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 		solers_editor_root->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-		_solers_style_split_container(solers_editor_root);
+		solers_editor_root->set_dragger_visibility(SplitContainer::DRAGGER_HIDDEN);
 		main_vbox->add_child(solers_editor_root);
 
 		solers_agent_runtime = memnew(SolersAgentRuntime);
@@ -9436,7 +9439,7 @@ EditorNode::EditorNode() {
 		solers_workspace_split->set_dragger_visibility(SplitContainer::DRAGGER_VISIBLE);
 		solers_workspace_split->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 		solers_workspace_split->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-		_solers_style_split_container(solers_workspace_split);
+		solers_workspace_split->set_dragger_visibility(SplitContainer::DRAGGER_HIDDEN);
 		solers_editor_host->add_child(solers_workspace_split);
 
 		main_hsplit->set_stretch_ratio(1.0);
@@ -9508,7 +9511,7 @@ EditorNode::EditorNode() {
 		solers_native_file_split->set_dragger_visibility(SplitContainer::DRAGGER_VISIBLE);
 		solers_native_file_split->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 		solers_native_file_split->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-		_solers_style_split_container(solers_native_file_split);
+		solers_native_file_split->set_dragger_visibility(SplitContainer::DRAGGER_HIDDEN);
 		file_page->add_child(solers_native_file_split);
 
 		solers_native_file_top = memnew(MarginContainer);
@@ -10102,7 +10105,7 @@ EditorNode::EditorNode() {
 		if (editor_main_screen) {
 			_solers_hide_viewport_chrome(editor_main_screen->get_control());
 		}
-		_set_solers_side_panel_visible(false);
+		_set_solers_side_panel_visible(true);
 	}
 #endif
 

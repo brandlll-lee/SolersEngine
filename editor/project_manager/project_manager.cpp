@@ -315,9 +315,17 @@ void ProjectManager::_update_theme(bool p_skip_creation) {
 		root_container->add_theme_constant_override("margin_top", top_bar_separation);
 		root_container->add_theme_constant_override("margin_bottom", top_bar_separation);
 		root_container->add_theme_constant_override("margin_right", top_bar_separation);
-		main_vbox->add_theme_constant_override("separation", top_bar_separation);
+		// Cursor-flat: panes share bg; spacing between title/shell/footer is the hairline only.
+		main_vbox->add_theme_constant_override("separation", 0);
 
 		background_panel->add_theme_style_override(SceneStringName(panel), get_theme_stylebox("Background", EditorStringName(EditorStyles)));
+		const Ref<StyleBox> chrome_panel = get_theme_stylebox("Background", EditorStringName(EditorStyles));
+		if (shell_chat_panel) {
+			shell_chat_panel->add_theme_style_override(SceneStringName(panel), chrome_panel);
+		}
+		if (shell_workspace_panel) {
+			shell_workspace_panel->add_theme_style_override(SceneStringName(panel), chrome_panel);
+		}
 		main_view_container->add_theme_style_override(SceneStringName(panel), get_theme_stylebox("panel_container", "ProjectManager"));
 		if (shell_workspace_home) {
 			shell_workspace_home->add_theme_style_override(SceneStringName(panel), get_theme_stylebox("workspace_home", "ProjectManager"));
@@ -349,9 +357,7 @@ void ProjectManager::_update_theme(bool p_skip_creation) {
 			asset_library->add_theme_style_override(SceneStringName(panel), memnew(StyleBoxEmpty));
 		}
 	}
-#ifdef ANDROID_ENABLED
 	DisplayServer::get_singleton()->window_set_color(theme->get_color("background", EditorStringName(Editor)));
-#endif
 }
 
 void ProjectManager::_show_workspace_launcher(bool p_show_tabs) {
@@ -2127,12 +2133,13 @@ ProjectManager::ProjectManager() {
 	HBoxContainer *shell = memnew(HBoxContainer);
 	shell->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	shell->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	shell->add_theme_constant_override("separation", 8 * EDSCALE);
+	shell->add_theme_constant_override("separation", 0);
 	main_vbox->add_child(shell);
 
 	shell_work_split = memnew(HSplitContainer);
 	shell_work_split->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	shell_work_split->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	shell_work_split->set_dragger_visibility(SplitContainer::DRAGGER_HIDDEN);
 	shell->add_child(shell_work_split);
 
 	shell_chat_panel = memnew(PanelContainer);

@@ -408,6 +408,11 @@ class DisplayServerWindows : public DisplayServer {
 	WindowID window_id_counter = MAIN_WINDOW_ID;
 	RBMap<WindowID, WindowData> windows;
 
+	// Cached caption/border color from window_set_color — applied to every HWND
+	// at create time so new dialogs inherit Editor/background without per-call sites.
+	bool window_bg_color_set = false;
+	Color window_bg_color;
+
 	WindowID last_focused_window = INVALID_WINDOW_ID;
 	WindowID last_mouse_button_down_window = INVALID_WINDOW_ID;
 	HCURSOR hCursor;

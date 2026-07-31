@@ -399,6 +399,19 @@ void Viewport::_sub_window_update(Window *p_window) {
 		RS::get_singleton()->canvas_item_add_rect(sw.canvas_item, r, Color());
 	}
 	RS::get_singleton()->canvas_item_add_texture_rect(sw.canvas_item, vr, sw.window->get_texture()->get_rid());
+
+	// Embedded-window counterpart to EditorTitleBar bottom edge.
+	// Same theme color Window/hairline (apply_chrome_edges also writes Editor/).
+	// Paint AFTER client texture, ON client top — the geometric title/body join.
+	if (!p_window->get_flag(Window::FLAG_BORDERLESS) && p_window->theme_cache.title_height > 0) {
+		if (p_window->has_theme_color(SNAME("hairline"), SNAME("Window"))) {
+			const Color hair = p_window->get_theme_color(SNAME("hairline"), SNAME("Window"));
+			if (hair.a > 0.0f) {
+				const real_t thickness = MAX(1.0, p_window->get_theme_default_base_scale());
+				RS::get_singleton()->canvas_item_add_rect(sw.canvas_item, Rect2(r.position, Size2(r.size.width, thickness)), hair);
+			}
+		}
+	}
 }
 
 void Viewport::_sub_window_grab_focus(Window *p_window) {

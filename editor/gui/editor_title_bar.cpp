@@ -30,6 +30,10 @@
 
 #include "editor_title_bar.h"
 
+#include "editor/editor_string_names.h"
+#include "editor/themes/editor_scale.h"
+#include "scene/theme/theme_db.h"
+
 void EditorTitleBar::gui_input(const Ref<InputEvent> &p_event) {
 	if (!can_move) {
 		return;
@@ -100,6 +104,21 @@ void EditorTitleBar::_notification(int p_what) {
 		}
 		case NOTIFICATION_RESIZED: {
 			get_window()->set_nonclient_area(get_global_transform().xform(Rect2i(get_position(), get_size())));
+		} break;
+		case NOTIFICATION_THEME_CHANGED: {
+			queue_redraw();
+		} break;
+		case NOTIFICATION_DRAW: {
+			// Cursor-flat: title and body share bg; edge is Editor/hairline when themed.
+			if (!has_theme_color(SNAME("hairline"), EditorStringName(Editor))) {
+				break;
+			}
+			const Color hair = get_theme_color(SNAME("hairline"), EditorStringName(Editor));
+			if (hair.a <= 0.0f) {
+				break;
+			}
+			const real_t y = get_size().height - MAX(1.0, EDSCALE);
+			draw_rect(Rect2(0, y, get_size().width, MAX(1.0, EDSCALE)), hair);
 		} break;
 		case NOTIFICATION_SORT_CHILDREN: {
 			if (!center_control) {

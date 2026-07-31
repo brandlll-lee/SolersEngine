@@ -2008,6 +2008,9 @@ Size2i DisplayServerWindows::window_get_title_size(const String &p_title, Window
 void DisplayServerWindows::window_set_color(const Color &p_color) {
 	_THREAD_SAFE_METHOD_
 
+	window_bg_color = p_color;
+	window_bg_color_set = true;
+
 	const COLORREF color = RGB(p_color.get_r8(), p_color.get_g8(), p_color.get_b8());
 	for (KeyValue<WindowID, WindowData> &E : windows) {
 		::DwmSetWindowAttribute(E.value.hWnd, DWMWA_CAPTION_COLOR, &color, sizeof(color));
@@ -6560,6 +6563,12 @@ Error DisplayServerWindows::_create_window(WindowID p_window_id, WindowMode p_mo
 		if (is_dark_mode_supported() && dark_title_available) {
 			BOOL value = is_dark_mode();
 			::DwmSetWindowAttribute(wd.hWnd, use_legacy_dark_mode_before_20H1 ? DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 : DWMWA_USE_IMMERSIVE_DARK_MODE, &value, sizeof(value));
+		}
+
+		if (window_bg_color_set) {
+			const COLORREF color = RGB(window_bg_color.get_r8(), window_bg_color.get_g8(), window_bg_color.get_b8());
+			::DwmSetWindowAttribute(wd.hWnd, DWMWA_CAPTION_COLOR, &color, sizeof(color));
+			::DwmSetWindowAttribute(wd.hWnd, DWMWA_BORDER_COLOR, &color, sizeof(color));
 		}
 
 		RegisterTouchWindow(wd.hWnd, 0);

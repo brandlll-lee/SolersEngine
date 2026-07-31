@@ -14,6 +14,7 @@
 #include "scene/gui/dialogs.h"
 #include "scene/resources/image_texture.h"
 #include "scene/resources/style_box_flat.h"
+#include "scene/resources/style_box_line.h"
 
 #include "modules/modules_enabled.gen.h"
 #ifdef MODULE_SVG_ENABLED
@@ -150,6 +151,8 @@ SolersPMTheme::Tokens SolersPMTheme::make_tokens(const Ref<Theme> &p_theme) {
 	// corner ticks the way light borders do on rounded boxes.
 	t.border = Color(0, 0, 0, 0.45f); // Hairline recess separators.
 	t.border_strong = Color(0, 0, 0, 0.62f); // Emphasized edges.
+	// Cursor-flat chrome edges: light hairline on deep bg (not dark recess).
+	t.hairline = Color(0.95f, 0.95f, 0.97f, 0.12f);
 	t.text = Color(0.886f, 0.890f, 0.902f); // ~#E2E3E6 — primary text.
 	t.text_dim = Color(0.886f, 0.890f, 0.902f, 0.55f); // Muted text.
 
@@ -160,20 +163,108 @@ SolersPMTheme::Tokens SolersPMTheme::make_tokens(const Ref<Theme> &p_theme) {
 	return t;
 }
 
-// Flat settings AcceptDialog fill — zero picture-frame margins. Shared by the
-// PM theme overlay and configure_settings_host so any host (Editor dock, PM)
-// gets the same chrome without depending on ambient ProjectManager theme.
-static Ref<StyleBoxFlat> _settings_host_panel(const Color &p_bg) {
-	return _solers_flat(p_bg, 0, Color(), 0, 0);
+static Ref<StyleBoxFlat> _solers_window_chrome_style(const Ref<Theme> &p_theme, const Color &p_chrome) {
+	if (p_theme.is_valid() && p_theme->has_stylebox(SNAME("embedded_border"), SNAME("Window"))) {
+		Ref<StyleBoxFlat> box = p_theme->get_stylebox(SNAME("embedded_border"), SNAME("Window"));
+		if (box.is_valid()) {
+			box = box->duplicate();
+			box->set_bg_color(p_chrome);
+			box->set_border_color(p_chrome);
+			return box;
+		}
+	}
+	// Fallback: must set border_color (default ~0.8 gray breaks flat title chrome).
+	Ref<StyleBoxFlat> box = _solers_flat(p_chrome, 0, Color(), 0, 0);
+	box->set_border_width(SIDE_TOP, 24 * EDSCALE);
+	box->set_expand_margin(SIDE_TOP, 24 * EDSCALE);
+	box->set_border_color(p_chrome);
+	box->set_bg_color(p_chrome);
+	return box;
+}
+
+void SolersPMTheme::apply_window_chrome(const Ref<Theme> &p_theme, const Color &p_chrome) {
+	ERR_FAIL_COND(p_theme.is_null());
+
+	// Fill only. Title/body join is NOT a dialog StyleBox — it is the same
+	// Editor/hairline token EditorTitleBar uses, drawn for embedded Windows in
+	// Viewport::_sub_window_update (engine title chrome, not a per-dialog UI).
+	Ref<StyleBoxFlat> window_chrome = _solers_window_chrome_style(p_theme, p_chrome);
+	p_theme->set_stylebox(SNAME("embedded_border"), SNAME("Window"), window_chrome);
+	p_theme->set_stylebox(SNAME("embedded_unfocused_border"), SNAME("Window"), window_chrome);
+
+	Ref<StyleBoxFlat> dialog_panel;
+	if (p_theme->has_stylebox(SNAME("panel"), SNAME("AcceptDialog"))) {
+		dialog_panel = p_theme->get_stylebox(SNAME("panel"), SNAME("AcceptDialog"));
+		if (dialog_panel.is_valid()) {
+			dialog_panel = dialog_panel->duplicate();
+		}
+	}
+	if (dialog_panel.is_null()) {
+		dialog_panel = _solers_flat(p_chrome, 0, Color(), 0, 0);
+	} else {
+		dialog_panel->set_bg_color(p_chrome);
+		dialog_panel->set_border_width_all(0); // drop any prior join-border patch
+	}
+	p_theme->set_stylebox(SNAME("panel"), SNAME("AcceptDialog"), dialog_panel);
+
+	// Stock forks share the same fill Ref (schema sync).
+	for (const StringName &type : { StringName("EditorSettingsDialog"), StringName("ProjectSettingsEditor") }) {
+		if (p_theme->has_stylebox(SNAME("panel"), type)) {
+			p_theme->set_stylebox(SNAME("panel"), type, dialog_panel);
+		}
+	}
+}
+
+void SolersPMTheme::apply_chrome_edges(const Ref<Theme> &p_theme, const Color &p_hairline) {
+	ERR_FAIL_COND(p_theme.is_null());
+
+	const int hair = MAX(1, (int)Math::round(EDSCALE));
+	// One token: EditorTitleBar (shell) + Viewport embedded title join + Split/Separator.
+	p_theme->set_color(SNAME("hairline"), EditorStringName(Editor), p_hairline);
+	p_theme->set_color(SNAME("hairline"), SNAME("Window"), p_hairline);
+
+	auto make_line = [&](bool p_vertical) -> Ref<StyleBoxLine> {
+		Ref<StyleBoxLine> line;
+		line.instantiate();
+		line->set_color(p_hairline);
+		line->set_thickness(hair);
+		line->set_vertical(p_vertical);
+		line->set_grow_begin(0);
+		line->set_grow_end(0);
+		return line;
+	};
+
+	// Pane splits (HSplit = vertical bar). DockSplitContainer inherits SplitContainer.
+	p_theme->set_stylebox("split_bar_background", "HSplitContainer", make_line(true));
+	p_theme->set_stylebox("split_bar_background", "SplitContainer", make_line(true));
+	p_theme->set_stylebox("split_bar_background", "VSplitContainer", make_line(false));
+	for (const StringName &type : { StringName("HSplitContainer"), StringName("VSplitContainer"), StringName("SplitContainer") }) {
+		p_theme->set_constant("separation", type, hair);
+		p_theme->set_constant("autohide", type, 1);
+	}
+
+	// Explicit HSeparator / VSeparator — and base Separator.separation (what
+	// Separator::get_minimum_size actually caches via class hierarchy).
+	p_theme->set_stylebox(SNAME("separator"), "HSeparator", make_line(false));
+	p_theme->set_stylebox(SNAME("separator"), "VSeparator", make_line(true));
+	p_theme->set_constant("separation", "HSeparator", hair);
+	p_theme->set_constant("separation", "VSeparator", hair);
+	p_theme->set_constant("separation", "Separator", hair);
 }
 
 void SolersPMTheme::configure_settings_host(AcceptDialog *p_dialog) {
 	ERR_FAIL_NULL(p_dialog);
 	p_dialog->set_theme_type_variation("PMSettingsDialog");
-	// Self-contained: do not require SolersPMTheme::apply() on a parent theme.
+	// Same window chrome as every other AcceptDialog — no Settings-only line.
 	const Tokens t = make_tokens(Ref<Theme>());
-	p_dialog->add_theme_style_override(SNAME("panel"), _settings_host_panel(t.bg));
-	p_dialog->add_theme_constant_override(SNAME("buttons_separation"), 0);
+	Ref<Theme> host_theme;
+	host_theme.instantiate();
+	host_theme->set_color(SNAME("background"), EditorStringName(Editor), t.bg);
+	apply_window_chrome(host_theme, t.bg);
+	apply_chrome_edges(host_theme, t.hairline);
+	host_theme->set_type_variation("PMSettingsDialog", "AcceptDialog");
+	host_theme->set_constant(SNAME("buttons_separation"), "PMSettingsDialog", 0);
+	p_dialog->set_theme(host_theme);
 	if (Button *ok = p_dialog->get_ok_button()) {
 		ok->hide();
 		if (CanvasItem *bar = Object::cast_to<CanvasItem>(ok->get_parent())) {
@@ -191,32 +282,26 @@ void SolersPMTheme::apply(const Ref<Theme> &p_theme) {
 	const int rr = MAX(0, (int)(t.radius_control * EDSCALE));
 	const int hair = MAX(1, (int)(EDSCALE));
 
-	// 1) Window backdrop — deep, neutral charcoal (drawn by background_panel).
+	// 1) Window chrome — one color for backdrop, shell panels, and native/embedded
+	//    title bars (Cursor-flat). Cards/tiles keep elevation via t.card* below.
 	{
 		Ref<StyleBoxFlat> bg = _solers_flat(t.bg, 0, Color(), 0, 0);
 		p_theme->set_stylebox("Background", EditorStringName(EditorStyles), bg);
 		p_theme->set_color("background", EditorStringName(Editor), t.bg);
+
+		Ref<StyleBoxFlat> shell = _solers_flat(t.bg, rp, Color(), 0, 4 * EDSCALE);
+		p_theme->set_stylebox("panel_container", "ProjectManager", shell);
+		p_theme->set_stylebox("workspace_home", "ProjectManager", _solers_flat(t.bg, 0, Color(), 0, 0));
+		p_theme->set_stylebox("project_list", "ProjectManager", _solers_flat(t.bg, 0, Color(), 0, 0));
+
+		apply_window_chrome(p_theme, t.bg);
 	}
 
-	// 2) Project Manager content surfaces (outer panel + inner list area).
-	//    The list/grid backdrop sits one layer *below* the tiles (UE keeps the
-	//    grid area darker than the template tiles so each tile reads raised).
-	{
-		Ref<StyleBoxFlat> panel = _solers_flat(t.surface, rp, t.border, hair, 4 * EDSCALE);
-		p_theme->set_stylebox("panel_container", "ProjectManager", panel);
+	apply_chrome_edges(p_theme, t.hairline);
 
-		Ref<StyleBoxFlat> workspace_home = _solers_flat(t.surface, 0, Color(), 0, 0);
-		p_theme->set_stylebox("workspace_home", "ProjectManager", workspace_home);
-
-		// Flat home — same surface as window, no framed list well.
-		Ref<StyleBoxFlat> list = _solers_flat(t.surface, 0, Color(), 0, 0);
-		p_theme->set_stylebox("project_list", "ProjectManager", list);
-	}
-
-	// Flat settings AcceptDialog — one Solers fill, zero picture-frame margins.
+	// Settings is an AcceptDialog variation (fill/margins only; join is Viewport).
 	{
 		p_theme->set_type_variation("PMSettingsDialog", "AcceptDialog");
-		p_theme->set_stylebox(SNAME("panel"), "PMSettingsDialog", _settings_host_panel(t.bg));
 		p_theme->set_constant(SNAME("buttons_separation"), "PMSettingsDialog", 0);
 	}
 

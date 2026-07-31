@@ -40,6 +40,7 @@ public:
 		Color card_selected;
 		Color border;
 		Color border_strong;
+		Color hairline; // Cursor-flat pane/title edges (light on deep bg).
 		Color accent;
 		Color text;
 		Color text_dim;
@@ -61,8 +62,18 @@ public:
 	// Safe to call repeatedly (idempotent) after every theme (re)generation.
 	static void apply(const Ref<Theme> &p_theme);
 
-	// Flat settings host: installs panel chrome on the dialog itself (not only a
-	// type variation that requires SolersPMTheme::apply on a parent theme).
+	// Cursor-flat pane edges for ANY Solers-themed tree (Editor + PM + Dock):
+	// SplitContainer / HSeparator / VSeparator + Editor/hairline color.
+	// New splits need zero call-site styling — theme is the authority.
+	static void apply_chrome_edges(const Ref<Theme> &p_theme, const Color &p_hairline);
+
+	// Retint Window embedded_border + AcceptDialog panel fill to p_chrome.
+	// Title/body join is NOT here — see apply_chrome_edges (hairline token) +
+	// EditorTitleBar / Viewport (one draw recipe, two Godot chrome hosts).
+	static void apply_window_chrome(const Ref<Theme> &p_theme, const Color &p_chrome);
+
+	// Settings host: variation + hide OK bar. Uses apply_window_chrome /
+	// apply_chrome_edges — same tokens as every other AcceptDialog.
 	static void configure_settings_host(AcceptDialog *p_dialog);
 
 	// Convert a (possibly colored) editor icon into a neutral monochrome glyph.
