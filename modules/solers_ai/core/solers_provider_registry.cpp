@@ -5,38 +5,19 @@
 /*                             GODOT ENGINE                               */
 /*                        https://godotengine.org                         */
 /**************************************************************************/
-/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
-/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
-/*                                                                        */
-/* Permission is hereby granted, free of charge, to any person obtaining  */
-/* a copy of this software and associated documentation files (the        */
-/* "Software"), to deal in the Software without restriction, including    */
-/* without limitation the rights to use, copy, modify, merge, publish,    */
-/* distribute, sublicense, and/or sell copies of the Software, and to     */
-/* permit persons to whom the Software is furnished to do so, subject to  */
-/* the following conditions:                                              */
-/*                                                                        */
-/* The above copyright notice and this permission notice shall be         */
-/* included in all copies or substantial portions of the Software.        */
-/*                                                                        */
-/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
-/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
-/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
-/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
-/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
-/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
-/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
-/**************************************************************************/
 
 #include "solers_provider_registry.h"
 
 #include "core/object/class_db.h"
 #include "core/os/os.h"
+#include "core/templates/hash_set.h"
+#include "modules/solers_ai/llm/solers_models_dev.h"
 
 void SolersProviderRegistry::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_provider_profile", "provider"), &SolersProviderRegistry::get_provider_profile);
 	ClassDB::bind_method(D_METHOD("resolve_provider_profile", "provider", "base_url_override"), &SolersProviderRegistry::resolve_provider_profile, DEFVAL(String()));
 	ClassDB::bind_method(D_METHOD("list_provider_profiles"), &SolersProviderRegistry::list_provider_profiles);
+	ClassDB::bind_method(D_METHOD("list_popular_provider_ids"), &SolersProviderRegistry::list_popular_provider_ids);
 	ClassDB::bind_method(D_METHOD("validate_config", "config"), &SolersProviderRegistry::validate_config);
 	ClassDB::bind_method(D_METHOD("is_model_allowed", "provider", "model"), &SolersProviderRegistry::is_model_allowed);
 }
@@ -53,53 +34,105 @@ Dictionary SolersProviderRegistry::_error(const String &p_code, const String &p_
 	error["code"] = p_code;
 	error["message"] = p_message;
 	error["recoverable"] = p_recoverable;
-
 	Dictionary result;
 	result["ok"] = false;
 	result["error"] = error;
 	return result;
 }
 
-Dictionary SolersProviderRegistry::_make_profile(const String &p_id, const String &p_label, const String &p_kind, const String &p_default_base_url, const String &p_default_model, bool p_local, bool p_api_key_required, const Array &p_features, const String &p_notes, const String &p_api_key_env, const String &p_catalog_provider, const String &p_protocol) const {
+String SolersProviderRegistry::_protocol_for_npm(const String &p_npm) {
+	if (p_npm.contains("anthropic")) {
+		return "anthropic-messages";
+	}
+	return "openai-chat";
+}
+
+bool SolersProviderRegistry::_looks_local_api(const String &p_api) {
+	const String api = p_api.to_lower();
+	return api.contains("127.0.0.1") || api.contains("localhost");
+}
+
+String SolersProviderRegistry::_default_model_for_catalog(const Dictionary &p_catalog) const {
+	const String declared = String(p_catalog.get("default_model", String())).strip_edges();
+	if (!declared.is_empty()) {
+		return declared;
+	}
+	const Dictionary models = p_catalog.get("models", Dictionary());
+	const Array ids = models.keys();
+	if (ids.is_empty()) {
+		return String();
+	}
+	return String(ids[0]);
+}
+
+Dictionary SolersProviderRegistry::_profile_from_catalog(const Dictionary &p_catalog) const {
+	const String id = p_catalog.get("id", String());
 	Dictionary profile;
-	profile["id"] = p_id;
-	profile["label"] = p_label;
-	profile["kind"] = p_kind;
-	profile["protocol"] = p_protocol;
-	profile["default_base_url"] = p_default_base_url;
-	profile["default_model"] = p_default_model;
-	profile["catalog_provider"] = p_catalog_provider.is_empty() ? p_id : p_catalog_provider;
-	profile["local"] = p_local;
-	profile["auth_type"] = p_local ? "none" : "api_key";
-	profile["auth_header"] = "Authorization";
-	profile["auth_prefix"] = "Bearer ";
-	profile["api_key_required"] = p_api_key_required;
-	profile["features"] = p_features;
-	profile["notes"] = p_notes;
-	profile["api_key_env"] = p_api_key_env;
+	profile["id"] = id;
+	profile["label"] = p_catalog.get("name", id);
+	profile["protocol"] = _protocol_for_npm(p_catalog.get("npm", String()));
+	profile["default_base_url"] = String(p_catalog.get("api", String())).strip_edges().trim_suffix("/");
+	profile["default_model"] = _default_model_for_catalog(p_catalog);
+	profile["catalog_provider"] = id;
+	const bool local = p_catalog.get("local", false) || _looks_local_api(profile.get("default_base_url", String()));
+	profile["local"] = local;
+	profile["auth_type"] = local ? "none" : "api_key";
+	if (profile.get("protocol", String()) == "anthropic-messages") {
+		profile["auth_header"] = "x-api-key";
+		profile["auth_prefix"] = String();
+	} else {
+		profile["auth_header"] = "Authorization";
+		profile["auth_prefix"] = "Bearer ";
+	}
+	profile["api_key_required"] = !local;
+	const Array env = p_catalog.get("env", Array());
+	profile["api_key_env"] = env.is_empty() ? String() : String(env[0]);
+	profile["notes"] = String();
+	profile["source_kind"] = "catalog";
 	return profile;
 }
 
-void SolersProviderRegistry::_register_profile(const Dictionary &p_profile) {
-	const String id = p_profile.get("id", String());
-	ERR_FAIL_COND(id.is_empty());
-	profiles[id] = p_profile;
-	profile_order.push_back(id);
+Dictionary SolersProviderRegistry::_default_custom_profile(const String &p_id) const {
+	Dictionary profile;
+	profile["id"] = p_id;
+	profile["label"] = p_id == "custom_openai_compatible" ? "Custom OpenAI-compatible" : p_id;
+	profile["protocol"] = "openai-chat";
+	profile["default_base_url"] = String();
+	profile["default_model"] = String();
+	profile["catalog_provider"] = p_id;
+	profile["local"] = false;
+	profile["auth_type"] = "api_key";
+	profile["auth_header"] = "Authorization";
+	profile["auth_prefix"] = "Bearer ";
+	profile["api_key_required"] = true;
+	profile["api_key_env"] = String();
+	profile["notes"] = "OpenAI-compatible gateway (LiteLLM, OpenRouter-style, vLLM, or private deployments).";
+	profile["source_kind"] = "custom";
+	return profile;
 }
 
-void SolersProviderRegistry::_register_default_profiles() {
-	profiles.clear();
-	profile_order.clear();
+void SolersProviderRegistry::_register_auth_hooks() {
+	overlays.clear();
+	overlay_order.clear();
 
-	Array codex_features;
-	codex_features.push_back("responses");
-	codex_features.push_back("tool_calls");
-	codex_features.push_back("reasoning");
-	codex_features.push_back("vision");
-	Dictionary codex = _make_profile("openai_codex", "ChatGPT Codex", "openai_responses", "https://chatgpt.com/backend-api/codex", "gpt-5.5", false, false, codex_features, "Sign in with ChatGPT to use Codex through an eligible Plus, Pro, Business, Edu, or Enterprise plan.", String(), "openai", "openai-responses");
+	// ChatGPT Codex — OAuth + Responses protocol (Solers AuthHook).
+	Dictionary codex;
+	codex["id"] = "openai_codex";
+	codex["label"] = "ChatGPT Codex";
+	codex["protocol"] = "openai-responses";
+	codex["default_base_url"] = "https://chatgpt.com/backend-api/codex";
+	codex["default_model"] = "gpt-5.5";
+	codex["catalog_provider"] = "openai";
+	codex["local"] = false;
 	codex["auth_type"] = "oauth";
 	codex["oauth_kind"] = "codex";
+	codex["auth_header"] = "Authorization";
+	codex["auth_prefix"] = "Bearer ";
+	codex["api_key_required"] = false;
+	codex["api_key_env"] = String();
 	codex["supports_max_output_tokens"] = false;
+	codex["notes"] = "Sign in with ChatGPT to use Codex through an eligible Plus, Pro, Business, Edu, or Enterprise plan.";
+	codex["source_kind"] = "overlay";
 	Dictionary codex_headers;
 	codex_headers["originator"] = "solers";
 	codex_headers["User-Agent"] = "Solers";
@@ -122,68 +155,48 @@ void SolersProviderRegistry::_register_default_profiles() {
 	gpt55_limits["output"] = 128000;
 	codex_model_limits["gpt-5.5"] = gpt55_limits;
 	codex["model_limits"] = codex_model_limits;
-	_register_profile(codex);
+	overlays["openai_codex"] = codex;
+	overlay_order.push_back("openai_codex");
 
-	Array openai_features;
-	openai_features.push_back("chat_completions");
-	openai_features.push_back("tool_calls");
-	openai_features.push_back("structured_outputs");
-	openai_features.push_back("vision");
-	_register_profile(_make_profile("openai", "OpenAI", "openai_compatible", "https://api.openai.com/v1", "gpt-5", false, true, openai_features, "OpenAI Chat Completions provider. Solers uses the same OpenAI-compatible tool-call loop as custom gateways.", "OPENAI_API_KEY"));
+	// Custom template — OpenCode/Kilo "Custom provider" entry.
+	overlays["custom_openai_compatible"] = _default_custom_profile("custom_openai_compatible");
+	overlay_order.push_back("custom_openai_compatible");
+}
 
-	Array anthropic_features;
-	anthropic_features.push_back("messages");
-	anthropic_features.push_back("tool_calls");
-	anthropic_features.push_back("vision");
-	anthropic_features.push_back("extended_thinking");
-	Dictionary anthropic = _make_profile("anthropic_messages", "Anthropic Messages", "anthropic_messages", "https://api.anthropic.com", "claude-sonnet-4.6", false, true, anthropic_features, "Use native Anthropic Messages for provider-specific features.", "ANTHROPIC_API_KEY", "anthropic", "anthropic-messages");
-	anthropic["auth_header"] = "x-api-key";
-	anthropic["auth_prefix"] = String();
-	_register_profile(anthropic);
-
-	Array gemini_features;
-	gemini_features.push_back("openai_compatible");
-	gemini_features.push_back("native_generate_content");
-	gemini_features.push_back("vision");
-	gemini_features.push_back("long_context");
-	_register_profile(_make_profile("gemini", "Google Gemini", "openai_compatible", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-pro", false, true, gemini_features, "OpenAI-compatible endpoint is useful for shared gateway code; native API can expose Gemini-specific features.", "GEMINI_API_KEY", "google"));
-
-	Array deepseek_features;
-	deepseek_features.push_back("openai_compatible");
-	deepseek_features.push_back("reasoning");
-	deepseek_features.push_back("streaming");
-	_register_profile(_make_profile("deepseek", "DeepSeek", "openai_compatible", "https://api.deepseek.com", "deepseek-v4-pro", false, true, deepseek_features, "Provider model aliases can change; Solers validates shape, not remote availability.", "DEEPSEEK_API_KEY"));
-
-	Array qwen_features;
-	qwen_features.push_back("openai_compatible");
-	qwen_features.push_back("long_context");
-	qwen_features.push_back("vision");
-	_register_profile(_make_profile("qwen", "Qwen / Alibaba Cloud Model Studio", "openai_compatible", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus", false, true, qwen_features, "Default is the Beijing-region DashScope compatible-mode endpoint; international accounts use dashscope-intl.aliyuncs.com.", "DASHSCOPE_API_KEY"));
-
-	Array ollama_features;
-	ollama_features.push_back("openai_compatible");
-	ollama_features.push_back("local");
-	ollama_features.push_back("chat_completions");
-	_register_profile(_make_profile("ollama", "Ollama", "openai_compatible", "http://127.0.0.1:11434/v1", "qwen3:8b", true, false, ollama_features, "Local runtime. API key is required by some clients but ignored by Ollama."));
-
-	Array lmstudio_features;
-	lmstudio_features.push_back("openai_compatible");
-	lmstudio_features.push_back("local");
-	lmstudio_features.push_back("chat_completions");
-	_register_profile(_make_profile("lm_studio", "LM Studio", "openai_compatible", "http://127.0.0.1:1234/v1", "", true, false, lmstudio_features, "Local server defaults to port 1234; model id depends on loaded model."));
-
-	Array custom_features;
-	custom_features.push_back("openai_compatible");
-	custom_features.push_back("chat_completions");
-	custom_features.push_back("user_defined");
-	_register_profile(_make_profile("custom_openai_compatible", "Custom OpenAI-compatible", "openai_compatible", "", "", false, true, custom_features, "For LiteLLM, OpenRouter-style, vLLM, or private gateway deployments."));
+void SolersProviderRegistry::set_models_dev(SolersModelsDev *p_models_dev, bool p_owned) {
+	if (owns_models_dev && models_dev && models_dev != p_models_dev) {
+		memdelete(models_dev);
+	}
+	models_dev = p_models_dev;
+	owns_models_dev = p_owned && p_models_dev != nullptr;
 }
 
 Dictionary SolersProviderRegistry::get_provider_profile(const String &p_provider) const {
-	if (!profiles.has(p_provider)) {
+	if (p_provider.is_empty()) {
 		return Dictionary();
 	}
-	return profiles[p_provider];
+	if (overlays.has(p_provider)) {
+		return overlays[p_provider];
+	}
+	if (models_dev) {
+		const Dictionary catalog = models_dev->get_provider(StringName(p_provider));
+		if (!catalog.is_empty()) {
+			return _profile_from_catalog(catalog);
+		}
+		// Logo / catalog id aliases (data map, not behavior branches).
+		const String canonical = models_dev->canonical_provider_id(p_provider);
+		if (canonical != p_provider) {
+			const Dictionary aliased = models_dev->get_provider(StringName(canonical));
+			if (!aliased.is_empty()) {
+				Dictionary profile = _profile_from_catalog(aliased);
+				profile["id"] = p_provider;
+				profile["catalog_provider"] = canonical;
+				return profile;
+			}
+		}
+	}
+	// Open extension: any unknown id is a custom OpenAI-compatible slot.
+	return _default_custom_profile(p_provider);
 }
 
 Dictionary SolersProviderRegistry::resolve_provider_profile(const String &p_provider, const String &p_base_url_override) const {
@@ -198,24 +211,66 @@ Dictionary SolersProviderRegistry::resolve_provider_profile(const String &p_prov
 
 Array SolersProviderRegistry::list_provider_profiles() const {
 	Array result;
-	for (const Variant &id : profile_order) {
-		result.push_back(profiles.get(id, Dictionary()));
+	HashSet<String> seen;
+	for (const Variant &id_v : overlay_order) {
+		const String id = id_v;
+		result.push_back(get_provider_profile(id));
+		seen.insert(id);
+	}
+	if (models_dev) {
+		const Array catalog = models_dev->list_providers();
+		for (const Variant &entry_v : catalog) {
+			const Dictionary entry = entry_v;
+			const String id = entry.get("id", String());
+			if (id.is_empty() || seen.has(id)) {
+				continue;
+			}
+			result.push_back(_profile_from_catalog(entry));
+			seen.insert(id);
+		}
 	}
 	return result;
 }
 
+Array SolersProviderRegistry::list_popular_provider_ids() const {
+	return models_dev ? models_dev->list_popular_provider_ids() : Array();
+}
+
+Array SolersProviderRegistry::list_overlay_provider_ids() const {
+	return overlay_order.duplicate();
+}
+
+bool SolersProviderRegistry::is_known_provider(const String &p_provider) const {
+	if (overlays.has(p_provider)) {
+		return true;
+	}
+	if (!models_dev) {
+		return false;
+	}
+	if (models_dev->has_provider(StringName(p_provider))) {
+		return true;
+	}
+	const String canonical = models_dev->canonical_provider_id(p_provider);
+	return canonical != p_provider && models_dev->has_provider(StringName(canonical));
+}
+
 bool SolersProviderRegistry::is_model_allowed(const String &p_provider, const String &p_model) const {
-	const Dictionary profile = get_provider_profile(p_provider);
-	const Array allowed_models = profile.get("allowed_models", Array());
-	return allowed_models.is_empty() || allowed_models.has(p_model.strip_edges());
+	// AuthHook overlays may declare an allowlist. Catalog providers have none —
+	// do not pull a full provider profile (and formerly a models table) per id.
+	if (overlays.has(p_provider)) {
+		const Dictionary overlay = overlays[p_provider];
+		const Array allowed_models = overlay.get("allowed_models", Array());
+		return allowed_models.is_empty() || allowed_models.has(p_model.strip_edges());
+	}
+	return true;
 }
 
 Dictionary SolersProviderRegistry::validate_config(const Dictionary &p_config) const {
-	const String provider = p_config.get("provider", "ollama");
-	if (!profiles.has(provider)) {
-		return _error("UNKNOWN_PROVIDER", vformat("Unknown Solers provider profile: %s", provider), true);
+	const String provider = p_config.get("provider", String());
+	if (provider.is_empty()) {
+		return _error("PROVIDER_REQUIRED", "A provider must be selected.", true);
 	}
-	const Dictionary profile = profiles[provider];
+	const Dictionary profile = get_provider_profile(provider);
 	const bool local = profile.get("local", false);
 	const bool api_key_required = profile.get("api_key_required", true);
 	String base_url = p_config.get("base_url", String());
@@ -229,11 +284,8 @@ Dictionary SolersProviderRegistry::validate_config(const Dictionary &p_config) c
 	const bool api_key_configured = p_config.get("api_key_configured", false) || !String(p_config.get("api_key", String())).is_empty();
 	const bool oauth_configured = p_config.get("oauth_configured", false);
 
-	// Human-facing diagnostics: routed through TTR so the editor UI (Project
-	// Manager AI tab, Solers dock) renders them in the user's locale.
 	Array warnings;
 	Array blockers;
-	// Env fallback counts as configured (api_key_env, e.g. OPENAI_API_KEY).
 	bool api_key_available = api_key_configured;
 	if (!api_key_available) {
 		const String env_name = profile.get("api_key_env", String());
@@ -273,5 +325,15 @@ Dictionary SolersProviderRegistry::validate_config(const Dictionary &p_config) c
 }
 
 SolersProviderRegistry::SolersProviderRegistry() {
-	_register_default_profiles();
+	models_dev = memnew(SolersModelsDev);
+	models_dev->initialize();
+	owns_models_dev = true;
+	_register_auth_hooks();
+}
+
+SolersProviderRegistry::~SolersProviderRegistry() {
+	if (owns_models_dev && models_dev) {
+		memdelete(models_dev);
+		models_dev = nullptr;
+	}
 }

@@ -56,6 +56,7 @@ protected:
 	static void _bind_methods();
 
 public:
+	SolersProviderRegistry *get_provider_registry() const { return provider_registry; }
 	void set_provider_registry(SolersProviderRegistry *p_provider_registry);
 	bool get_local_models_only() const;
 	Dictionary set_local_models_only(bool p_enabled);
@@ -65,6 +66,8 @@ public:
 	Dictionary disconnect_provider(const String &p_provider);
 	Dictionary list_provider_profiles() const;
 	Dictionary list_connected_provider_configs() const;
+	// OpenCode/Kilo-aligned view: { connected, popular, all, custom }.
+	Dictionary list_provider_view() const;
 	Dictionary validate_provider_config(const Dictionary &p_args) const;
 	Dictionary resolve_provider_profile(const String &p_provider, const String &p_base_url_override = String()) const;
 	bool is_model_allowed(const String &p_provider, const String &p_model) const;

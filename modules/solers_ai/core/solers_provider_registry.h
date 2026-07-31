@@ -5,28 +5,6 @@
 /*                             GODOT ENGINE                               */
 /*                        https://godotengine.org                         */
 /**************************************************************************/
-/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
-/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
-/*                                                                        */
-/* Permission is hereby granted, free of charge, to any person obtaining  */
-/* a copy of this software and associated documentation files (the        */
-/* "Software"), to deal in the Software without restriction, including    */
-/* without limitation the rights to use, copy, modify, merge, publish,    */
-/* distribute, sublicense, and/or sell copies of the Software, and to     */
-/* permit persons to whom the Software is furnished to do so, subject to  */
-/* the following conditions:                                              */
-/*                                                                        */
-/* The above copyright notice and this permission notice shall be         */
-/* included in all copies or substantial portions of the Software.        */
-/*                                                                        */
-/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
-/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
-/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
-/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
-/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
-/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
-/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
-/**************************************************************************/
 
 #pragma once
 
@@ -34,27 +12,46 @@
 #include "core/variant/array.h"
 #include "core/variant/dictionary.h"
 
+class SolersModelsDev;
+
+// Assembles transport profiles from models.dev catalog + a small AuthHook
+// overlay table (Codex OAuth, custom OpenAI-compatible template). New catalog
+// providers need zero Solers code changes.
 class SolersProviderRegistry : public Object {
 	GDCLASS(SolersProviderRegistry, Object);
 
-	Dictionary profiles;
-	Array profile_order;
+	SolersModelsDev *models_dev = nullptr; // Owned.
+	Dictionary overlays; // id -> special profile (AuthHooks).
+	Array overlay_order;
+	bool owns_models_dev = true;
 
 	Dictionary _ok(const Variant &p_data) const;
 	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
-	Dictionary _make_profile(const String &p_id, const String &p_label, const String &p_kind, const String &p_default_base_url, const String &p_default_model, bool p_local, bool p_api_key_required, const Array &p_features, const String &p_notes, const String &p_api_key_env = String(), const String &p_catalog_provider = String(), const String &p_protocol = "openai-chat") const;
-	void _register_profile(const Dictionary &p_profile);
-	void _register_default_profiles();
+	void _register_auth_hooks();
+	Dictionary _profile_from_catalog(const Dictionary &p_catalog) const;
+	Dictionary _default_custom_profile(const String &p_id) const;
+	String _default_model_for_catalog(const Dictionary &p_catalog) const;
+	static String _protocol_for_npm(const String &p_npm);
+	static bool _looks_local_api(const String &p_api);
 
 protected:
 	static void _bind_methods();
 
 public:
+	SolersModelsDev *get_models_dev() const { return models_dev; }
+	void set_models_dev(SolersModelsDev *p_models_dev, bool p_owned = false);
+
 	Dictionary get_provider_profile(const String &p_provider) const;
 	Dictionary resolve_provider_profile(const String &p_provider, const String &p_base_url_override = String()) const;
+	// Catalog + AuthHook overlays (OpenCode-style "all"). Custom user ids resolve
+	// via get_provider_profile when configured.
 	Array list_provider_profiles() const;
+	Array list_popular_provider_ids() const;
+	Array list_overlay_provider_ids() const;
 	Dictionary validate_config(const Dictionary &p_config) const;
 	bool is_model_allowed(const String &p_provider, const String &p_model) const;
+	bool is_known_provider(const String &p_provider) const;
 
 	SolersProviderRegistry();
+	~SolersProviderRegistry();
 };

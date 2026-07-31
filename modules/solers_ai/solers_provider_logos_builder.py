@@ -28,6 +28,19 @@ def _escape_c_string(value: str) -> str:
     )
 
 
+def _write_c_string_literal(file, value: str, indent: str = "\t\t") -> None:
+    # MSVC C2026: a single string literal must stay under ~16KB. Adjacent
+    # literals concatenate, so large SVGs are emitted as chunked pieces.
+    chunk = 8000
+    if not value:
+        file.write(f'{indent}"",\n')
+        return
+    pieces = [_escape_c_string(value[i : i + chunk]) for i in range(0, len(value), chunk)]
+    file.write(indent)
+    file.write(" ".join(f'"{piece}"' for piece in pieces))
+    file.write(",\n")
+
+
 def _parse_logo_path(svg_path: Path) -> tuple[str, str]:
     """Return (logo_id, track) where track is 'mono' or 'color'."""
     name = svg_path.name
@@ -63,7 +76,7 @@ def _write_table(file, table_name: str, count_name: str, logos: list[dict[str, s
     for logo in logos:
         file.write("\t{\n")
         file.write(f'\t\t"{_escape_c_string(logo["id"])}",\n')
-        file.write(f'\t\t"{_escape_c_string(logo["svg"])}",\n')
+        _write_c_string_literal(file, logo["svg"])
         file.write("\t},\n")
     file.write("};\n\n")
     file.write(f"static const int {count_name} = {len(logos)};\n")

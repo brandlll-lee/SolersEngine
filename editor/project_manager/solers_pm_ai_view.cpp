@@ -223,11 +223,58 @@ void SolersPMAIView::_select_category(const String &p_id) {
 
 void SolersPMAIView::_add_provider_row(const String &p_id, const String &p_title, const Ref<Texture2D> &p_icon, bool p_preserve_icon_color, const String &p_subtitle) {
 	SolersCategoryCard *card = memnew(SolersCategoryCard);
-	card->configure(p_title, p_icon, p_subtitle, Color(_provider_status(p_id).get("color", Color())));
+	// Plugins keep readiness dots; LLM rows use subtitle source tags (OpenCode/Kilo).
+	const Color dot = selected_category == "llm" ? Color(0, 0, 0, 0) : Color(_provider_status(p_id).get("color", Color()));
+	card->configure(p_title, p_icon, p_subtitle, dot);
 	card->set_preserve_icon_color(p_preserve_icon_color);
 	card->set_meta("provider_id", p_id);
 	card->set_pressed_callback(callable_mp(this, &SolersPMAIView::_select_provider).bind(p_id, true));
 	provider_list->add_child(card);
+}
+
+String SolersPMAIView::_source_label(const String &p_source) const {
+	if (p_source == "env") {
+		return TTR("Environment");
+	}
+	if (p_source == "oauth") {
+		return TTR("OAuth");
+	}
+	if (p_source == "custom") {
+		return TTR("Custom");
+	}
+	if (p_source == "config") {
+		return TTR("Config");
+	}
+	if (p_source == "api") {
+		return TTR("API key");
+	}
+	return String();
+}
+
+void SolersPMAIView::_add_section_label(const String &p_text) {
+	Label *label = memnew(Label);
+	label->set_text(p_text);
+	label->add_theme_font_size_override(SNAME("font_size"), int(Math::round(11.0f * EDSCALE)));
+	label->add_theme_color_override(SNAME("font_color"), get_theme_color(SNAME("font_color"), SNAME("Label")).darkened(0.25f));
+	label->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+	provider_list->add_child(label);
+}
+
+void SolersPMAIView::_add_llm_row(const String &p_id, const String &p_title, const String &p_subtitle, bool p_connect_action) {
+#ifdef MODULE_SOLERS_AI_ENABLED
+	const Dictionary profile = registry ? registry->get_provider_profile(p_id) : Dictionary();
+	const String catalog_id = profile.get("catalog_provider", p_id);
+	String subtitle = p_subtitle;
+	if (p_connect_action && subtitle.is_empty()) {
+		subtitle = TTR("Connect");
+	}
+	_add_provider_row(p_id, p_title, SolersChatGlyphs::provider_logo(catalog_id, int(Math::round(16.0f * EDSCALE))), false, subtitle);
+#else
+	(void)p_id;
+	(void)p_title;
+	(void)p_subtitle;
+	(void)p_connect_action;
+#endif
 }
 
 void SolersPMAIView::_build_provider_list() {
@@ -240,7 +287,7 @@ void SolersPMAIView::_build_provider_list() {
 	const bool llm_category = selected_category == "llm";
 	local_models_only_box->set_visible(llm_category);
 	if (llm_category) {
-		local_models_only_check->set_pressed_no_signal(settings_service->get_local_models_only());
+		local_models_only_check->set_pressed_no_signal(settings_service && settings_service->get_local_models_only());
 	}
 
 	if (!llm_category) {
@@ -264,15 +311,50 @@ void SolersPMAIView::_build_provider_list() {
 
 	provider_list_title->set_text(TTR("LLM Provider"));
 	provider_list_notes->set_text(TTR("Connect the model provider Solers uses for chat and agent work."));
-	const Array profiles = registry->list_provider_profiles();
-	for (const Variant &profile_value : profiles) {
-		const Dictionary profile = profile_value;
-		const String id = profile.get("id", String());
-		// The profile's models.dev catalog id doubles as the logo id; unknown
-		// ids (custom gateways) fall back to the generic "synthetic" mark.
-		const String catalog_id = profile.get("catalog_provider", id);
-		_add_provider_row(id, TTRGET(String(profile.get("label", id))), SolersChatGlyphs::provider_logo(catalog_id, int(Math::round(16.0f * EDSCALE))));
+	if (!settings_service || !registry) {
+		return;
 	}
+
+	const Dictionary view = settings_service->list_provider_view().get("data", Dictionary());
+	const Array connected = view.get("connected", Array());
+	const Array popular = view.get("popular", Array());
+	const Dictionary custom = view.get("custom", Dictionary());
+
+	if (!connected.is_empty()) {
+		_add_section_label(TTR("Connected"));
+		for (const Variant &row_v : connected) {
+			const Dictionary row = row_v;
+			const String id = row.get("provider", String());
+			const Dictionary profile = row.get("profile", registry->get_provider_profile(id));
+			String subtitle = _source_label(row.get("source", String()));
+			if (row.get("connected", false) && !row.get("available", true)) {
+				subtitle = subtitle.is_empty() ? TTR("Local Models Only") : subtitle + " · " + TTR("Local Models Only");
+			}
+			_add_llm_row(id, TTRGET(String(profile.get("label", id))), subtitle, false);
+		}
+	}
+
+	_add_section_label(TTR("Popular"));
+	for (const Variant &row_v : popular) {
+		const Dictionary row = row_v;
+		const String id = row.get("provider", String());
+		if (id == "custom_openai_compatible") {
+			continue;
+		}
+		const Dictionary profile = row.get("profile", registry->get_provider_profile(id));
+		_add_llm_row(id, TTRGET(String(profile.get("label", id))), String(), true);
+	}
+
+	const String custom_id = custom.get("provider", "custom_openai_compatible");
+	if (!custom.get("connected", false)) {
+		_add_llm_row(custom_id, TTR("Custom provider"), TTR("Connect"), true);
+	}
+
+	SolersCategoryCard *view_all = memnew(SolersCategoryCard);
+	view_all->configure(TTR("View all providers"), SolersChatGlyphs::provider_logo("synthetic", int(Math::round(16.0f * EDSCALE))), TTR("Browse catalog"));
+	view_all->set_meta("provider_id", String("__view_all__"));
+	view_all->set_pressed_callback(callable_mp(this, &SolersPMAIView::_open_view_all));
+	provider_list->add_child(view_all);
 #endif
 }
 
@@ -292,6 +374,13 @@ void SolersPMAIView::_show_provider_list() {
 }
 
 void SolersPMAIView::_select_provider(const String &p_id, bool p_load_stored) {
+	if (p_id == "__view_all__") {
+		_open_view_all();
+		return;
+	}
+	if (view_all_dialog && view_all_dialog->is_visible()) {
+		view_all_dialog->hide();
+	}
 	if (quick_settings_view) {
 		quick_settings_view->hide();
 	}
@@ -310,6 +399,83 @@ void SolersPMAIView::_select_provider(const String &p_id, bool p_load_stored) {
 	if (saved_feedback) {
 		saved_feedback->set_text(String());
 	}
+}
+
+void SolersPMAIView::_open_view_all() {
+#ifdef MODULE_SOLERS_AI_ENABLED
+	if (!view_all_dialog) {
+		view_all_dialog = memnew(AcceptDialog);
+		view_all_dialog->set_title(TTR("All providers"));
+		view_all_dialog->set_min_size(Size2(420, 480) * EDSCALE);
+		add_child(view_all_dialog);
+
+		VBoxContainer *box = memnew(VBoxContainer);
+		box->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
+		box->add_theme_constant_override("separation", 8 * EDSCALE);
+		view_all_dialog->add_child(box);
+
+		view_all_search = memnew(LineEdit);
+		view_all_search->set_placeholder(TTR("Search providers..."));
+		view_all_search->set_clear_button_enabled(true);
+#ifdef MODULE_SOLERS_AI_ENABLED
+		solers_style_bare_search_line_edit(view_all_search);
+#endif
+		view_all_search->connect(SceneStringName(text_changed), callable_mp(this, &SolersPMAIView::_on_view_all_search));
+		box->add_child(view_all_search);
+
+		ScrollContainer *scroll = memnew(ScrollContainer);
+		scroll->set_v_size_flags(SIZE_EXPAND_FILL);
+		scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
+		box->add_child(scroll);
+
+		view_all_list = memnew(VBoxContainer);
+		view_all_list->set_h_size_flags(SIZE_EXPAND_FILL);
+		view_all_list->add_theme_constant_override("separation", 2 * EDSCALE);
+		scroll->add_child(view_all_list);
+	}
+	if (view_all_search) {
+		view_all_search->set_text(String());
+	}
+	_rebuild_view_all_list();
+	view_all_dialog->popup_centered(Size2(420, 480) * EDSCALE);
+#endif
+}
+
+void SolersPMAIView::_on_view_all_search(const String &p_text) {
+	_rebuild_view_all_list(p_text);
+}
+
+void SolersPMAIView::_rebuild_view_all_list(const String &p_filter) {
+#ifdef MODULE_SOLERS_AI_ENABLED
+	if (!view_all_list || !registry) {
+		return;
+	}
+	for (int i = view_all_list->get_child_count() - 1; i >= 0; i--) {
+		Node *child = view_all_list->get_child(i);
+		view_all_list->remove_child(child);
+		child->queue_free();
+	}
+	const String filter = p_filter.strip_edges().to_lower();
+	const Array profiles = registry->list_provider_profiles();
+	for (const Variant &profile_value : profiles) {
+		const Dictionary profile = profile_value;
+		const String id = profile.get("id", String());
+		const String label = String(profile.get("label", id));
+		if (id == "custom_openai_compatible") {
+			continue;
+		}
+		if (!filter.is_empty() && !id.to_lower().contains(filter) && !label.to_lower().contains(filter)) {
+			continue;
+		}
+		SolersCategoryCard *card = memnew(SolersCategoryCard);
+		const String catalog_id = profile.get("catalog_provider", id);
+		card->configure(TTRGET(label), SolersChatGlyphs::provider_logo(catalog_id, int(Math::round(16.0f * EDSCALE))), TTR("Connect"));
+		card->set_pressed_callback(callable_mp(this, &SolersPMAIView::_select_provider).bind(id, true));
+		view_all_list->add_child(card);
+	}
+#else
+	(void)p_filter;
+#endif
 }
 
 void SolersPMAIView::_refresh_form(bool p_load_stored) {
@@ -807,6 +973,27 @@ void SolersPMAIView::update_quick_popup_size_limits(const Size2 &p_max_popup_siz
 #endif
 }
 
+void SolersPMAIView::bind_services(SolersSettingsService *p_settings_service) {
+#ifdef MODULE_SOLERS_AI_ENABLED
+	if (owns_services) {
+		if (settings_service) {
+			memdelete(settings_service);
+			settings_service = nullptr;
+		}
+		if (registry) {
+			memdelete(registry);
+			registry = nullptr;
+		}
+		owns_services = false;
+	}
+	settings_service = p_settings_service;
+	registry = p_settings_service ? p_settings_service->get_provider_registry() : nullptr;
+	refresh();
+#else
+	(void)p_settings_service;
+#endif
+}
+
 void SolersPMAIView::refresh() {
 #ifdef MODULE_SOLERS_AI_ENABLED
 	_build_provider_list();
@@ -826,10 +1013,9 @@ SolersPMAIView::SolersPMAIView() {
 	registry = memnew(SolersProviderRegistry);
 	settings_service = memnew(SolersSettingsService);
 	settings_service->set_provider_registry(registry);
+	owns_services = true;
 
 	const SolersPMTheme::Tokens tokens = SolersPMTheme::make_tokens(get_theme());
-	const Color hairline = Color(tokens.text.r, tokens.text.g, tokens.text.b, 0.10f);
-	const int hair_px = MAX(1, (int)EDSCALE);
 
 	// Left rail — layout only (dialog host paints the single flat fill).
 	VBoxContainer *rail = memnew(VBoxContainer);
@@ -863,13 +1049,9 @@ SolersPMAIView::SolersPMAIView() {
 
 	_build_nav();
 
+	// Pane edge: StyleBoxLine comes from SolersPMTheme::apply_chrome_edges — do not override.
 	VSeparator *sep = memnew(VSeparator);
 	sep->set_v_size_flags(SIZE_EXPAND_FILL);
-	Ref<StyleBoxFlat> sep_sb;
-	sep_sb.instantiate();
-	sep_sb->set_bg_color(hairline);
-	sep_sb->set_content_margin(SIDE_LEFT, hair_px);
-	sep->add_theme_style_override(SNAME("separator"), sep_sb);
 	add_child(sep);
 
 	ScrollContainer *scroll = memnew(ScrollContainer);
@@ -1208,13 +1390,15 @@ SolersPMAIView::SolersPMAIView() {
 
 SolersPMAIView::~SolersPMAIView() {
 #ifdef MODULE_SOLERS_AI_ENABLED
-	if (settings_service) {
-		memdelete(settings_service);
-		settings_service = nullptr;
-	}
-	if (registry) {
-		memdelete(registry);
-		registry = nullptr;
+	if (owns_services) {
+		if (settings_service) {
+			memdelete(settings_service);
+			settings_service = nullptr;
+		}
+		if (registry) {
+			memdelete(registry);
+			registry = nullptr;
+		}
 	}
 #endif
 }

@@ -33,12 +33,15 @@
 #include "core/io/json.h"
 #include "core/object/class_db.h"
 #include "core/os/os.h"
+#include "core/templates/hash_set.h"
+#include "core/templates/list.h"
 #include "editor/settings/editor_settings.h"
 #include "modules/solers_ai/core/solers_codex_auth.h"
 #include "modules/solers_ai/core/solers_provider_registry.h"
 #include "modules/solers_ai/core/solers_secret_store.h"
+#include "modules/solers_ai/llm/solers_models_dev.h"
 
-static constexpr int SOLERS_PROVIDER_SETTINGS_VERSION = 4;
+static constexpr int SOLERS_PROVIDER_SETTINGS_VERSION = 5;
 
 void SolersSettingsService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_provider_registry", "provider_registry"), &SolersSettingsService::set_provider_registry);
@@ -50,6 +53,7 @@ void SolersSettingsService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("disconnect_provider", "provider"), &SolersSettingsService::disconnect_provider);
 	ClassDB::bind_method(D_METHOD("list_provider_profiles"), &SolersSettingsService::list_provider_profiles);
 	ClassDB::bind_method(D_METHOD("list_connected_provider_configs"), &SolersSettingsService::list_connected_provider_configs);
+	ClassDB::bind_method(D_METHOD("list_provider_view"), &SolersSettingsService::list_provider_view);
 	ClassDB::bind_method(D_METHOD("validate_provider_config", "args"), &SolersSettingsService::validate_provider_config);
 	ClassDB::bind_method(D_METHOD("start_codex_login", "provider"), &SolersSettingsService::start_codex_login);
 	ClassDB::bind_method(D_METHOD("cancel_codex_login"), &SolersSettingsService::cancel_codex_login);
@@ -141,6 +145,35 @@ void SolersSettingsService::_migrate_provider_settings() {
 		}
 		if (settings->has_setting(old_path)) {
 			settings->erase(old_path);
+		}
+	}
+	if (version < 5) {
+		// Single alias authority: SolersModelsDev::canonical_provider_id.
+		SolersModelsDev *md = provider_registry ? provider_registry->get_models_dev() : nullptr;
+		if (md) {
+			static const char *PROVIDER_KEYS[] = { "configured", "model", "base_url", "api_key", "oauth", "reasoning_effort" };
+			for (const Variant &from_v : md->list_legacy_provider_ids()) {
+				const String from = from_v;
+				const String to = md->canonical_provider_id(from);
+				if (from.is_empty() || to.is_empty() || to == from) {
+					continue;
+				}
+				for (const char *key : PROVIDER_KEYS) {
+					const String old_path = _provider_setting_path(from, key);
+					if (!settings->has_setting(old_path)) {
+						continue;
+					}
+					const String new_path = _provider_setting_path(to, key);
+					if (!settings->has_setting(new_path)) {
+						settings->set_manually(new_path, settings->get_setting(old_path));
+					}
+					settings->erase(old_path);
+				}
+				if (provider == from) {
+					provider = to;
+					settings->set_manually(_setting_path("provider"), provider);
+				}
+			}
 		}
 	}
 	settings->set_manually(_setting_path("settings_version"), SOLERS_PROVIDER_SETTINGS_VERSION);
@@ -257,6 +290,17 @@ Dictionary SolersSettingsService::_get_provider_config(const String &p_provider,
 	data["connected"] = connected;
 	data["available"] = connected && (!(bool)data["local_models_only"] || (bool)profile.get("local", false));
 	data["active"] = settings->has_setting(_setting_path("provider")) && String(settings->get_setting(_setting_path("provider"))) == p_provider;
+	String source = "none";
+	if (auth_type == "oauth" && oauth_configured) {
+		source = "oauth";
+	} else if (api_key_source == "environment") {
+		source = "env";
+	} else if (api_key_configured) {
+		source = String(profile.get("source_kind", String())) == "custom" ? "custom" : "api";
+	} else if (auth_type == "none" && connection_declared) {
+		source = "config";
+	}
+	data["source"] = source;
 	if (p_include_secret) {
 		data["auth"] = _get_stored_auth(p_provider);
 	}
@@ -311,9 +355,10 @@ Dictionary SolersSettingsService::set_provider_config(const Dictionary &p_args) 
 	if (provider.is_empty()) {
 		return _error("PROVIDER_REQUIRED", "A provider must be selected.");
 	}
-	if (!provider_registry || provider_registry->get_provider_profile(provider).is_empty()) {
-		return _error("UNKNOWN_PROVIDER", vformat("Unknown Solers provider profile: %s", provider));
+	if (!provider_registry) {
+		return _error("PROVIDER_REGISTRY_UNAVAILABLE", "Solers provider registry is not initialized.", false);
 	}
+	// Catalog / AuthHook / custom OpenAI-compatible — get_provider_profile always resolves.
 	if (p_args.has("model") && !provider_registry->is_model_allowed(provider, String(p_args["model"]))) {
 		return _error("MODEL_NOT_ALLOWED", "The selected model is not available through this provider connection.");
 	}
@@ -344,6 +389,16 @@ Dictionary SolersSettingsService::set_provider_config(const Dictionary &p_args) 
 	}
 	if (p_args.has("api_key") && !String(p_args["api_key"]).is_empty()) {
 		settings->set_manually(_provider_setting_path(provider, "api_key"), SolersSecretStore::protect(String(p_args["api_key"])));
+	}
+	if (!provider_registry->is_known_provider(provider) || provider == "custom_openai_compatible" || String(profile.get("source_kind", String())) == "custom") {
+		Array custom_ids;
+		if (settings->has_setting(_setting_path("custom_provider_ids"))) {
+			custom_ids = settings->get_setting(_setting_path("custom_provider_ids"));
+		}
+		if (!custom_ids.has(provider)) {
+			custom_ids.push_back(provider);
+			settings->set_manually(_setting_path("custom_provider_ids"), custom_ids);
+		}
 	}
 	Dictionary data = _get_provider_config(provider, false);
 	if (!was_connected && data.get("connected", false) && !profile.get("local", false) && get_local_models_only()) {
@@ -390,6 +445,16 @@ Dictionary SolersSettingsService::disconnect_provider(const String &p_provider) 
 	Dictionary data;
 	data["provider"] = p_provider;
 	data["disconnected"] = true;
+	EditorSettings *settings_after = EditorSettings::get_singleton();
+	if (settings_after && settings_after->has_setting(_setting_path("custom_provider_ids"))) {
+		Array custom_ids = settings_after->get_setting(_setting_path("custom_provider_ids"));
+		const int idx = custom_ids.find(p_provider);
+		if (idx >= 0) {
+			custom_ids.remove_at(idx);
+			settings_after->set_manually(_setting_path("custom_provider_ids"), custom_ids);
+			EditorSettings::save();
+		}
+	}
 	return _ok(data);
 }
 
@@ -404,9 +469,62 @@ Dictionary SolersSettingsService::list_provider_profiles() const {
 Dictionary SolersSettingsService::list_connected_provider_configs() const {
 	ERR_FAIL_NULL_V(provider_registry, _error("PROVIDER_REGISTRY_UNAVAILABLE", "Solers provider registry is not initialized.", false));
 	Array connected;
-	const Array profiles = provider_registry->list_provider_profiles();
-	for (const Variant &profile_value : profiles) {
+	HashSet<String> seen;
+	Array candidates;
+
+	auto push_candidate = [&](const String &p_id) {
+		if (p_id.is_empty() || seen.has(p_id)) {
+			return;
+		}
+		seen.insert(p_id);
+		Dictionary stub;
+		stub["id"] = p_id;
+		candidates.push_back(stub);
+	};
+
+	// AuthHook overlays + custom slots + active provider — never walk the full
+	// models.dev catalog just to discover who is connected.
+	for (const Variant &id_v : provider_registry->list_overlay_provider_ids()) {
+		push_candidate(id_v);
+	}
+	EditorSettings *settings = EditorSettings::get_singleton();
+	if (settings) {
+		if (settings->has_setting(_setting_path("custom_provider_ids"))) {
+			for (const Variant &id_v : Array(settings->get_setting(_setting_path("custom_provider_ids")))) {
+				push_candidate(id_v);
+			}
+		}
+		if (settings->has_setting(_setting_path("provider"))) {
+			push_candidate(String(settings->get_setting(_setting_path("provider"))));
+		}
+		// Authoritative: any providers/<id>/configured|api_key|oauth key present.
+		List<PropertyInfo> props;
+		settings->get_property_list(&props);
+		const String prefix = _setting_path("providers/");
+		for (const PropertyInfo &pi : props) {
+			if (!String(pi.name).begins_with(prefix)) {
+				continue;
+			}
+			const String rest = String(pi.name).substr(prefix.length());
+			const int slash = rest.find("/");
+			if (slash <= 0) {
+				continue;
+			}
+			const String key = rest.substr(slash + 1);
+			if (key != "configured" && key != "api_key" && key != "oauth") {
+				continue;
+			}
+			push_candidate(rest.substr(0, slash));
+		}
+	}
+
+	seen.clear();
+	for (const Variant &profile_value : candidates) {
 		const String provider = Dictionary(profile_value).get("id", String());
+		if (provider.is_empty() || seen.has(provider)) {
+			continue;
+		}
+		seen.insert(provider);
 		const Dictionary config = _get_provider_config(provider, false);
 		if (config.get("connected", false)) {
 			connected.push_back(config);
@@ -415,6 +533,65 @@ Dictionary SolersSettingsService::list_connected_provider_configs() const {
 	Dictionary data;
 	data["providers"] = connected;
 	data["count"] = connected.size();
+	return _ok(data);
+}
+
+Dictionary SolersSettingsService::list_provider_view() const {
+	ERR_FAIL_NULL_V(provider_registry, _error("PROVIDER_REGISTRY_UNAVAILABLE", "Solers provider registry is not initialized.", false));
+	if (SolersModelsDev *md = provider_registry->get_models_dev()) {
+		md->refresh();
+	}
+
+	const Dictionary connected_wrap = list_connected_provider_configs().get("data", Dictionary());
+	const Array connected = connected_wrap.get("providers", Array());
+	HashSet<String> connected_ids;
+	for (const Variant &c : connected) {
+		connected_ids.insert(String(Dictionary(c).get("provider", String())));
+	}
+
+	Array popular;
+	HashSet<String> popular_ids_seen;
+	auto push_popular = [&](const String &p_id) {
+		if (p_id.is_empty() || connected_ids.has(p_id) || popular_ids_seen.has(p_id)) {
+			return;
+		}
+		const Dictionary profile = provider_registry->get_provider_profile(p_id);
+		if (profile.is_empty()) {
+			return;
+		}
+		// Custom template belongs in the custom slot, not Popular.
+		if (String(profile.get("source_kind", String())) == "custom") {
+			return;
+		}
+		popular_ids_seen.insert(p_id);
+		Dictionary row;
+		row["provider"] = p_id;
+		row["profile"] = profile;
+		row["connected"] = false;
+		row["source"] = "none";
+		popular.push_back(row);
+	};
+
+	// AuthHook overlays first (source_kind=overlay) — no per-id case branches.
+	for (const Variant &id_v : provider_registry->list_overlay_provider_ids()) {
+		push_popular(id_v);
+	}
+	// Catalog popular ordering (data in models.dev, not a behavior switch).
+	for (const Variant &id_v : provider_registry->list_popular_provider_ids()) {
+		push_popular(id_v);
+	}
+
+	Dictionary custom_row;
+	custom_row["provider"] = "custom_openai_compatible";
+	custom_row["profile"] = provider_registry->get_provider_profile("custom_openai_compatible");
+	custom_row["connected"] = connected_ids.has("custom_openai_compatible");
+	custom_row["source"] = custom_row.get("connected", false) ? "custom" : "none";
+
+	Dictionary data;
+	data["connected"] = connected;
+	data["popular"] = popular;
+	data["all"] = provider_registry->list_provider_profiles();
+	data["custom"] = custom_row;
 	return _ok(data);
 }
 

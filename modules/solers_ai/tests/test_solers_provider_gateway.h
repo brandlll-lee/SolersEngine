@@ -239,19 +239,21 @@ TEST_CASE("[SolersSecretStore] strict credentials are protected and recoverable"
 	CHECK(SolersSecretStore::unprotect(stored) == secret);
 }
 
-TEST_CASE("[SolersProviderRegistry] exposes canonical transport profiles") {
+TEST_CASE("[SolersProviderRegistry] assembles catalog and AuthHook overlays") {
 	SolersProviderRegistry registry;
 
 	Dictionary openai = registry.get_provider_profile("openai");
-	Dictionary anthropic = registry.get_provider_profile("anthropic_messages");
+	Dictionary anthropic = registry.get_provider_profile("anthropic");
 
-	CHECK(openai.get("kind", String()) == "openai_compatible");
+	CHECK(openai.get("protocol", String()) == "openai-chat");
 	CHECK(openai.get("default_base_url", String()) == "https://api.openai.com/v1");
-	CHECK(anthropic.get("kind", String()) == "anthropic_messages");
+	CHECK(anthropic.get("protocol", String()) == "anthropic-messages");
 	CHECK(anthropic.get("default_base_url", String()) == "https://api.anthropic.com");
+	CHECK(registry.is_known_provider("openai"));
+	CHECK(registry.is_known_provider("openai_codex"));
 }
 
-TEST_CASE("[SolersProviderRegistry] routes custom gateways through the explicit custom profile") {
+TEST_CASE("[SolersProviderRegistry] routes custom gateways without a hardcoded allowlist") {
 	SolersProviderRegistry registry;
 
 	Dictionary config;
@@ -266,11 +268,16 @@ TEST_CASE("[SolersProviderRegistry] routes custom gateways through the explicit 
 	CHECK(data.get("valid", false));
 	CHECK(data.get("effective_base_url", String()) == "https://gateway.example/v1");
 
-	Dictionary unknown = config;
-	unknown["provider"] = "synthetic-unregistered-provider";
-	const Dictionary rejected = registry.validate_config(unknown);
-	CHECK_FALSE(rejected.get("ok", true));
-	CHECK(Dictionary(rejected.get("error", Dictionary())).get("code", String()) == "UNKNOWN_PROVIDER");
+	// Behavior contract: a brand-new provider id is OpenAI-compatible custom —
+	// no UNKNOWN_PROVIDER allowlist patch required.
+	Dictionary fresh;
+	fresh["provider"] = "synthetic-brand-new-gateway";
+	fresh["model"] = "synthetic-model";
+	fresh["base_url"] = "https://gateway.example/v1";
+	fresh["api_key"] = "synthetic-key";
+	const Dictionary accepted = registry.validate_config(fresh);
+	CHECK(accepted.get("ok", false));
+	CHECK(Dictionary(accepted.get("data", Dictionary())).get("valid", false));
 }
 
 TEST_CASE("[Editor][SolersSettingsService] local model policy migrates without changing provider configuration") {
@@ -340,6 +347,18 @@ TEST_CASE("[Editor][SolersSettingsService] local model policy migrates without c
 	CHECK(remote_config.get("model", String()) == "synthetic-model");
 	CHECK(remote_config.get("base_url", String()) == "https://gateway.example/v1");
 	CHECK(Dictionary(service.get_provider_config().get("data", Dictionary())).get("provider", String()) == "custom_openai_compatible");
+
+	// Contract: never-special-cased catalog-style id connects via assembler.
+	Dictionary brand_new;
+	brand_new["provider"] = "synthetic-never-special-cased";
+	brand_new["model"] = "m1";
+	brand_new["base_url"] = "https://example.test/v1";
+	brand_new["api_key"] = "k";
+	service.set_local_models_only(false);
+	const Dictionary brand_saved = service.set_provider_config(brand_new);
+	CHECK(brand_saved.get("ok", false));
+	CHECK(Dictionary(brand_saved.get("data", Dictionary())).get("connected", false));
+	service.disconnect_provider("synthetic-never-special-cased");
 
 	SolersToolRegistry tool_registry;
 	SolersAgentSession session;
@@ -1989,6 +2008,40 @@ TEST_CASE("[SolersObservationService] empty file search lists bounded project fi
 	CHECK((int)result.get("count", -1) >= 0);
 }
 
+TEST_CASE("[SolersObservationService] observe_path digests any selection by engine authority") {
+	// Contract: directory and ordinary file both get a digest.kind — not only PackedScene.
+	const String dir_path = "res://solers_observe_path_contract";
+	const String file_path = dir_path.path_join("note.txt");
+	{
+		Ref<DirAccess> root = DirAccess::open("res://");
+		REQUIRE(root.is_valid());
+		CHECK(root->make_dir("solers_observe_path_contract") == OK);
+		Ref<FileAccess> file = FileAccess::open(file_path, FileAccess::WRITE);
+		REQUIRE(file.is_valid());
+		file->store_string("observe-path-contract\n");
+	}
+	SolersObservationService observation_service;
+	const Dictionary dir_observed = observation_service.observe_path(dir_path + "/");
+	REQUIRE((bool)dir_observed.get("ok", false));
+	const Dictionary dir_digest = dir_observed.get("digest", Dictionary());
+	CHECK(dir_digest.get("kind", String()) == "directory");
+	CHECK((int)dir_digest.get("file_count", 0) >= 1);
+	// EFS-backed digests project import_valid/dependency_count; DirAccess fallback may omit them.
+	const Array children = dir_digest.get("children", Array());
+	REQUIRE(children.size() >= 1);
+
+	const Dictionary file_observed = observation_service.observe_path(file_path);
+	REQUIRE((bool)file_observed.get("ok", false));
+	CHECK_FALSE(String(Dictionary(file_observed.get("digest", Dictionary())).get("kind", String())).is_empty());
+
+	Ref<DirAccess> cleanup = DirAccess::open(dir_path);
+	REQUIRE(cleanup.is_valid());
+	CHECK(cleanup->remove("note.txt") == OK);
+	Ref<DirAccess> root = DirAccess::open("res://");
+	REQUIRE(root.is_valid());
+	CHECK(root->remove("solers_observe_path_contract") == OK);
+}
+
 TEST_CASE("[SolersObservationService] structured search and runtime observations stay bounded") {
 	const String path = "res://solers_search_contract.txt";
 	{
@@ -3014,17 +3067,18 @@ TEST_CASE("[SolersContextManager] estimates ASCII and non-ASCII text like Kimi C
 }
 
 TEST_CASE("[SolersContextManager] compaction begins exactly when the next reply stops fitting") {
-	// Headroom is the model's own declared output ceiling, so the trigger
-	// tracks whatever the model says it can emit rather than a fixed fraction.
+	// Headroom is min(max_output, 20k) — OpenCode COMPACTION_BUFFER — so a
+	// large wire budget cannot collapse usable input on every short turn.
 	SolersContextManager context;
 
-	CHECK_FALSE(context.should_compact(167999, 200000, 32000));
-	CHECK(context.should_compact(168000, 200000, 32000));
-	// A roomier output ceiling on the same window compacts sooner.
-	CHECK(context.should_compact(150000, 200000, 50000));
-	CHECK_FALSE(context.should_compact(149999, 200000, 50000));
-	// A window that cannot even hold one reply has nothing to reclaim.
-	CHECK_FALSE(context.should_compact(30000, 50000, 50000));
+	CHECK_FALSE(context.should_compact(179999, 200000, 32000));
+	CHECK(context.should_compact(180000, 200000, 32000));
+	// Reserve caps at 20k even when max_output is larger.
+	CHECK(context.should_compact(180000, 200000, 50000));
+	CHECK_FALSE(context.should_compact(179999, 200000, 50000));
+	// Mid-size windows still compact near the end, not at tool-prompt size.
+	CHECK_FALSE(context.should_compact(8000, 500000, 32000));
+	CHECK(context.should_compact(480000, 500000, 32000));
 	CHECK_FALSE(context.should_compact(30000, 0, 8192));
 }
 
@@ -3216,6 +3270,11 @@ TEST_CASE("[SolersAgentSession] a tool result reaches the model as parsable JSON
 		nodes.push_back(node);
 	}
 	measurements["nodes"] = nodes;
+	Dictionary digest;
+	digest["path"] = "res://sample.tscn";
+	digest["root_type"] = "Node3D";
+	digest["node_count"] = 3;
+	measurements["digest"] = digest;
 	Dictionary result;
 	result["ok"] = true;
 	result["data"] = measurements;
@@ -3231,10 +3290,14 @@ TEST_CASE("[SolersAgentSession] a tool result reaches the model as parsable JSON
 	REQUIRE(parser->parse(elided) == OK);
 	const Dictionary envelope = parser->get_data();
 	CHECK(envelope.get("ok", false));
-	CHECK_FALSE(envelope.has("data"));
+	// Digest survives elision; fat details do not.
+	CHECK(envelope.has("data"));
+	CHECK(Dictionary(envelope.get("data", Dictionary())).has("digest"));
+	CHECK_FALSE(Dictionary(envelope.get("data", Dictionary())).has("nodes"));
 	const Dictionary reported = envelope.get("data_elided", Dictionary());
 	CHECK((int)reported.get("token_budget", 0) == 500);
 	CHECK((int)reported.get("tokens", 0) > 500);
+	CHECK((bool)reported.get("kept_digest", false));
 	// The model is told which part of the payload it lost, not just that it
 	// lost something.
 	CHECK(Array(reported.get("data_keys", Array())).has("nodes"));
@@ -3599,6 +3662,133 @@ TEST_CASE("[SolersLLMClient] transport failures use the failed state without a p
 	CHECK(find_event_kind(events, SolersLLMEventKind::ERROR).is_empty());
 }
 
+TEST_CASE("[SolersOpenAIChatProtocol] SSE error frames are authoritative failures") {
+	SolersOpenAIChatProtocol protocol;
+	Dictionary state;
+	const Array events = protocol.parse_event(state, "error", R"json({"error":{"message":"Internal server error from model.","type":"server_error","code":"Internal error"}})json");
+	REQUIRE(events.size() == 1);
+	CHECK(String(Dictionary(events[0]).get("kind", String())) == SolersLLMEventKind::ERROR);
+	CHECK(String(Dictionary(events[0]).get("message", String())).contains("Internal server error from model"));
+	CHECK(String(Dictionary(events[0]).get("code", String())) == "server_error");
+
+	Dictionary state2;
+	const Array nested = protocol.parse_event(state2, "", R"json({"error":{"message":"boom","type":"invalid_request_error"}})json");
+	REQUIRE(nested.size() == 1);
+	CHECK(String(Dictionary(nested[0]).get("kind", String())) == SolersLLMEventKind::ERROR);
+	CHECK(String(Dictionary(nested[0]).get("message", String())) == "boom");
+}
+
+TEST_CASE("[SolersLLMClient] empty HTTP 200 stream fails without retry") {
+	// Authority: zero response body bytes ⇒ identical retry cannot help.
+	Ref<TCPServer> server;
+	server.instantiate();
+	REQUIRE(server->listen(0, IPAddress("127.0.0.1")) == OK);
+
+	SolersLLMProtocolRegistry protocols;
+	protocols.register_builtin_protocols();
+	SolersLLMClient client;
+	client.set_protocol_registry(&protocols);
+
+	Dictionary request;
+	request["model"] = "synthetic-model";
+	Array messages;
+	messages.push_back(SolersLLMMessage::user("test"));
+	request["messages"] = messages;
+	Dictionary profile;
+	profile["protocol"] = "openai-chat";
+	profile["base_url"] = vformat("http://127.0.0.1:%d/v1", server->get_local_port());
+	Dictionary auth;
+	auth["type"] = "none";
+	REQUIRE(client.begin(request, profile, auth) == OK);
+
+	bool responded = false;
+	const uint64_t started = OS::get_singleton()->get_ticks_msec();
+	while (!client.is_failed() && !client.is_done() && OS::get_singleton()->get_ticks_msec() - started < 3000) {
+		if (!responded && server->is_connection_available()) {
+			Ref<StreamPeerTCP> conn = server->take_connection();
+			REQUIRE(conn.is_valid());
+			conn->poll();
+			uint8_t discard[4096];
+			int received = 0;
+			conn->get_partial_data(discard, 4096, received);
+			const CharString resp = String(
+					"HTTP/1.1 200 OK\r\n"
+					"Content-Type: text/event-stream\r\n"
+					"Transfer-Encoding: chunked\r\n"
+					"Connection: close\r\n"
+					"\r\n"
+					"0\r\n"
+					"\r\n")
+											 .utf8();
+			conn->put_data((const uint8_t *)resp.get_data(), resp.length());
+			responded = true;
+			server->stop();
+		}
+		client.poll();
+		OS::get_singleton()->delay_usec(1000);
+	}
+	REQUIRE(client.is_failed());
+	CHECK(String(client.get_error().get("code", String())) == "STREAM_ENDED_WITHOUT_FINISH");
+	CHECK_FALSE((bool)client.get_error().get("retryable", true));
+	CHECK((int)client.get_error().get("response_bytes", -1) == 0);
+	CHECK_FALSE(SolersLLMRetry::is_retryable(client.get_error()));
+}
+
+TEST_CASE("[SolersLLMClient] JSON error body on HTTP 200 is terminal") {
+	Ref<TCPServer> server;
+	server.instantiate();
+	REQUIRE(server->listen(0, IPAddress("127.0.0.1")) == OK);
+
+	SolersLLMProtocolRegistry protocols;
+	protocols.register_builtin_protocols();
+	SolersLLMClient client;
+	client.set_protocol_registry(&protocols);
+
+	Dictionary request;
+	request["model"] = "synthetic-model";
+	Array messages;
+	messages.push_back(SolersLLMMessage::user("test"));
+	request["messages"] = messages;
+	Dictionary profile;
+	profile["protocol"] = "openai-chat";
+	profile["base_url"] = vformat("http://127.0.0.1:%d/v1", server->get_local_port());
+	Dictionary auth;
+	auth["type"] = "none";
+	REQUIRE(client.begin(request, profile, auth) == OK);
+
+	const String json_body = "{\"error\":{\"message\":\"quota exhausted\"}}";
+	bool responded = false;
+	const uint64_t started = OS::get_singleton()->get_ticks_msec();
+	while (!client.is_failed() && !client.is_done() && OS::get_singleton()->get_ticks_msec() - started < 3000) {
+		if (!responded && server->is_connection_available()) {
+			Ref<StreamPeerTCP> conn = server->take_connection();
+			REQUIRE(conn.is_valid());
+			conn->poll();
+			uint8_t discard[4096];
+			int received = 0;
+			conn->get_partial_data(discard, 4096, received);
+			const String http = vformat(
+					"HTTP/1.1 200 OK\r\n"
+					"Content-Type: application/json\r\n"
+					"Content-Length: %d\r\n"
+					"Connection: close\r\n"
+					"\r\n"
+					"%s",
+					json_body.utf8().length(), json_body);
+			const CharString resp = http.utf8();
+			conn->put_data((const uint8_t *)resp.get_data(), resp.length());
+			responded = true;
+			server->stop();
+		}
+		client.poll();
+		OS::get_singleton()->delay_usec(1000);
+	}
+	REQUIRE(client.is_failed());
+	CHECK(String(client.get_error().get("code", String())) == "PROVIDER_ERROR");
+	CHECK(String(client.get_error().get("message", String())).contains("quota exhausted"));
+	CHECK_FALSE((bool)client.get_error().get("retryable", true));
+}
+
 TEST_CASE("[SolersModelsDev] input modality support is model-level and unknown is permissive") {
 	Dictionary vision_model;
 	Array modalities;
@@ -3679,6 +3869,14 @@ TEST_CASE("[SolersProviderRegistry] is the single transport profile source") {
 	REQUIRE_FALSE(allowed_models.is_empty());
 	CHECK(registry.is_model_allowed("openai_codex", allowed_models[0]));
 	CHECK_FALSE(registry.is_model_allowed("openai_codex", "synthetic-unsupported-model"));
+
+	SolersSettingsService view_service;
+	view_service.set_provider_registry(&registry);
+	const Dictionary view = view_service.list_provider_view().get("data", Dictionary());
+	CHECK(view.has("connected"));
+	CHECK(view.has("popular"));
+	CHECK(view.has("all"));
+	CHECK(view.has("custom"));
 }
 
 TEST_CASE("[SolersOpenAIResponsesProtocol] lowers encrypted reasoning and tool continuation") {

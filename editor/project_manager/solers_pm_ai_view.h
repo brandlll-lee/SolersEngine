@@ -16,6 +16,7 @@
 #include "core/variant/dictionary.h"
 #include "scene/gui/box_container.h"
 
+class AcceptDialog;
 class Button;
 class CheckBox;
 class EditorSettingsDialog;
@@ -33,8 +34,9 @@ class VBoxContainer;
 class SolersPMAIView : public HBoxContainer {
 	GDCLASS(SolersPMAIView, HBoxContainer);
 
-	SolersProviderRegistry *registry = nullptr; // Owned.
-	SolersSettingsService *settings_service = nullptr; // Owned.
+	SolersProviderRegistry *registry = nullptr;
+	SolersSettingsService *settings_service = nullptr;
+	bool owns_services = false;
 
 	// Left rail.
 	VBoxContainer *nav_list = nullptr;
@@ -71,6 +73,10 @@ class SolersPMAIView : public HBoxContainer {
 	Button *disconnect_btn = nullptr;
 	Label *saved_feedback = nullptr;
 
+	AcceptDialog *view_all_dialog = nullptr;
+	LineEdit *view_all_search = nullptr;
+	VBoxContainer *view_all_list = nullptr;
+
 	// Right pane — quick EditorSettings (migrated from QuickSettingsDialog).
 	VBoxContainer *quick_settings_view = nullptr;
 	VBoxContainer *quick_settings_list = nullptr;
@@ -101,6 +107,9 @@ class SolersPMAIView : public HBoxContainer {
 	bool _is_asset_provider(const String &p_id) const;
 	bool _uses_codex_auth(const String &p_id) const;
 	Dictionary _provider_status(const String &p_id, bool p_live_form = false) const;
+	String _source_label(const String &p_source) const;
+	void _add_section_label(const String &p_text);
+	void _add_llm_row(const String &p_id, const String &p_title, const String &p_subtitle, bool p_connect_action);
 
 	void _build_nav();
 	void _select_category(const String &p_id);
@@ -119,6 +128,9 @@ class SolersPMAIView : public HBoxContainer {
 	void _on_codex_disconnect();
 	void _save();
 	void _disconnect_selected_provider();
+	void _open_view_all();
+	void _rebuild_view_all_list(const String &p_filter = String());
+	void _on_view_all_search(const String &p_text);
 
 	void _fetch_quick_setting_values();
 	void _update_quick_settings_values();
@@ -141,6 +153,7 @@ protected:
 	static void _bind_methods();
 
 public:
+	void bind_services(SolersSettingsService *p_settings_service);
 	void refresh();
 	void select_category(const String &p_id);
 	void update_quick_popup_size_limits(const Size2 &p_max_popup_size);

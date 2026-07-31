@@ -54,6 +54,16 @@ public:
 
 	bool has_provider(const StringName &p_id) const;
 	Dictionary get_provider(const StringName &p_id) const;
+	// Ordered catalog entries for Settings UI / Runtime assembly.
+	Array list_providers() const;
+	// Model ids only — no deep-copy of the full provider document.
+	Array list_model_ids(const StringName &p_provider) const;
+	// Popular subset ids (catalog ordering data). Missing entries skipped by callers.
+	Array list_popular_provider_ids() const;
+	// Legacy connection ids that map through canonical_provider_id (migration enum).
+	Array list_legacy_provider_ids() const;
+	// Legacy Solers connection id → models.dev catalog id.
+	String canonical_provider_id(const String &p_id) const;
 	// Per-model metadata, or an empty dictionary when unknown.
 	Dictionary get_model(const StringName &p_provider, const String &p_model) const;
 	// Returns 1 when declared, 0 when explicitly absent, and -1 when unknown.

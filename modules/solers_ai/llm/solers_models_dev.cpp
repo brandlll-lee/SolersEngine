@@ -65,11 +65,12 @@ void SolersModelsDev::_load_seed() {
 	static const SeedProvider seeds[] = {
 		{ "openai", "OpenAI", "@ai-sdk/openai", "https://api.openai.com/v1", "OPENAI_API_KEY", false },
 		{ "anthropic", "Anthropic", "@ai-sdk/anthropic", "https://api.anthropic.com", "ANTHROPIC_API_KEY", false },
-		{ "google", "Google Gemini", "@ai-sdk/openai-compatible", "https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY", false },
+		{ "google", "Google", "@ai-sdk/openai-compatible", "https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY", false },
 		{ "deepseek", "DeepSeek", "@ai-sdk/openai-compatible", "https://api.deepseek.com", "DEEPSEEK_API_KEY", false },
+		{ "openrouter", "OpenRouter", "@ai-sdk/openai-compatible", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", false },
 		{ "qwen", "Qwen / DashScope", "@ai-sdk/openai-compatible", "https://dashscope.aliyuncs.com/compatible-mode/v1", "DASHSCOPE_API_KEY", false },
 		{ "ollama", "Ollama", "@ai-sdk/openai-compatible", "http://127.0.0.1:11434/v1", "", true },
-		{ "lm_studio", "LM Studio", "@ai-sdk/openai-compatible", "http://127.0.0.1:1234/v1", "", true },
+		{ "lmstudio", "LM Studio", "@ai-sdk/openai-compatible", "http://127.0.0.1:1234/v1", "", true },
 	};
 	for (const SeedProvider &seed : seeds) {
 		Dictionary provider;
@@ -107,7 +108,8 @@ void SolersModelsDev::_load_seed() {
 }
 
 void SolersModelsDev::_ingest(const Dictionary &p_root) {
-	MutexLock lock(providers_mutex);
+	// Build off-lock, then short-swap — UI readers must not wait on full rebuild.
+	HashMap<StringName, Dictionary> next;
 	const Array provider_ids = p_root.keys();
 	for (int i = 0; i < provider_ids.size(); i++) {
 		const String provider_id = provider_ids[i];
@@ -156,8 +158,10 @@ void SolersModelsDev::_ingest(const Dictionary &p_root) {
 			}
 		}
 		out_provider["models"] = models_out;
-		providers[StringName(provider_id)] = out_provider;
+		next[StringName(provider_id)] = out_provider;
 	}
+	MutexLock lock(providers_mutex);
+	providers = next;
 }
 
 void SolersModelsDev::_load_cache() {
@@ -283,10 +287,29 @@ bool SolersModelsDev::has_provider(const StringName &p_id) const {
 	return providers.has(p_id);
 }
 
+static Dictionary _solers_provider_meta(const Dictionary &p_provider) {
+	// Metadata only — never deep-copy the models table for profile/UI hot paths.
+	Dictionary out;
+	out["id"] = p_provider.get("id", String());
+	out["name"] = p_provider.get("name", String());
+	out["npm"] = p_provider.get("npm", String());
+	out["api"] = p_provider.get("api", String());
+	out["env"] = Array(p_provider.get("env", Array())).duplicate();
+	out["local"] = p_provider.get("local", false);
+	const Variant models_v = p_provider.get("models", Dictionary());
+	if (models_v.get_type() == Variant::DICTIONARY) {
+		const Array ids = Dictionary(models_v).keys();
+		if (!ids.is_empty()) {
+			out["default_model"] = ids[0];
+		}
+	}
+	return out;
+}
+
 Dictionary SolersModelsDev::get_provider(const StringName &p_id) const {
 	MutexLock lock(providers_mutex);
 	const Dictionary *found = providers.getptr(p_id);
-	return found ? found->duplicate(true) : Dictionary();
+	return found ? _solers_provider_meta(*found) : Dictionary();
 }
 
 Dictionary SolersModelsDev::get_model(const StringName &p_provider, const String &p_model) const {
@@ -335,11 +358,93 @@ Array SolersModelsDev::reasoning_efforts(const Dictionary &p_model) {
 	return efforts;
 }
 
+Array SolersModelsDev::list_providers() const {
+	MutexLock lock(providers_mutex);
+	Array result;
+	Vector<String> ids;
+	ids.resize(providers.size());
+	int i = 0;
+	for (const KeyValue<StringName, Dictionary> &kv : providers) {
+		ids.write[i++] = String(kv.key);
+	}
+	ids.sort();
+	for (const String &id : ids) {
+		const Dictionary *found = providers.getptr(StringName(id));
+		if (found) {
+			result.push_back(_solers_provider_meta(*found));
+		}
+	}
+	return result;
+}
+
+Array SolersModelsDev::list_model_ids(const StringName &p_provider) const {
+	MutexLock lock(providers_mutex);
+	const Dictionary *found = providers.getptr(p_provider);
+	if (!found) {
+		return Array();
+	}
+	const Dictionary models = found->get("models", Dictionary());
+	return models.keys();
+}
+
+namespace {
+struct SolersProviderAlias {
+	const char *from;
+	const char *to;
+};
+// Single alias table — migration + runtime canonicalization.
+static const SolersProviderAlias SOLERS_PROVIDER_ALIASES[] = {
+	{ "gemini", "google" },
+	{ "anthropic_messages", "anthropic" },
+	{ "lm_studio", "lmstudio" },
+};
+} // namespace
+
+Array SolersModelsDev::list_popular_provider_ids() const {
+	// Catalog ordering data (OpenCode/Kilo style), not a behavior switch.
+	static const char *POPULAR[] = {
+		"openai",
+		"anthropic",
+		"google",
+		"deepseek",
+		"openrouter",
+		"ollama",
+		"lmstudio",
+	};
+	Array ids;
+	for (const char *id : POPULAR) {
+		ids.push_back(String(id));
+	}
+	return ids;
+}
+
+Array SolersModelsDev::list_legacy_provider_ids() const {
+	Array ids;
+	for (const SolersProviderAlias &alias : SOLERS_PROVIDER_ALIASES) {
+		ids.push_back(String(alias.from));
+	}
+	return ids;
+}
+
+String SolersModelsDev::canonical_provider_id(const String &p_id) const {
+	for (const SolersProviderAlias &alias : SOLERS_PROVIDER_ALIASES) {
+		if (p_id == alias.from) {
+			return String(alias.to);
+		}
+	}
+	return p_id;
+}
+
 Dictionary SolersModelsDev::find_provider(const String &p_id, const String &p_api_url) const {
 	MutexLock lock(providers_mutex);
-	const Dictionary *found = providers.getptr(StringName(p_id));
+	const String canonical = canonical_provider_id(p_id);
+	const Dictionary *found = providers.getptr(StringName(canonical));
 	if (found) {
-		return found->duplicate(true);
+		return _solers_provider_meta(*found);
+	}
+	const Dictionary *direct = providers.getptr(StringName(p_id));
+	if (direct) {
+		return _solers_provider_meta(*direct);
 	}
 	// Custom/gateway profiles carry no catalog id; the endpoint URL is the
 	// remaining authoritative link to a catalog entry.
@@ -349,7 +454,7 @@ Dictionary SolersModelsDev::find_provider(const String &p_id, const String &p_ap
 	}
 	for (const KeyValue<StringName, Dictionary> &kv : providers) {
 		if (String(kv.value.get("api", String())).strip_edges().trim_suffix("/") == api_url) {
-			return kv.value.duplicate(true);
+			return _solers_provider_meta(kv.value);
 		}
 	}
 	return Dictionary();
