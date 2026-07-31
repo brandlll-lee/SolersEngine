@@ -70,9 +70,8 @@ public:
 
 	void record_usage(int p_input_tokens, int p_covered_message_count);
 	int get_token_count_with_pending(const Array &p_messages, const String &p_system_prompt, const Array &p_tools) const;
-	// Compact once the next response no longer fits: the model states its own
-	// output ceiling, so the headroom is a declared fact rather than a guessed
-	// fraction of the window.
+	// Compact when used tokens leave less than min(max_output, 20k) headroom
+	// (OpenCode COMPACTION_BUFFER). Unknown windows (context<=0) never auto-compact.
 	bool should_compact(int p_used_tokens, int p_context_window, int p_max_output_tokens) const;
 	bool should_compact(const Array &p_messages, const String &p_system_prompt, const Array &p_tools, int p_context_window, int p_max_output_tokens) const;
 	bool is_overflow(const Array &p_messages, const String &p_system_prompt, const Array &p_tools, int p_context_window) const;

@@ -86,10 +86,17 @@ private:
 	// into the stream_finish trace so each session's delta cadence is visible.
 	int stream_text_delta_count = 0;
 	int stream_text_bytes = 0;
+	bool stream_saw_finish = false;
+	bool stream_has_content = false;
+	// Wire authority for empty-stream classification: zero response bytes means
+	// the identical request will not help (not a truncated mid-stream).
+	int response_bytes = 0;
+	String response_prefix;
 
 	Dictionary _redacted_request_body(const String &p_body) const;
 	void _trace(const String &p_event, const Dictionary &p_payload = Dictionary()) const;
 	void _drain_records(Array &r_events);
+	void _complete_stream(Array &r_batch);
 	void _fail(const String &p_code, const String &p_message, bool p_retryable = false);
 
 	static void _thread_func(void *p_userdata);

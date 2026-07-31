@@ -253,19 +253,24 @@ Node *SolersReflectionService::_resolve_node(const String &p_node_path, String &
 		node = edited_root->get_node_or_null(node_path);
 	}
 	if (!node) {
-		// Walk the requested segments to the deepest ancestor that exists and
-		// report its real children, so the model corrects the path from live
-		// scene facts instead of retrying blind.
+		// Walk edited-root-relative segments. A leading "/" often means
+		// SceneTree-absolute style (/KeyLight); if every segment resolves under
+		// the edited root, that walk is authoritative — do not report NOT_FOUND.
 		Node *deepest = edited_root;
-		String missing_segment = normalized_path;
+		String missing_segment;
 		const Vector<String> segments = normalized_path.trim_prefix("/").split("/", false);
+		bool found_all = !segments.is_empty();
 		for (const String &segment : segments) {
 			Node *next = deepest->get_node_or_null(NodePath(segment));
 			if (!next) {
 				missing_segment = segment;
+				found_all = false;
 				break;
 			}
 			deepest = next;
+		}
+		if (found_all) {
+			return deepest;
 		}
 		PackedStringArray child_names;
 		for (int i = 0; i < deepest->get_child_count() && i < 64; i++) {

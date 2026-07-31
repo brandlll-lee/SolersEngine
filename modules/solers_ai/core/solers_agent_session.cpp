@@ -91,6 +91,20 @@ static bool _is_session_tool(const String &p_name) {
 	return p_name == "update_plan";
 }
 
+// Shared by terminal auto-commit and env context — same conflict suffix rules.
+static String _solers_pending_scene_path(const Node *p_root) {
+	ERR_FAIL_NULL_V(p_root, "res://scene.tscn");
+	String base = String(p_root->get_name()).validate_filename().to_lower();
+	if (base.is_empty()) {
+		base = "scene";
+	}
+	String save_path = "res://" + base + ".tscn";
+	for (int i = 2; i < 100 && FileAccess::exists(save_path); i++) {
+		save_path = vformat("res://%s_%d.tscn", base, i);
+	}
+	return save_path;
+}
+
 static Dictionary _update_plan_schema() {
 	Dictionary status;
 	status["type"] = "string";
@@ -253,6 +267,14 @@ void SolersAgentSession::set_tool_registry(SolersToolRegistry *p_tool_registry) 
 	_register_session_tools();
 }
 
+void SolersAgentSession::set_models_dev(SolersModelsDev *p_models_dev, bool p_owned) {
+	if (owns_models_dev && models_dev && models_dev != p_models_dev) {
+		memdelete(models_dev);
+	}
+	models_dev = p_models_dev;
+	owns_models_dev = p_owned && p_models_dev != nullptr;
+}
+
 void SolersAgentSession::_register_session_tools() {
 	if (!tool_registry || session_tools_registry == tool_registry) {
 		return;
@@ -304,56 +326,81 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 		return empty;
 	}
 
-	const Vector<String> transcript_lines = solers_transcript_read_snapshot();
-	if (transcript_lines.is_empty()) {
-		Dictionary empty;
-		empty["messages"] = restored;
-		return empty;
-	}
+	struct ScanState {
+		const String *project_path = nullptr;
+		const String *session_id = nullptr;
+		Array *restored = nullptr;
+		Array *restored_background_assets = nullptr;
+		Dictionary *restored_plan = nullptr;
+		String *restored_outcome = nullptr;
+		int *restored_turn_id = nullptr;
+		uint64_t *restored_authored_revision = nullptr;
+		uint64_t *restored_runtime_epoch = nullptr;
+		uint64_t *restored_observed_revision = nullptr;
+		Dictionary *restored_reversal = nullptr;
+	} scan;
+	scan.project_path = &p_project_path;
+	scan.session_id = &p_session_id;
+	scan.restored = &restored;
+	scan.restored_background_assets = &restored_background_assets;
+	scan.restored_plan = &restored_plan;
+	scan.restored_outcome = &restored_outcome;
+	scan.restored_turn_id = &restored_turn_id;
+	scan.restored_authored_revision = &restored_authored_revision;
+	scan.restored_runtime_epoch = &restored_runtime_epoch;
+	scan.restored_observed_revision = &restored_observed_revision;
+	scan.restored_reversal = &restored_reversal;
 
-	for (const String &record : transcript_lines) {
-		const String line = record.strip_edges();
-		if (line.is_empty()) {
-			continue;
+	solers_transcript_foreach_line(&scan, [](void *p_userdata, const String &p_record) -> bool {
+		ScanState &scan = *static_cast<ScanState *>(p_userdata);
+		const String line = p_record.strip_edges();
+		if (line.is_empty() || !solers_transcript_line_has_session(line, *scan.session_id)) {
+			return true;
 		}
+
+		// result_replay is an encrypted full tool body, often 100KB+. It is
+		// audit-only; restore uses the already-delivered content field.
+		// Stripping it before JSON::parse keeps session switches responsive.
+		String parse_line = line;
+		if (parse_line.find("\"result_replay\"") >= 0) {
+			parse_line = solers_transcript_strip_json_string_field(parse_line, "result_replay");
+		}
+
 		Dictionary event;
-		if (!solers_transcript_parse_record(line, event)) {
-			continue;
+		if (!solers_transcript_parse_record(parse_line, event)) {
+			return true;
 		}
-		if (String(event.get("project_path", String())) != p_project_path || String(event.get("session_id", String())) != p_session_id) {
-			continue;
+		if (String(event.get("project_path", String())) != *scan.project_path || String(event.get("session_id", String())) != *scan.session_id) {
+			return true;
 		}
-		restored_turn_id = MAX(restored_turn_id, (int)event.get("turn_id", 0));
-		restored_authored_revision = MAX(restored_authored_revision, (uint64_t)(int64_t)event.get("authored_revision", 0));
-		restored_runtime_epoch = MAX(restored_runtime_epoch, (uint64_t)(int64_t)event.get("runtime_epoch", 0));
-		restored_observed_revision = MAX(restored_observed_revision, (uint64_t)(int64_t)event.get("observed_revision", 0));
+		*scan.restored_turn_id = MAX(*scan.restored_turn_id, (int)event.get("turn_id", 0));
+		*scan.restored_authored_revision = MAX(*scan.restored_authored_revision, (uint64_t)(int64_t)event.get("authored_revision", 0));
+		*scan.restored_runtime_epoch = MAX(*scan.restored_runtime_epoch, (uint64_t)(int64_t)event.get("runtime_epoch", 0));
+		*scan.restored_observed_revision = MAX(*scan.restored_observed_revision, (uint64_t)(int64_t)event.get("observed_revision", 0));
 
 		const String event_type = event.get("event_type", String());
 		if (event_type == "reversal_created") {
-			restored_reversal = event.get("reversal", Dictionary()).duplicate(true);
-			continue;
+			*scan.restored_reversal = event.get("reversal", Dictionary()).duplicate(true);
+			return true;
 		}
 		if (event_type == "reversal_cleared" || event_type == "reversal_consumed") {
-			restored_reversal.clear();
-			continue;
+			scan.restored_reversal->clear();
+			return true;
 		}
 		if (event_type == "tool_result") {
 			String tool_content = String(event.get("content", String()));
 			if (tool_content.is_empty()) {
-				const String replay = event.get("result_replay", String());
-				if (SolersSecretStore::is_protected(replay)) {
-					tool_content = SolersSecretStore::unprotect(replay);
-				} else {
-					Dictionary fallback;
-					fallback["ok"] = event.get("ok", false);
-					if (event.has("error")) {
-						fallback["error"] = event["error"];
-					}
-					if (event.has("result_summary")) {
-						fallback["summary"] = event["result_summary"];
-					}
-					tool_content = JSON::stringify(fallback, "", false, true);
+				// Never unprotect result_replay here — that rehydrates the full
+				// payload we just refused to parse. UI/model get a slim envelope.
+				Dictionary fallback;
+				fallback["ok"] = event.get("ok", false);
+				if (event.has("error")) {
+					fallback["error"] = event["error"];
 				}
+				if (event.has("result_summary")) {
+					fallback["summary"] = event["result_summary"];
+				}
+				tool_content = JSON::stringify(fallback, "", false, true);
 			}
 			Dictionary tool_message = SolersLLMMessage::tool_result(
 					event.get("call_id", String()),
@@ -364,41 +411,41 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 			if (event.has("error")) {
 				tool_message["error"] = event["error"];
 			}
-			restored.push_back(tool_message);
-			continue;
+			scan.restored->push_back(tool_message);
+			return true;
 		}
 		if (event_type == "plan_updated") {
-			restored_plan["explanation"] = event.get("explanation", String());
-			restored_plan["plan"] = event.get("plan", Array());
-			continue;
+			(*scan.restored_plan)["explanation"] = event.get("explanation", String());
+			(*scan.restored_plan)["plan"] = event.get("plan", Array());
+			return true;
 		}
 		if (event_type == "context.apply_compaction") {
 			const Array compacted = event.get("messages", Array());
 			if (!compacted.is_empty()) {
-				restored = compacted.duplicate(true);
+				*scan.restored = compacted.duplicate(true);
 			}
 			const Dictionary plan = event.get("current_plan", Dictionary());
 			if (!plan.is_empty()) {
-				restored_plan = plan.duplicate(true);
+				*scan.restored_plan = plan.duplicate(true);
 			}
-			continue;
+			return true;
 		}
 		if (event_type == "turn_outcome") {
-			restored_outcome = event.get("outcome", String());
-			continue;
+			*scan.restored_outcome = event.get("outcome", String());
+			return true;
 		}
 		if (event_type == "background_asset_delivery") {
-			restored_background_assets.push_back(event);
-			continue;
+			scan.restored_background_assets->push_back(event);
+			return true;
 		}
 		if (event_type == "background_asset_consumed") {
 			const String asset_id = event.get("asset_id", String());
-			for (int i = restored_background_assets.size() - 1; i >= 0; i--) {
-				if (String(Dictionary(restored_background_assets[i]).get("asset_id", String())) == asset_id) {
-					restored_background_assets.remove_at(i);
+			for (int i = scan.restored_background_assets->size() - 1; i >= 0; i--) {
+				if (String(Dictionary((*scan.restored_background_assets)[i]).get("asset_id", String())) == asset_id) {
+					scan.restored_background_assets->remove_at(i);
 				}
 			}
-			continue;
+			return true;
 		}
 
 		const String role = event.get("role", String());
@@ -407,7 +454,7 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 		const String reasoning = event.get("reasoning", String());
 		if (role == SolersLLMRole::USER) {
 			if (content.is_empty()) {
-				continue;
+				return true;
 			}
 			Array mentions = event.get("mentions", Array());
 			const bool had_block = content.find("[Selected Solers context]") >= 0;
@@ -415,25 +462,25 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 			if (mentions.is_empty() && had_block) {
 				mentions = SolersMention::parse(display);
 			}
-			// Legacy rows already embed prompt_block (+ optional attachment appendix).
-			// New rows store display content + mentions; expand for the model only.
+			// Restore path has no live observation; keep path metadata (fresh turns re-observe).
 			String model_content = had_block ? content : (display + SolersMention::prompt_block(mentions));
 			Dictionary user_message = SolersLLMMessage::user(model_content);
 			if (!mentions.is_empty()) {
 				user_message["mentions"] = mentions;
 			}
-			restored.push_back(user_message);
+			scan.restored->push_back(user_message);
 		} else if (role == SolersLLMRole::ASSISTANT) {
 			if (content.is_empty() && tool_calls.is_empty() && reasoning.is_empty()) {
-				continue;
+				return true;
 			}
 			Dictionary assistant_message = SolersLLMMessage::assistant(content, tool_calls);
 			if (!reasoning.is_empty()) {
 				assistant_message["reasoning"] = reasoning;
 			}
-			restored.push_back(assistant_message);
+			scan.restored->push_back(assistant_message);
 		}
-	}
+		return true;
+	});
 
 	Dictionary state;
 	state["messages"] = restored;
@@ -465,7 +512,7 @@ void SolersAgentSession::_write_transcript_event(const String &p_type, const Dic
 	solers_transcript_write(event);
 }
 
-void SolersAgentSession::_write_transcript_message(const String &p_role, const String &p_content, const Array &p_mentions, const Array &p_tool_calls, const String &p_reasoning) const {
+void SolersAgentSession::_write_transcript_message(const String &p_role, const String &p_content, const Array &p_mentions, const Array &p_tool_calls, const String &p_reasoning, const Array &p_attachments) const {
 	Dictionary event;
 	event["event_type"] = "message";
 	event["turn_id"] = turn_id;
@@ -479,6 +526,21 @@ void SolersAgentSession::_write_transcript_message(const String &p_role, const S
 	}
 	if (!p_reasoning.is_empty()) {
 		event["reasoning"] = p_reasoning;
+	}
+	// Metadata only (same ids the model saw) — never persist image bytes in transcript.
+	if (!p_attachments.is_empty()) {
+		Array attachment_meta;
+		for (int i = 0; i < p_attachments.size(); i++) {
+			const Dictionary attachment = p_attachments[i];
+			Dictionary meta;
+			meta["id"] = attachment.get("id", String());
+			meta["filename"] = attachment.get("filename", String());
+			if (attachment.has("mime_type")) {
+				meta["mime_type"] = attachment.get("mime_type", String());
+			}
+			attachment_meta.push_back(meta);
+		}
+		event["attachments"] = attachment_meta;
 	}
 	event["wall"] = Time::get_singleton()->get_unix_time_from_system();
 	_stamp_transcript_event(event);
@@ -822,8 +884,27 @@ bool SolersAgentSession::_poll_state_observation() {
 	return false;
 }
 
-static String _solers_mention_context(const Array &p_mentions) {
-	return SolersMention::prompt_block(p_mentions);
+// Enriched mentions are the audit authority (same array the model sees).
+// strip_prompt_block is display-only — never treat stripped transcript text as the fact source.
+static Array _solers_enrich_mentions(const Array &p_mentions, SolersObservationService *p_observation) {
+	Array enriched;
+	for (int i = 0; i < p_mentions.size(); i++) {
+		Dictionary mention = Dictionary(p_mentions[i]).duplicate(true);
+		const String path = String(mention.get("path", String())).strip_edges();
+		// Project paths only (res://). Scene-relative node paths are not observe_path inputs.
+		if (p_observation && path.begins_with("res://") && !mention.has("digest")) {
+			const Dictionary observed = p_observation->observe_path(path);
+			if ((bool)observed.get("ok", false) && observed.has("digest")) {
+				mention["digest"] = observed["digest"];
+			}
+		}
+		enriched.push_back(mention);
+	}
+	return enriched;
+}
+
+static String _solers_mention_context(const Array &p_enriched_mentions) {
+	return SolersMention::prompt_block(p_enriched_mentions);
 }
 
 Dictionary SolersAgentSession::queue_user_message(const Dictionary &p_args) {
@@ -836,13 +917,15 @@ Dictionary SolersAgentSession::queue_user_message(const Dictionary &p_args) {
 	if (!running) {
 		return _error("AGENT_IDLE", "No agent turn is running; start a new turn instead.");
 	}
-	Dictionary message = SolersLLMMessage::user(prompt + _solers_mention_context(mentions));
+	SolersObservationService *observation = tool_registry ? tool_registry->observation_service : nullptr;
+	const Array enriched_mentions = _solers_enrich_mentions(mentions, observation);
+	Dictionary message = SolersLLMMessage::user(prompt + _solers_mention_context(enriched_mentions));
 	message["origin"] = "user_steering";
 	if (!attachments.is_empty()) {
 		message["attachments"] = attachments;
 	}
-	if (!mentions.is_empty()) {
-		message["mentions"] = mentions;
+	if (!enriched_mentions.is_empty()) {
+		message["mentions"] = enriched_mentions;
 	}
 	pending_steering_messages.push_back(message);
 	Dictionary payload;
@@ -875,7 +958,7 @@ bool SolersAgentSession::_flush_pending_steering() {
 			}
 		}
 		messages.push_back(message);
-		_write_transcript_message("user", SolersMention::strip_prompt_block(message.get("content", String())), mentions);
+		_write_transcript_message("user", SolersMention::strip_prompt_block(message.get("content", String())), mentions, Array(), String(), message.get("attachments", Array()));
 	}
 	pending_steering_messages.clear();
 	return true;
@@ -905,14 +988,7 @@ Dictionary SolersAgentSession::_commit_dirty_scene_if_needed() {
 		// A dirty edited scene without a file yet gets a deterministic home
 		// derived from its root name, so authored work is always committable
 		// instead of silently evaporating with the in-memory scene.
-		String base = String(root->get_name()).validate_filename().to_lower();
-		if (base.is_empty()) {
-			base = "scene";
-		}
-		save_path = "res://" + base + ".tscn";
-		for (int i = 2; i < 100 && FileAccess::exists(save_path); i++) {
-			save_path = vformat("res://%s_%d.tscn", base, i);
-		}
+		save_path = _solers_pending_scene_path(root);
 		editor_interface->save_scene_as(save_path, false);
 		assigned_path = root->get_scene_file_path() == save_path && FileAccess::exists(save_path);
 		err = assigned_path ? OK : ERR_CANT_CREATE;
@@ -939,11 +1015,13 @@ String SolersAgentSession::_default_system_prompt() const {
 	String prompt =
 			"You are Solers, an AI agent living natively inside the Solers game engine editor (a Godot 4 fork).\n\n"
 			"Operating contract:\n"
-			"- Prefer the smallest coherent native change. Inspect live state before editing; do not guess APIs or scene contents.\n"
+			"- Prefer the smallest coherent native change. Inspect live state before editing; do not guess APIs or project contents.\n"
+			"- Digests in [Selected Solers context] and Current engine context are authoritative bounded observations of those selections. Answer identity/overview questions from them; use tools only for facts they mark incomplete/truncated or that need live/runtime measurement. Do not rediscover a selection with search/script.run.\n"
 			"- Built-in tools are already available. If tool.search is present, it discovers only external plugin, connector, or MCP tools. Skills provide knowledge and never activate capabilities.\n"
-			"- Keep scene edits undoable and authored in scene/resources. Write or patch code only when native composition cannot express the requested behavior.\n"
-			"- Scene edits live in the editor's undo history until the scene file is written. Solers commits the edited scene itself on every terminal path of the turn, and the engine saves it before playback, so do not spend tool calls saving it; a commit that fails is reported to you explicitly.\n"
-			"- For algorithmic or bulk work (procedural data, batch changes), run a one-shot @tool script through script.run instead of attaching temporary scripts to the scene or playing it. Declare func run(host) when nodes need scene-tree access. Everything parented under host is discarded when the call ends unless you pass persist_host_children=true, which hands those nodes to the edited scene as one undoable action - that handover (or scene.edit) is the only way scripted content becomes part of the scene.\n"
+			"- Keep scene edits undoable and authored in scene/resources. Hierarchy scaffolding uses scene.edit (create_node/instantiate/set_property batches). Write or patch code only when native composition cannot express the requested behavior.\n"
+			"- Scene edits live in the editor undo history until committed. Solers auto-commits the edited scene on every terminal path (and assigns res://<root>.tscn when still unsaved); the engine also saves before playback. Do not save via engine.execute or EditorInterface — a failed commit is reported explicitly.\n"
+			"- Appearance: viewport.capture (prefer target=camera for static look-dev; runtime only when gameplay must run). Support/gaps/containment/alignment: scene.validate — a capture is not a measurement.\n"
+			"- Use script.run only for algorithmic or bulk mutation scene.edit/resource.edit/script.edit cannot express — not for building scene trees (do not use persist_host_children to scaffold hierarchy).\n"
 			"- Background tools return stable job ids immediately. Continue independent work; when nothing else is runnable, call job.wait once with the required ids and stop issuing tools. Solers parks this turn and resumes it with a background job delta when any requested job reaches a project-import terminal state; do not poll asset.status for progress.\n"
 			"- Tool errors carry the native cause; read it, change what it names, and retry. Repeating an identical failed call wastes a step.\n"
 			"- Before each non-trivial tool call or group of related calls, write one short sentence saying what you are about to do and why. Group related actions under one preamble; skip it for trivial reads. This narration is how the user follows your progress.\n"
@@ -1001,11 +1079,17 @@ Dictionary SolersAgentSession::_environment_context_message(bool p_include_obser
 	}
 	EditorInterface *editor_interface = EditorInterface::get_singleton();
 	Node *edited_root = editor_interface ? editor_interface->get_edited_scene_root() : nullptr;
-	context["current_scene"] = edited_root ? edited_root->get_scene_file_path() : String();
-	if (edited_root && edited_root->get_scene_file_path().is_empty()) {
-		// Explicit fact instead of an empty string the model has to interpret:
-		// this scene lives only in memory until it is saved to a res:// path.
+	const String current_scene_path = edited_root ? edited_root->get_scene_file_path() : String();
+	context["current_scene"] = current_scene_path;
+	if (edited_root && current_scene_path.is_empty()) {
+		// Explicit fact: in-memory only until terminal auto-commit assigns res://.
 		context["current_scene_unsaved"] = true;
+		context["current_scene_pending_path"] = _solers_pending_scene_path(edited_root);
+	} else if (!current_scene_path.is_empty()) {
+		const Dictionary observed = observation->observe_path(current_scene_path);
+		if ((bool)observed.get("ok", false) && observed.has("digest")) {
+			context["current_scene_digest"] = observed["digest"];
+		}
 	}
 
 	Dictionary selection = observation->get_selection(0, 0);
@@ -1110,7 +1194,18 @@ bool SolersAgentSession::_refresh_active_model_limits() {
 	const int previous_context = context_window;
 	const int previous_output = max_output_tokens;
 	context_window = resolved_context > 0 ? resolved_context : 0;
-	max_output_tokens = resolved_output > 0 ? resolved_output : 8192;
+	// Catalog output is advisory only. OpenCode hard-caps wire output at 32k so
+	// a lying catalog (output≈context≈500k) cannot starve input or force compact.
+	static constexpr int SOLERS_OUTPUT_TOKEN_MAX = 32000;
+	static constexpr int SOLERS_OUTPUT_INPUT_RESERVE = 8192;
+	if (resolved_output <= 0) {
+		resolved_output = 8192;
+	}
+	resolved_output = MIN(resolved_output, SOLERS_OUTPUT_TOKEN_MAX);
+	if (context_window > 0) {
+		resolved_output = MIN(resolved_output, MAX(1024, context_window - SOLERS_OUTPUT_INPUT_RESERVE));
+	}
+	max_output_tokens = resolved_output;
 	return context_window != previous_context || max_output_tokens != previous_output;
 }
 
@@ -1153,6 +1248,13 @@ Dictionary SolersAgentSession::_redacted_request_graph(const Dictionary &p_reque
 	graph["provider"] = active_provider.get("provider", String());
 	graph["model"] = p_request.get("model", String());
 	graph["protocol"] = p_profile.get("protocol", String());
+	if (p_request.has("max_tokens")) {
+		graph["max_tokens"] = p_request["max_tokens"];
+	}
+	if (p_request.has("reasoning_effort")) {
+		graph["reasoning_effort"] = p_request["reasoning_effort"];
+	}
+	graph["tool_count"] = Array(p_request.get("tools", Array())).size();
 
 	Array items;
 	if (!protocol_registry) {
@@ -1230,6 +1332,10 @@ Error SolersAgentSession::_dispatch_model_request(bool p_skip_compaction) {
 	}
 	_append_background_asset_deltas(false);
 	_flush_pending_steering();
+	// Drop prior-turn usage so compaction headroom is not computed from a
+	// stale prompt total that already included the previous max_output reserve.
+	last_usage.clear();
+	last_stop_reason = String();
 	if (_refresh_active_model_limits()) {
 		Dictionary limits;
 		limits["context_window"] = context_window;
@@ -1320,6 +1426,8 @@ Error SolersAgentSession::_dispatch_compaction_request() {
 		return ERR_UNAVAILABLE;
 	}
 	_refresh_active_model_limits();
+	last_usage.clear();
+	last_stop_reason = String();
 	const String provider_id = active_provider.get("provider", String());
 	const String base_url = active_provider.get("base_url", String());
 	const Dictionary auth = active_provider.get("auth", Dictionary());
@@ -1659,6 +1767,8 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 	if (system_prompt.is_empty()) {
 		system_prompt = _default_system_prompt();
 	}
+	SolersObservationService *observation_for_mentions = tool_registry ? tool_registry->observation_service : nullptr;
+	turn_mentions = _solers_enrich_mentions(turn_mentions, observation_for_mentions);
 	String model_prompt = prompt + _solers_mention_context(turn_mentions);
 	if (!turn_attachments.is_empty()) {
 		model_prompt += model_prompt.is_empty() ? String() : "\n\n";
@@ -1700,7 +1810,8 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 	turn_started["model_limits_known"] = context_window > 0;
 	_write_transcript_event("turn_started", turn_started);
 	_record("agent_turn_started", turn_started);
-	_write_transcript_message("user", prompt, turn_mentions);
+	// Persist the same enriched mentions + attachment ids the model received (display still strips the prompt block).
+	_write_transcript_message("user", prompt, turn_mentions, Array(), String(), turn_attachments);
 
 	const Error err = _dispatch_model_request();
 	if (err != OK) {
@@ -1737,10 +1848,10 @@ void SolersAgentSession::poll() {
 		return;
 	}
 	if (phase == PHASE_AWAITING_APPROVAL || phase == PHASE_TOOL_EXECUTING || phase == PHASE_TOOLS) {
-		// Admit every immediately runnable call from one model response in the
-		// same main-loop turn. Pending calls release the execution slot, so
-		// independent imports can join one native scan wave. Worker calls and
-		// unresolved approvals naturally stop this bounded drive loop.
+		// Drive the tool queue on the main loop: MAIN_THREAD tools still run
+		// one-at-a-time (single execution slot). Pending/parked calls release
+		// the slot so the next non-conflicting call can start; WORKER_THREAD
+		// tools and unresolved approvals stop this bounded drive loop.
 		const int drive_budget = MAX(8, tool_queue.size() * 4 + pending_tool_executions.size() * 2);
 		for (int i = 0; i < drive_budget && running; i++) {
 			const Phase before_phase = phase;
@@ -1873,6 +1984,18 @@ void SolersAgentSession::_on_model_turn_complete() {
 	}
 	if (pending_tool_calls.is_empty()) {
 		const String final_text = current_text;
+		if (final_text.is_empty() && current_reasoning.is_empty()) {
+			Dictionary error;
+			error["code"] = "EMPTY_MODEL_RESPONSE";
+			error["recoverable"] = true;
+			if (last_stop_reason.is_empty()) {
+				error["message"] = "The model stream ended without a finish signal or content. Check the provider connection and try again.";
+			} else {
+				error["message"] = vformat("The model returned an empty response (stop=%s). Check max_tokens budget or try again.", last_stop_reason);
+			}
+			_finish_turn("failed", error.get("message", String()), error);
+			return;
+		}
 		if (!current_text.is_empty()) {
 			emit_signal(SNAME("assistant_message"), current_text);
 		}
@@ -2747,9 +2870,8 @@ String SolersAgentSession::deliverable_tool_result(const String &p_call_id, cons
 	if (tokens <= p_budget) {
 		return full_result;
 	}
-	// A result that does not fit is replaced by its own envelope, never cut in
-	// the middle: clipping serialized JSON by character count yields a body the
-	// model cannot parse at all, so every measured fact in it is lost.
+	// Over-budget: keep authoritative digests, spill the fat details. Never clip
+	// JSON mid-string, and never leave the model with only data_keys.
 	Dictionary envelope;
 	envelope["ok"] = p_result.get("ok", false);
 	if (p_result.has("error")) {
@@ -2758,16 +2880,28 @@ String SolersAgentSession::deliverable_tool_result(const String &p_call_id, cons
 	if (p_result.has("diagnostics")) {
 		envelope["diagnostics"] = p_result["diagnostics"];
 	}
+	const Dictionary data = p_result.get("data", Dictionary());
+	Dictionary kept_data;
+	if (data.has("digest")) {
+		kept_data["digest"] = data["digest"];
+	}
+	if (p_result.has("digest")) {
+		kept_data["digest"] = p_result["digest"];
+	}
+	if (!kept_data.is_empty()) {
+		envelope["data"] = kept_data;
+	}
 	Dictionary elided;
 	elided["tokens"] = tokens;
 	elided["token_budget"] = p_budget;
-	elided["data_keys"] = Dictionary(p_result.get("data", Dictionary())).keys();
+	elided["data_keys"] = data.keys();
+	elided["kept_digest"] = kept_data.has("digest");
 	const String spill_path = _spill_tool_result(p_call_id, full_result);
 	if (spill_path.is_empty()) {
-		elided["recovery"] = "Re-run this call with narrower arguments; the complete body could not be written to disk.";
+		elided["recovery"] = kept_data.has("digest") ? "Digest retained above; re-run with narrower arguments for full details." : "Re-run this call with narrower arguments; the complete body could not be written to disk.";
 	} else {
 		elided["complete_result_path"] = spill_path;
-		elided["recovery"] = vformat("Read %s for the complete body, or re-run this call with narrower arguments.", spill_path);
+		elided["recovery"] = kept_data.has("digest") ? vformat("Digest retained above. Full body spilled to %s if you need non-digest details.", spill_path) : vformat("Read %s for the complete body, or re-run this call with narrower arguments.", spill_path);
 	}
 	envelope["data_elided"] = elided;
 	return JSON::stringify(envelope, "", false, true);
@@ -3099,7 +3233,10 @@ void SolersAgentSession::_resume_next_background_asset() {
 }
 
 Array SolersAgentSession::get_messages() const {
-	return messages.duplicate(true);
+	// UI restore only reads entries; a deep copy of tool payloads was free
+	// cost on every session switch. Array is COW, so callers that mutate the
+	// returned handle do not write through into session state.
+	return messages;
 }
 
 Dictionary SolersAgentSession::get_status() const {
@@ -3162,14 +3299,6 @@ bool SolersAgentSession::is_admitting_tool_calls() const {
 	return !_conflicts_with_pending(accesses);
 }
 
-Dictionary SolersAgentSession::get_model_provider(const String &p_catalog_id, const String &p_api_url) {
-	if (!models_dev) {
-		return Dictionary();
-	}
-	models_dev->refresh();
-	return models_dev->find_provider(p_catalog_id, p_api_url);
-}
-
 SolersAgentSession::SolersAgentSession() {
 	session_id = _make_session_id();
 	protocol_registry = memnew(SolersLLMProtocolRegistry);
@@ -3179,6 +3308,7 @@ SolersAgentSession::SolersAgentSession() {
 	context_manager = memnew(SolersContextManager);
 	models_dev = memnew(SolersModelsDev);
 	models_dev->initialize();
+	owns_models_dev = true;
 }
 
 SolersAgentSession::~SolersAgentSession() {
@@ -3199,8 +3329,10 @@ SolersAgentSession::~SolersAgentSession() {
 		memdelete(client);
 		client = nullptr;
 	}
-	if (models_dev) {
+	if (owns_models_dev && models_dev) {
 		memdelete(models_dev);
+		models_dev = nullptr;
+	} else {
 		models_dev = nullptr;
 	}
 	if (protocol_registry) {

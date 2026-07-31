@@ -60,8 +60,10 @@ class SolersObservationService : public Object {
 	Array _serialize_node_array(const TypedArray<Node> &p_nodes, Node *p_edited_root, int p_max_depth, int p_max_children_per_node) const;
 	bool _normalize_project_path(const String &p_path, String &r_res_path, String &r_error) const;
 	bool _collect_project_files_indexed(const String &p_query, int p_max_files, Array &r_files, int &r_scanned_count, bool &r_truncated) const;
+	bool _collect_project_folders_indexed(const String &p_query, int p_max_folders, Array &r_folders, int &r_scanned_count, bool &r_truncated) const;
 	void _collect_project_files(const String &p_dir, const String &p_query, int p_max_files, Array &r_files, int &r_scanned_count, bool &r_truncated, uint64_t p_deadline_msec) const;
 	Dictionary _search_project_paths(const String &p_query, int p_max_files) const;
+	void _collect_resource_references(class EditorFileSystemDirectory *p_dir, const String &p_target, Array &r_results, int p_max_results, int &r_scanned, bool &r_truncated) const;
 	Dictionary _capture_error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
 	Dictionary _capture_image(const Ref<Image> &p_image, const String &p_target, const String &p_capture_id = String());
 	Dictionary _register_pending_capture(const String &p_target, const Dictionary &p_extra);
@@ -91,8 +93,15 @@ public:
 	Dictionary get_project_info() const;
 	Dictionary get_project_settings_summary() const;
 	Dictionary list_project_files(int p_max_files = 512) const;
+	Dictionary list_project_folders(int p_max_folders = 512, const String &p_query = String()) const;
 	Dictionary search_project(const Dictionary &p_args) const;
-	Dictionary read_project_file(const String &p_path, int p_max_bytes = 262144) const;
+	// Front door: bounded digest for any res:// selection (directory / Resource / file).
+	// Kind comes from DirAccess + ResourceLoader / EditorFileSystem — not mention token names.
+	Dictionary observe_path(const String &p_path, bool p_include_references = false) const;
+	Dictionary digest_packed_scene(const String &p_path, int p_max_nodes = 96, bool p_include_references = false) const;
+	Dictionary find_resource_references(const String &p_path, int p_max_results = 64) const;
+	// PackedScene source text is denied by default; returns observe_path digest + SCENE_TEXT_DENIED.
+	Dictionary read_project_file(const String &p_path, int p_max_bytes = 262144, bool p_raw = false) const;
 	Dictionary get_open_scenes(int p_max_depth = 1, int p_max_children_per_node = 16) const;
 	Dictionary get_selection(int p_max_depth = 1, int p_max_children_per_node = 16) const;
 	Dictionary get_scene_tree(int p_max_depth = 8, int p_max_children_per_node = 128) const;

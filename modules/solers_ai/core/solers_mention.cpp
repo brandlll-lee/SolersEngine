@@ -4,7 +4,9 @@
 
 #include "solers_mention.h"
 
+#include "core/config/project_settings.h"
 #include "core/io/config_file.h"
+#include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/json.h"
 #include "core/io/resource_loader.h"
@@ -35,10 +37,14 @@ static bool _path_exists(const String &p_path) {
 	if (path.is_empty()) {
 		return false;
 	}
-	if (ResourceLoader::exists(path)) {
+	if (ResourceLoader::exists(path) || FileAccess::exists(path)) {
 		return true;
 	}
-	return FileAccess::exists(path);
+	String dir = path;
+	while (dir.ends_with("/")) {
+		dir = dir.substr(0, dir.length() - 1);
+	}
+	return !dir.is_empty() && DirAccess::exists(dir);
 }
 
 static bool _node_exists(const String &p_node_path) {
@@ -163,24 +169,54 @@ static Array _collect_addons(const String &p_query) {
 	return items;
 }
 
-static Array _collect_files(SolersObservationService *p_observation, const String &p_query) {
+static Array _collect_files(SolersObservationService *p_observation, const String &p_query, int p_max_items) {
 	Array items;
 	if (!p_observation) {
 		return items;
 	}
+	const int limit = CLAMP(p_max_items, 1, BROWSE_LIMIT);
 	HashSet<String> seen;
 	Dictionary args;
 	args["type"] = "path";
 	args["query"] = p_query;
-	args["max_results"] = COLLECT_LIMIT;
+	args["max_results"] = limit;
 	const Dictionary search = p_observation->search_project(args);
 	const Array results = search.get("results", Array());
-	for (int i = 0; i < results.size() && items.size() < COLLECT_LIMIT; i++) {
+	for (int i = 0; i < results.size() && items.size() < limit; i++) {
 		const String path = String(Dictionary(results[i]).get("path", String())).strip_edges();
 		if (path.is_empty() || !_path_exists(path)) {
 			continue;
 		}
 		Dictionary mention = _path_mention("file", path);
+		if (!_matches_query(mention, p_query)) {
+			continue;
+		}
+		_append_unique(items, seen, mention);
+	}
+	return items;
+}
+
+static Array _collect_folders(SolersObservationService *p_observation, const String &p_query, int p_max_items) {
+	Array items;
+	if (!p_observation) {
+		return items;
+	}
+	const int limit = CLAMP(p_max_items, 1, BROWSE_LIMIT);
+	HashSet<String> seen;
+	const Dictionary listed = p_observation->list_project_folders(limit, p_query);
+	const Array folders = listed.get("folders", Array());
+	for (int i = 0; i < folders.size() && items.size() < limit; i++) {
+		String path = String(folders[i]).strip_edges();
+		if (path.is_empty()) {
+			continue;
+		}
+		if (!path.ends_with("/")) {
+			path += "/";
+		}
+		if (!_path_exists(path)) {
+			continue;
+		}
+		Dictionary mention = _path_mention("folder", path, path.trim_suffix("/").get_file());
 		if (!_matches_query(mention, p_query)) {
 			continue;
 		}
@@ -341,6 +377,9 @@ static Dictionary _try_parse_token(const String &p_body) {
 	} else if (body.begins_with("node:")) {
 		source = "node";
 		id = body.substr(5);
+	} else if (body.begins_with("folder:")) {
+		source = "folder";
+		id = body.substr(7);
 	} else if (body.begins_with("addon:")) {
 		source = "addon";
 		id = body.substr(6);
@@ -371,6 +410,16 @@ static Dictionary _try_parse_token(const String &p_body) {
 			return empty;
 		}
 		return _path_mention(source, id);
+	}
+	if (source == "folder") {
+		String folder = id;
+		if (!folder.ends_with("/")) {
+			folder += "/";
+		}
+		if (!_path_exists(folder)) {
+			return empty;
+		}
+		return _path_mention("folder", folder, folder.trim_suffix("/").get_file());
 	}
 	if (source == "addon") {
 		if (!_path_exists(id) || !id.ends_with("plugin.cfg")) {
@@ -447,19 +496,24 @@ Array scan_line_spans(const String &p_line) {
 	return spans;
 }
 
-Array collect_section_items(const String &p_section_id, SolersObservationService *p_observation, const String &p_query) {
+Array collect_section_items(const String &p_section_id, SolersObservationService *p_observation, const String &p_query, int p_max_items) {
 	const String section = p_section_id.strip_edges().to_lower();
+	const int limit = p_max_items > 0 ? p_max_items : BROWSE_LIMIT;
 	if (section.is_empty()) {
 		Array all;
 		HashSet<String> seen;
 		auto merge = [&](const Array &p_items) {
 			for (int i = 0; i < p_items.size(); i++) {
+				if (all.size() >= limit) {
+					return;
+				}
 				_append_unique(all, seen, p_items[i]);
 			}
 		};
 		merge(_collect_plugins(p_query));
 		merge(_collect_addons(p_query));
-		merge(_collect_files(p_observation, p_query));
+		merge(_collect_files(p_observation, p_query, limit));
+		merge(_collect_folders(p_observation, p_query, limit));
 		merge(_collect_scenes(p_observation, p_query));
 		merge(_collect_selection(p_observation, p_query));
 		return all;
@@ -471,7 +525,10 @@ Array collect_section_items(const String &p_section_id, SolersObservationService
 		return _collect_addons(p_query);
 	}
 	if (section == "files") {
-		return _collect_files(p_observation, p_query);
+		return _collect_files(p_observation, p_query, limit);
+	}
+	if (section == "folders") {
+		return _collect_folders(p_observation, p_query, limit);
 	}
 	if (section == "scenes") {
 		return _collect_scenes(p_observation, p_query);
@@ -491,13 +548,15 @@ Array collect_root_sections(SolersObservationService *p_observation, const Strin
 		{ "solers", "Solers Plugins" },
 		{ "addons", "Godot Plugins" },
 		{ "files", "Files" },
+		{ "folders", "Folders" },
 		{ "scenes", "Open Scenes" },
 		{ "selection", "Selection" },
 	};
 
 	Array sections;
 	for (const SectionDef &def : defs) {
-		const Array items = collect_section_items(def.id, p_observation, p_query);
+		// Badge only — full browse happens after opening the section.
+		const Array items = collect_section_items(def.id, p_observation, p_query, COLLECT_LIMIT);
 		if (items.is_empty()) {
 			continue;
 		}
@@ -505,6 +564,7 @@ Array collect_root_sections(SolersObservationService *p_observation, const Strin
 		section["id"] = def.id;
 		section["label"] = String(def.label);
 		section["count"] = items.size();
+		section["truncated"] = items.size() >= COLLECT_LIMIT;
 		sections.push_back(section);
 	}
 	return sections;

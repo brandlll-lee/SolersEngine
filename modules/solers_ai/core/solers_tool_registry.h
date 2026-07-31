@@ -71,17 +71,20 @@ class SolersToolRegistry : public Object {
 			SolersFunctionTool::ReadyHandler p_ready_handler = {},
 			SolersFunctionTool::CompletionHandler p_completion_handler = {},
 			std::function<SolersPermissionManager::Permission(const Dictionary &)> p_permission_resolver = {},
-			std::function<SolersToolMutationPolicy(const Dictionary &)> p_mutation_policy_resolver = {});
+			std::function<SolersToolMutationPolicy(const Dictionary &)> p_mutation_policy_resolver = {},
+			SolersToolUiKind p_ui_kind = SolersToolUiKind::DEFAULT);
 	void _add_observe_exposed(const char *p_name, const char *p_description, const char *p_schema_json,
 			SolersToolExposure p_exposure, SolersFunctionTool::Handler p_handler,
 			std::function<Array(const Dictionary &)> p_resource_access = {},
 			bool p_cache_across_revisions = false,
 			SolersFunctionTool::PollHandler p_poll_handler = {},
-			SolersFunctionTool::ReadyHandler p_ready_handler = {});
+			SolersFunctionTool::ReadyHandler p_ready_handler = {},
+			SolersToolUiKind p_ui_kind = SolersToolUiKind::OBSERVE);
 	void _add_observe(const char *p_name, const char *p_description, const char *p_schema_json,
 			SolersFunctionTool::Handler p_handler, std::function<Array(const Dictionary &)> p_resource_access = {},
 			SolersFunctionTool::PollHandler p_poll_handler = {},
-			SolersFunctionTool::ReadyHandler p_ready_handler = {});
+			SolersFunctionTool::ReadyHandler p_ready_handler = {},
+			SolersToolUiKind p_ui_kind = SolersToolUiKind::OBSERVE);
 
 	void _register_observation_tools();
 	void _register_script_tools();

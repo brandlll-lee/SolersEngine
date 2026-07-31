@@ -203,7 +203,10 @@ void SolersObservationService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_project_settings_summary"), &SolersObservationService::get_project_settings_summary);
 	ClassDB::bind_method(D_METHOD("list_project_files", "max_files"), &SolersObservationService::list_project_files, DEFVAL(512));
 	ClassDB::bind_method(D_METHOD("search_project", "args"), &SolersObservationService::search_project);
-	ClassDB::bind_method(D_METHOD("read_project_file", "path", "max_bytes"), &SolersObservationService::read_project_file, DEFVAL(262144));
+	ClassDB::bind_method(D_METHOD("observe_path", "path", "include_references"), &SolersObservationService::observe_path, DEFVAL(false));
+	ClassDB::bind_method(D_METHOD("digest_packed_scene", "path", "max_nodes", "include_references"), &SolersObservationService::digest_packed_scene, DEFVAL(96), DEFVAL(false));
+	ClassDB::bind_method(D_METHOD("find_resource_references", "path", "max_results"), &SolersObservationService::find_resource_references, DEFVAL(64));
+	ClassDB::bind_method(D_METHOD("read_project_file", "path", "max_bytes", "raw"), &SolersObservationService::read_project_file, DEFVAL(262144), DEFVAL(false));
 	ClassDB::bind_method(D_METHOD("get_open_scenes", "max_depth", "max_children_per_node"), &SolersObservationService::get_open_scenes, DEFVAL(1), DEFVAL(16));
 	ClassDB::bind_method(D_METHOD("get_selection", "max_depth", "max_children_per_node"), &SolersObservationService::get_selection, DEFVAL(1), DEFVAL(16));
 	ClassDB::bind_method(D_METHOD("get_scene_tree", "max_depth", "max_children_per_node"), &SolersObservationService::get_scene_tree, DEFVAL(8), DEFVAL(128));
@@ -889,6 +892,40 @@ bool SolersObservationService::_collect_project_files_indexed(const String &p_qu
 	return true;
 }
 
+bool SolersObservationService::_collect_project_folders_indexed(const String &p_query, int p_max_folders, Array &r_folders, int &r_scanned_count, bool &r_truncated) const {
+	if (!Engine::get_singleton()->is_editor_hint()) {
+		return false;
+	}
+	EditorFileSystem *efs = EditorFileSystem::get_singleton();
+	if (!efs || !efs->get_filesystem() || efs->is_scanning()) {
+		return false;
+	}
+	EditorFileSystemDirectory *root = efs->get_filesystem();
+	LocalVector<EditorFileSystemDirectory *> stack;
+	stack.push_back(root);
+	while (!stack.is_empty()) {
+		EditorFileSystemDirectory *dir = stack[stack.size() - 1];
+		stack.remove_at(stack.size() - 1);
+		for (int i = 0; i < dir->get_subdir_count(); i++) {
+			EditorFileSystemDirectory *sub = dir->get_subdir(i);
+			if (!sub) {
+				continue;
+			}
+			r_scanned_count++;
+			const String path = sub->get_path();
+			if (p_query.is_empty() || path.findn(p_query) != -1) {
+				if (r_folders.size() >= p_max_folders) {
+					r_truncated = true;
+					return true;
+				}
+				r_folders.push_back(path);
+			}
+			stack.push_back(sub);
+		}
+	}
+	return true;
+}
+
 void SolersObservationService::_collect_project_files(const String &p_dir, const String &p_query, int p_max_files, Array &r_files, int &r_scanned_count, bool &r_truncated, uint64_t p_deadline_msec) const {
 	if (r_files.size() >= p_max_files) {
 		r_truncated = true;
@@ -1197,6 +1234,21 @@ Dictionary SolersObservationService::list_project_files(int p_max_files) const {
 	return result;
 }
 
+Dictionary SolersObservationService::list_project_folders(int p_max_folders, const String &p_query) const {
+	Dictionary result;
+	Array folders;
+	int scanned_count = 0;
+	bool truncated = false;
+	const int max_folders = CLAMP(p_max_folders, 1, SOLERS_FILE_LIST_HARD_CAP);
+	const bool indexed = _collect_project_folders_indexed(p_query.strip_edges(), max_folders, folders, scanned_count, truncated);
+	result["folders"] = folders;
+	result["count"] = folders.size();
+	result["scanned_count"] = scanned_count;
+	result["truncated"] = truncated;
+	result["source"] = indexed ? "editor_index" : "unavailable";
+	return result;
+}
+
 Dictionary SolersObservationService::_search_project_paths(const String &p_query, int p_max_files) const {
 	Dictionary result;
 	const String query = p_query.strip_edges();
@@ -1273,6 +1325,380 @@ static Dictionary _solers_project_result(const String &p_path) {
 	return result;
 }
 
+static bool _solers_is_packed_scene_type(const String &p_resource_type) {
+	return p_resource_type == "PackedScene";
+}
+
+void SolersObservationService::_collect_resource_references(EditorFileSystemDirectory *p_dir, const String &p_target, Array &r_results, int p_max_results, int &r_scanned, bool &r_truncated) const {
+	if (!p_dir || r_results.size() >= p_max_results) {
+		if (p_dir && r_results.size() >= p_max_results) {
+			r_truncated = true;
+		}
+		return;
+	}
+	for (int i = 0; i < p_dir->get_subdir_count(); i++) {
+		_collect_resource_references(p_dir->get_subdir(i), p_target, r_results, p_max_results, r_scanned, r_truncated);
+		if (r_truncated) {
+			return;
+		}
+	}
+	for (int i = 0; i < p_dir->get_file_count(); i++) {
+		r_scanned++;
+		const Vector<String> deps = p_dir->get_file_deps(i);
+		bool found = false;
+		for (int j = 0; j < deps.size(); j++) {
+			const String dep = ResourceUID::ensure_path(deps[j].get_slice("::", 0));
+			if (deps[j] == p_target || dep == p_target) {
+				found = true;
+				break;
+			}
+		}
+		if (!found) {
+			continue;
+		}
+		r_results.push_back(_solers_project_result(p_dir->get_file_path(i)));
+		if (r_results.size() >= p_max_results) {
+			r_truncated = true;
+			return;
+		}
+	}
+}
+
+Dictionary SolersObservationService::find_resource_references(const String &p_path, int p_max_results) const {
+	Dictionary result;
+	String res_path;
+	String path_error;
+	if (!_normalize_project_path(p_path, res_path, path_error)) {
+		result["ok"] = false;
+		result["error"] = path_error;
+		return result;
+	}
+	Array references;
+	int scanned = 0;
+	bool truncated = false;
+	const int max_results = CLAMP(p_max_results, 1, 256);
+	EditorFileSystem *efs = EditorFileSystem::get_singleton();
+	if (efs) {
+		_collect_resource_references(efs->get_filesystem(), res_path, references, max_results, scanned, truncated);
+	}
+	result["ok"] = true;
+	result["path"] = res_path;
+	result["references"] = references;
+	result["count"] = references.size();
+	result["scanned_count"] = scanned;
+	result["truncated"] = truncated;
+	return result;
+}
+
+Dictionary SolersObservationService::observe_path(const String &p_path, bool p_include_references) const {
+	Dictionary result;
+	String res_path;
+	String path_error;
+	if (!_normalize_project_path(p_path, res_path, path_error)) {
+		result["ok"] = false;
+		result["error"] = path_error;
+		return result;
+	}
+	if (res_path != "res://" && res_path.ends_with("/")) {
+		res_path = res_path.substr(0, res_path.length() - 1);
+	}
+
+	EditorFileSystem *efs = EditorFileSystem::get_singleton();
+	EditorFileSystemDirectory *efs_dir = (efs && !efs->is_scanning()) ? efs->get_filesystem_path(res_path) : nullptr;
+	const bool is_directory = efs_dir != nullptr || DirAccess::open(res_path).is_valid();
+	if (is_directory) {
+		const int max_children = 48;
+		Array children;
+		Dictionary type_counts;
+		int file_count = 0;
+		int subdir_count = 0;
+		bool truncated = false;
+
+		if (efs_dir) {
+			subdir_count = efs_dir->get_subdir_count();
+			file_count = efs_dir->get_file_count();
+			for (int i = 0; i < efs_dir->get_subdir_count(); i++) {
+				EditorFileSystemDirectory *sub = efs_dir->get_subdir(i);
+				if (!sub) {
+					continue;
+				}
+				type_counts["directory"] = (int)type_counts.get("directory", 0) + 1;
+				if (children.size() >= max_children) {
+					truncated = true;
+					continue;
+				}
+				Dictionary child;
+				child["path"] = sub->get_path();
+				child["kind"] = "directory";
+				children.push_back(child);
+			}
+			for (int i = 0; i < efs_dir->get_file_count(); i++) {
+				const String child_type = String(efs_dir->get_file_type(i));
+				const String count_key = child_type.is_empty() ? String("file") : child_type;
+				type_counts[count_key] = (int)type_counts.get(count_key, 0) + 1;
+				if (children.size() >= max_children) {
+					truncated = true;
+					continue;
+				}
+				Dictionary child;
+				const String child_path = efs_dir->get_file_path(i);
+				child["path"] = child_path;
+				child["kind"] = count_key;
+				child["import_valid"] = efs_dir->get_file_import_is_valid(i);
+				const ResourceUID::ID child_uid = ResourceLoader::get_resource_uid(child_path);
+				if (child_uid != ResourceUID::INVALID_ID) {
+					child["uid"] = ResourceUID::get_singleton()->id_to_text(child_uid);
+				}
+				child["dependency_count"] = efs_dir->get_file_deps(i).size();
+				children.push_back(child);
+			}
+		} else {
+			Ref<DirAccess> dir = DirAccess::open(res_path);
+			if (dir.is_valid()) {
+				dir->list_dir_begin();
+				for (String name = dir->get_next(); !name.is_empty(); name = dir->get_next()) {
+					if (name == "." || name == "..") {
+						continue;
+					}
+					const String child_path = res_path.path_join(name);
+					if (dir->current_is_dir()) {
+						subdir_count++;
+						if (children.size() < max_children) {
+							Dictionary child;
+							child["path"] = child_path;
+							child["kind"] = "directory";
+							children.push_back(child);
+						} else {
+							truncated = true;
+						}
+						type_counts["directory"] = (int)type_counts.get("directory", 0) + 1;
+					} else {
+						file_count++;
+						const String child_type = ResourceLoader::get_resource_type(child_path);
+						const String kind = child_type.is_empty() ? String("file") : child_type;
+						if (children.size() < max_children) {
+							Dictionary child;
+							child["path"] = child_path;
+							child["kind"] = kind;
+							children.push_back(child);
+						} else {
+							truncated = true;
+						}
+						type_counts[kind] = (int)type_counts.get(kind, 0) + 1;
+					}
+				}
+			}
+		}
+
+		Dictionary digest;
+		digest["kind"] = "directory";
+		digest["path"] = res_path;
+		digest["file_count"] = file_count;
+		digest["subdir_count"] = subdir_count;
+		digest["children"] = children;
+		digest["type_counts"] = type_counts;
+		digest["truncated"] = truncated || (file_count + subdir_count) > children.size();
+		digest["summary"] = vformat("Directory with %d files and %d subdirectories.", file_count, subdir_count);
+		result["ok"] = true;
+		result["path"] = res_path;
+		result["digest"] = digest;
+		return result;
+	}
+
+	if (!FileAccess::exists(res_path)) {
+		result["ok"] = false;
+		result["error"] = vformat("Path does not exist.%s", solers_file_suggestions(res_path));
+		result["path"] = res_path;
+		return result;
+	}
+
+	const String resource_type = ResourceLoader::get_resource_type(res_path);
+	if (_solers_is_packed_scene_type(resource_type)) {
+		return digest_packed_scene(res_path, 96, p_include_references);
+	}
+
+	Dictionary digest;
+	digest["kind"] = resource_type.is_empty() ? String("file") : resource_type;
+	digest["path"] = res_path;
+	if (!resource_type.is_empty()) {
+		digest["resource_type"] = resource_type;
+	}
+	const ResourceUID::ID uid = ResourceLoader::get_resource_uid(res_path);
+	if (uid != ResourceUID::INVALID_ID) {
+		digest["uid"] = ResourceUID::get_singleton()->id_to_text(uid);
+	}
+	digest["size_bytes"] = FileAccess::get_size(res_path);
+
+	Array dependencies;
+	List<String> dep_list;
+	ResourceLoader::get_dependencies(res_path, &dep_list, true);
+	const int max_deps = 32;
+	int dep_i = 0;
+	for (const String &raw_dependency : dep_list) {
+		if (dep_i >= max_deps) {
+			break;
+		}
+		dependencies.push_back(ResourceUID::ensure_path(raw_dependency.get_slice("::", 0)));
+		dep_i++;
+	}
+	digest["dependencies"] = dependencies;
+	digest["dependencies_truncated"] = dep_list.size() > dependencies.size();
+	digest["summary"] = resource_type.is_empty()
+			? vformat("File (%d bytes).", (int64_t)digest.get("size_bytes", 0))
+			: vformat("%s resource (%d bytes, %d deps).", resource_type, (int64_t)digest.get("size_bytes", 0), dependencies.size());
+	if (p_include_references) {
+		const Dictionary refs = find_resource_references(res_path, 32);
+		digest["references"] = refs.get("references", Array());
+		digest["references_count"] = refs.get("count", 0);
+		digest["references_truncated"] = (bool)refs.get("truncated", false);
+	}
+
+	result["ok"] = true;
+	result["path"] = res_path;
+	result["digest"] = digest;
+	return result;
+}
+
+Dictionary SolersObservationService::digest_packed_scene(const String &p_path, int p_max_nodes, bool p_include_references) const {
+	Dictionary result;
+	String res_path;
+	String path_error;
+	if (!_normalize_project_path(p_path, res_path, path_error)) {
+		result["ok"] = false;
+		result["error"] = path_error;
+		return result;
+	}
+	const String resource_type = ResourceLoader::get_resource_type(res_path);
+	if (!_solers_is_packed_scene_type(resource_type)) {
+		result["ok"] = false;
+		result["error"] = vformat("Not a PackedScene (resource_type=%s).", resource_type.is_empty() ? String("unknown") : resource_type);
+		result["path"] = res_path;
+		return result;
+	}
+
+	const Ref<PackedScene> scene = ResourceLoader::load(res_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_REUSE);
+	if (scene.is_null()) {
+		result["ok"] = false;
+		result["error"] = "Unable to load PackedScene.";
+		result["path"] = res_path;
+		return result;
+	}
+	const Ref<SceneState> state = scene->get_state();
+	if (state.is_null()) {
+		result["ok"] = false;
+		result["error"] = "PackedScene has no SceneState.";
+		result["path"] = res_path;
+		return result;
+	}
+
+	const int max_nodes = CLAMP(p_max_nodes, 1, 256);
+	const int node_count = state->get_node_count();
+	Array nodes;
+	Array scripts;
+	Array external_scenes;
+	HashSet<String> seen_scripts;
+	HashSet<String> seen_scenes;
+
+	for (int i = 0; i < node_count; i++) {
+		const String node_path = String(state->get_node_path(i));
+		const String name = String(state->get_node_name(i));
+		const String node_type = String(state->get_node_type(i));
+		if (nodes.size() < max_nodes) {
+			Dictionary node;
+			node["path"] = node_path;
+			node["name"] = name;
+			node["type"] = node_type;
+			if (state->is_node_instance_placeholder(i)) {
+				const String placeholder = state->get_node_instance_placeholder(i);
+				node["instance"] = placeholder;
+				if (!placeholder.is_empty() && !seen_scenes.has(placeholder)) {
+					seen_scenes.insert(placeholder);
+					external_scenes.push_back(placeholder);
+				}
+			} else {
+				const Ref<PackedScene> inst = state->get_node_instance(i);
+				if (inst.is_valid()) {
+					const String inst_path = inst->get_path();
+					if (!inst_path.is_empty()) {
+						node["instance"] = inst_path;
+						if (!seen_scenes.has(inst_path)) {
+							seen_scenes.insert(inst_path);
+							external_scenes.push_back(inst_path);
+						}
+					}
+				}
+			}
+			nodes.push_back(node);
+		}
+		for (int p = 0; p < state->get_node_property_count(i); p++) {
+			if (state->get_node_property_name(i, p) != StringName("script")) {
+				continue;
+			}
+			const Variant value = state->get_node_property_value(i, p);
+			String script_path;
+			if (value.get_type() == Variant::OBJECT) {
+				const Ref<Resource> res = value;
+				if (res.is_valid()) {
+					script_path = res->get_path();
+				}
+			} else if (value.get_type() == Variant::STRING) {
+				script_path = String(value);
+			}
+			if (!script_path.is_empty() && !seen_scripts.has(script_path)) {
+				seen_scripts.insert(script_path);
+				scripts.push_back(script_path);
+			}
+		}
+	}
+
+	Array dependencies;
+	List<String> dep_list;
+	ResourceLoader::get_dependencies(res_path, &dep_list, true);
+	const int max_deps = 32;
+	int dep_i = 0;
+	for (const String &raw_dependency : dep_list) {
+		if (dep_i >= max_deps) {
+			break;
+		}
+		dependencies.push_back(ResourceUID::ensure_path(raw_dependency.get_slice("::", 0)));
+		dep_i++;
+	}
+
+	Dictionary digest;
+	digest["kind"] = "PackedScene";
+	digest["path"] = res_path;
+	digest["resource_type"] = resource_type;
+	const ResourceUID::ID uid = ResourceLoader::get_resource_uid(res_path);
+	if (uid != ResourceUID::INVALID_ID) {
+		digest["uid"] = ResourceUID::get_singleton()->id_to_text(uid);
+	}
+	if (node_count > 0) {
+		digest["root_name"] = String(state->get_node_name(0));
+		digest["root_type"] = String(state->get_node_type(0));
+	}
+	digest["node_count"] = node_count;
+	digest["nodes_reported"] = nodes.size();
+	digest["nodes_truncated"] = node_count > nodes.size();
+	digest["nodes"] = nodes;
+	digest["scripts"] = scripts;
+	digest["external_scenes"] = external_scenes;
+	digest["dependencies"] = dependencies;
+	digest["dependencies_truncated"] = dep_list.size() > dependencies.size();
+	digest["summary"] = vformat("PackedScene root=%s (%s), %d nodes, %d scripts, %d external scenes.",
+			String(digest.get("root_name", String())), String(digest.get("root_type", String())), node_count, scripts.size(), external_scenes.size());
+	if (p_include_references) {
+		const Dictionary refs = find_resource_references(res_path, 32);
+		digest["references"] = refs.get("references", Array());
+		digest["references_count"] = refs.get("count", 0);
+		digest["references_truncated"] = (bool)refs.get("truncated", false);
+	}
+
+	result["ok"] = true;
+	result["path"] = res_path;
+	result["digest"] = digest;
+	return result;
+}
+
 Dictionary SolersObservationService::search_project(const Dictionary &p_args) const {
 	const String type = String(p_args.get("type", "path")).to_lower();
 	const String query = String(p_args.get("query", String())).strip_edges();
@@ -1282,6 +1708,27 @@ Dictionary SolersObservationService::search_project(const Dictionary &p_args) co
 	Array results;
 	int scanned = 0;
 	bool truncated = false;
+
+	if (type == "references") {
+		String path = requested_path;
+		if (path.is_empty()) {
+			path = query;
+		}
+		const Dictionary refs = find_resource_references(path, max_results);
+		Dictionary result;
+		result["type"] = type;
+		result["path"] = refs.get("path", path);
+		result["query"] = query;
+		result["results"] = refs.get("references", Array());
+		result["count"] = refs.get("count", 0);
+		result["scanned_count"] = refs.get("scanned_count", 0);
+		result["truncated"] = refs.get("truncated", false);
+		result["ok"] = refs.get("ok", false);
+		if (refs.has("error")) {
+			result["error"] = refs["error"];
+		}
+		return result;
+	}
 
 	if (type == "path") {
 		const Dictionary paths = _search_project_paths(query, max_results);
@@ -1305,7 +1752,9 @@ Dictionary SolersObservationService::search_project(const Dictionary &p_args) co
 					continue;
 				}
 				scanned++;
-				const Dictionary file = read_project_file(path, 1048576);
+				// Internal index scan may read PackedScene source; tool-facing
+				// project.read_file still requires raw=true for scenes.
+				const Dictionary file = read_project_file(path, 1048576, true);
 				if (!(bool)file.get("ok", false)) {
 					continue;
 				}
@@ -1409,7 +1858,7 @@ Dictionary SolersObservationService::search_project(const Dictionary &p_args) co
 	return result;
 }
 
-Dictionary SolersObservationService::read_project_file(const String &p_path, int p_max_bytes) const {
+Dictionary SolersObservationService::read_project_file(const String &p_path, int p_max_bytes, bool p_raw) const {
 	Dictionary result;
 	String res_path;
 	String path_error;
@@ -1423,6 +1872,21 @@ Dictionary SolersObservationService::read_project_file(const String &p_path, int
 		result["ok"] = false;
 		result["error"] = vformat("File does not exist.%s", solers_file_suggestions(res_path));
 		result["path"] = res_path;
+		return result;
+	}
+
+	const String resource_type = ResourceLoader::get_resource_type(res_path);
+	if (!p_raw && _solers_is_packed_scene_type(resource_type)) {
+		const Dictionary observed = observe_path(res_path, true);
+		result["ok"] = false;
+		result["code"] = "SCENE_TEXT_DENIED";
+		result["error"] = "PackedScene source text is not the scene fact model. The digest field is the complete answer for structure/identity — do not retry with raw=true. Use scene.inspect(path=...) for live details. Pass raw=true only when editing .tscn/.scn source text.";
+		result["path"] = res_path;
+		result["resource_type"] = resource_type;
+		result["recovery"] = "Use digest (already included) or scene.inspect(path=...). Do not call project.read_file with raw=true for observation.";
+		if ((bool)observed.get("ok", false) && observed.has("digest")) {
+			result["digest"] = observed["digest"];
+		}
 		return result;
 	}
 

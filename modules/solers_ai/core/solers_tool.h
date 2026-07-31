@@ -54,6 +54,25 @@ enum class SolersToolMutationPolicy {
 	IRREVERSIBLE,
 };
 
+// Closed UI presentation kind for chat tool rows. Declared at registration —
+// the dock maps kind → glyph/verb and never matches tool name strings.
+// DEFAULT means "derive from permission / mutation_policy".
+enum class SolersToolUiKind {
+	DEFAULT,
+	OBSERVE,
+	READ,
+	SEARCH,
+	WRITE,
+	SCENE,
+	SHELL,
+	RUN,
+	NETWORK,
+	ASSET,
+	CAPTURE,
+	THINK,
+	SHIELD,
+};
+
 // Authoritative capability metadata. Permission/approval/redaction are decided
 // from these structured facts — never from matching the tool name. Adding a
 // new tool with new risk characteristics needs no change to the orchestrator.
@@ -83,6 +102,7 @@ struct SolersToolCapability {
 	// Argument keys whose values must be redacted from the timeline/logs
 	// (replaces the old per-tool-name `if` redaction in the dispatcher).
 	Vector<String> redact_args;
+	SolersToolUiKind ui_kind = SolersToolUiKind::DEFAULT;
 };
 
 // Per-call context handed to every tool, mirroring opencode's `Tool.Context`.

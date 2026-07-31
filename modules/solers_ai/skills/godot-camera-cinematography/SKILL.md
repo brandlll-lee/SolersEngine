@@ -31,14 +31,14 @@ For photoreal exposure/DOF look recipes, also read `godot-3d-rendering`. This sk
 | `Area3D` | Enter/exit shot triggers (`body_entered` / `body_exited`) |
 | `SubViewport` + extra `Camera3D` | Picture-in-picture / render-to-texture; separate Viewport current-camera authority |
 
-Inspect unknown properties with `engine.inspect` before guessing ClassDB names.
+Instance property values: `scene.inspect` / `resource.inspect`. Use `engine.inspect` only when a ClassDB class or method name is unknown.
 
 ## Agent tool sequence
 1. `skill.read` this skill (and `godot-scripting-input-gameplay` if input ownership is unclear).
 2. `scene.inspect` the live camera (`current`, `fov`, `global_transform`, parent rig).
-3. `scene.edit` to create Marker shots, Area triggers, cinematic `Camera3D`, connections.
-4. `script.edit` (or `script.run` for one-shot layout) for the transition controller.
-5. `runtime.control` → play → trigger → `viewport.capture target=runtime` (and `target=camera` with `node_path` when needed) → `runtime.observe`.
+3. `scene.edit` to create Marker shots, Area triggers, cinematic `Camera3D`, connections, and hierarchy layout.
+4. `script.edit` for the transition controller (not `script.run` for scaffolding).
+5. `runtime.control` → play → trigger → `viewport.capture target=runtime` (and `target=camera` with `node_path` when needed) → `runtime.observe`. Spatial placement still requires `scene.validate`, not a capture.
 
 There is **no** `camera.*` tool. Capabilities are native nodes + scripts.
 

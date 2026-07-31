@@ -60,7 +60,8 @@ Use for 3D layout, imported models, PBR materials, lights, Environment/GI, shado
 
 ## Verify
 1. `scene.inspect` / `resource.inspect` Environment, lights, materials.
-2. `runtime.control` play → `viewport.capture` from the composition camera (not top-down).
-3. Check readable shadows, no accidental white clip, soft shadow growth with distance.
-4. Fix sources (light/GI/material), re-capture; 2–3 loops minimum for photoreal goals.
-5. After UV2/lightmap work: `mesh.unwrap_uv2` / `lightmap.bake` then capture again.
+2. Static look-dev (materials, lights, still composition): `viewport.capture target=camera` with the product `Camera3D` — shares the edited World3D; do **not** `runtime.control` play only to screenshot.
+3. Gameplay or script lifecycle only: `runtime.control` play → `viewport.capture target=runtime` → `runtime.observe` as needed.
+4. Support, gaps, containment, coaxial alignment: `scene.validate` (world AABB). A capture does not measure these.
+5. Fix sources (light/GI/material/transform), then re-capture or re-validate; stop when the facts pass — no fixed loop count.
+6. After UV2/lightmap work: `mesh.unwrap_uv2` / `lightmap.bake` then capture again.

@@ -251,9 +251,32 @@ Array SolersOpenAIChatProtocol::parse_event(Dictionary &r_state, const String &p
 
 	const Variant parsed = JSON::parse_string(data);
 	if (parsed.get_type() != Variant::DICTIONARY) {
+		if (p_event_name == "error") {
+			events.push_back(SolersLLMEvent::error("PROVIDER_STREAM_ERROR", data.is_empty() ? "Provider stream reported an error." : data));
+		}
 		return events;
 	}
 	const Dictionary obj = parsed;
+
+	// SSE `event: error` / `data: {"error":...}` is an authoritative failure.
+	// Ignoring it turns a gateway model error into a fake "no finish" empty stream.
+	if (p_event_name == "error" || obj.has("error")) {
+		const Variant err_v = obj.get("error", Variant());
+		const Dictionary err = err_v.get_type() == Variant::DICTIONARY ? Dictionary(err_v) : obj;
+		String message = String(err.get("message", obj.get("message", String()))).strip_edges();
+		if (message.is_empty()) {
+			message = "Provider stream reported an error.";
+		}
+		String code = String(err.get("type", String())).strip_edges();
+		if (code.is_empty()) {
+			code = String(err.get("code", String())).strip_edges();
+		}
+		if (code.is_empty()) {
+			code = "PROVIDER_STREAM_ERROR";
+		}
+		events.push_back(SolersLLMEvent::error(code, message));
+		return events;
+	}
 
 	// Usage frames arrive with an empty `choices` array when stream_options
 	// requested it; surface them regardless of position.

@@ -34,6 +34,17 @@ Dictionary SolersLLMClient::_redacted_request_body(const String &p_body) const {
 	out["model"] = body.get("model", String());
 	out["stream"] = body.get("stream", false);
 	out["store"] = body.get("store", Variant());
+	if (body.has("max_tokens")) {
+		out["max_tokens"] = body["max_tokens"];
+	}
+	if (body.has("max_output_tokens")) {
+		out["max_output_tokens"] = body["max_output_tokens"];
+	}
+	if (body.has("reasoning_effort")) {
+		out["reasoning_effort"] = body["reasoning_effort"];
+	}
+	const Array tools = body.get("tools", Array());
+	out["tool_count"] = tools.size();
 	Array messages;
 	const Array native_messages = body.get("messages", Array());
 	for (int i = 0; i < native_messages.size(); i++) {
@@ -102,7 +113,20 @@ void SolersLLMClient::_fail(const String &p_code, const String &p_message, bool 
 	payload["code"] = p_code;
 	payload["message"] = p_message;
 	payload["retryable"] = last_error["retryable"];
+	payload["response_bytes"] = response_bytes;
+	if (!response_prefix.is_empty()) {
+		payload["body_prefix"] = response_prefix.substr(0, MIN(512, response_prefix.length()));
+	}
 	_trace("fail", payload);
+	// Keep the exact wire body for the last failure so empty/error streams can be
+	// reproduced outside Solers without guessing which schema field the gateway hated.
+	if (!request_body.is_empty() && !trace_path.is_empty()) {
+		const String dump_path = trace_path.get_base_dir().path_join("last_failed_request.json");
+		Ref<FileAccess> dump = FileAccess::open(dump_path, FileAccess::WRITE);
+		if (dump.is_valid()) {
+			dump->store_string(request_body);
+		}
+	}
 	state = STATE_FAILED;
 	if (http.is_valid()) {
 		http->close();
@@ -243,6 +267,7 @@ Error SolersLLMClient::begin(const Dictionary &p_request, const Dictionary &p_pr
 	trace_payload["host"] = host;
 	trace_payload["path"] = request_path;
 	trace_payload["protocol"] = String(protocol_id);
+	trace_payload["body_bytes"] = request_body.utf8().length();
 	trace_payload["body"] = _redacted_request_body(request_body);
 	_trace("request_prepared", trace_payload);
 
@@ -328,6 +353,10 @@ void SolersLLMClient::_run_worker() {
 	prev_state = state;
 	stream_text_delta_count = 0;
 	stream_text_bytes = 0;
+	stream_saw_finish = false;
+	stream_has_content = false;
+	response_bytes = 0;
+	response_prefix = String();
 
 	while (!abort_requested.is_set()) {
 		batch.clear();
@@ -365,8 +394,7 @@ void SolersLLMClient::_run_worker() {
 					if (capturing_error) {
 						_fail("HTTP_ERROR", error_buffer.is_empty() ? "Provider returned an error." : error_buffer);
 					} else {
-						_drain_records(batch);
-						state = STATE_DONE;
+						_complete_stream(batch);
 					}
 				}
 			} break;
@@ -428,7 +456,14 @@ void SolersLLMClient::_run_worker() {
 				const PackedByteArray chunk = http->read_response_body_chunk();
 				if (chunk.size() > 0) {
 					last_progress_msec = OS::get_singleton()->get_ticks_msec();
+					response_bytes += chunk.size();
 					const String s = String::utf8((const char *)chunk.ptr(), chunk.size());
+					if (response_prefix.length() < 512) {
+						response_prefix += s;
+						if (response_prefix.length() > 512) {
+							response_prefix = response_prefix.substr(0, 512);
+						}
+					}
 					if (capturing_error) {
 						error_buffer += s;
 					} else {
@@ -441,8 +476,7 @@ void SolersLLMClient::_run_worker() {
 				if (capturing_error) {
 					_fail("HTTP_ERROR", error_buffer.is_empty() ? "Provider returned an error." : error_buffer);
 				} else {
-					_drain_records(batch);
-					state = STATE_DONE;
+					_complete_stream(batch);
 				}
 			} break;
 			default: {
@@ -501,22 +535,83 @@ void SolersLLMClient::_drain_records(Array &r_events) {
 				if (kind == SolersLLMEventKind::TEXT_DELTA) {
 					stream_text_delta_count++;
 					stream_text_bytes += String(event.get("text", String())).length();
-				} else if (kind == SolersLLMEventKind::TOOL_CALL) {
-					Dictionary payload;
-					payload["id"] = event.get("id", String());
-					payload["name"] = event.get("name", String());
-					_trace("stream_tool_call", payload);
+					stream_has_content = true;
+				} else if (kind == SolersLLMEventKind::REASONING_DELTA) {
+					stream_has_content = true;
+				} else if (kind == SolersLLMEventKind::TOOL_CALL || kind == SolersLLMEventKind::TOOL_INPUT_START || kind == SolersLLMEventKind::TOOL_INPUT_DELTA) {
+					stream_has_content = true;
+					if (kind == SolersLLMEventKind::TOOL_CALL) {
+						Dictionary payload;
+						payload["id"] = event.get("id", String());
+						payload["name"] = event.get("name", String());
+						_trace("stream_tool_call", payload);
+					}
 				} else if (kind == SolersLLMEventKind::FINISH) {
+					stream_saw_finish = true;
 					Dictionary payload;
 					payload["stop_reason"] = event.get("stop_reason", String());
 					payload["text_delta_count"] = stream_text_delta_count;
 					payload["text_bytes"] = stream_text_bytes;
 					_trace("stream_finish", payload);
+				} else if (kind == SolersLLMEventKind::ERROR) {
+					// Protocol already named the failure — don't wait for a missing
+					// finish_reason and relabel it as STREAM_ENDED_WITHOUT_FINISH.
+					_fail(String(event.get("code", "PROVIDER_STREAM_ERROR")), String(event.get("message", "Provider stream reported an error.")), false);
+					last_error["response_bytes"] = response_bytes;
+					if (!response_prefix.is_empty()) {
+						last_error["body_prefix"] = response_prefix.substr(0, MIN(512, response_prefix.length()));
+					}
 				}
 				r_events.push_back(produced[i]);
 			}
 		}
 		sep = sse_buffer.find("\n\n");
+	}
+}
+
+void SolersLLMClient::_complete_stream(Array &r_batch) {
+	// Providers often omit the trailing blank line on the final SSE record.
+	sse_buffer = sse_buffer.replace("\r\n", "\n");
+	if (!sse_buffer.is_empty() && !sse_buffer.ends_with("\n\n")) {
+		sse_buffer += sse_buffer.ends_with("\n") ? "\n" : "\n\n";
+	}
+	_drain_records(r_batch);
+	if (state == STATE_FAILED) {
+		return;
+	}
+
+	if (stream_saw_finish || stream_has_content) {
+		state = STATE_DONE;
+		return;
+	}
+
+	// HTTP 200 with a non-SSE JSON error body: surface the message, never retry.
+	const String raw = response_prefix.strip_edges();
+	const bool looks_json = raw.begins_with("{") && !raw.begins_with("data:") && !raw.contains("\ndata:");
+	if (looks_json) {
+		String message = "Provider returned an error body without a stream.";
+		const Variant parsed = JSON::parse_string(raw);
+		if (parsed.get_type() == Variant::DICTIONARY) {
+			const Dictionary obj = parsed;
+			const Dictionary err = obj.get("error", Dictionary());
+			if (!String(err.get("message", String())).is_empty()) {
+				message = err.get("message", String());
+			} else if (!String(obj.get("message", String())).is_empty()) {
+				message = obj.get("message", String());
+			}
+		}
+		_fail("PROVIDER_ERROR", message, false);
+		last_error["response_bytes"] = response_bytes;
+		last_error["body_prefix"] = raw.substr(0, MIN(512, raw.length()));
+		return;
+	}
+
+	// Zero response bytes: identical retry cannot help. Bytes without a terminal
+	// finish are a truncated stream and stay retryable (pi / OpenCode).
+	_fail("STREAM_ENDED_WITHOUT_FINISH", "Provider stream ended without a terminal finish event.", response_bytes > 0);
+	last_error["response_bytes"] = response_bytes;
+	if (!response_prefix.is_empty()) {
+		last_error["body_prefix"] = response_prefix.substr(0, MIN(512, response_prefix.length()));
 	}
 }
 

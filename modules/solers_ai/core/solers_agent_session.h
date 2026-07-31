@@ -76,7 +76,8 @@ class SolersAgentSession : public Object {
 	SolersLLMProtocolRegistry *protocol_registry = nullptr; // owned
 	SolersLLMClient *client = nullptr; // owned
 	SolersContextManager *context_manager = nullptr; // owned
-	SolersModelsDev *models_dev = nullptr; // owned; data-driven model registry
+	SolersModelsDev *models_dev = nullptr; // data-driven model registry
+	bool owns_models_dev = true;
 
 	int context_window = 0; // Unknown until provider/model metadata says otherwise.
 	int max_output_tokens = 8192;
@@ -98,7 +99,7 @@ class SolersAgentSession : public Object {
 	Dictionary active_provider; // { provider, model, base_url, api_key, features }
 	bool running = false;
 	Phase phase = PHASE_STREAMING;
-	Array tool_queue; // calls queued for paced execution this step
+	Array tool_queue; // provider-ordered tool calls for this step (MAIN_THREAD tools run serially)
 	Array failed_resource_accesses;
 	HashMap<String, Dictionary> readonly_cache;
 	HashSet<StringName> task_deferred_tools;
@@ -257,7 +258,7 @@ class SolersAgentSession : public Object {
 	Dictionary _commit_dirty_scene_if_needed();
 	bool _append_background_asset_deltas(bool p_waited_only);
 	void _resume_next_background_asset();
-	void _write_transcript_message(const String &p_role, const String &p_content, const Array &p_mentions = Array(), const Array &p_tool_calls = Array(), const String &p_reasoning = String()) const;
+	void _write_transcript_message(const String &p_role, const String &p_content, const Array &p_mentions = Array(), const Array &p_tool_calls = Array(), const String &p_reasoning = String(), const Array &p_attachments = Array()) const;
 	void _write_transcript_tool(const String &p_call_id, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result, const String &p_delivered_content) const;
 	void _write_transcript_plan() const;
 	void _write_transcript_compaction(const Dictionary &p_result) const;
@@ -272,6 +273,7 @@ protected:
 public:
 	void set_tool_registry(SolersToolRegistry *p_tool_registry);
 	void set_settings_service(SolersSettingsService *p_settings_service) { settings_service = p_settings_service; }
+	void set_models_dev(SolersModelsDev *p_models_dev, bool p_owned = false);
 	void set_action_timeline(SolersActionTimeline *p_action_timeline) { action_timeline = p_action_timeline; }
 	void set_permission_manager(SolersPermissionManager *p_permission_manager) { permission_manager = p_permission_manager; }
 
@@ -298,7 +300,6 @@ public:
 	Array get_messages() const;
 	Dictionary get_plan() const { return current_plan.duplicate(true); }
 	Dictionary get_status() const;
-	Dictionary get_model_provider(const String &p_catalog_id, const String &p_api_url = String());
 	bool is_running() const { return running; }
 	bool is_executing_tool() const { return running && phase == PHASE_TOOL_EXECUTING; }
 	bool is_admitting_tool_calls() const;

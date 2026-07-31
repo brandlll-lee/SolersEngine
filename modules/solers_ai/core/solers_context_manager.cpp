@@ -216,13 +216,18 @@ int SolersContextManager::get_token_count_with_pending(const Array &p_messages, 
 }
 
 bool SolersContextManager::should_compact(int p_used_tokens, int p_context_window, int p_max_output_tokens) const {
-	if (p_context_window <= 0 || p_max_output_tokens <= 0 || p_max_output_tokens >= p_context_window) {
+	if (p_context_window <= 0 || p_max_output_tokens <= 0) {
 		return false;
 	}
 	if (last_compacted_token_count >= 0 && p_used_tokens <= last_compacted_token_count) {
 		return false;
 	}
-	return p_used_tokens + p_max_output_tokens >= p_context_window;
+	// OpenCode COMPACTION_BUFFER: reserve min(20k, maxOutput), not the full
+	// wire budget — otherwise a large (but capped) max_output still collapses
+	// usable input toward zero on mid-size windows.
+	static constexpr int COMPACTION_BUFFER = 20000;
+	const int reserve = MIN(p_max_output_tokens, COMPACTION_BUFFER);
+	return p_used_tokens + reserve >= p_context_window;
 }
 
 bool SolersContextManager::should_compact(const Array &p_messages, const String &p_system_prompt, const Array &p_tools, int p_context_window, int p_max_output_tokens) const {
