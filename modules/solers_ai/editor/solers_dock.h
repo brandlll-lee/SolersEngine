@@ -82,13 +82,15 @@ class SolersDock : public PanelContainer {
 	SolersPMAIView *provider_settings_view = nullptr;
 	SolersSelectChip *model_chip = nullptr;
 	PanelContainer *plugin_mention_popup = nullptr;
+	VBoxContainer *plugin_mention_box = nullptr;
+	LineEdit *plugin_mention_search = nullptr;
 	ScrollContainer *plugin_mention_scroll = nullptr;
 	VBoxContainer *plugin_mention_list = nullptr;
 	Vector<Button *> plugin_mention_rows;
 	int plugin_mention_line = -1;
 	int plugin_mention_start_column = -1;
 	int plugin_mention_selected = 0;
-	String mention_section; // empty = root; otherwise section id (solers/addons/files/scenes/selection)
+	String mention_section; // empty = root; otherwise section id (solers/addons/files/folders/…)
 	Control *model_popup_overlay = nullptr;
 	// Cascading model menu: a compact root menu (Model / Effort / actions)
 	// plus one lazily built submenu that opens beside the hovered row.
@@ -99,7 +101,11 @@ class SolersDock : public PanelContainer {
 	PanelContainer *model_submenu = nullptr;
 	ScrollContainer *model_submenu_scroll = nullptr;
 	VBoxContainer *model_submenu_box = nullptr;
+	LineEdit *model_submenu_search = nullptr;
+	VBoxContainer *model_submenu_list = nullptr;
 	int model_submenu_kind = 0; // 0 = closed, 1 = model, 2 = effort.
+	// Cached model rows for search filtering (provider, model_id, label, available).
+	Array model_submenu_entries;
 	SolersSelectChip *approval_mode_chip = nullptr;
 	MarginContainer *approval_overlay_inset = nullptr;
 	PanelContainer *approval_overlay_card = nullptr;
@@ -128,6 +134,12 @@ class SolersDock : public PanelContainer {
 	String session_project_path;
 	String session_current_id;
 	String session_filter_text;
+	Array pending_history_messages;
+	int pending_history_index = 0;
+	uint64_t history_load_token = 0;
+	bool history_loading = false;
+	VBoxContainer *history_staging = nullptr;
+	VBoxContainer *history_mount = nullptr; // non-null while first swap builds off-tree
 
 	SolersObservationService *observation_service = nullptr;
 	SolersToolRegistry *tool_registry = nullptr;
@@ -149,13 +161,22 @@ class SolersDock : public PanelContainer {
 	void _on_workspace_toggle_pressed();
 	void _toggle_session_sidebar();
 	void _refresh_session_list();
+	void _request_session_list_refresh();
+	void _highlight_session_selection();
 	void _apply_session_filter();
 	void _on_session_filter_changed(const String &p_text);
 	void _on_session_row_pressed(const String &p_session_id);
+	void _append_history_message(const Dictionary &p_message);
+	void _pump_history_load();
+	void _clear_history_staging();
+	void _swap_history_staging();
+	VBoxContainer *_chat_mount() const;
 	void _on_new_agent_pressed();
 	void _on_model_chip_pressed();
 	void _position_model_menu();
 	void _open_model_submenu(int p_kind);
+	void _rebuild_model_submenu_list(const String &p_filter = String());
+	void _on_model_submenu_search(const String &p_text);
 	void _position_model_submenu(Button *p_anchor_row);
 	void _close_model_submenu();
 	void _hide_model_popup();
@@ -191,6 +212,7 @@ class SolersDock : public PanelContainer {
 	void _mention_inline_click(const Dictionary &p_info, const Rect2 &p_rect);
 	bool _try_delete_mention_span(int p_direction);
 	void _refresh_mention_popup();
+	void _on_mention_search_changed(const String &p_text);
 	void _hide_mention_popup();
 	void _select_mention(const Dictionary &p_mention);
 	void _open_mention_section(const String &p_section_id);

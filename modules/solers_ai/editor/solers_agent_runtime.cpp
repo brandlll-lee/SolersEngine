@@ -44,6 +44,7 @@ SolersAgentRuntime::SolersAgentRuntime() {
 	file_checkpoint->set_action_timeline(action_timeline);
 	script_service->set_action_timeline(action_timeline);
 	settings_service->set_provider_registry(provider_registry);
+	agent_session->set_models_dev(provider_registry->get_models_dev(), false);
 	reflection_service->set_action_timeline(action_timeline);
 
 	tool_registry->set_action_timeline(action_timeline);

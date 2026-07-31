@@ -12,6 +12,7 @@
 
 #include "core/input/input_event.h"
 #include "core/os/keyboard.h"
+#include "core/string/ustring.h"
 #include "core/variant/dictionary.h"
 #include "editor/editor_node.h"
 #include "editor/editor_string_names.h"
@@ -23,6 +24,7 @@
 #include "scene/gui/panel_container.h"
 #include "scene/resources/font.h"
 #include "scene/resources/image_texture.h"
+#include "scene/resources/style_box.h"
 #include "scene/resources/style_box_flat.h"
 #include "scene/theme/theme_db.h"
 
@@ -39,7 +41,8 @@ static constexpr float SOLERS_WIDGET_ANIM_SPEED = 11.0f;
 
 static HashMap<String, Ref<Texture2D>> g_solers_glyph_cache;
 
-// Official Lucide path data (MIT, https://lucide.dev), 24x24 viewBox.
+// Lucide (ISC/MIT, https://lucide.dev) + Tabler Icons (MIT, https://tabler.io/icons).
+// All bodies are stroke paths in a 24x24 viewBox; size/stroke unified at rasterize.
 static String solers_glyph_body(const StringName &p_name) {
 	if (p_name == SNAME("panel")) {
 		// lucide: panel-left
@@ -99,13 +102,25 @@ static String solers_glyph_body(const StringName &p_name) {
 		// lucide: eye
 		return "<path d=\"M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0\"/><circle cx=\"12\" cy=\"12\" r=\"3\"/>";
 	}
+	if (p_name == SNAME("tool_search")) {
+		// tabler: search
+		return "<path d=\"M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0\"/><path d=\"M21 21l-6 -6\"/>";
+	}
+	if (p_name == SNAME("tool_read")) {
+		// lucide: file-text
+		return "<path d=\"M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z\"/><path d=\"M14 2v4a2 2 0 0 0 2 2h4\"/><path d=\"M10 9H8\"/><path d=\"M16 13H8\"/><path d=\"M16 17H8\"/>";
+	}
+	if (p_name == SNAME("tool_capture")) {
+		// tabler: photo
+		return "<path d=\"M15 8h.01\"/><path d=\"M3 6a3 3 0 0 1 3 -3h12a3 3 0 0 1 3 3v12a3 3 0 0 1 -3 3h-12a3 3 0 0 1 -3 -3v-12z\"/><path d=\"M3 16l5 -5c.928 -.893 2.072 -.893 3 0l5 5\"/><path d=\"M14 14l1 -1c.928 -.893 2.072 -.893 3 0l3 3\"/>";
+	}
 	if (p_name == SNAME("tool_scene")) {
-		// lucide: box
-		return "<path d=\"M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z\"/><path d=\"m3.3 7 8.7 5 8.7-5\"/><path d=\"M12 22V12\"/>";
+		// tabler: box
+		return "<path d=\"M12 3l8 4.5l0 9l-8 4.5l-8 -4.5l0 -9l8 -4.5\"/><path d=\"M12 12l8 -4.5\"/><path d=\"M12 12l0 9\"/><path d=\"M12 12l-8 -4.5\"/>";
 	}
 	if (p_name == SNAME("tool_file")) {
-		// lucide: file-pen-line
-		return "<path d=\"M12 20h9\"/><path d=\"M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z\"/><path d=\"m15 5 3 3\"/>";
+		// tabler: pencil (write)
+		return "<path d=\"M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4\"/><path d=\"M13.5 6.5l4 4\"/>";
 	}
 	if (p_name == SNAME("tool_run")) {
 		// lucide: play
@@ -120,8 +135,8 @@ static String solers_glyph_body(const StringName &p_name) {
 		return "<path d=\"m7.5 4.27 9 5.15\"/><path d=\"M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z\"/><path d=\"m3.3 7 8.7 5 8.7-5\"/><path d=\"M12 22V12\"/>";
 	}
 	if (p_name == SNAME("tool_network")) {
-		// lucide: globe
-		return "<circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20\"/><path d=\"M2 12h20\"/>";
+		// tabler: world
+		return "<path d=\"M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0\"/><path d=\"M3.6 9h16.8\"/><path d=\"M3.6 15h16.8\"/><path d=\"M11.5 3a17 17 0 0 0 0 18\"/><path d=\"M12.5 3a17 17 0 0 1 0 18\"/>";
 	}
 	if (p_name == SNAME("tool_shell")) {
 		// lucide: terminal
@@ -456,23 +471,28 @@ Size2 SolersSelectChip::get_minimum_size() const {
 	const float ed = EDSCALE;
 	const Ref<Font> font = get_theme_font(SceneStringName(font), SNAME("Label"));
 	const int font_size = int(12 * ed);
+	const float icon_slot = 12.0f * ed;
+	const float gap_icon_txt = 4.0f * ed;
+	const float gap_txt_chev = 4.0f * ed;
+	const float chevron_px = 9.0f * ed;
+	const float pad_x = 6.0f * ed;
 
-	float width = 5.0f * ed; // Leading pad.
+	float width = pad_x;
 	if (leading_texture.is_valid() || glyph != StringName()) {
-		width += 13.0f * ed + 5.0f * ed;
+		width += icon_slot + gap_icon_txt;
 	}
 	if (font.is_valid()) {
 		if (!strong_text.is_empty()) {
 			width += font->get_string_size(strong_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
 		}
 		if (!muted_text.is_empty()) {
-			width += 5.0f * ed + font->get_string_size(muted_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
+			width += gap_icon_txt + font->get_string_size(muted_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
 		}
 	}
 	if (show_chevron) {
-		width += 6.0f * ed + 9.0f * ed; // Chevron gap + chevron.
+		width += gap_txt_chev + chevron_px;
 	}
-	width += 5.0f * ed; // Trailing pad.
+	width += pad_x;
 	return Size2(width, 24.0f * ed);
 }
 
@@ -554,21 +574,26 @@ void SolersSelectChip::_notification(int p_what) {
 
 			const Ref<Font> font = get_theme_font(SceneStringName(font), SNAME("Label"));
 			const int font_size = int(12 * ed);
-			float x = 5.0f * ed;
+			const float icon_slot = 12.0f * ed;
+			const float gap_icon_txt = 4.0f * ed;
+			const float gap_txt_chev = 4.0f * ed;
+			float x = 6.0f * ed;
 
 			if (leading_texture.is_valid()) {
-				// Provider mark: dim at rest, full strength on hover
-				// (opencode's opacity-40 -> group-hover:opacity-100).
-				const Point2 pos(x, (r.size.y - leading_texture->get_height()) * 0.5f);
-				draw_texture(leading_texture, pos.floor(), Color(1, 1, 1, 0.55f + 0.45f * anim));
-				x += 13.0f * ed + 5.0f * ed;
+				const float tw = leading_texture->get_width();
+				const float th = leading_texture->get_height();
+				const Point2 pos(x + (icon_slot - tw) * 0.5f, (r.size.y - th) * 0.5f);
+				draw_texture(leading_texture, pos.round(), Color(1, 1, 1, 0.80f + 0.20f * anim));
+				x += icon_slot + gap_icon_txt;
 			} else if (glyph != StringName()) {
-				Ref<Texture2D> icon = SolersChatGlyphs::get(glyph, int(Math::round(13.0f * ed)), 1.9f);
+				Ref<Texture2D> icon = SolersChatGlyphs::get(glyph, int(Math::round(icon_slot)), 1.9f);
 				if (icon.is_valid()) {
-					const Point2 pos(x, (r.size.y - icon->get_height()) * 0.5f);
-					draw_texture(icon, pos.floor(), strong_color);
+					const float tw = icon->get_width();
+					const float th = icon->get_height();
+					const Point2 pos(x + (icon_slot - tw) * 0.5f, (r.size.y - th) * 0.5f);
+					draw_texture(icon, pos.round(), strong_color);
 				}
-				x += 13.0f * ed + 5.0f * ed;
+				x += icon_slot + gap_icon_txt;
 			}
 
 			if (font.is_valid()) {
@@ -576,22 +601,22 @@ void SolersSelectChip::_notification(int p_what) {
 				const float text_h = font->get_height(font_size);
 				const float baseline = (r.size.y - text_h) * 0.5f + ascent;
 				if (!strong_text.is_empty()) {
-					draw_string(font, Point2(x, baseline).floor(), strong_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, strong_color);
+					draw_string(font, Point2(x, baseline).round(), strong_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, strong_color);
 					x += font->get_string_size(strong_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
 				}
 				if (!muted_text.is_empty()) {
-					x += 5.0f * ed;
-					draw_string(font, Point2(x, baseline).floor(), muted_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, muted_color);
+					x += gap_icon_txt;
+					draw_string(font, Point2(x, baseline).round(), muted_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, muted_color);
 					x += font->get_string_size(muted_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
 				}
 			}
 
-			x += 6.0f * ed;
+			x += gap_txt_chev;
 			if (show_chevron) {
 				Ref<Texture2D> chevron = SolersChatGlyphs::get(SNAME("chevron_down"), int(Math::round(9.0f * ed)), 2.2f);
 				if (chevron.is_valid()) {
-					const Point2 pos(x, (r.size.y - chevron->get_height()) * 0.5f + 0.5f * ed);
-					draw_texture(chevron, pos.floor(), chevron_color);
+					const Point2 pos(x, (r.size.y - chevron->get_height()) * 0.5f);
+					draw_texture(chevron, pos.round(), chevron_color);
 				}
 			}
 		} break;
@@ -767,6 +792,9 @@ Ref<Texture2D> solers_mention_chip_icon(const Dictionary &p_mention, int p_px) {
 	}
 	if (source == "addon") {
 		return editor->get_editor_theme()->get_icon(SNAME("PluginScript"), EditorStringName(EditorIcons));
+	}
+	if (source == "folder") {
+		return editor->get_editor_theme()->get_icon(SNAME("Folder"), EditorStringName(EditorIcons));
 	}
 	if (source == "node") {
 		const String type = String(p_mention.get("type", "Node")).strip_edges();
@@ -970,4 +998,76 @@ void SolersPlanCapsule::_notification(int p_what) {
 			draw_string(font, Point2(10.0f * ed + ring + 6.0f * ed, baseline).floor(), label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, text);
 		} break;
 	}
+}
+
+/* ------------------------------------------------------------------ */
+/* Tool ui_kind → glyph + verb (single table)                          */
+/* ------------------------------------------------------------------ */
+
+namespace {
+struct SolersToolUiChromeRow {
+	const char *kind;
+	const char *glyph; // StringName literal
+	const char *verb; // English source for TTR
+};
+
+static const SolersToolUiChromeRow SOLERS_TOOL_UI_CHROME[] = {
+	{ "observe", "tool_observe", "Inspect" },
+	{ "read", "tool_read", "Read" },
+	{ "search", "tool_search", "Search" },
+	{ "write", "tool_file", "Edit" },
+	{ "scene", "tool_scene", "Scene" },
+	{ "shell", "tool_shell", "Terminal" },
+	{ "run", "tool_run", "Run" },
+	{ "network", "tool_network", "Network" },
+	{ "asset", "tool_asset", "Asset" },
+	{ "capture", "tool_capture", "Capture" },
+	{ "think", "sparkle", "Wait" },
+	{ "shield", "shield", "Permission" },
+};
+
+static const SolersToolUiChromeRow *_solers_tool_ui_row_for_kind(const String &p_kind) {
+	for (const SolersToolUiChromeRow &row : SOLERS_TOOL_UI_CHROME) {
+		if (p_kind == row.kind) {
+			return &row;
+		}
+	}
+	return nullptr;
+}
+} // namespace
+
+StringName solers_tool_glyph_for_ui_kind(const String &p_ui_kind) {
+	const SolersToolUiChromeRow *row = _solers_tool_ui_row_for_kind(p_ui_kind.strip_edges());
+	return row ? StringName(row->glyph) : StringName();
+}
+
+String solers_tool_verb_for_ui_kind(const String &p_ui_kind) {
+	const SolersToolUiChromeRow *row = _solers_tool_ui_row_for_kind(p_ui_kind.strip_edges());
+	return row ? TTR(row->verb) : TTR("Tool");
+}
+
+String solers_tool_verb_for_glyph(const StringName &p_glyph) {
+	if (p_glyph == SNAME("tool_export")) {
+		return TTR("Asset");
+	}
+	for (const SolersToolUiChromeRow &row : SOLERS_TOOL_UI_CHROME) {
+		if (p_glyph == StringName(row.glyph)) {
+			return TTR(row.verb);
+		}
+	}
+	return TTR("Tool");
+}
+
+void solers_style_bare_search_line_edit(LineEdit *p_edit) {
+	ERR_FAIL_NULL(p_edit);
+	Ref<StyleBoxEmpty> empty;
+	empty.instantiate();
+	empty->set_content_margin_individual(4 * EDSCALE, 4 * EDSCALE, 4 * EDSCALE, 4 * EDSCALE);
+	p_edit->add_theme_style_override("normal", empty);
+	p_edit->add_theme_style_override("focus", empty);
+	p_edit->add_theme_style_override("read_only", empty);
+	p_edit->add_theme_color_override(SceneStringName(font_color), Color(0.918f, 0.929f, 0.945f));
+	p_edit->add_theme_color_override("font_placeholder_color", Color(0.345f, 0.357f, 0.388f));
+	p_edit->add_theme_font_size_override(SceneStringName(font_size), int(12 * EDSCALE));
+	p_edit->set_custom_minimum_size(Size2(0, 26 * EDSCALE));
 }

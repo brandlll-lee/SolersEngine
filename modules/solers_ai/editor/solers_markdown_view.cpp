@@ -35,11 +35,13 @@ static const Color SOLERS_MD_LINK = Color::hex(0x6fb1ffff);
 static const Color SOLERS_MD_CODE_SPAN_TEXT = Color(0.847, 0.871, 0.914);
 static const Color SOLERS_MD_QUOTE_TEXT = Color(0.78, 0.80, 0.84);
 static const Color SOLERS_MD_RULE = Color(1, 1, 1, 0.12f);
-static const Color SOLERS_MD_TABLE_BORDER = Color(1, 1, 1, 0.08f);
-static const Color SOLERS_MD_TABLE_HEADER_BG = Color(1, 1, 1, 0.06f);
-static const Color SOLERS_MD_TABLE_CELL_BG = Color(1, 1, 1, 0.025f);
+// Tables: zebra washes only — no 1px translucent-white cell outlines (RTL
+// draw_rect borders bloom on dark chat canvases).
+static const Color SOLERS_MD_TABLE_HEADER_BG = Color(1, 1, 1, 0.07f);
+static const Color SOLERS_MD_TABLE_CELL_BG = Color(1, 1, 1, 0.03f);
 static const Color SOLERS_MD_CODE_PANEL_BG = Color(0.071, 0.082, 0.102);
-static const Color SOLERS_MD_CODE_PANEL_BORDER = Color(1, 1, 1, 0.055f);
+// Blend source for SolersSurface-style opaque hairlines (never draw as AA border).
+static const Color SOLERS_MD_CODE_EDGE = Color(1, 1, 1, 0.055f);
 
 // Syntax highlighting (Godot editor inspired).
 static const Color SOLERS_SYN_KEYWORD = Color::hex(0xff7085ff);
@@ -430,8 +432,8 @@ static int solers_md_enter_block(MD_BLOCKTYPE p_type, void *p_detail, void *p_us
 			rtl->push_cell();
 			const Color bg = (p_type == MD_BLOCK_TH) ? SOLERS_MD_TABLE_HEADER_BG : SOLERS_MD_TABLE_CELL_BG;
 			rtl->set_cell_row_background_color(bg, bg);
-			rtl->set_cell_border_color(SOLERS_MD_TABLE_BORDER);
-			rtl->set_cell_padding(Rect2(8 * ed, 3 * ed, 8 * ed, 3 * ed));
+			rtl->set_cell_border_color(Color(0, 0, 0, 0));
+			rtl->set_cell_padding(Rect2(8 * ed, 4 * ed, 8 * ed, 4 * ed));
 			const MD_BLOCK_TD_DETAIL *td = static_cast<const MD_BLOCK_TD_DETAIL *>(p_detail);
 			bool aligned = false;
 			if (td && td->align == MD_ALIGN_CENTER) {
@@ -489,7 +491,7 @@ static int solers_md_leave_block(MD_BLOCKTYPE p_type, void *p_detail, void *p_us
 			rtl->push_table(1, INLINE_ALIGNMENT_TOP);
 			rtl->push_cell();
 			rtl->set_cell_row_background_color(SOLERS_MD_CODE_PANEL_BG, SOLERS_MD_CODE_PANEL_BG);
-			rtl->set_cell_border_color(SOLERS_MD_CODE_PANEL_BORDER);
+			rtl->set_cell_border_color(Color(0, 0, 0, 0));
 			rtl->set_cell_padding(Rect2(9 * ed, 6 * ed, 9 * ed, 6 * ed));
 			rtl->push_mono();
 			rtl->push_font_size(int(s.base_font_size * 0.92f));
@@ -747,9 +749,16 @@ void SolersCodeBlock::_render_body() {
 	body->add_theme_font_size_override("normal_font_size", int(12 * ed));
 
 	body->clear();
-	solers_highlight_code(body, language, code);
+	// While the fence is still open, skip the highlighter — every delta would
+	// otherwise re-tokenize the whole buffer and jitter height. Highlight once
+	// when the stream settles (caret=false).
 	if (caret) {
+		body->push_color(SOLERS_SYN_DEFAULT);
+		body->add_text(code);
 		body->add_text(String::chr(SOLERS_MD_CARET));
+		body->pop();
+	} else {
+		solers_highlight_code(body, language, code);
 	}
 }
 
@@ -806,17 +815,27 @@ void SolersCodeBlock::_notification(int p_what) {
 		} break;
 		case NOTIFICATION_DRAW: {
 			const float ed = EDSCALE;
+			const Rect2 r(Point2(), get_size());
+			const float rad = 9.0f * ed;
+			const float bw = MAX(1.0f, ed);
+			// Same opaque-hairline recipe as SolersSurface: translucent white
+			// StyleBoxFlat borders bloom at AA corners on dark panels.
+			Color edge = SOLERS_MD_CODE_PANEL_BG.lerp(SOLERS_MD_CODE_EDGE, SOLERS_MD_CODE_EDGE.a * 0.28f);
+			edge.a = 1.0f;
+
 			Ref<StyleBoxFlat> panel;
 			panel.instantiate();
 			panel->set_anti_aliased(true);
+			panel->set_border_width_all(0);
+			panel->set_bg_color(edge);
+			panel->set_corner_radius_all(int(rad));
+			draw_style_box(panel, r);
 			panel->set_bg_color(SOLERS_MD_CODE_PANEL_BG);
-			panel->set_corner_radius_all(int(9 * ed));
-			panel->set_border_width_all(MAX(1, int(ed)));
-			panel->set_border_color(SOLERS_MD_CODE_PANEL_BORDER);
-			draw_style_box(panel, Rect2(Point2(), get_size()));
+			panel->set_corner_radius_all(MAX(0, int(rad - bw)));
+			draw_style_box(panel, r.grow(-bw));
 
 			const float header_h = SOLERS_CODE_HEADER_H * ed;
-			draw_rect(Rect2(1, header_h, get_size().x - 2, MAX(1.0f, ed)), Color(1, 1, 1, 0.045f));
+			draw_rect(Rect2(bw, header_h, get_size().x - bw * 2.0f, MAX(1.0f, ed)), edge);
 
 			const Ref<Font> mono = get_theme_font(SNAME("source"), SNAME("EditorFonts"));
 			if (mono.is_valid()) {
@@ -969,6 +988,8 @@ RichTextLabel *SolersMarkdownView::_make_paragraph_label() {
 	rtl->add_theme_style_override("focus", memnew(StyleBoxEmpty));
 	rtl->add_theme_color_override("default_color", SOLERS_MD_TEXT_BODY);
 	rtl->add_theme_constant_override("line_separation", int(4 * ed));
+	rtl->add_theme_constant_override("table_h_separation", int(2 * ed));
+	rtl->add_theme_constant_override("table_v_separation", int(2 * ed));
 	rtl->add_theme_constant_override("paragraph_separation", int(3 * ed));
 	rtl->add_theme_font_size_override("normal_font_size", int(14 * ed));
 	rtl->add_theme_font_size_override("bold_font_size", int(14 * ed));
@@ -1092,8 +1113,24 @@ void SolersMarkdownView::append_markdown_delta(const String &p_delta, bool p_str
 		return;
 	}
 	Block &last = blocks[blocks.size() - 1];
-	if (!rendered_md_valid || !rendered_streaming || !p_streaming || blocks.is_empty() ||
-			!Math::is_equal_approx(get_size().x, layout_width) || starts_new_block || touches_fence || blocks[blocks.size() - 1].is_code) {
+	const bool width_ok = Math::is_equal_approx(get_size().x, layout_width);
+
+	// Open fenced code: append into the live SolersCodeBlock. Falling back to
+	// set_markdown here was the main stream flicker (full re-split + re-highlight).
+	if (rendered_md_valid && rendered_streaming && p_streaming && last.is_code && width_ok && !starts_new_block && !touches_fence) {
+		last.source += p_delta;
+		last.rendered_caret = true;
+		rendered_md = markdown;
+		rendered_streaming = true;
+		rendered_md_valid = true;
+		if (SolersCodeBlock *code_block = Object::cast_to<SolersCodeBlock>(last.control)) {
+			code_block->set_code(last.lang, last.source, true);
+			_relayout();
+			return;
+		}
+	}
+
+	if (!rendered_md_valid || !rendered_streaming || !p_streaming || !width_ok || starts_new_block || touches_fence || last.is_code) {
 		set_markdown(markdown, p_streaming);
 		return;
 	}

@@ -43,6 +43,7 @@
 #include "modules/solers_ai/core/solers_mention.h"
 #include "modules/solers_ai/core/solers_observation_service.h"
 #include "modules/solers_ai/core/solers_permission_manager.h"
+#include "modules/solers_ai/core/solers_provider_registry.h"
 #include "modules/solers_ai/core/solers_settings_service.h"
 #include "modules/solers_ai/core/solers_tool_registry.h"
 #include "modules/solers_ai/core/solers_trace.h"
@@ -69,7 +70,6 @@
 #include "scene/resources/image_texture.h"
 #include "scene/resources/style_box.h"
 #include "scene/resources/style_box_flat.h"
-#include "scene/resources/style_box_line.h"
 #include "servers/display/display_server.h"
 #include "servers/rendering/rendering_server.h"
 
@@ -84,11 +84,7 @@ static const Color SOLERS_BG = Color(0.030, 0.030, 0.023);
 // Composer / chip colors: shared authority in solers_chat_widgets.h
 #define SOLERS_COMPOSER_BG solers_composer_bg()
 static const Color SOLERS_POPUP_BG = Color(0.118, 0.118, 0.122);
-// Composer edge: a touch more defined than the section hairline so the input
-// reads as a discrete card, like Cursor's composer.
-static const Color SOLERS_COMPOSER_BORDER = Color(0.95, 0.95, 0.97, 0.16);
-// Session rail hairline (Cursor-flat split between sidebar and chat).
-static const Color SOLERS_SESSION_HAIRLINE = Color(0.95, 0.95, 0.97, 0.12);
+#define SOLERS_COMPOSER_BORDER solers_composer_border()
 // Primary text: high contrast for readability on dark backgrounds.
 static const Color SOLERS_TEXT_PRIMARY = Color(0.961, 0.969, 0.984);
 // Body text: comfortable reading with slightly reduced contrast for hierarchy.
@@ -117,20 +113,6 @@ static Ref<StyleBoxFlat> solers_make_stylebox_margins(const Color &p_bg, int p_r
 	Ref<StyleBoxFlat> style = solers_make_stylebox(p_bg, Color(0, 0, 0, 0), p_radius, 0);
 	style->set_content_margin_individual(p_left * EDSCALE, p_top * EDSCALE, p_right * EDSCALE, p_bottom * EDSCALE);
 	return style;
-}
-
-static void solers_style_session_split(HSplitContainer *p_split) {
-	Ref<StyleBoxLine> split_bar;
-	split_bar.instantiate();
-	split_bar->set_color(SOLERS_SESSION_HAIRLINE);
-	split_bar->set_thickness(MAX(1, (int)Math::round(EDSCALE)));
-	split_bar->set_vertical(true);
-	split_bar->set_grow_begin(0);
-	split_bar->set_grow_end(0);
-	p_split->add_theme_style_override("split_bar_background", split_bar);
-	p_split->set_dragger_visibility(SplitContainer::DRAGGER_HIDDEN);
-	p_split->add_theme_constant_override("autohide", 1);
-	p_split->add_theme_constant_override("separation", MAX(1, (int)Math::round(EDSCALE)));
 }
 
 // Flat session-rail row — not the model-popup helper (toggle/heavy wash/right check).
@@ -205,7 +187,7 @@ static String solers_session_display_title(const String &p_raw) {
 static void solers_style_session_line_edit(LineEdit *p_edit) {
 	Ref<StyleBoxFlat> normal = solers_make_stylebox(Color(1, 1, 1, 0.04), Color(1, 1, 1, 0.08), 6, 0);
 	normal->set_content_margin_individual(10 * EDSCALE, 7 * EDSCALE, 10 * EDSCALE, 7 * EDSCALE);
-	Ref<StyleBoxFlat> focus = solers_make_stylebox(Color(1, 1, 1, 0.05), Color(0.94, 0.78, 0.46, 0.35), 6, 0);
+	Ref<StyleBoxFlat> focus = solers_make_stylebox(Color(1, 1, 1, 0.05), Color(solers_accent().r, solers_accent().g, solers_accent().b, 0.35f), 6, 0);
 	focus->set_content_margin_individual(10 * EDSCALE, 7 * EDSCALE, 10 * EDSCALE, 7 * EDSCALE);
 	p_edit->add_theme_style_override("normal", normal);
 	p_edit->add_theme_style_override("focus", focus);
@@ -252,11 +234,26 @@ static void solers_style_model_popup_row(Button *p_row, bool p_selected = false)
 	p_row->add_theme_color_override("font_hover_color", SOLERS_TEXT_PRIMARY);
 	p_row->add_theme_color_override("font_pressed_color", SOLERS_TEXT_PRIMARY);
 	p_row->add_theme_color_override("font_hover_pressed_color", SOLERS_TEXT_PRIMARY);
-	p_row->add_theme_style_override("normal", solers_make_stylebox_margins(Color(0, 0, 0, 0), 5, 8, 3, 8, 3));
-	p_row->add_theme_style_override("hover", solers_make_stylebox_margins(Color(1, 1, 1, 0.060), 5, 8, 3, 8, 3));
-	p_row->add_theme_style_override("pressed", solers_make_stylebox_margins(Color(1, 1, 1, 0.045), 5, 8, 3, 8, 3));
-	p_row->add_theme_style_override("hover_pressed", solers_make_stylebox_margins(Color(1, 1, 1, 0.070), 5, 8, 3, 8, 3));
-	p_row->add_theme_style_override("focus", solers_make_stylebox_margins(Color(0, 0, 0, 0), 5, 8, 3, 8, 3));
+	// Shared StyleBoxes — avoid 5× memnew per row on large catalogs.
+	static Ref<StyleBoxFlat> s_normal;
+	static Ref<StyleBoxFlat> s_hover;
+	static Ref<StyleBoxFlat> s_pressed;
+	static Ref<StyleBoxFlat> s_hover_pressed;
+	static Ref<StyleBoxFlat> s_focus;
+	static real_t s_ed = 0;
+	if (s_normal.is_null() || !Math::is_equal_approx(s_ed, EDSCALE)) {
+		s_ed = EDSCALE;
+		s_normal = solers_make_stylebox_margins(Color(0, 0, 0, 0), 5, 8, 3, 8, 3);
+		s_hover = solers_make_stylebox_margins(Color(1, 1, 1, 0.060), 5, 8, 3, 8, 3);
+		s_pressed = solers_make_stylebox_margins(Color(1, 1, 1, 0.045), 5, 8, 3, 8, 3);
+		s_hover_pressed = solers_make_stylebox_margins(Color(1, 1, 1, 0.070), 5, 8, 3, 8, 3);
+		s_focus = solers_make_stylebox_margins(Color(0, 0, 0, 0), 5, 8, 3, 8, 3);
+	}
+	p_row->add_theme_style_override("normal", s_normal);
+	p_row->add_theme_style_override("hover", s_hover);
+	p_row->add_theme_style_override("pressed", s_pressed);
+	p_row->add_theme_style_override("hover_pressed", s_hover_pressed);
+	p_row->add_theme_style_override("focus", s_focus);
 }
 
 static Button *solers_make_model_popup_group(const String &p_title, const Ref<Texture2D> &p_icon = Ref<Texture2D>()) {
@@ -373,12 +370,16 @@ static String solers_compact_label(const String &p_label) {
 	return label.substr(0, 25) + "...";
 }
 
-static String solers_resolve_model_display(SolersAgentSession *p_session, const Dictionary &p_provider_data, const String &p_model) {
+static SolersModelsDev *solers_dock_models_dev(SolersSettingsService *p_settings) {
+	return p_settings && p_settings->get_provider_registry() ? p_settings->get_provider_registry()->get_models_dev() : nullptr;
+}
+
+static String solers_resolve_model_display(SolersSettingsService *p_settings, const Dictionary &p_provider_data, const String &p_model) {
 	const Dictionary profile = p_provider_data.get("profile", Dictionary());
 	const String provider = String(p_provider_data.get("provider", String())).strip_edges();
 	const String catalog_id = profile.get("catalog_provider", provider);
-	const Dictionary catalog = p_session ? p_session->get_model_provider(catalog_id, p_provider_data.get("base_url", String())) : Dictionary();
-	const Dictionary model_info = Dictionary(catalog.get("models", Dictionary())).get(p_model, Dictionary());
+	SolersModelsDev *models_dev = solers_dock_models_dev(p_settings);
+	const Dictionary model_info = models_dev ? models_dev->get_model(StringName(catalog_id), p_model) : Dictionary();
 	return solers_model_display_label(p_model, model_info, profile.get("model_labels", Dictionary()));
 }
 
@@ -501,6 +502,11 @@ static StringName solers_tool_glyph_for_metadata(const Dictionary &p_tool) {
 	const String exposure = String(p_tool.get("exposure", String())).strip_edges();
 	if (exposure == "hidden") {
 		return SNAME("shield");
+	}
+
+	const StringName from_kind = solers_tool_glyph_for_ui_kind(String(p_tool.get("ui_kind", "default")).strip_edges());
+	if (from_kind != StringName()) {
+		return from_kind;
 	}
 
 	const String permission = String(p_tool.get("permission", "observe"));
@@ -634,15 +640,15 @@ void SolersDock::_refresh_model_chip() {
 
 	const Dictionary chip_profile = provider_data.get("profile", Dictionary());
 	const String catalog_id = chip_profile.get("catalog_provider", provider);
-	model_chip->set_leading_texture(SolersChatGlyphs::provider_logo(catalog_id, int(Math::round(13.0f * EDSCALE))));
+	model_chip->set_leading_texture(SolersChatGlyphs::provider_logo(catalog_id, int(Math::round(12.0f * EDSCALE))));
 
 	if (!available) {
-		model_chip->set_texts(solers_compact_label(solers_resolve_model_display(agent_session, provider_data, model)), TTR("Local only"));
+		model_chip->set_texts(solers_compact_label(solers_resolve_model_display(settings_service, provider_data, model)), TTR("Local only"));
 		model_chip->set_tooltip_text(TTR("Local Models Only blocks this remote provider. Choose a local model or disable Local Models Only in Provider Settings."));
 		return;
 	}
 
-	model_chip->set_texts(solers_compact_label(solers_resolve_model_display(agent_session, provider_data, model)), solers_reasoning_effort_label(reasoning_effort));
+	model_chip->set_texts(solers_compact_label(solers_resolve_model_display(settings_service, provider_data, model)), solers_reasoning_effort_label(reasoning_effort));
 
 	String tooltip = vformat(TTR("Model: %s\nEffort: %s\nProvider: %s"), model, solers_reasoning_effort_label(reasoning_effort), provider.is_empty() ? TTR("unknown") : provider);
 	if (!base_url.is_empty()) {
@@ -719,14 +725,15 @@ void SolersDock::_on_cell_content_changed() {
 
 void SolersDock::_append_user_message(const String &p_message, const Array &p_attachments) {
 	chat_log += vformat("%sYou\n%s\n", chat_log.is_empty() ? "" : "\n", p_message);
-	if (!message_list) {
+	VBoxContainer *mount = _chat_mount();
+	if (!mount) {
 		return;
 	}
 	_clear_empty_state();
 
 	SolersUserBubble *bubble = memnew(SolersUserBubble);
 	bubble->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
-	message_list->add_child(bubble);
+	mount->add_child(bubble);
 	bubble->set_attachments(p_attachments);
 	bubble->set_message(p_message);
 
@@ -735,7 +742,8 @@ void SolersDock::_append_user_message(const String &p_message, const Array &p_at
 
 void SolersDock::_append_error_row(const String &p_text) {
 	chat_log += vformat("%s\n", p_text);
-	if (!message_list) {
+	VBoxContainer *mount = _chat_mount();
+	if (!mount) {
 		return;
 	}
 	_clear_empty_state();
@@ -746,22 +754,23 @@ void SolersDock::_append_error_row(const String &p_text) {
 	row->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	row->add_theme_color_override("font_color", Color(0.875, 0.478, 0.420));
 	row->add_theme_font_size_override(SceneStringName(font_size), 12 * EDSCALE);
-	message_list->add_child(row);
+	mount->add_child(row);
 
 	callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
 }
 
 void SolersDock::_ensure_status_cell(const String &p_status) {
-	if (!message_list) {
+	VBoxContainer *mount = _chat_mount();
+	if (!mount) {
 		return;
 	}
 	_clear_empty_state();
 	if (!status_cell) {
 		status_cell = memnew(SolersStatusCell);
-		message_list->add_child(status_cell);
+		mount->add_child(status_cell);
 	}
 	// The status row always trails the latest content.
-	message_list->move_child(status_cell, message_list->get_child_count() - 1);
+	mount->move_child(status_cell, mount->get_child_count() - 1);
 	status_cell->set_status(p_status);
 	_on_cell_content_changed();
 }
@@ -791,12 +800,16 @@ SolersAssistantCell *SolersDock::_ensure_text_cell() {
 	if (active_text_cell) {
 		return active_text_cell;
 	}
+	VBoxContainer *mount = _chat_mount();
+	if (!mount) {
+		return nullptr;
+	}
 	_clear_empty_state();
 	active_text_cell = memnew(SolersAssistantCell);
 	active_text_cell->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
-	message_list->add_child(active_text_cell);
+	mount->add_child(active_text_cell);
 	if (status_cell) {
-		message_list->move_child(status_cell, message_list->get_child_count() - 1);
+		mount->move_child(status_cell, mount->get_child_count() - 1);
 	}
 	return active_text_cell;
 }
@@ -890,7 +903,7 @@ void SolersDock::_on_stop_chat_pressed() {
 			permission_manager->reject_request(request.get("id", 0));
 		}
 	}
-	_finish_turn_cells();
+	// Abort emits turn_completed(outcome=aborted); that handler shows the visible status.
 	_refresh_status();
 	_update_send_enabled();
 }
@@ -908,17 +921,21 @@ void SolersDock::_toggle_session_sidebar() {
 	const bool show = !session_sidebar->is_visible();
 	session_sidebar->set_visible(show);
 	if (session_button) {
-		session_button->set_accent(show ? Color(0.94, 0.78, 0.46) : Color(0, 0, 0, 0));
+		session_button->set_accent(show ? solers_accent() : Color(0, 0, 0, 0));
 	}
 	if (EditorSettings::get_singleton()) {
 		EditorSettings::get_singleton()->set_project_metadata("solers", "session_sidebar_visible", show);
 	}
-	// Instant toggle: never rescan transcript here. Refresh only if the list
-	// was never built (empty) — data events call notify_sessions_changed().
+	// Show the shell this frame; fill the list next idle so a cold index rebuild
+	// cannot stall the toggle click. solers_list_sessions rebuilds if needed.
 	if (show && session_list && session_list->get_child_count() == 0) {
-		_refresh_session_list();
+		_request_session_list_refresh();
 	}
 	_sync_layout_widths();
+}
+
+void SolersDock::_request_session_list_refresh() {
+	callable_mp(this, &SolersDock::_refresh_session_list).call_deferred();
 }
 
 void SolersDock::_on_new_agent_pressed() {
@@ -930,6 +947,19 @@ void SolersDock::_on_new_agent_pressed() {
 	_refresh_session_list();
 }
 
+void SolersDock::_highlight_session_selection() {
+	if (!session_list) {
+		return;
+	}
+	for (int i = 0; i < session_list->get_child_count(); i++) {
+		Button *row = Object::cast_to<Button>(session_list->get_child(i));
+		if (!row || String(row->get_meta("session_kind", String())) != "row") {
+			continue;
+		}
+		solers_style_session_row(row, String(row->get_meta("session_id", String())) == session_current_id);
+	}
+}
+
 void SolersDock::_on_session_row_pressed(const String &p_session_id) {
 	if (p_session_id.is_empty()) {
 		return;
@@ -938,7 +968,9 @@ void SolersDock::_on_session_row_pressed(const String &p_session_id) {
 	if (session_select_callback.is_valid()) {
 		session_select_callback.call(p_session_id);
 	}
-	_refresh_session_list();
+	// Selection is a highlight change, not a list-data change. Rescanning
+	// transcript.jsonl here was freezing the editor for seconds on every click.
+	_highlight_session_selection();
 }
 
 void SolersDock::_on_session_filter_changed(const String &p_text) {
@@ -1059,16 +1091,24 @@ void SolersDock::set_new_session_callback(const Callable &p_callback) {
 }
 
 void SolersDock::set_session_context(const String &p_project_path, const String &p_session_id) {
+	const bool project_changed = session_project_path != p_project_path;
 	session_project_path = p_project_path;
 	session_current_id = p_session_id;
-	if (session_sidebar && session_sidebar->is_visible()) {
-		_refresh_session_list();
+	if (!session_sidebar || !session_sidebar->is_visible()) {
+		return;
+	}
+	// Only a project switch changes which sessions belong in the list.
+	// Same-project session switches only need the selected-row accent.
+	if (project_changed || (session_list && session_list->get_child_count() == 0)) {
+		_request_session_list_refresh();
+	} else {
+		_highlight_session_selection();
 	}
 }
 
 void SolersDock::notify_sessions_changed() {
 	if (session_sidebar && session_sidebar->is_visible()) {
-		_refresh_session_list();
+		_request_session_list_refresh();
 	}
 }
 
@@ -1112,13 +1152,12 @@ void SolersDock::_on_model_chip_pressed() {
 	model_menu_model_row = solers_make_model_menu_parent_row(
 			active_provider.is_empty() ? Ref<Texture2D>() : SolersChatGlyphs::provider_logo(active_catalog_id, int(Math::round(14.0f * EDSCALE))),
 			TTR("Model"),
-			active_model.is_empty() ? TTR("None") : solers_compact_label(solers_resolve_model_display(agent_session, provider_data, active_model)));
+			active_model.is_empty() ? TTR("None") : solers_compact_label(solers_resolve_model_display(settings_service, provider_data, active_model)));
 	model_menu_model_row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_open_model_submenu).bind(SOLERS_SUBMENU_MODEL));
-	model_menu_model_row->connect(SceneStringName(mouse_entered), callable_mp(this, &SolersDock::_open_model_submenu).bind(SOLERS_SUBMENU_MODEL));
 	model_menu_box->add_child(model_menu_model_row);
 
-	const Dictionary active_catalog = agent_session ? agent_session->get_model_provider(active_catalog_id, provider_data.get("base_url", String())) : Dictionary();
-	const Dictionary active_model_info = Dictionary(active_catalog.get("models", Dictionary())).get(active_model, Dictionary());
+	SolersModelsDev *models_dev = solers_dock_models_dev(settings_service);
+	const Dictionary active_model_info = models_dev ? models_dev->get_model(StringName(active_catalog_id), active_model) : Dictionary();
 	const Array efforts = SolersModelsDev::reasoning_efforts(active_model_info);
 	if (provider_data.get("available", false) && !active_model.is_empty() && !efforts.is_empty()) {
 		model_menu_effort_row = solers_make_model_menu_parent_row(Ref<Texture2D>(), TTR("Effort"), solers_reasoning_effort_label(active_effort));
@@ -1174,14 +1213,18 @@ void SolersDock::_position_model_menu() {
 }
 
 void SolersDock::_open_model_submenu(int p_kind) {
-	if (!model_submenu || !model_submenu_scroll || !model_submenu_box) {
+	if (!model_submenu || !model_submenu_scroll || !model_submenu_list) {
 		return;
 	}
 	if (model_submenu_kind == p_kind && model_submenu->is_visible()) {
 		return;
 	}
 	model_submenu_kind = p_kind;
-	solers_clear_children(model_submenu_box);
+	model_submenu_entries.clear();
+	if (model_submenu_search) {
+		model_submenu_search->set_visible(p_kind == SOLERS_SUBMENU_MODEL);
+		model_submenu_search->set_text(String());
+	}
 
 	const Dictionary provider_data = settings_service ? Dictionary(settings_service->get_provider_config().get("data", Dictionary())) : Dictionary();
 	const String active_provider = String(provider_data.get("provider", String())).strip_edges();
@@ -1191,8 +1234,8 @@ void SolersDock::_open_model_submenu(int p_kind) {
 	if (p_kind == SOLERS_SUBMENU_MODEL) {
 		const Dictionary connected_data = settings_service ? Dictionary(settings_service->list_connected_provider_configs().get("data", Dictionary())) : Dictionary();
 		const Array connected = connected_data.get("providers", Array());
+		SolersModelsDev *models_dev = solers_dock_models_dev(settings_service);
 
-		int visible_provider_count = 0;
 		for (const Variant &config_value : connected) {
 			const Dictionary config = config_value;
 			const bool available = config.get("available", false);
@@ -1200,25 +1243,26 @@ void SolersDock::_open_model_submenu(int p_kind) {
 			const String provider = config.get("provider", String());
 			const bool selected = active_provider == provider;
 			const String catalog_id = profile.get("catalog_provider", provider);
-			const Dictionary catalog_provider = agent_session ? agent_session->get_model_provider(catalog_id, config.get("base_url", String())) : Dictionary();
-			const Dictionary catalog_models = catalog_provider.get("models", Dictionary());
+			const StringName catalog_name = StringName(catalog_id);
+			const Array allowed_models = profile.get("allowed_models", Array());
+			const bool has_allowlist = !allowed_models.is_empty();
 
 			Array models;
 			HashSet<String> seen_models;
 			solers_add_unique_model(models, seen_models, config.get("model", String()));
-			for (const Variant &profile_model : Array(profile.get("allowed_models", Array()))) {
+			for (const Variant &profile_model : allowed_models) {
 				solers_add_unique_model(models, seen_models, profile_model);
 			}
-			for (const Variant &model_id_value : catalog_models.keys()) {
-				const String model_id = model_id_value;
-				// Agent sessions need tool calls; the catalog's tool_call flag
-				// is authoritative. Explicit profile/config entries above are
-				// user-declared and bypass this filter.
-				const Dictionary model_info = catalog_models.get(model_id, Dictionary());
-				if (model_info.has("tool_call") && !(bool)model_info["tool_call"]) {
-					continue;
-				}
-				if (!settings_service || settings_service->is_model_allowed(provider, model_id)) {
+			if (models_dev) {
+				for (const Variant &model_id_value : models_dev->list_model_ids(catalog_name)) {
+					const String model_id = model_id_value;
+					if (has_allowlist && !allowed_models.has(model_id)) {
+						continue;
+					}
+					const Dictionary model_info = models_dev->get_model(catalog_name, model_id);
+					if (model_info.has("tool_call") && !(bool)model_info["tool_call"]) {
+						continue;
+					}
 					solers_add_unique_model(models, seen_models, model_id);
 				}
 			}
@@ -1227,61 +1271,118 @@ void SolersDock::_open_model_submenu(int p_kind) {
 				continue;
 			}
 
-			visible_provider_count++;
 			const String provider_label = profile.get("label", provider);
-			model_submenu_box->add_child(solers_make_model_popup_group(
-					available ? provider_label : vformat(TTR("%s — blocked by Local Models Only"), provider_label),
-					SolersChatGlyphs::provider_logo(catalog_id, int(Math::round(13.0f * EDSCALE)))));
+			Dictionary group;
+			group["kind"] = "group";
+			group["provider"] = provider;
+			group["label"] = available ? provider_label : vformat(TTR("%s — blocked by Local Models Only"), provider_label);
+			group["catalog_id"] = catalog_id;
+			model_submenu_entries.push_back(group);
+
+			const Dictionary model_labels = profile.get("model_labels", Dictionary());
 			for (const Variant &model_value : models) {
 				const String model_id = model_value;
-				if (settings_service && !settings_service->is_model_allowed(provider, model_id)) {
+				if (has_allowlist && !allowed_models.has(model_id)) {
 					continue;
 				}
-				const Dictionary model_info = catalog_models.get(model_id, Dictionary());
-				const Dictionary model_labels = profile.get("model_labels", Dictionary());
-				const String display_name = model_info.get("name", model_labels.get(model_id, model_id));
-				Button *row = solers_make_model_popup_row(display_name, model_id, selected && model_id == active_model);
-				if (available) {
-					row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_set_model_provider_from_popup).bind(provider, model_id));
-				} else {
-					row->set_disabled(true);
-					row->add_theme_color_override("font_disabled_color", SOLERS_TEXT_DIM);
-					row->set_tooltip_text(TTR("Disable Local Models Only to use this remote model."));
-				}
-				model_submenu_box->add_child(row);
+				const Dictionary model_info = models_dev ? models_dev->get_model(catalog_name, model_id) : Dictionary();
+				Dictionary entry;
+				entry["kind"] = "model";
+				entry["provider"] = provider;
+				entry["model_id"] = model_id;
+				entry["label"] = model_info.get("name", model_labels.get(model_id, model_id));
+				entry["available"] = available;
+				entry["selected"] = selected && model_id == active_model;
+				model_submenu_entries.push_back(entry);
 			}
 		}
-
-		if (visible_provider_count == 0) {
-			Label *empty = memnew(Label(connected.is_empty() ? TTR("No connected model provider. Connect one in Provider Settings.") : TTR("Connected providers do not expose any selectable models.")));
-			empty->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-			empty->add_theme_color_override("font_color", SOLERS_TEXT_DIM);
-			empty->set_custom_minimum_size(Size2(0, 52 * EDSCALE));
-			model_submenu_box->add_child(empty);
-		}
+		_rebuild_model_submenu_list();
 		_position_model_submenu(model_menu_model_row);
 	} else if (p_kind == SOLERS_SUBMENU_EFFORT) {
+		solers_clear_children(model_submenu_list);
 		const Dictionary active_profile = provider_data.get("profile", Dictionary());
 		const String active_catalog_id = active_profile.get("catalog_provider", active_provider);
-		const Dictionary active_catalog = agent_session ? agent_session->get_model_provider(active_catalog_id, provider_data.get("base_url", String())) : Dictionary();
-		const Dictionary active_model_info = Dictionary(active_catalog.get("models", Dictionary())).get(active_model, Dictionary());
+		SolersModelsDev *models_dev = solers_dock_models_dev(settings_service);
+		const Dictionary active_model_info = models_dev ? models_dev->get_model(StringName(active_catalog_id), active_model) : Dictionary();
 		const Array efforts = SolersModelsDev::reasoning_efforts(active_model_info);
 
 		Button *default_effort = solers_make_model_popup_row(TTR("Default"), String(), active_effort.is_empty());
 		default_effort->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_set_reasoning_effort_from_popup).bind(String()));
-		model_submenu_box->add_child(default_effort);
+		model_submenu_list->add_child(default_effort);
 		for (const Variant &effort_value : efforts) {
 			const String effort = effort_value;
 			Button *row = solers_make_model_popup_row(solers_reasoning_effort_label(effort), effort, effort == active_effort);
 			row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_set_reasoning_effort_from_popup).bind(effort));
-			model_submenu_box->add_child(row);
+			model_submenu_list->add_child(row);
 		}
 		_position_model_submenu(model_menu_effort_row);
 	}
 }
 
+void SolersDock::_on_model_submenu_search(const String &p_text) {
+	if (model_submenu_kind == SOLERS_SUBMENU_MODEL) {
+		_rebuild_model_submenu_list(p_text);
+	}
+}
+
+void SolersDock::_rebuild_model_submenu_list(const String &p_filter) {
+	if (!model_submenu_list) {
+		return;
+	}
+	solers_clear_children(model_submenu_list);
+	const String filter = p_filter.strip_edges().to_lower();
+	int visible_models = 0;
+	HashSet<String> emitted_groups;
+
+	for (int i = 0; i < model_submenu_entries.size(); i++) {
+		const Dictionary entry = model_submenu_entries[i];
+		if (String(entry.get("kind", String())) != "model") {
+			continue;
+		}
+		const String model_id = entry.get("model_id", String());
+		const String label = entry.get("label", model_id);
+		if (!filter.is_empty() && !model_id.to_lower().contains(filter) && !label.to_lower().contains(filter)) {
+			continue;
+		}
+		const String provider = entry.get("provider", String());
+		if (!emitted_groups.has(provider)) {
+			for (const Variant &g_v : model_submenu_entries) {
+				const Dictionary g = g_v;
+				if (g.get("kind", String()) == "group" && String(g.get("provider", String())) == provider) {
+					model_submenu_list->add_child(solers_make_model_popup_group(
+							g.get("label", provider),
+							SolersChatGlyphs::provider_logo(g.get("catalog_id", provider), int(Math::round(13.0f * EDSCALE)))));
+					emitted_groups.insert(provider);
+					break;
+				}
+			}
+		}
+		const bool available = entry.get("available", false);
+		Button *row = solers_make_model_popup_row(label, model_id, entry.get("selected", false));
+		if (available) {
+			row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_set_model_provider_from_popup).bind(provider, model_id));
+		} else {
+			row->set_disabled(true);
+			row->add_theme_color_override("font_disabled_color", SOLERS_TEXT_DIM);
+			row->set_tooltip_text(TTR("Disable Local Models Only to use this remote model."));
+		}
+		model_submenu_list->add_child(row);
+		visible_models++;
+	}
+
+	if (visible_models == 0) {
+		Label *empty = memnew(Label(model_submenu_entries.is_empty()
+						? TTR("No connected model provider. Connect one in Provider Settings.")
+						: (filter.is_empty() ? TTR("Connected providers do not expose any selectable models.") : TTR("No models match this search."))));
+		empty->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+		empty->add_theme_color_override("font_color", SOLERS_TEXT_DIM);
+		empty->set_custom_minimum_size(Size2(0, 52 * EDSCALE));
+		model_submenu_list->add_child(empty);
+	}
+}
+
 void SolersDock::_position_model_submenu(Button *p_anchor_row) {
-	if (!model_popup_overlay || !model_menu || !model_submenu || !model_submenu_scroll || !model_submenu_box || !p_anchor_row) {
+	if (!model_popup_overlay || !model_menu || !model_submenu || !model_submenu_scroll || !model_submenu_list || !p_anchor_row) {
 		return;
 	}
 
@@ -1295,14 +1396,15 @@ void SolersDock::_position_model_submenu(Button *p_anchor_row) {
 
 	const int max_w = MAX(1, int(overlay_size.x) - margin * 2);
 	const int submenu_w = CLAMP(int(260 * EDSCALE), 1, max_w);
-	const float natural_h = model_submenu_box->get_combined_minimum_size().y + popup_pad * 2;
-	const int max_h = MIN(int(320 * EDSCALE), MAX(1, int(overlay_size.y) - margin * 2));
+	const float search_h = (model_submenu_search && model_submenu_search->is_visible()) ? model_submenu_search->get_combined_minimum_size().y + 4 * EDSCALE : 0;
+	const float natural_h = model_submenu_list->get_combined_minimum_size().y + search_h + popup_pad * 2;
+	const int max_h = MIN(int(360 * EDSCALE), MAX(1, int(overlay_size.y) - margin * 2));
 	const int submenu_h = int(CLAMP(natural_h, float(MIN(int(60 * EDSCALE), max_h)), float(max_h)));
 
 	const int content_w = MAX(1, submenu_w - popup_pad * 2);
-	const int content_h = MAX(1, submenu_h - popup_pad * 2);
+	const int content_h = MAX(1, submenu_h - popup_pad * 2 - int(search_h));
 	model_submenu_scroll->set_custom_minimum_size(Size2(content_w, content_h));
-	model_submenu_box->set_custom_minimum_size(Size2(content_w, 0));
+	model_submenu_list->set_custom_minimum_size(Size2(content_w, 0));
 	model_submenu_scroll->get_v_scroll_bar()->set_value(0);
 
 	// Beside the root menu: prefer the right edge, fall back to the left.
@@ -1387,7 +1489,7 @@ void SolersDock::_reset_model_defaults_from_popup() {
 
 void SolersDock::_open_model_settings_from_popup() {
 	_hide_model_popup();
-	open_provider_settings("plugins");
+	open_provider_settings("llm");
 }
 
 void SolersDock::open_provider_settings(const String &p_category) {
@@ -1422,64 +1524,167 @@ void SolersDock::start_new_chat() {
 }
 
 void SolersDock::load_chat_history(const Array &p_messages) {
-	_clear_chat_view(p_messages.is_empty());
-	for (int i = 0; i < p_messages.size(); i++) {
-		const Variant item = p_messages[i];
-		if (item.get_type() != Variant::DICTIONARY) {
-			continue;
+	// Mount history across frames so a long transcript cannot freeze the
+	// editor inside the session-row click. A newer load cancels the older one.
+	_clear_history_staging();
+	history_load_token++;
+	pending_history_messages = p_messages;
+	pending_history_index = 0;
+	history_loading = true;
+	if (!history_staging) {
+		history_staging = memnew(VBoxContainer);
+		history_staging->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		history_staging->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+		history_staging->add_theme_constant_override("separation", 14 * EDSCALE);
+	}
+	history_mount = history_staging;
+	callable_mp(this, &SolersDock::_pump_history_load).call_deferred();
+}
+
+VBoxContainer *SolersDock::_chat_mount() const {
+	return history_mount ? history_mount : message_list;
+}
+
+void SolersDock::_clear_history_staging() {
+	history_mount = nullptr;
+	if (!history_staging) {
+		return;
+	}
+	while (history_staging->get_child_count() > 0) {
+		Node *child = history_staging->get_child(0);
+		history_staging->remove_child(child);
+		child->queue_free();
+	}
+}
+
+void SolersDock::_swap_history_staging() {
+	if (!history_staging || !message_list) {
+		history_mount = nullptr;
+		return;
+	}
+	while (message_list->get_child_count() > 0) {
+		Node *child = message_list->get_child(0);
+		message_list->remove_child(child);
+		child->queue_free();
+	}
+	_clear_empty_state();
+	while (history_staging->get_child_count() > 0) {
+		Node *child = history_staging->get_child(0);
+		history_staging->remove_child(child);
+		message_list->add_child(child);
+	}
+	history_mount = nullptr;
+}
+
+void SolersDock::_append_history_message(const Dictionary &p_message) {
+	const String role = p_message.get("role", String());
+	const String content = p_message.get("content", String());
+	if (String(p_message.get("origin", String())) == "compaction_summary") {
+		return;
+	}
+	if (role == SolersLLMRole::USER) {
+		if (content.is_empty()) {
+			return;
 		}
-		const Dictionary message = item;
-		const String role = message.get("role", String());
-		const String content = message.get("content", String());
-		if (String(message.get("origin", String())) == "compaction_summary") {
-			continue;
-		}
-		if (role == SolersLLMRole::USER) {
-			if (content.is_empty()) {
-				continue;
-			}
-			_settle_tool_group();
-			_append_user_message(SolersMention::strip_prompt_block(content));
-		} else if (role == SolersLLMRole::ASSISTANT) {
-			_settle_tool_group();
-			const String reasoning = String(message.get("reasoning", String())).strip_edges();
-			if (!reasoning.is_empty()) {
+		_settle_tool_group();
+		_append_user_message(SolersMention::strip_prompt_block(content));
+	} else if (role == SolersLLMRole::ASSISTANT) {
+		_settle_tool_group();
+		const String reasoning = String(p_message.get("reasoning", String())).strip_edges();
+		if (!reasoning.is_empty()) {
+			VBoxContainer *mount = _chat_mount();
+			if (mount) {
 				_clear_empty_state();
 				SolersThinkingCell *thinking = memnew(SolersThinkingCell);
 				thinking->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
-				message_list->add_child(thinking);
+				mount->add_child(thinking);
 				thinking->set_settled_reasoning(reasoning);
 			}
-			if (!content.is_empty()) {
-				_on_agent_assistant_message(content);
+		}
+		if (!content.is_empty()) {
+			_on_agent_assistant_message(content);
+		}
+		const Array tool_calls = p_message.get("tool_calls", Array());
+		for (int t = 0; t < tool_calls.size(); t++) {
+			const Dictionary call = tool_calls[t];
+			_on_agent_tool_started(call.get("id", String()), call.get("name", String()), call.get("arguments", String()));
+		}
+	} else if (role == SolersLLMRole::TOOL) {
+		const String call_id = p_message.get("tool_call_id", String());
+		const String tool_name = p_message.get("name", String());
+		if (call_id.is_empty() || !tool_cells_by_id.has(call_id)) {
+			_on_agent_tool_started(call_id, tool_name, "{}");
+		}
+		Dictionary result;
+		result["ok"] = true;
+		const String raw = content.strip_edges();
+		if (!raw.is_empty()) {
+			Ref<JSON> json;
+			json.instantiate();
+			if (json->parse(raw) == OK && json->get_data().get_type() == Variant::DICTIONARY) {
+				result = json->get_data();
 			}
-			const Array tool_calls = message.get("tool_calls", Array());
-			for (int t = 0; t < tool_calls.size(); t++) {
-				const Dictionary call = tool_calls[t];
-				_on_agent_tool_started(call.get("id", String()), call.get("name", String()), call.get("arguments", String()));
-			}
-		} else if (role == SolersLLMRole::TOOL) {
-			const String call_id = message.get("tool_call_id", String());
-			const String tool_name = message.get("name", String());
-			if (call_id.is_empty() || !tool_cells_by_id.has(call_id)) {
-				_on_agent_tool_started(call_id, tool_name, "{}");
-			}
-			Dictionary result;
-			result["ok"] = true;
-			const String raw = content.strip_edges();
-			if (!raw.is_empty()) {
-				Ref<JSON> json;
-				json.instantiate();
-				if (json->parse(raw) == OK && json->get_data().get_type() == Variant::DICTIONARY) {
-					result = json->get_data();
-				}
-			}
-			if (message.has("ok")) {
-				result["ok"] = message.get("ok", true);
-			}
-			_on_agent_tool_finished(call_id, tool_name, result, (int)message.get("duration_msec", 0));
+		}
+		if (p_message.has("ok")) {
+			result["ok"] = p_message.get("ok", true);
+		}
+		_on_agent_tool_finished(call_id, tool_name, result, (int)p_message.get("duration_msec", 0));
+	}
+}
+
+void SolersDock::_pump_history_load() {
+	if (!history_loading) {
+		return;
+	}
+	const uint64_t token = history_load_token;
+	if (pending_history_index == 0 && history_mount) {
+		// Reset turn state without clearing the live tree yet (avoids white flash).
+		chat_log = String();
+		scroll_to_bottom_deferred = false;
+		active_thinking_cell = nullptr;
+		active_text_cell = nullptr;
+		status_cell = nullptr;
+		active_tool_group = nullptr;
+		tool_cells_by_id.clear();
+		last_started_tool_cell = nullptr;
+		if (plan_capsule) {
+			plan_capsule->clear_plan();
+		}
+		if (pending_history_messages.is_empty()) {
+			_clear_chat_view(true);
+			history_mount = nullptr;
+			history_loading = false;
+			pending_history_index = 0;
+			return;
 		}
 	}
+	constexpr int HISTORY_BATCH = 8;
+	int mounted = 0;
+	while (pending_history_index < pending_history_messages.size() && mounted < HISTORY_BATCH) {
+		if (token != history_load_token) {
+			_clear_history_staging();
+			return;
+		}
+		const Variant item = pending_history_messages[pending_history_index++];
+		if (item.get_type() == Variant::DICTIONARY) {
+			_append_history_message(item);
+			mounted++;
+		}
+	}
+	if (token != history_load_token) {
+		_clear_history_staging();
+		return;
+	}
+	if (history_mount && (mounted > 0 || pending_history_index >= pending_history_messages.size())) {
+		_swap_history_staging();
+	}
+	if (pending_history_index < pending_history_messages.size()) {
+		callable_mp(this, &SolersDock::_pump_history_load).call_deferred();
+		return;
+	}
+	history_loading = false;
+	pending_history_messages = Array();
+	pending_history_index = 0;
 	if (agent_session) {
 		const Dictionary plan = agent_session->get_plan();
 		if (!plan.is_empty()) {
@@ -1626,6 +1831,11 @@ static Ref<Texture2D> solers_mention_section_icon(const String &p_section_id) {
 	}
 	if (p_section_id == "files") {
 		return SolersChatGlyphs::get(SNAME("tool_file"), size, 2.0f);
+	}
+	if (p_section_id == "folders") {
+		if (EditorNode *editor = EditorNode::get_singleton()) {
+			return editor->get_editor_theme()->get_icon(SNAME("Folder"), EditorStringName(EditorIcons));
+		}
 	}
 	if (p_section_id == "scenes") {
 		return SolersChatGlyphs::get(SNAME("tool_scene"), size, 2.0f);
@@ -1932,23 +2142,45 @@ void SolersDock::_refresh_mention_popup() {
 	const int line = chat_input->get_caret_line();
 	const int column = chat_input->get_caret_column();
 	int mention_start = -1;
-	const String query = SolersMention::query_at(chat_input->get_line(line), column, mention_start);
+	const String at_query = SolersMention::query_at(chat_input->get_line(line), column, mention_start);
 	if (mention_start < 0) {
 		_hide_mention_popup();
 		return;
 	}
 
-	// Typing a filter leaves the section stack and searches across sources.
-	if (!query.is_empty()) {
-		mention_section = String();
+	const bool was_visible = plugin_mention_popup->is_visible();
+	if (plugin_mention_search && !was_visible) {
+		plugin_mention_search->set_text(String());
+	}
+
+	// Popup LineEdit is the section-local filter; @ query seeds cross-source find
+	// only when the search box is empty. Never clear mention_section on filter.
+	String filter;
+	if (plugin_mention_search) {
+		filter = plugin_mention_search->get_text().strip_edges();
+	}
+	if (filter.is_empty()) {
+		filter = at_query;
 	}
 
 	solers_clear_children(plugin_mention_list);
 	plugin_mention_rows.clear();
 
-	const bool filtered = !query.is_empty();
-	if (filtered) {
-		const Array items = SolersMention::collect_section_items(String(), observation_service, query);
+	if (!mention_section.is_empty()) {
+		// Escape returns to root sections (no Back chrome).
+		const Array items = SolersMention::collect_section_items(mention_section, observation_service, filter);
+		for (int i = 0; i < items.size(); i++) {
+			const Dictionary mention = items[i];
+			Button *row = memnew(Button);
+			solers_style_mention_item_row(row, mention);
+			row->set_meta("mention_kind", "item");
+			row->set_meta("mention", mention);
+			row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_select_mention).bind(mention));
+			plugin_mention_list->add_child(row);
+			plugin_mention_rows.push_back(row);
+		}
+	} else if (!filter.is_empty()) {
+		const Array items = SolersMention::collect_section_items(String(), observation_service, filter, SolersMention::COLLECT_LIMIT);
 		String last_source;
 		for (int i = 0; i < items.size(); i++) {
 			const Dictionary mention = items[i];
@@ -1965,37 +2197,19 @@ void SolersDock::_refresh_mention_popup() {
 			plugin_mention_list->add_child(row);
 			plugin_mention_rows.push_back(row);
 		}
-	} else if (mention_section.is_empty()) {
+	} else {
 		const Array sections = SolersMention::collect_root_sections(observation_service, String());
 		for (int i = 0; i < sections.size(); i++) {
 			const Dictionary section = sections[i];
 			const String section_id = String(section.get("id", String()));
 			const String label = String(section.get("label", section_id));
 			const int count = (int)section.get("count", 0);
-			Button *row = solers_make_model_menu_parent_row(solers_mention_section_icon(section_id), label, itos(count));
+			const bool truncated = (bool)section.get("truncated", false);
+			const String badge = truncated ? itos(count) + "+" : itos(count);
+			Button *row = solers_make_model_menu_parent_row(solers_mention_section_icon(section_id), label, badge);
 			row->set_meta("mention_kind", "section");
 			row->set_meta("section_id", section_id);
 			row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_open_mention_section).bind(section_id));
-			plugin_mention_list->add_child(row);
-			plugin_mention_rows.push_back(row);
-		}
-	} else {
-		Button *back = memnew(Button);
-		solers_style_model_popup_row(back);
-		back->set_text(String::utf8("\u2190 ") + TTR("Back"));
-		back->set_meta("mention_kind", "back");
-		back->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_open_mention_section).bind(String()));
-		plugin_mention_list->add_child(back);
-		plugin_mention_rows.push_back(back);
-
-		const Array items = SolersMention::collect_section_items(mention_section, observation_service, String());
-		for (int i = 0; i < items.size(); i++) {
-			const Dictionary mention = items[i];
-			Button *row = memnew(Button);
-			solers_style_mention_item_row(row, mention);
-			row->set_meta("mention_kind", "item");
-			row->set_meta("mention", mention);
-			row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_select_mention).bind(mention));
 			plugin_mention_list->add_child(row);
 			plugin_mention_rows.push_back(row);
 		}
@@ -2014,11 +2228,12 @@ void SolersDock::_refresh_mention_popup() {
 	const Rect2 input_rect = chat_input->get_global_rect();
 	const Rect2 dock_rect = get_global_rect();
 	const float width = MIN(360.0f * EDSCALE, MAX(220.0f * EDSCALE, input_rect.size.x));
-	const float estimated = (plugin_mention_list->get_child_count() * 30.0f + 12.0f) * EDSCALE;
-	const float measured = plugin_mention_list->get_combined_minimum_size().y + 12.0f * EDSCALE;
+	const float search_h = (plugin_mention_search ? plugin_mention_search->get_combined_minimum_size().y + 4.0f * EDSCALE : 0.0f);
+	const float estimated = (plugin_mention_list->get_child_count() * 30.0f + 12.0f) * EDSCALE + search_h;
+	const float measured = plugin_mention_list->get_combined_minimum_size().y + 12.0f * EDSCALE + search_h;
 	const float content_height = MAX(estimated, measured);
-	const float max_height = MIN(280.0f * EDSCALE, MAX(120.0f * EDSCALE, get_size().y * 0.45f));
-	const float height = MIN(max_height, MAX(48.0f * EDSCALE, content_height));
+	const float max_height = MIN(320.0f * EDSCALE, MAX(120.0f * EDSCALE, get_size().y * 0.45f));
+	const float height = MIN(max_height, MAX(72.0f * EDSCALE, content_height));
 	const float x = CLAMP(input_rect.position.x, dock_rect.position.x + 6.0f * EDSCALE, MAX(dock_rect.position.x + 6.0f * EDSCALE, dock_rect.position.x + dock_rect.size.x - width - 6.0f * EDSCALE));
 	const float y = MAX(dock_rect.position.y + 6.0f * EDSCALE, input_rect.position.y - height - 6.0f * EDSCALE);
 	plugin_mention_popup->set_size(Size2(width, height));
@@ -2027,9 +2242,18 @@ void SolersDock::_refresh_mention_popup() {
 	plugin_mention_popup->move_to_front();
 }
 
+void SolersDock::_on_mention_search_changed(const String &) {
+	if (plugin_mention_popup && plugin_mention_popup->is_visible()) {
+		_refresh_mention_popup();
+	}
+}
+
 void SolersDock::_hide_mention_popup() {
 	if (plugin_mention_popup) {
 		plugin_mention_popup->hide();
+	}
+	if (plugin_mention_search) {
+		plugin_mention_search->set_text(String());
 	}
 	if (plugin_mention_list) {
 		solers_clear_children(plugin_mention_list);
@@ -2072,10 +2296,6 @@ void SolersDock::_activate_mention_selection() {
 	const String kind = String(row->get_meta("mention_kind", String()));
 	if (kind == "section") {
 		_open_mention_section(String(row->get_meta("section_id", String())));
-		return;
-	}
-	if (kind == "back") {
-		_open_mention_section(String());
 		return;
 	}
 	if (kind == "item") {
@@ -2423,6 +2643,9 @@ void SolersDock::set_services(SolersObservationService *p_observation_service, S
 	mcp_adapter = p_mcp_adapter;
 	rpc_server = p_rpc_server;
 	settings_service = p_settings_service;
+	if (provider_settings_view && p_settings_service) {
+		provider_settings_view->bind_services(p_settings_service);
+	}
 	const bool auto_mode = EditorSettings::get_singleton() ? (bool)EditorSettings::get_singleton()->get_project_metadata("solers", "auto_approve_mode", false) : false;
 	_set_auto_approve_mode(auto_mode, false);
 	_refresh_status();
@@ -2435,10 +2658,10 @@ void SolersDock::make_visible() {
 		const bool show = EditorSettings::get_singleton()->get_project_metadata("solers", "session_sidebar_visible", false);
 		session_sidebar->set_visible(show);
 		if (session_button) {
-			session_button->set_accent(show ? Color(0.94, 0.78, 0.46) : Color(0, 0, 0, 0));
+			session_button->set_accent(show ? solers_accent() : Color(0, 0, 0, 0));
 		}
 		if (show) {
-			_refresh_session_list();
+			_request_session_list_refresh();
 		}
 	}
 }
@@ -2455,7 +2678,9 @@ SolersDock::SolersDock() {
 	set_custom_minimum_size(Size2(340 * EDSCALE, 0));
 	set_h_size_flags(Control::SIZE_FILL);
 	set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	add_theme_style_override("panel", solers_make_stylebox(SOLERS_BG, Color(0.16, 0.16, 0.17, 1), 0, 0));
+	// Cursor-flat shell: fill only — no inset card border. Pane edges come from
+	// apply_chrome_edges (HSplit hairline) + EditorTitleBar, same as session_sidebar.
+	add_theme_style_override("panel", solers_make_stylebox(SOLERS_BG, Color(0, 0, 0, 0), 0, 0));
 
 	root_box = memnew(VBoxContainer);
 	root_box->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -2468,7 +2693,8 @@ SolersDock::SolersDock() {
 	body_split = memnew(HSplitContainer);
 	body_split->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	body_split->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	solers_style_session_split(body_split);
+	// Hairline comes from SolersPMTheme::apply_chrome_edges on the ambient theme.
+	body_split->set_dragger_visibility(SplitContainer::DRAGGER_HIDDEN);
 	root_box->add_child(body_split);
 
 	session_sidebar = memnew(PanelContainer);
@@ -2769,11 +2995,33 @@ SolersDock::SolersDock() {
 	plugin_mention_popup->hide();
 	add_child(plugin_mention_popup);
 
+	MarginContainer *plugin_mention_margin = memnew(MarginContainer);
+	plugin_mention_margin->add_theme_constant_override("margin_left", 6 * EDSCALE);
+	plugin_mention_margin->add_theme_constant_override("margin_right", 6 * EDSCALE);
+	plugin_mention_margin->add_theme_constant_override("margin_top", 6 * EDSCALE);
+	plugin_mention_margin->add_theme_constant_override("margin_bottom", 6 * EDSCALE);
+	plugin_mention_popup->add_child(plugin_mention_margin);
+
+	plugin_mention_box = memnew(VBoxContainer);
+	plugin_mention_box->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	plugin_mention_box->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	plugin_mention_box->add_theme_constant_override("separation", 4 * EDSCALE);
+	plugin_mention_margin->add_child(plugin_mention_box);
+
+	plugin_mention_search = memnew(LineEdit);
+	plugin_mention_search->set_placeholder(TTR("Search..."));
+	plugin_mention_search->set_clear_button_enabled(true);
+	solers_style_bare_search_line_edit(plugin_mention_search);
+	plugin_mention_search->connect(SceneStringName(text_changed), callable_mp(this, &SolersDock::_on_mention_search_changed));
+	plugin_mention_box->add_child(plugin_mention_search);
+
 	plugin_mention_scroll = memnew(ScrollContainer);
+	plugin_mention_scroll->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	plugin_mention_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	plugin_mention_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
 	plugin_mention_scroll->set_vertical_scroll_mode(ScrollContainer::SCROLL_MODE_AUTO);
 	plugin_mention_scroll->add_theme_style_override(SceneStringName(panel), memnew(StyleBoxEmpty));
-	plugin_mention_popup->add_child(plugin_mention_scroll);
+	plugin_mention_box->add_child(plugin_mention_scroll);
 	plugin_mention_list = memnew(VBoxContainer);
 	plugin_mention_list->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	plugin_mention_list->add_theme_constant_override("separation", 2 * EDSCALE);
@@ -2832,7 +3080,22 @@ SolersDock::SolersDock() {
 	model_submenu_margin->add_theme_constant_override("margin_top", 8 * EDSCALE);
 	model_submenu_margin->add_theme_constant_override("margin_bottom", 8 * EDSCALE);
 	model_submenu->add_child(model_submenu_margin);
+	model_submenu_box = memnew(VBoxContainer);
+	model_submenu_box->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	model_submenu_box->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	model_submenu_box->add_theme_constant_override("separation", 4 * EDSCALE);
+	model_submenu_margin->add_child(model_submenu_box);
+
+	model_submenu_search = memnew(LineEdit);
+	model_submenu_search->set_placeholder(TTR("Search models..."));
+	model_submenu_search->set_clear_button_enabled(true);
+	solers_style_bare_search_line_edit(model_submenu_search);
+	model_submenu_search->connect(SceneStringName(text_changed), callable_mp(this, &SolersDock::_on_model_submenu_search));
+	model_submenu_box->add_child(model_submenu_search);
+
 	model_submenu_scroll = memnew(ScrollContainer);
+	model_submenu_scroll->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	model_submenu_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	model_submenu_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
 	model_submenu_scroll->set_vertical_scroll_mode(ScrollContainer::SCROLL_MODE_AUTO);
 	model_submenu_scroll->add_theme_style_override(SceneStringName(panel), memnew(StyleBoxEmpty));
@@ -2841,15 +3104,21 @@ SolersDock::SolersDock() {
 	model_scroll_bar->add_theme_style_override("grabber", solers_make_stylebox(Color(1, 1, 1, 0.14), Color(0, 0, 0, 0), 3, 0));
 	model_scroll_bar->add_theme_style_override("grabber_highlight", solers_make_stylebox(Color(1, 1, 1, 0.22), Color(0, 0, 0, 0), 3, 0));
 	model_scroll_bar->add_theme_style_override("grabber_pressed", solers_make_stylebox(Color(1, 1, 1, 0.30), Color(0, 0, 0, 0), 3, 0));
-	model_submenu_box = memnew(VBoxContainer);
-	model_submenu_box->add_theme_constant_override("separation", 2 * EDSCALE);
-	model_submenu_scroll->add_child(model_submenu_box);
-	model_submenu_margin->add_child(model_submenu_scroll);
+	model_submenu_list = memnew(VBoxContainer);
+	model_submenu_list->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	model_submenu_list->add_theme_constant_override("separation", 2 * EDSCALE);
+	model_submenu_scroll->add_child(model_submenu_list);
+	model_submenu_box->add_child(model_submenu_scroll);
 
 	_update_chat_input_height();
 }
 
 SolersDock::~SolersDock() {
+	_clear_history_staging();
+	if (history_staging) {
+		memdelete(history_staging);
+		history_staging = nullptr;
+	}
 	// The dock is the sole consumer of the glyph cache; release the textures
 	// with it so nothing lives past renderer teardown.
 	SolersChatGlyphs::clear_cache();
@@ -2882,7 +3151,8 @@ void SolersDock::_on_agent_model_request_started() {
 }
 
 void SolersDock::_on_agent_reasoning_delta(const String &p_text) {
-	if (p_text.is_empty() || !message_list) {
+	VBoxContainer *mount = _chat_mount();
+	if (p_text.is_empty() || !mount) {
 		return;
 	}
 	_clear_empty_state();
@@ -2891,14 +3161,14 @@ void SolersDock::_on_agent_reasoning_delta(const String &p_text) {
 	if (!active_thinking_cell || !active_thinking_cell->is_active()) {
 		active_thinking_cell = memnew(SolersThinkingCell);
 		active_thinking_cell->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
-		message_list->add_child(active_thinking_cell);
+		mount->add_child(active_thinking_cell);
 	}
 	active_thinking_cell->append_reasoning(p_text);
 	_on_cell_content_changed();
 }
 
 void SolersDock::_on_agent_assistant_delta(const String &p_text) {
-	if (p_text.is_empty() || !message_list) {
+	if (p_text.is_empty() || !_chat_mount()) {
 		return;
 	}
 	// The model moved from thinking to answering.
@@ -2919,7 +3189,8 @@ void SolersDock::_on_agent_assistant_message(const String &p_text) {
 		active_text_cell = nullptr;
 		return;
 	}
-	if (text.is_empty() || !message_list) {
+	VBoxContainer *mount = _chat_mount();
+	if (text.is_empty() || !mount) {
 		return;
 	}
 	// Provider without streaming: materialize the step in one piece.
@@ -2928,13 +3199,14 @@ void SolersDock::_on_agent_assistant_message(const String &p_text) {
 	_clear_empty_state();
 	SolersAssistantCell *cell = memnew(SolersAssistantCell);
 	cell->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
-	message_list->add_child(cell);
+	mount->add_child(cell);
 	cell->set_full_text_immediate(p_text);
 	_on_cell_content_changed();
 }
 
 void SolersDock::_on_agent_tool_started(const String &p_id, const String &p_name, const String &p_arguments) {
-	if (!message_list) {
+	VBoxContainer *mount = _chat_mount();
+	if (!mount) {
 		return;
 	}
 	if (!p_id.is_empty()) {
@@ -2953,7 +3225,7 @@ void SolersDock::_on_agent_tool_started(const String &p_id, const String &p_name
 	if (!active_tool_group) {
 		active_tool_group = memnew(SolersToolGroupCell);
 		active_tool_group->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
-		message_list->add_child(active_tool_group);
+		mount->add_child(active_tool_group);
 	}
 	SolersToolCell *cell = active_tool_group->add_tool();
 	cell->start(p_name, p_arguments, solers_tool_glyph_for_name(tool_registry, p_name));
@@ -3023,6 +3295,10 @@ void SolersDock::_on_agent_tool_finished(const String &p_id, const String &p_nam
 
 void SolersDock::_on_agent_turn_completed(const Dictionary &p_result) {
 	_finish_turn_cells();
+	if (String(p_result.get("outcome", String())) == "aborted") {
+		const String message = String(p_result.get("text", String())).strip_edges();
+		_append_error_row(message.is_empty() ? TTR("Turn aborted.") : message);
+	}
 	if (agent_session) {
 		const Dictionary plan = agent_session->get_plan();
 		_on_agent_plan_updated(plan.get("explanation", String()), plan.get("plan", Array()));
@@ -3040,10 +3316,14 @@ void SolersDock::_on_agent_turn_failed(const Dictionary &p_error) {
 }
 
 void SolersDock::_on_agent_turn_retrying(int p_attempt, const String &p_message) {
-	// A transient provider/connection failure is being retried with backoff;
-	// keep the turn alive and show a shimmer status instead of an error row.
+	// Context/observation is already ready; this is transport retry. Show the native cause.
 	_settle_thinking_cell();
-	_ensure_status_cell(vformat(TTR("Reconnecting (attempt %d)..."), p_attempt));
+	const String detail = p_message.strip_edges();
+	if (detail.is_empty()) {
+		_ensure_status_cell(vformat(TTR("Reconnecting (attempt %d)..."), p_attempt));
+	} else {
+		_ensure_status_cell(vformat(TTR("Reconnecting (attempt %d): %s"), p_attempt, detail));
+	}
 	_update_send_enabled();
 }
 

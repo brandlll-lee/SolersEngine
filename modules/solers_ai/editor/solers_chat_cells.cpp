@@ -104,21 +104,28 @@ static float solers_draw_shimmer_text(Control *p_control, const Point2 &p_baseli
 	return pos.x - p_baseline_pos.x;
 }
 
+static String _clip_tool_fact(const String &p_value, int p_max = 48) {
+	if (p_value.length() <= p_max) {
+		return p_value;
+	}
+	return p_value.left(MAX(1, p_max - 3)) + "...";
+}
+
 static String _summarize_streaming_tool_args(const String &p_raw) {
-	const int key_pos = p_raw.find("\"path\"");
+	const int key_pos = p_raw.find("\"");
 	if (key_pos >= 0) {
-		const int colon_pos = p_raw.find(":", key_pos + 6);
+		// Prefer the first JSON string value in a partial object (usually path/query).
+		const int colon_pos = p_raw.find(":", key_pos + 1);
 		const int quote_pos = colon_pos >= 0 ? p_raw.find("\"", colon_pos + 1) : -1;
 		const int end_pos = quote_pos >= 0 ? p_raw.find("\"", quote_pos + 1) : -1;
 		if (end_pos > quote_pos) {
-			return "path: " + p_raw.substr(quote_pos + 1, end_pos - quote_pos - 1) + ", (streaming...)";
+			return _clip_tool_fact(p_raw.substr(quote_pos + 1, end_pos - quote_pos - 1));
 		}
 	}
-	return "(streaming...)";
+	return String::utf8("…");
 }
 
-// Compact, human-scannable summary of a tool-call argument object:
-//   {"path":"res://main.tscn","type":"Node2D"} -> path: res://main.tscn, type: Node2D
+// Primary fact for tool-row pills: first non-empty string arg (data-driven).
 String solers_summarize_tool_args(const String &p_arguments_json) {
 	const String raw = p_arguments_json.strip_edges();
 	if (raw.is_empty() || raw == "{}") {
@@ -129,48 +136,33 @@ String solers_summarize_tool_args(const String &p_arguments_json) {
 	}
 	Ref<JSON> json;
 	json.instantiate();
-	const Error parse_err = json->parse(raw);
-	if (parse_err != OK) {
+	if (json->parse(raw) != OK) {
 		return _summarize_streaming_tool_args(raw);
 	}
 	const Variant parsed = json->get_data();
 	if (parsed.get_type() != Variant::DICTIONARY) {
-		return raw.left(96);
+		return _clip_tool_fact(raw);
 	}
 	const Dictionary args = parsed;
-	String out;
-	int listed = 0;
 	for (const KeyValue<Variant, Variant> &kv : args) {
-		if (listed >= 4 || out.length() > 88) {
-			out += ", ...";
-			break;
+		if (kv.value.get_type() == Variant::STRING) {
+			const String value = String(kv.value).strip_edges();
+			if (!value.is_empty()) {
+				return _clip_tool_fact(value);
+			}
 		}
-		String value;
-		switch (kv.value.get_type()) {
-			case Variant::STRING: {
-				value = String(kv.value);
-				if (value.length() > 40) {
-					value = value.left(37) + "...";
-				}
-			} break;
-			case Variant::DICTIONARY:
-			case Variant::ARRAY: {
-				value = JSON::stringify(kv.value, "", false, true);
-				if (value.length() > 40) {
-					value = value.left(37) + "...";
-				}
-			} break;
-			default: {
-				value = kv.value.stringify();
-			} break;
-		}
-		if (!out.is_empty()) {
-			out += ", ";
-		}
-		out += String(kv.key) + ": " + value;
-		listed++;
 	}
-	return out;
+	for (const KeyValue<Variant, Variant> &kv : args) {
+		switch (kv.value.get_type()) {
+			case Variant::INT:
+			case Variant::FLOAT:
+			case Variant::BOOL:
+				return _clip_tool_fact(kv.value.stringify());
+			default:
+				break;
+		}
+	}
+	return String();
 }
 
 /* ------------------------------------------------------------------ */
@@ -216,7 +208,11 @@ void SolersUserBubble::_shape(float p_cell_width) {
 	const Ref<Font> font = solers_cell_font(this);
 	const int font_size = int(14 * ed);
 	line_height = font.is_valid() ? font->get_height(font_size) + 3.0f * ed : float(font_size) + 3.0f * ed;
-	const float max_text_width = MIN(cell_width * 0.78f, 380.0f * ed);
+	// Parent cell width is the only authority. Padding is reserved up front so
+	// shaped content never asks the draw path for more than the cell owns.
+	const float pad_h = 12.0f * ed;
+	const float max_content = MAX(cell_width - pad_h * 2.0f, 40.0f * ed);
+	const float max_text_width = MIN(max_content, 380.0f * ed);
 	const int icon_px = int(Math::round(13.0f * ed));
 
 	shaped_lines.clear();
@@ -252,7 +248,7 @@ void SolersUserBubble::_shape(float p_cell_width) {
 					chip.text = label;
 					chip.mention = mention;
 					const Ref<Texture2D> icon = solers_mention_chip_icon(mention, icon_px);
-					chip.width = solers_mention_chip_width(label, font, font_size, icon.is_valid());
+					chip.width = MIN(solers_mention_chip_width(label, font, font_size, icon.is_valid()), max_text_width);
 					pending.push_back(chip);
 				}
 				cursor = start + len;
@@ -284,12 +280,12 @@ void SolersUserBubble::_shape(float p_cell_width) {
 					line_w += seg.width;
 					continue;
 				}
-				// Wrap plain text on spaces when needed.
+				// Wrap plain text when the remaining segment does not fit.
 				String rest = seg.text;
 				while (!rest.is_empty()) {
 					const float room = max_text_width - line_w;
 					const float rest_w = font->get_string_size(rest, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
-					if (line.is_empty() || rest_w <= room) {
+					if (rest_w <= room) {
 						Seg piece;
 						piece.text = rest;
 						piece.width = rest_w;
@@ -341,7 +337,10 @@ void SolersUserBubble::_shape(float p_cell_width) {
 	const float thumb = 56.0f * ed;
 	const float gap = 8.0f * ed;
 	const int attachment_count = attachment_textures.size();
-	const float attachments_height = attachment_count > 0 ? thumb + (text_size.y > 0.0f ? gap : 0.0f) : 0.0f;
+	const int per_row = MAX(1, int((max_content + gap) / (thumb + gap)));
+	const int attachment_rows = attachment_count > 0 ? (attachment_count + per_row - 1) / per_row : 0;
+	const float attachments_height = attachment_rows > 0 ? attachment_rows * thumb + (attachment_rows - 1) * gap + (text_size.y > 0.0f ? gap : 0.0f) : 0.0f;
+	text_size.x = MIN(text_size.x, max_text_width);
 	const float old_height = cell_height;
 	cell_height = attachments_height + text_size.y + pad_v * 2.0f;
 	if (!Math::is_equal_approx(old_height, cell_height)) {
@@ -380,27 +379,36 @@ void SolersUserBubble::_notification(int p_what) {
 			const int icon_px = int(Math::round(13.0f * ed));
 			const Ref<Font> font = solers_cell_font(this);
 			const int attachment_count = attachment_textures.size();
-			const float attachments_width = attachment_count > 0 ? attachment_count * thumb + MAX(0, attachment_count - 1) * gap : 0.0f;
-			const float attachments_height = attachment_count > 0 ? thumb + (text_size.y > 0.0f ? gap : 0.0f) : 0.0f;
-			const Size2 bubble_size(MAX(text_size.x, attachments_width) + pad_h * 2.0f, attachments_height + text_size.y + pad_v * 2.0f);
+			const float max_content = MAX(get_size().x - pad_h * 2.0f, 40.0f * ed);
+			const int per_row = MAX(1, int((max_content + gap) / (thumb + gap)));
+			const float attachments_width = attachment_count > 0 ? MIN(attachment_count, per_row) * thumb + MAX(0, MIN(attachment_count, per_row) - 1) * gap : 0.0f;
+			const int attachment_rows = attachment_count > 0 ? (attachment_count + per_row - 1) / per_row : 0;
+			const float attachments_height = attachment_rows > 0 ? attachment_rows * thumb + (attachment_rows - 1) * gap + (text_size.y > 0.0f ? gap : 0.0f) : 0.0f;
+			const float ideal_w = MAX(text_size.x, attachments_width) + pad_h * 2.0f;
+			const Size2 bubble_size(MIN(ideal_w, get_size().x), attachments_height + text_size.y + pad_v * 2.0f);
 			const Rect2 bubble(Point2(get_size().x - bubble_size.x, 0), bubble_size);
 			solers_cell_fill(this, bubble, SOLERS_CELL_BUBBLE_BG, 14.0f * ed);
 			float y = bubble.position.y + pad_v;
 			if (attachment_count > 0) {
-				float x = bubble.position.x + pad_h;
-				for (int i = 0; i < attachment_count; i++) {
-					const Rect2 rect(Point2(x, y), Size2(thumb, thumb));
-					solers_cell_fill(this, rect, Color(0, 0, 0, 0.18f), 8.0f * ed, Color(1, 1, 1, 0.11f));
-					const Ref<Texture2D> texture = attachment_textures[i];
-					if (texture.is_valid()) {
-						const Size2 source = texture->get_size();
-						const float crop = MIN(source.x, source.y);
-						const Rect2 source_rect(Point2((source.x - crop) * 0.5f, (source.y - crop) * 0.5f), Size2(crop, crop));
-						draw_texture_rect_region(texture, rect, source_rect);
+				int drawn = 0;
+				while (drawn < attachment_count) {
+					float x = bubble.position.x + pad_h;
+					const int row_count = MIN(per_row, attachment_count - drawn);
+					for (int i = 0; i < row_count; i++) {
+						const Rect2 rect(Point2(x, y), Size2(thumb, thumb));
+						solers_cell_fill(this, rect, Color(0, 0, 0, 0.18f), 8.0f * ed, Color(1, 1, 1, 0.11f));
+						const Ref<Texture2D> texture = attachment_textures[drawn + i];
+						if (texture.is_valid()) {
+							const Size2 source = texture->get_size();
+							const float crop = MIN(source.x, source.y);
+							const Rect2 source_rect(Point2((source.x - crop) * 0.5f, (source.y - crop) * 0.5f), Size2(crop, crop));
+							draw_texture_rect_region(texture, rect, source_rect);
+						}
+						x += thumb + gap;
 					}
-					x += thumb + gap;
+					drawn += row_count;
+					y += thumb + (drawn < attachment_count ? gap : (text_size.y > 0.0f ? gap : 0.0f));
 				}
-				y += attachments_height;
 			}
 			if (!shaped_lines.is_empty() && font.is_valid()) {
 				const RID ci = get_canvas_item();
@@ -519,7 +527,10 @@ void SolersAssistantCell::_update_markdown() {
 	rendered_width = width;
 
 	markdown_view->set_position(Point2());
-	markdown_view->set_size(Size2(width, markdown_view->get_size().y));
+	// Width-only size sync before render — avoid height thrash that re-enters RESIZED.
+	if (!Math::is_equal_approx(markdown_view->get_size().x, width)) {
+		markdown_view->set_size(Size2(width, MAX(1.0f, markdown_view->get_size().y)));
+	}
 	if (can_append) {
 		markdown_view->append_markdown_delta(full_text.substr(previous_rendered_chars), caret);
 	} else {
@@ -544,6 +555,14 @@ Size2 SolersAssistantCell::get_minimum_size() const {
 void SolersAssistantCell::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_RESIZED: {
+			const float width = get_size().x;
+			// Height-only growth from streaming must not invalidate the render cache.
+			if (rendered_width >= 0.0f && Math::is_equal_approx(rendered_width, width)) {
+				if (markdown_view) {
+					markdown_view->set_size(Size2(width, cell_height));
+				}
+				break;
+			}
 			rendered_chars = -1;
 			_update_markdown();
 		} break;
@@ -788,6 +807,7 @@ void SolersToolCell::start(const String &p_tool_name, const String &p_arguments_
 	tool_name = p_tool_name.is_empty() ? String("tool") : p_tool_name;
 	tool_glyph = p_tool_glyph == StringName() ? SNAME("sparkle") : p_tool_glyph;
 	args_summary = solers_summarize_tool_args(p_arguments_json);
+	set_tooltip_text(tool_name);
 	status = STATUS_RUNNING;
 	shaped_for_width = -1.0f;
 	_shape(get_size().x);
@@ -806,6 +826,7 @@ void SolersToolCell::update(const String &p_tool_name, const String &p_arguments
 	tool_name = next_name.is_empty() ? String("tool") : next_name;
 	tool_glyph = next_glyph;
 	args_summary = next_summary;
+	set_tooltip_text(tool_name);
 	if (glyph_changed && content_changed.is_valid()) {
 		content_changed.call();
 	}
@@ -883,24 +904,26 @@ void SolersToolCell::_notification(int p_what) {
 			const float header_h = 28.0f * ed;
 			const float type_cx = 14.0f * ed;
 			const float icon_cy = header_h * 0.5f;
+			const String verb = solers_tool_verb_for_glyph(tool_glyph);
 
-			Ref<Texture2D> type_icon = SolersChatGlyphs::get(tool_glyph, int(Math::round(12.0f * ed)), 2.1f);
+			Ref<Texture2D> type_icon = SolersChatGlyphs::get(tool_glyph, int(Math::round(13.0f * ed)), 2.0f);
 			if (type_icon.is_valid()) {
-				const Color icon_color = status == STATUS_ERROR ? SOLERS_CELL_ERROR : SOLERS_CELL_TEXT_FAINT;
+				const Color icon_color = status == STATUS_ERROR ? SOLERS_CELL_ERROR : SOLERS_CELL_TEXT_DIM;
 				draw_texture(type_icon, Point2(type_cx - type_icon->get_width() * 0.5f, icon_cy - type_icon->get_height() * 0.5f).floor(), icon_color);
 			}
 
-			// Name + argument summary + duration.
-			const int name_size = int(12 * ed);
-			const int args_size = int(11 * ed);
+			// [icon] Verb  [pill: fact] …… duration  — Cursor-style tool row.
+			const int verb_size = int(12 * ed);
+			const int fact_size = int(11 * ed);
 			float x = 28.0f * ed;
-			const float name_baseline = (header_h - font->get_height(name_size)) * 0.5f + font->get_ascent(name_size);
+			const float verb_baseline = (header_h - font->get_height(verb_size)) * 0.5f + font->get_ascent(verb_size);
+			const Color verb_color = status == STATUS_ERROR ? SOLERS_CELL_ERROR : Color(0.90f, 0.91f, 0.94f);
 			if (status == STATUS_RUNNING) {
-				solers_draw_shimmer_text(this, Point2(x, name_baseline).floor(), tool_name, font, name_size, Math::fmod(float(OS::get_singleton()->get_ticks_msec()) / (SOLERS_SHIMMER_PERIOD * 1000.0f), 1.0f), SOLERS_CELL_TEXT_FAINT, Color(0.95f, 0.96f, 0.98f));
+				solers_draw_shimmer_text(this, Point2(x, verb_baseline).floor(), verb, font, verb_size, Math::fmod(float(OS::get_singleton()->get_ticks_msec()) / (SOLERS_SHIMMER_PERIOD * 1000.0f), 1.0f), SOLERS_CELL_TEXT_FAINT, Color(0.95f, 0.96f, 0.98f));
 			} else {
-				draw_string(font, Point2(x, name_baseline).floor(), tool_name, HORIZONTAL_ALIGNMENT_LEFT, -1, name_size, status == STATUS_ERROR ? SOLERS_CELL_ERROR : Color(0.90f, 0.91f, 0.94f));
+				draw_string(font, Point2(x, verb_baseline).floor(), verb, HORIZONTAL_ALIGNMENT_LEFT, -1, verb_size, verb_color);
 			}
-			x += font->get_string_size(tool_name, HORIZONTAL_ALIGNMENT_LEFT, -1, name_size).x + 8.0f * ed;
+			x += font->get_string_size(verb, HORIZONTAL_ALIGNMENT_LEFT, -1, verb_size).x + 8.0f * ed;
 
 			String trail;
 			if (status != STATUS_RUNNING && duration_msec >= 0) {
@@ -908,25 +931,31 @@ void SolersToolCell::_notification(int p_what) {
 			}
 			float trail_w = 0.0f;
 			if (!trail.is_empty() && mono.is_valid()) {
-				trail_w = mono->get_string_size(trail, HORIZONTAL_ALIGNMENT_LEFT, -1, args_size).x;
-				const float trail_baseline = (header_h - mono->get_height(args_size)) * 0.5f + mono->get_ascent(args_size);
-				draw_string(mono, Point2(get_size().x - trail_w - 10.0f * ed, trail_baseline).floor(), trail, HORIZONTAL_ALIGNMENT_LEFT, -1, args_size, SOLERS_CELL_TEXT_FAINT);
-				trail_w += 16.0f * ed;
+				trail_w = mono->get_string_size(trail, HORIZONTAL_ALIGNMENT_LEFT, -1, fact_size).x;
+				const float trail_baseline = (header_h - mono->get_height(fact_size)) * 0.5f + mono->get_ascent(fact_size);
+				draw_string(mono, Point2(get_size().x - trail_w - 10.0f * ed, trail_baseline).floor(), trail, HORIZONTAL_ALIGNMENT_LEFT, -1, fact_size, SOLERS_CELL_TEXT_FAINT);
+				trail_w += 14.0f * ed;
 			}
 
 			if (!args_summary.is_empty() && mono.is_valid()) {
-				const float args_avail = get_size().x - x - trail_w - 10.0f * ed;
-				if (args_avail > 24.0f * ed) {
+				const float pad_x = 7.0f * ed;
+				const float pad_y = 3.0f * ed;
+				const float fact_avail = get_size().x - x - trail_w - pad_x * 2.0f - 8.0f * ed;
+				if (fact_avail > 20.0f * ed) {
 					String shown = args_summary;
-					while (shown.length() > 4 && mono->get_string_size(shown, HORIZONTAL_ALIGNMENT_LEFT, -1, args_size).x > args_avail) {
+					while (shown.length() > 4 && mono->get_string_size(shown, HORIZONTAL_ALIGNMENT_LEFT, -1, fact_size).x > fact_avail) {
 						shown = shown.left(shown.length() - 4) + "...";
 					}
-					const float args_baseline = (header_h - mono->get_height(args_size)) * 0.5f + mono->get_ascent(args_size);
-					draw_string(mono, Point2(x, args_baseline).floor(), shown, HORIZONTAL_ALIGNMENT_LEFT, -1, args_size, SOLERS_CELL_TEXT_FAINT);
+					const Size2 fact_sz = mono->get_string_size(shown, HORIZONTAL_ALIGNMENT_LEFT, -1, fact_size);
+					const float pill_h = fact_sz.y + pad_y * 2.0f;
+					const float pill_w = fact_sz.x + pad_x * 2.0f;
+					const Rect2 pill(Point2(x, (header_h - pill_h) * 0.5f).floor(), Size2(pill_w, pill_h));
+					solers_cell_fill(this, pill, Color(1, 1, 1, 0.06f), 6.0f * ed);
+					const float fact_baseline = pill.position.y + pad_y + mono->get_ascent(fact_size);
+					draw_string(mono, Point2(pill.position.x + pad_x, fact_baseline).floor(), shown, HORIZONTAL_ALIGNMENT_LEFT, -1, fact_size, SOLERS_CELL_TEXT_DIM);
 				}
 			}
 
-			// Error detail block.
 			if (status == STATUS_ERROR && error_paragraph->get_line_count() > 0) {
 				error_paragraph->draw(get_canvas_item(), Point2(28.0f * ed, header_h + 2.0f * ed), Color(SOLERS_CELL_ERROR, 0.92f));
 			}
@@ -1079,7 +1108,7 @@ void SolersToolGroupCell::_notification(int p_what) {
 					x += icon_step;
 				}
 			}
-			const String label = vformat(String::utf8("已运行 %d 条命令"), total);
+			const String label = vformat(String::utf8("已运行 %d 个工具"), total);
 			x += 4.0f * ed;
 			const float phase = Math::fmod(float(OS::get_singleton()->get_ticks_msec()) / (SOLERS_SHIMMER_PERIOD * 1000.0f), 1.0f);
 			const float label_w = running > 0 ?

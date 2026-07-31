@@ -29,6 +29,7 @@
 #include "core/variant/dictionary.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/control.h"
+#include "scene/gui/line_edit.h"
 #include "scene/gui/margin_container.h"
 #include "scene/gui/panel_container.h"
 #include "scene/resources/font.h"
@@ -219,12 +220,27 @@ inline Color solers_composer_bg() {
 inline Color solers_cell_bubble_bg() {
 	return solers_composer_bg().lightened(0.04f);
 }
+inline Color solers_accent() {
+	return Color(0.94f, 0.78f, 0.46f);
+}
 inline Color solers_chip_bg() {
-	return Color(0.145f, 0.175f, 0.235f, 0.95f);
+	return Color(solers_accent().r, solers_accent().g, solers_accent().b, 0.88f);
 }
 inline Color solers_chip_text() {
-	return Color(0.55f, 0.82f, 0.98f);
+	return Color(0.12f, 0.10f, 0.06f);
 }
+// Same RGB as Tokens.hairline; slightly stronger alpha for the composer card edge.
+inline Color solers_composer_border() {
+	return Color(0.95f, 0.95f, 0.97f, 0.16f);
+}
+
+// One UI table: ui_kind wire string → glyph + localized verb (TTR).
+StringName solers_tool_glyph_for_ui_kind(const String &p_ui_kind);
+String solers_tool_verb_for_ui_kind(const String &p_ui_kind);
+String solers_tool_verb_for_glyph(const StringName &p_glyph);
+
+// Bare search field (mention / model / provider pickers) — Cursor-flat, no chrome.
+void solers_style_bare_search_line_edit(LineEdit *p_edit);
 
 String solers_mention_chip_label(const Dictionary &p_mention);
 float solers_mention_chip_width(const String &p_label, const Ref<Font> &p_font, int p_font_size, bool p_has_icon);
