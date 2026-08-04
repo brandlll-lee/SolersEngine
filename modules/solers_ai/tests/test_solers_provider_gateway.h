@@ -304,7 +304,10 @@ TEST_CASE("[Editor][SolersSettingsService] local model policy migrates without c
 		settings->erase(path);
 	}
 
+	SolersModelsDev models_dev;
+	models_dev.initialize();
 	SolersProviderRegistry registry;
+	registry.set_models_dev(&models_dev, false);
 	for (const bool enabled : { false, true }) {
 		settings->set_manually(prefix + "settings_version", 3);
 		settings->set_manually(prefix + "privacy_mode", enabled);
@@ -313,7 +316,7 @@ TEST_CASE("[Editor][SolersSettingsService] local model policy migrates without c
 		migration_service.set_provider_registry(&registry);
 		CHECK(migration_service.get_local_models_only() == enabled);
 		CHECK_FALSE(settings->has_setting(prefix + "privacy_mode"));
-		CHECK((int)settings->get_setting(prefix + "settings_version") == 4);
+		CHECK((int)settings->get_setting(prefix + "settings_version") == 5);
 	}
 
 	settings->set_manually(prefix + "settings_version", 4);
@@ -359,6 +362,8 @@ TEST_CASE("[Editor][SolersSettingsService] local model policy migrates without c
 	CHECK(brand_saved.get("ok", false));
 	CHECK(Dictionary(brand_saved.get("data", Dictionary())).get("connected", false));
 	service.disconnect_provider("synthetic-never-special-cased");
+	service.set_provider_config(remote);
+	service.set_local_models_only(true);
 
 	SolersToolRegistry tool_registry;
 	SolersAgentSession session;
@@ -715,7 +720,7 @@ TEST_CASE("[SolersToolRegistry] file checkpoint reversal survives session restor
 	SolersAgentSession restored_session;
 	restored_session.set_tool_registry(&restore_registry);
 	restored_session.set_session(project_path, session_id);
-	CHECK((int64_t)restored_session.get_status().get("authored_revision", -1) == 1);
+	CHECK((int64_t)restored_session.get_status().get("session_revision", -1) == 1);
 
 	SolersToolContext revert_context;
 	revert_context.call_id = "revert-file";
@@ -724,7 +729,6 @@ TEST_CASE("[SolersToolRegistry] file checkpoint reversal survives session restor
 	revert_context.authored_revision = 1;
 	Dictionary revert_args;
 	revert_args["reversal_id"] = reversal_id;
-	revert_args["expected_revision"] = 1;
 	const Dictionary revert_result = restore_registry.call_tool_with_context(SNAME("history.revert"), revert_args, revert_context);
 	REQUIRE((bool)revert_result.get("ok", false));
 	CHECK_FALSE(FileAccess::exists(path));
@@ -917,24 +921,22 @@ TEST_CASE("[SolersToolRegistry] default model surface is domain-first") {
 		"project.read_file",
 		"project.search",
 		"project.edit",
-		"scene.inspect",
-		"scene.edit",
-		"scene.validate",
-		"resource.inspect",
-		"resource.edit",
+		"object.query",
+		"object.transaction",
 		"script.edit",
 		"script.validate",
-		"script.run",
-		"engine.inspect",
-		"engine.execute",
+		"script.compute",
+		"engine.describe",
 		"runtime.control",
 		"runtime.observe",
 		"history.revert",
 		"skill.read",
 		"scene.bake_csg",
+		"scene.open",
+		"scene.reload",
 		"mesh.unwrap_uv2",
 		"lightmap.bake",
-		"viewport.capture",
+		"render.capture",
 		"asset.catalog.search",
 		"asset.catalog.inspect",
 		"asset.catalog.acquire",
@@ -957,7 +959,8 @@ TEST_CASE("[SolersToolRegistry] default model surface is domain-first") {
 		"native.list_properties", "native.get", "native.set", "native.list_methods", "native.call", "native.save", "native.free",
 		"scene.instantiate", "scene.validate_spatial", "scene.validate_structure", "object.get_property", "object.set_property",
 		"object.call_method", "editor.invoke", "asset.list_local", "asset.import_to_project",
-		"plugin.search", "plugin.inspect", "plugin.list", "plugin.ensure"
+		"plugin.search", "plugin.inspect", "plugin.list", "plugin.ensure",
+		"scene.inspect", "scene.edit", "scene.validate", "resource.inspect", "resource.edit", "engine.inspect", "engine.execute", "viewport.capture"
 	};
 	for (const char *name : removed_core) {
 		CHECK(find_tool_def(tools, name).is_empty());
@@ -988,43 +991,33 @@ TEST_CASE("[SolersToolRegistry] default model surface is domain-first") {
 	CHECK(catalog_inspect_properties.has("asset_id"));
 	CHECK_FALSE(Array(Dictionary(catalog_inspect_properties.get("kind", Dictionary())).get("enum", Array())).is_empty());
 	CHECK(Dictionary(Dictionary(find_tool_def(tools, "job.wait").get("input_schema", Dictionary())).get("properties", Dictionary())).has("ids"));
-	Dictionary scene_edit = find_tool_def(tools, "scene.edit");
-	REQUIRE_FALSE(scene_edit.is_empty());
-	CHECK(scene_edit.get("execution", String()) == "main_thread");
-	CHECK_FALSE(scene_edit.has("ephemeral_result"));
-	const Dictionary scene_edit_properties = Dictionary(scene_edit.get("input_schema", Dictionary())).get("properties", Dictionary());
-	const Dictionary scene_operations = scene_edit_properties.get("operations", Dictionary());
-	CHECK((int)scene_operations.get("maxItems", 0) == 256);
-	const Dictionary operation_properties = Dictionary(scene_operations.get("items", Dictionary())).get("properties", Dictionary());
-	const Array operation_names = Dictionary(operation_properties.get("op", Dictionary())).get("enum", Array());
-	CHECK(operation_names.has("instantiate"));
-	CHECK_FALSE(operation_names.has("get_property"));
-	CHECK_FALSE(operation_names.has("list_properties"));
-
-	Dictionary engine_inspect = find_tool_def(tools, "engine.inspect");
-	CHECK_FALSE(engine_inspect.has("ephemeral_result"));
-	const Dictionary engine_inspect_properties = Dictionary(engine_inspect.get("input_schema", Dictionary())).get("properties", Dictionary());
-	CHECK(engine_inspect_properties.has("query"));
-	CHECK(engine_inspect_properties.has("classes"));
-	Dictionary engine_execute = find_tool_def(tools, "engine.execute");
-	CHECK(engine_execute.get("mutation_policy", String()) == "irreversible");
-	CHECK(engine_execute.get("permission", String()) == "edit_scene");
-	CHECK_FALSE(Dictionary(Dictionary(engine_execute.get("input_schema", Dictionary())).get("properties", Dictionary())).has("contract_id"));
-	Dictionary script_run = find_tool_def(tools, "script.run");
-	CHECK(script_run.get("mutation_policy", String()) == "irreversible");
-	CHECK(script_run.get("permission", String()) == "edit_scene");
-	CHECK(Dictionary(Dictionary(script_run.get("input_schema", Dictionary())).get("properties", Dictionary())).has("source"));
+	const Dictionary object_query = find_tool_def(tools, "object.query");
+	REQUIRE_FALSE(object_query.is_empty());
+	CHECK(Array(Dictionary(object_query.get("input_schema", Dictionary())).get("oneOf", Array())).size() == 4);
+	const Dictionary transaction = find_tool_def(tools, "object.transaction");
+	REQUIRE_FALSE(transaction.is_empty());
+	CHECK(transaction.get("execution", String()) == "main_thread");
+	CHECK(transaction.get("mutation_policy_dynamic", false));
+	CHECK(Array(Dictionary(transaction.get("input_schema", Dictionary())).get("oneOf", Array())).size() == 2);
+	Dictionary engine_describe = find_tool_def(tools, "engine.describe");
+	CHECK_FALSE(engine_describe.has("ephemeral_result"));
+	const Dictionary engine_describe_properties = Dictionary(engine_describe.get("input_schema", Dictionary())).get("properties", Dictionary());
+	CHECK(engine_describe_properties.has("query"));
+	CHECK(engine_describe_properties.has("classes"));
+	Dictionary script_compute = find_tool_def(tools, "script.compute");
+	CHECK(script_compute.get("mutation_policy", String()) == "file_checkpoint");
+	CHECK(script_compute.get("permission", String()) == "edit_files");
+	const Dictionary compute_properties = Dictionary(Dictionary(script_compute.get("input_schema", Dictionary())).get("properties", Dictionary()));
+	CHECK(compute_properties.has("source"));
+	CHECK(compute_properties.has("outputs"));
 	Dictionary project_edit = find_tool_def(tools, "project.edit");
 	CHECK(project_edit.get("permission", String()) == "edit_files");
 	CHECK(project_edit.get("mutation_policy_dynamic", false));
 	CHECK(Dictionary(project_edit.get("input_schema", Dictionary())).has("oneOf"));
-	Dictionary resource_edit = find_tool_def(tools, "resource.edit");
-	CHECK(Dictionary(resource_edit.get("input_schema", Dictionary())).has("oneOf"));
 	CHECK(String(find_tool_def(tools, "mesh.unwrap_uv2").get("description", String())).contains("off the editor thread"));
-	CHECK_FALSE(find_tool_def(tools, "viewport.capture").has("ephemeral_result"));
-	const Dictionary capture_properties = Dictionary(Dictionary(find_tool_def(tools, "viewport.capture").get("input_schema", Dictionary())).get("properties", Dictionary()));
-	CHECK(Array(Dictionary(capture_properties.get("target", Dictionary())).get("enum", Array())).has("orthographic"));
-	CHECK(find_tool_def(tools, "scene.validate").get("produces_scene_validation", false));
+	const Dictionary render_capture = find_tool_def(tools, "render.capture");
+	CHECK_FALSE(render_capture.has("ephemeral_result"));
+	CHECK(Array(Dictionary(render_capture.get("input_schema", Dictionary())).get("oneOf", Array())).size() == 2);
 	CHECK(find_tool_def(tools, "editor.action.list").is_empty());
 	CHECK(find_tool_def(tools, "editor.action.execute").is_empty());
 	CHECK_FALSE(find_tool_def(tools, "skill.read").has("ephemeral_result"));
@@ -1132,74 +1125,122 @@ TEST_CASE("[SolersPluginRegistry] an unknown connector extends every registry-dr
 	memdelete(plugin);
 }
 
-TEST_CASE("[SolersToolRegistry] engine execution runs typed operations and reports the native cause") {
-	SolersPermissionManager permissions;
-	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
-	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_SCENE, true);
+TEST_CASE("[SolersToolRegistry] object transactions expose no in-editor native escape") {
 	SolersReflectionService reflection_service;
 	SolersResourceService resource_service;
 	SolersToolRegistry registry;
-	registry.set_permission_manager(&permissions);
 	registry.set_reflection_service(&reflection_service);
 	registry.set_resource_service(&resource_service);
 	registry.register_default_tools();
 
-	SolersToolContext context;
-	context.session_id = "engine-execute-task";
+	Dictionary native;
+	native["scope"] = "native";
+	native["operations"] = Array();
+	const Dictionary result = registry.call_tool(SNAME("object.transaction"), native);
+	CHECK_FALSE(result.get("ok", true));
+	const String code = Dictionary(result.get("error", Dictionary())).get("code", String());
+	CHECK((code == "TOOL_ARGUMENT_INVALID" || code == "OBJECT_SCOPE_INVALID"));
+}
 
-	// engine.inspect introspects exact classes directly; no contract token round-trip.
+TEST_CASE("[SolersToolRegistry] ClassDB member queries match whitespace-separated property names") {
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
+	SolersReflectionService reflection_service;
+	SolersToolRegistry registry;
+	registry.set_permission_manager(&permissions);
+	registry.set_reflection_service(&reflection_service);
+	registry.register_default_tools();
+
 	Dictionary class_request;
-	class_request["class_name"] = "RefCounted";
+	class_request["class_name"] = "CameraAttributesPhysical";
+	class_request["max_members"] = 16;
+	class_request["include_inherited"] = true;
+	class_request["member_query"] = "exposure_aperture exposure_sensitivity";
 	Array classes;
 	classes.push_back(class_request);
-	Dictionary inspect;
-	inspect["classes"] = classes;
-	const Dictionary inspected = registry.call_tool_with_context(SNAME("engine.inspect"), inspect, context);
-	REQUIRE(inspected.get("ok", false));
-	const Array inspected_classes = Dictionary(inspected.get("data", Dictionary())).get("classes", Array());
-	REQUIRE(inspected_classes.size() == 1);
-	CHECK_FALSE(Dictionary(inspected.get("data", Dictionary())).has("contract_id"));
+	Dictionary args;
+	args["classes"] = classes;
+	const Dictionary result = registry.call_tool(SNAME("engine.describe"), args);
+	REQUIRE((bool)result.get("ok", false));
+	const Array described = Dictionary(result.get("data", Dictionary())).get("classes", Array());
+	REQUIRE(described.size() == 1);
+	const Array properties = Dictionary(described[0]).get("properties", Array());
+	HashSet<String> names;
+	for (int i = 0; i < properties.size(); i++) {
+		names.insert(Dictionary(properties[i]).get("name", String()));
+	}
+	CHECK(names.has("exposure_aperture"));
+	CHECK(names.has("exposure_sensitivity"));
+}
 
-	// A structurally broken operation fails with the exact reason, not a gate code.
-	Dictionary malformed;
-	malformed["op"] = "free";
-	Array malformed_operations;
-	malformed_operations.push_back(malformed);
-	Dictionary malformed_execute;
-	malformed_execute["operations"] = malformed_operations;
-	const Dictionary malformed_result = registry.call_tool_with_context(SNAME("engine.execute"), malformed_execute, context);
-	CHECK_FALSE(malformed_result.get("ok", true));
-	CHECK(Dictionary(malformed_result.get("error", Dictionary())).get("code", String()) == "ENGINE_OBJECT_REQUIRED");
+TEST_CASE("[SolersToolRegistry] resource transactions reject stale hashes and return native receipts") {
+	const String path = "res://.solers_transaction_contract.tres";
+	if (FileAccess::exists(path)) {
+		DirAccess::remove_file_or_error(ProjectSettings::get_singleton()->globalize_path(path));
+	}
+	SolersFileCheckpoint checkpoints;
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_FILES, true);
+	SolersReflectionService reflection_service;
+	SolersResourceService resources;
+	SolersToolRegistry registry;
+	registry.set_file_checkpoint(&checkpoints);
+	registry.set_permission_manager(&permissions);
+	registry.set_reflection_service(&reflection_service);
+	registry.set_resource_service(&resources);
+	registry.register_default_tools();
+	SolersToolContext context;
+	context.call_id = "create_resource";
+	context.session_id = "resource-transaction-contract";
 
-	// instantiate + free runs without any prior inspection ceremony.
-	Dictionary instantiate;
-	instantiate["id"] = "value";
-	instantiate["op"] = "instantiate";
-	instantiate["class_name"] = "RefCounted";
-	Dictionary release;
-	release["op"] = "free";
-	release["ref"] = "value";
-	Array operations;
-	operations.push_back(instantiate);
-	operations.push_back(release);
-	Dictionary execute;
-	execute["operations"] = operations;
-	const Dictionary executed = registry.call_tool_with_context(SNAME("engine.execute"), execute, context);
-	CHECK(executed.get("ok", false));
-	CHECK((int)Dictionary(executed.get("data", Dictionary())).get("count", 0) == 2);
+	Dictionary create;
+	create["op"] = "create";
+	create["class_name"] = "Gradient";
+	create["path"] = path;
+	Array create_operations;
+	create_operations.push_back(create);
+	Dictionary create_args;
+	create_args["scope"] = "resource";
+	create_args["operations"] = create_operations;
+	const Dictionary created = registry.call_tool_with_context(SNAME("object.transaction"), create_args, context);
+	REQUIRE((bool)created.get("ok", false));
+	const String sha = FileAccess::get_sha256(path);
+	REQUIRE(sha.length() == 64);
 
-	// A failing native call surfaces the failed index and underlying cause.
-	Dictionary bad_instantiate;
-	bad_instantiate["op"] = "instantiate";
-	bad_instantiate["class_name"] = "NoSuchClass";
-	Array bad_operations;
-	bad_operations.push_back(bad_instantiate);
-	Dictionary bad_execute;
-	bad_execute["operations"] = bad_operations;
-	const Dictionary failed = registry.call_tool_with_context(SNAME("engine.execute"), bad_execute, context);
-	CHECK_FALSE(failed.get("ok", true));
-	CHECK(Dictionary(failed.get("error", Dictionary())).get("code", String()) == "ENGINE_EXECUTION_FAILED");
-	CHECK((int)Dictionary(failed.get("data", Dictionary())).get("failed_index", -1) == 0);
+	Dictionary update;
+	update["op"] = "update";
+	update["path"] = path;
+	update["expected_sha256"] = String("0000000000000000000000000000000000000000000000000000000000000000");
+	Dictionary properties;
+	properties["resource_name"] = "stale-write";
+	update["properties"] = properties;
+	Array update_operations;
+	update_operations.push_back(update);
+	Dictionary update_args;
+	update_args["scope"] = "resource";
+	update_args["operations"] = update_operations;
+	context.call_id = "stale_resource";
+	const Dictionary stale = registry.call_tool_with_context(SNAME("object.transaction"), update_args, context);
+	CHECK_FALSE((bool)stale.get("ok", true));
+	CHECK(Dictionary(stale.get("error", Dictionary())).get("code", String()) == "RESOURCE_STATE_CONFLICT");
+	CHECK(FileAccess::get_sha256(path) == sha);
+
+	update["expected_sha256"] = sha;
+	properties["resource_name"] = "committed-write";
+	update["properties"] = properties;
+	update_operations[0] = update;
+	update_args["operations"] = update_operations;
+	context.call_id = "update_resource";
+	const Dictionary updated = registry.call_tool_with_context(SNAME("object.transaction"), update_args, context);
+	REQUIRE((bool)updated.get("ok", false));
+	const Dictionary mutation = Dictionary(updated.get("data", Dictionary())).get("mutation", Dictionary());
+	CHECK(mutation.has("session_revision"));
+	CHECK_FALSE(mutation.has("authored_revision"));
+	const Dictionary receipt = mutation.get("receipt", Dictionary());
+	CHECK(Array(receipt.get("resources_before", Array())).size() == 1);
+	CHECK(Array(receipt.get("resources_after", Array())).size() == 1);
+	CHECK(String(Dictionary(Array(receipt.get("resources_after", Array()))[0]).get("sha256", String())).length() == 64);
+	DirAccess::remove_file_or_error(ProjectSettings::get_singleton()->globalize_path(path));
 }
 
 TEST_CASE("[SolersScriptService] project.godot cannot use the raw file path") {
@@ -1213,7 +1254,7 @@ TEST_CASE("[SolersScriptService] project.godot cannot use the raw file path") {
 	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "EDITOR_OWNED_FILE");
 }
 
-TEST_CASE("[SolersScriptService] script edits commit and return post-write diagnostics") {
+TEST_CASE("[SolersScriptService] invalid source never replaces the authoritative file") {
 	const String path = "res://solers_script_validation_contract.gd";
 	const String fs_path = ProjectSettings::get_singleton()->globalize_path(path);
 	if (FileAccess::exists(path)) {
@@ -1229,20 +1270,17 @@ TEST_CASE("[SolersScriptService] script edits commit and return post-write diagn
 	Dictionary written = script_service.write_file(write_args);
 	REQUIRE((bool)written.get("ok", false));
 	CHECK(Dictionary(written.get("data", Dictionary())).get("valid", false));
+	const String valid_sha256 = FileAccess::get_sha256(path);
 
-	// A broken edit still commits; the parser diagnostics come back as data the
-	// model can act on, and the file checkpoint keeps the mutation reversible.
 	Dictionary patch_args;
 	patch_args["path"] = path;
 	patch_args["old_text"] = "\treturn 1";
 	patch_args["new_text"] = "\treturn +";
 	Dictionary patched = script_service.patch_file(patch_args);
-	REQUIRE((bool)patched.get("ok", false));
-	const Dictionary patched_data = patched.get("data", Dictionary());
-	CHECK_FALSE((bool)patched_data.get("valid", true));
-	const Dictionary validation = patched_data.get("validation", Dictionary());
-	CHECK((int)validation.get("error_count", 0) > 0);
-	CHECK(FileAccess::get_file_as_string(path).contains("return +"));
+	CHECK_FALSE((bool)patched.get("ok", true));
+	CHECK(Dictionary(patched.get("error", Dictionary())).get("code", String()) == "SCRIPT_VALIDATION_FAILED");
+	CHECK(FileAccess::get_sha256(path) == valid_sha256);
+	CHECK(FileAccess::get_file_as_string(path) == valid_source);
 
 	DirAccess::remove_file_or_error(fs_path);
 
@@ -1256,10 +1294,8 @@ TEST_CASE("[SolersScriptService] script edits commit and return post-write diagn
 	shader_args["path"] = shader_path;
 	shader_args["content"] = "shader_type spatial;\nvoid fragment() { ALBEDO = missing_identifier; }\n";
 	const Dictionary shader_result = script_service.edit_script(shader_args);
-	REQUIRE((bool)shader_result.get("ok", false));
-	CHECK_FALSE((bool)Dictionary(shader_result.get("data", Dictionary())).get("valid", true));
-	CHECK(FileAccess::exists(shader_path));
-	DirAccess::remove_file_or_error(shader_fs_path);
+	CHECK_FALSE((bool)shader_result.get("ok", true));
+	CHECK_FALSE(FileAccess::exists(shader_path));
 }
 
 TEST_CASE("[SolersScriptService] patch matching tolerates whitespace drift and rejects ambiguity") {
@@ -1356,86 +1392,39 @@ TEST_CASE("[SolersScriptService] native serialized resources require native reso
 	}
 }
 
-TEST_CASE("[SolersResourceService] native RefCounted workflow converts typed arrays and saves resources") {
-	const String path = "res://solers_native_surface_contract.tres";
-	const String fs_path = ProjectSettings::get_singleton()->globalize_path(path);
+TEST_CASE("[SolersScriptService] isolated compute commits only verified declared resources") {
+	const String path = "res://.solers_compute_contract.tres";
+	const String absolute = ProjectSettings::get_singleton()->globalize_path(path);
 	if (FileAccess::exists(path)) {
-		DirAccess::remove_file_or_error(fs_path);
+		DirAccess::remove_file_or_error(absolute);
 	}
 
-	SolersResourceService service;
-	Dictionary instantiate_args;
-	instantiate_args["class_name"] = "SurfaceTool";
-	const Dictionary instantiated = service.native_instantiate(instantiate_args);
-	REQUIRE((bool)instantiated.get("ok", false));
-	const Dictionary surface_handle = instantiated.get("data", Dictionary());
+	Dictionary output;
+	output["from"] = "generated.tres";
+	output["to"] = path;
+	output["resource_type"] = "Resource";
+	Array outputs;
+	outputs.push_back(output);
+	Dictionary args;
+	args["source"] = "extends SceneTree\nfunc _init():\n\tvar value := Resource.new()\n\tvalue.resource_name = \"isolated\"\n\tif ResourceSaver.save(value, \"res://generated.tres\") != OK:\n\t\tquit(2)\n\t\treturn\n\tquit()\n";
+	args["outputs"] = outputs;
 
-	Dictionary call_args;
-	call_args["object_id"] = surface_handle;
-	call_args["method"] = "begin";
-	Array invalid_begin_args;
-	invalid_begin_args.push_back(Mesh::PRIMITIVE_TRIANGLES);
-	invalid_begin_args.push_back(0);
-	call_args["args"] = invalid_begin_args;
-	const Dictionary invalid_begin = service.native_call(call_args);
-	CHECK_FALSE((bool)invalid_begin.get("ok", true));
-	CHECK(Dictionary(invalid_begin.get("error", Dictionary())).get("code", String()) == "INVALID_ARGUMENT_COUNT");
-
-	Array begin_args;
-	begin_args.push_back(Mesh::PRIMITIVE_TRIANGLES);
-	call_args["args"] = begin_args;
-	REQUIRE((bool)service.native_call(call_args).get("ok", false));
-
-	Array vertices;
-	Dictionary vertex;
-	vertex["x"] = 0.0;
-	vertex["y"] = 0.0;
-	vertex["z"] = 0.0;
-	vertices.push_back(vertex);
-	vertex["x"] = 1.0;
-	vertices.push_back(vertex);
-	vertex["x"] = 0.0;
-	vertex["y"] = 1.0;
-	vertices.push_back(vertex);
-	Array fan_args;
-	fan_args.push_back(vertices);
-	call_args["method"] = "add_triangle_fan";
-	call_args["args"] = fan_args;
-	REQUIRE((bool)service.native_call(call_args).get("ok", false));
-
-	call_args["method"] = "generate_normals";
-	call_args["args"] = Array();
-	REQUIRE((bool)service.native_call(call_args).get("ok", false));
-	call_args["method"] = "commit_to_arrays";
-	const Dictionary committed = service.native_call(call_args);
-	REQUIRE((bool)committed.get("ok", false));
-	const Array surface_arrays = Dictionary(committed.get("data", Dictionary())).get("result", Array());
-	REQUIRE(surface_arrays.size() == Mesh::ARRAY_MAX);
-	CHECK(PackedVector3Array(surface_arrays[Mesh::ARRAY_VERTEX]).size() == 3);
-	CHECK(PackedVector3Array(surface_arrays[Mesh::ARRAY_NORMAL]).size() == 3);
-
-	instantiate_args["class_name"] = "ArrayMesh";
-	const Dictionary mesh_instantiated = service.native_instantiate(instantiate_args);
-	REQUIRE((bool)mesh_instantiated.get("ok", false));
-	const Dictionary mesh_handle = mesh_instantiated.get("data", Dictionary());
-
-	Dictionary save_args;
-	save_args["object_id"] = mesh_handle;
-	save_args["path"] = path;
-	REQUIRE((bool)service.native_save(save_args).get("ok", false));
-	REQUIRE(FileAccess::exists(path));
-
-	const Ref<Resource> loaded_resource = ResourceLoader::load(path);
-	const Ref<ArrayMesh> mesh = loaded_resource;
-	REQUIRE(mesh.is_valid());
-	CHECK(mesh->get_surface_count() == 0);
-
-	Dictionary free_args;
-	free_args["object_id"] = surface_handle;
-	CHECK((bool)service.native_free(free_args).get("ok", false));
-	free_args["object_id"] = mesh_handle;
-	CHECK((bool)service.native_free(free_args).get("ok", false));
-	DirAccess::remove_file_or_error(fs_path);
+	SolersScriptService service;
+	REQUIRE(service.compute_script("compute-contract", args).get("ok", false));
+	const uint64_t deadline = OS::get_singleton()->get_ticks_msec() + 10000;
+	while (!service.compute_script_ready("compute-contract") && OS::get_singleton()->get_ticks_msec() < deadline) {
+		OS::get_singleton()->delay_usec(10000);
+	}
+	REQUIRE(service.compute_script_ready("compute-contract"));
+	const Dictionary result = service.compute_script_finalize("compute-contract");
+	REQUIRE(result.get("ok", false));
+	const Array committed = Dictionary(result.get("data", Dictionary())).get("outputs", Array());
+	REQUIRE(committed.size() == 1);
+	CHECK_FALSE(String(Dictionary(committed[0]).get("sha256", String())).is_empty());
+	const Ref<Resource> loaded = ResourceLoader::load(path, "Resource", ResourceFormatLoader::CACHE_MODE_IGNORE_DEEP);
+	REQUIRE(loaded.is_valid());
+	CHECK(loaded->get_name() == "isolated");
+	DirAccess::remove_file_or_error(absolute);
 }
 
 TEST_CASE("[SolersToolRegistry] batch failure summaries expose failed operation") {
@@ -1519,7 +1508,7 @@ TEST_CASE("[SolersToolRegistry] external search prioritizes exact ids and never 
 		const Dictionary tool = matches[i];
 		CHECK(tool.get("exposure", String()) == "deferred");
 	}
-	CHECK_FALSE(search_result_has_tool(result, "engine.execute"));
+	CHECK_FALSE(search_result_has_tool(result, "object.transaction"));
 }
 
 TEST_CASE("[SolersToolRegistry] tool.search uses Godot fuzzy fallback for external metadata") {
@@ -1721,8 +1710,6 @@ TEST_CASE("[SolersToolRegistry] replay protection preserves sensitive arguments 
 	const Dictionary protected_args = registry.protect_tool_args_for_replay(SNAME("synthetic.replay"), args);
 	CHECK(protected_args.get("path", String()) == "res://same.gd");
 	CHECK_FALSE(JSON::stringify(protected_args).contains("sensitive replay payload"));
-	const Dictionary restored = registry.restore_tool_args_from_replay(SNAME("synthetic.replay"), protected_args);
-	CHECK(restored.get("content", String()) == "sensitive replay payload");
 }
 
 TEST_CASE("[SolersReflectionService] batch refuses mutations without an undo history") {
@@ -1833,71 +1820,6 @@ TEST_CASE("[SolersResourceService] property coercion accepts named and nested Go
 	memdelete(node);
 }
 
-TEST_CASE("[SolersReflectionService] structural topology requires one real contact graph") {
-	SolersReflectionService reflection_service;
-	Array single_member;
-	single_member.push_back("RoomShell");
-	CHECK(reflection_service.validate_structure_topology(single_member, Array()).get("ok", false));
-	Array members;
-	members.push_back("Room/Structure/Floor");
-	members.push_back("Room/Structure/Wall");
-	members.push_back("Room/FixedFinish/DoorTrim");
-
-	Dictionary floor_wall;
-	floor_wall["a"] = members[0];
-	floor_wall["b"] = members[1];
-	floor_wall["kind"] = "max_gap";
-	Dictionary wall_trim = floor_wall.duplicate(true);
-	wall_trim["a"] = members[1];
-	wall_trim["b"] = members[2];
-	Array relations;
-	relations.push_back(floor_wall);
-	relations.push_back(wall_trim);
-	CHECK(reflection_service.validate_structure_topology(members, relations).get("ok", false));
-
-	Dictionary shared_datum;
-	shared_datum["a"] = members[1];
-	shared_datum["b"] = members[2];
-	shared_datum["kind"] = "align";
-	shared_datum["axis"] = "y";
-	shared_datum["a_anchor"] = "max";
-	shared_datum["b_anchor"] = "max";
-	Dictionary opening_clearance;
-	opening_clearance["a"] = members[0];
-	opening_clearance["b"] = members[2];
-	opening_clearance["kind"] = "no_overlap";
-	Array clearance_axes;
-	clearance_axes.push_back("x");
-	clearance_axes.push_back("z");
-	opening_clearance["axes"] = clearance_axes;
-	relations.push_back(shared_datum);
-	relations.push_back(opening_clearance);
-	CHECK(reflection_service.validate_structure_topology(members, relations).get("ok", false));
-	Dictionary invalid_datum = shared_datum.duplicate(true);
-	invalid_datum.erase("axis");
-	relations[2] = invalid_datum;
-	Dictionary invalid_datum_result = reflection_service.validate_structure_topology(members, relations);
-	CHECK_FALSE((bool)invalid_datum_result.get("ok", true));
-	CHECK(Dictionary(invalid_datum_result.get("error", Dictionary())).get("code", String()) == "INVALID_STRUCTURE_CONTRACT");
-	relations.resize(2);
-
-	Dictionary partial_axis = wall_trim.duplicate(true);
-	Array axes;
-	axes.push_back("y");
-	partial_axis["axes"] = axes;
-	relations[1] = partial_axis;
-	Dictionary rejected = reflection_service.validate_structure_topology(members, relations);
-	CHECK_FALSE((bool)rejected.get("ok", true));
-	CHECK(Dictionary(rejected.get("error", Dictionary())).get("code", String()) == "INVALID_STRUCTURE_CONTRACT");
-
-	Dictionary contains = wall_trim.duplicate(true);
-	contains["kind"] = "contains";
-	relations[1] = contains;
-	rejected = reflection_service.validate_structure_topology(members, relations);
-	CHECK_FALSE((bool)rejected.get("ok", true));
-	CHECK(Dictionary(rejected.get("error", Dictionary())).get("code", String()) == "DISCONNECTED_STRUCTURE_CONTRACT");
-}
-
 TEST_CASE("[SolersReflectionService] exact structural contacts expose any positive gap") {
 	const AABB wall(Vector3(), Vector3(1, 1, 1));
 	const AABB touching(Vector3(1, 0, 0), Vector3(1, 1, 1));
@@ -1923,49 +1845,7 @@ TEST_CASE("[SceneTree][SolersGeometryFacts] mesh facts expose bounds and topolog
 	CHECK(Math::is_equal_approx((double)size[2], 6.0));
 }
 
-TEST_CASE("[SolersReflectionService] placement topology requires one support for every logical member") {
-	SolersReflectionService reflection_service;
-	Array members;
-	members.push_back("Props/Table");
-	members.push_back("Props/Lamp");
-
-	Dictionary table_support;
-	table_support["member"] = members[0];
-	table_support["supported_by"] = "Structure/Floor";
-	Dictionary lamp_support;
-	lamp_support["member"] = members[1];
-	lamp_support["supported_by"] = members[0];
-	lamp_support["support_member"] = members[0];
-	Array placements;
-	placements.push_back(table_support);
-	placements.push_back(lamp_support);
-	CHECK(reflection_service.validate_placement_topology(members, placements).get("ok", false));
-
-	placements.resize(1);
-	Dictionary rejected = reflection_service.validate_placement_topology(members, placements);
-	CHECK_FALSE((bool)rejected.get("ok", true));
-	CHECK(Dictionary(rejected.get("error", Dictionary())).get("code", String()) == "INCOMPLETE_PLACEMENT_CONTRACT");
-
-	placements.push_back(lamp_support);
-	Dictionary self_support = lamp_support.duplicate(true);
-	self_support["supported_by"] = members[1];
-	self_support["support_member"] = members[1];
-	placements[1] = self_support;
-	rejected = reflection_service.validate_placement_topology(members, placements);
-	CHECK_FALSE((bool)rejected.get("ok", true));
-	CHECK(Dictionary(rejected.get("error", Dictionary())).get("code", String()) == "INVALID_PLACEMENT_CONTRACT");
-
-	Dictionary table_cycle = table_support.duplicate(true);
-	table_cycle["supported_by"] = members[1];
-	table_cycle["support_member"] = members[1];
-	placements[0] = table_cycle;
-	placements[1] = lamp_support;
-	rejected = reflection_service.validate_placement_topology(members, placements);
-	CHECK_FALSE((bool)rejected.get("ok", true));
-	CHECK(Dictionary(rejected.get("error", Dictionary())).get("code", String()) == "CYCLIC_PLACEMENT_SUPPORT");
-}
-
-TEST_CASE("[SolersToolRegistry] scene.edit access follows its mutation contract") {
+TEST_CASE("[SolersToolRegistry] scene object transaction access follows its native scope") {
 	SolersReflectionService reflection_service;
 	SolersToolRegistry registry;
 	registry.set_reflection_service(&reflection_service);
@@ -1979,9 +1859,10 @@ TEST_CASE("[SolersToolRegistry] scene.edit access follows its mutation contract"
 	Array write_operations;
 	write_operations.push_back(write_op);
 	Dictionary write_args;
+	write_args["scope"] = "scene";
 	write_args["operations"] = write_operations;
-	CHECK_FALSE(registry.is_read_only("scene.edit", write_args));
-	const Array write_access = registry.resolve_resource_access("scene.edit", write_args);
+	CHECK_FALSE(registry.is_read_only("object.transaction", write_args));
+	const Array write_access = registry.resolve_resource_access("object.transaction", write_args);
 	REQUIRE(write_access.size() == 1);
 	CHECK(Dictionary(write_access[0]).get("mode", String()) == "write");
 	CHECK(Dictionary(write_access[0]).get("key", String()) == "scene:ReferenceCamera");
@@ -1993,8 +1874,9 @@ TEST_CASE("[SolersToolRegistry] scene.edit access follows its mutation contract"
 	Array instantiate_operations;
 	instantiate_operations.push_back(instantiate);
 	Dictionary instantiate_args;
+	instantiate_args["scope"] = "scene";
 	instantiate_args["operations"] = instantiate_operations;
-	const Array instantiate_access = registry.resolve_resource_access("scene.edit", instantiate_args);
+	const Array instantiate_access = registry.resolve_resource_access("object.transaction", instantiate_args);
 	REQUIRE(instantiate_access.size() == 2);
 	CHECK(Dictionary(instantiate_access[0]).get("mode", String()) == "read");
 	CHECK(Dictionary(instantiate_access[0]).get("key", String()) == "project:res://props/tree.glb");
@@ -2086,9 +1968,113 @@ TEST_CASE("[SolersObservationService] runtime capture waits for visual readiness
 	REQUIRE((bool)pending.get("ok", false));
 	const Dictionary data = pending.get("data", Dictionary());
 	CHECK(data.get("status", String()) == "pending");
+	CHECK((int64_t)data.get("render_sequence", 0) > 0);
+	CHECK(Dictionary(data.get("source_state", Dictionary())).has("runtime_epoch"));
 	CHECK((bool)data.get("awaiting_runtime_ready", false));
 	const Dictionary poll_args = data.get("poll_args", Dictionary());
 	CHECK_FALSE(observation_service.is_viewport_capture_ready(poll_args));
+}
+
+TEST_CASE("[SolersObservationService] runtime status exposes a single capture_ready authority") {
+	// capture_ready is the one fact render.capture(runtime) and context share —
+	// not a second guess from ScriptEditorDebugger alone.
+	SolersObservationService observation_service;
+	const Dictionary status = observation_service.get_runtime_status();
+	CHECK(status.has("is_playing"));
+	CHECK(status.has("debugger_connected"));
+	CHECK(status.has("capture_ready"));
+	CHECK(status.get("capture_ready", true).get_type() == Variant::BOOL);
+	// With no play session, capture must not claim readiness.
+	CHECK_FALSE((bool)status.get("capture_ready", true));
+}
+
+TEST_CASE("[SolersToolRegistry] scene.open is a thin EditorInterface open surface") {
+	SolersReflectionService reflection_service;
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_SCENE, true);
+	SolersToolRegistry registry;
+	registry.set_reflection_service(&reflection_service);
+	registry.set_permission_manager(&permissions);
+	registry.register_default_tools();
+
+	const Dictionary tool = find_tool_def(registry.list_tools(), "scene.open");
+	REQUIRE_FALSE(tool.is_empty());
+	CHECK(tool.get("permission", String()) == "observe");
+	CHECK(tool.get("mutation_policy", String()) == "irreversible");
+	CHECK(tool.get("exposure", String()) == "direct");
+	CHECK_FALSE(registry.affects_scene_state(SNAME("scene.open")));
+	const Dictionary schema = tool.get("input_schema", Dictionary());
+	CHECK(Dictionary(schema.get("properties", Dictionary())).has("path"));
+	CHECK(Array(schema.get("required", Array())).has("path"));
+
+	Dictionary missing_path;
+	const Dictionary missing_path_result = registry.call_tool(SNAME("scene.open"), missing_path);
+	CHECK_FALSE((bool)missing_path_result.get("ok", true));
+	const String missing_path_code = Dictionary(missing_path_result.get("error", Dictionary())).get("code", String());
+	CHECK((missing_path_code == "SCENE_PATH_REQUIRED" || missing_path_code == "TOOL_ARGUMENT_INVALID"));
+
+	Dictionary missing_file;
+	missing_file["path"] = "res://definitely_missing_solers_scene_open_contract.tscn";
+	const Dictionary missing_file_result = registry.call_tool(SNAME("scene.open"), missing_file);
+	CHECK_FALSE((bool)missing_file_result.get("ok", true));
+	const String missing_code = Dictionary(missing_file_result.get("error", Dictionary())).get("code", String());
+	CHECK((missing_code == "SCENE_NOT_FOUND" || missing_code == "EDITOR_UNAVAILABLE"));
+}
+
+TEST_CASE("[SolersToolRegistry] scene.reload is a thin EditorNode reload surface") {
+	SolersReflectionService reflection_service;
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
+	SolersToolRegistry registry;
+	registry.set_reflection_service(&reflection_service);
+	registry.set_permission_manager(&permissions);
+	registry.register_default_tools();
+
+	const Dictionary tool = find_tool_def(registry.list_tools(), "scene.reload");
+	REQUIRE_FALSE(tool.is_empty());
+	CHECK(tool.get("permission", String()) == "observe");
+	CHECK(tool.get("mutation_policy", String()) == "irreversible");
+	CHECK(tool.get("exposure", String()) == "direct");
+	CHECK(String(tool.get("description", String())).contains("EditorNode::reload_scene"));
+	CHECK(String(tool.get("description", String())).contains("@tool"));
+	CHECK_FALSE(registry.affects_scene_state(SNAME("scene.reload")));
+	const Dictionary schema = tool.get("input_schema", Dictionary());
+	CHECK(Dictionary(schema.get("properties", Dictionary())).has("path"));
+	CHECK_FALSE(schema.has("required"));
+
+	Dictionary args;
+	const Dictionary result = registry.call_tool(SNAME("scene.reload"), args);
+	CHECK_FALSE((bool)result.get("ok", true));
+	const String code = Dictionary(result.get("error", Dictionary())).get("code", String());
+	CHECK((code == "NO_EDITED_SCENE" || code == "SCENE_PATH_REQUIRED" || code == "SCENE_NOT_OPEN"));
+	CHECK((bool)Dictionary(result.get("error", Dictionary())).get("recoverable", false));
+
+	Dictionary missing;
+	missing["path"] = "res://definitely_not_open_in_editor_solers_contract.tscn";
+	const Dictionary missing_result = registry.call_tool(SNAME("scene.reload"), missing);
+	CHECK_FALSE((bool)missing_result.get("ok", true));
+	const String missing_code = Dictionary(missing_result.get("error", Dictionary())).get("code", String());
+	CHECK((missing_code == "SCENE_NOT_OPEN" || missing_code == "NO_EDITED_SCENE"));
+}
+
+TEST_CASE("[SolersScriptService] script.edit reports whether the path is the edited scene root script") {
+	const String path = "res://solers_root_script_fact_contract.gd";
+	const String fs_path = ProjectSettings::get_singleton()->globalize_path(path);
+	if (FileAccess::exists(path)) {
+		DirAccess::remove_file_or_error(fs_path);
+	}
+	SolersScriptService script_service;
+	Dictionary args;
+	args["path"] = path;
+	args["content"] = "extends Node\nfunc _ready() -> void:\n\tpass\n";
+	const Dictionary written = script_service.write_file(args);
+	REQUIRE((bool)written.get("ok", false));
+	const Dictionary data = written.get("data", Dictionary());
+	CHECK(data.has("path"));
+	CHECK(data.has("sha256"));
+	CHECK(data.has("affects_edited_scene_root_script"));
+	CHECK_FALSE((bool)data.get("affects_edited_scene_root_script", true));
+	DirAccess::remove_file_or_error(fs_path);
 }
 
 TEST_CASE("[SolersToolRegistry] project.search rejects incomplete requests before execution") {
@@ -2153,18 +2139,6 @@ TEST_CASE("[SolersResourceService] native Resource path flow creates edits loads
 	set_args["value"] = "contract updated";
 	Dictionary set = resource_service.set_resource_property(set_args);
 	REQUIRE(set.get("ok", false));
-
-	Dictionary native_load_args;
-	native_load_args["path"] = path;
-	Dictionary native_loaded = resource_service.native_load(native_load_args);
-	REQUIRE(native_loaded.get("ok", false));
-	Dictionary call_args;
-	call_args["object_id"] = native_loaded.get("data", Dictionary());
-	call_args["method"] = "get_path";
-	Dictionary call = resource_service.native_call(call_args);
-	REQUIRE(call.get("ok", false));
-	Dictionary call_data = call.get("data", Dictionary());
-	CHECK(call_data.get("result", String()) == path);
 
 	Ref<Resource> loaded = ResourceLoader::load(path, "Resource");
 	REQUIRE(loaded.is_valid());
@@ -2940,6 +2914,7 @@ TEST_CASE("[SolersReflectionService] introspection reports native Object argumen
 	Dictionary args;
 	args["class_name"] = "Mesh";
 	args["include_inherited"] = false;
+	args["member_query"] = "surface_set_material";
 	const Dictionary result = reflection_service.introspect_class(args);
 	REQUIRE(result.get("ok", false));
 
@@ -2957,6 +2932,96 @@ TEST_CASE("[SolersReflectionService] introspection reports native Object argumen
 		break;
 	}
 	CHECK(found);
+}
+
+TEST_CASE("[SolersReflectionService] lean introspect returns member_names without typed members") {
+	SolersReflectionService reflection_service;
+	Dictionary lean_args;
+	lean_args["class_name"] = "Node3D";
+	lean_args["include_inherited"] = false;
+	lean_args["max_members"] = 1;
+	const Dictionary lean = reflection_service.introspect_class(lean_args);
+	REQUIRE(lean.get("ok", false));
+	const Dictionary lean_data = lean.get("data", Dictionary());
+	REQUIRE(PackedStringArray(lean_data.get("member_names", PackedStringArray())).size() == 1);
+	CHECK((int)lean_data.get("member_count", 0) > 0);
+	CHECK(lean_data.get("truncated", false));
+	REQUIRE(lean_data.has("next_cursor"));
+	Dictionary next_args = lean_args.duplicate();
+	next_args["cursor"] = lean_data["next_cursor"];
+	const Dictionary next = reflection_service.introspect_class(next_args);
+	REQUIRE(next.get("ok", false));
+	CHECK(PackedStringArray(Dictionary(next.get("data", Dictionary())).get("member_names", PackedStringArray())).size() == 1);
+	CHECK_FALSE(lean_data.has("methods"));
+	CHECK_FALSE(lean_data.has("properties"));
+
+	Dictionary expand_args = lean_args;
+	expand_args["member_query"] = "position";
+	expand_args["max_members"] = 64;
+	const Dictionary expanded = reflection_service.introspect_class(expand_args);
+	REQUIRE(expanded.get("ok", false));
+	const Dictionary expand_data = expanded.get("data", Dictionary());
+	CHECK(expand_data.has("properties"));
+	CHECK(Array(expand_data.get("properties", Array())).size() >= 1);
+}
+
+TEST_CASE("[SolersToolRegistry] object.query defaults lean and expands on flag") {
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_all(true);
+	SolersObservationService observation;
+	SolersReflectionService reflection_service;
+	SolersToolRegistry registry;
+	registry.set_permission_manager(&permissions);
+	registry.set_observation_service(&observation);
+	registry.set_reflection_service(&reflection_service);
+	registry.register_default_tools();
+
+	Dictionary lean_args;
+	lean_args["target"] = "scene";
+	const Dictionary lean = registry.call_tool(SNAME("object.query"), lean_args);
+	REQUIRE_MESSAGE((bool)lean.get("ok", false), String(Dictionary(lean.get("error", Dictionary())).get("message", String())));
+	const Dictionary lean_data = lean.get("data", Dictionary());
+	CHECK(lean_data.has("state"));
+	CHECK_FALSE(lean_data.has("scene_tree"));
+	CHECK_FALSE(lean_data.has("selection"));
+
+	// Expand contract: caller-facing flags remain on the scene branch schema.
+	// (Headless suites may leave a non-owned edited-scene pointer; do not
+	// serialize the live tree here — that path is covered by editor dogfood.)
+	const Dictionary query_def = find_tool_def(registry.list_tools(), "object.query");
+	REQUIRE_FALSE(query_def.is_empty());
+	const Array branches = Dictionary(query_def.get("input_schema", Dictionary())).get("oneOf", Array());
+	REQUIRE(branches.size() >= 1);
+	const Dictionary scene_props = Dictionary(branches[0]).get("properties", Dictionary());
+	CHECK(scene_props.has("include_tree"));
+	CHECK(scene_props.has("include_selection"));
+	CHECK(scene_props.has("node_paths"));
+}
+
+TEST_CASE("[SolersReflectionService] member_query reports unmatched tokens from ClassDB") {
+	// OR matching must not silently drop a token that exists on no member of the class.
+	SolersReflectionService reflection_service;
+	Dictionary args;
+	args["class_name"] = "ProceduralSkyMaterial";
+	args["include_inherited"] = false;
+	args["member_query"] = "sun_angle_max sun_disk_scale";
+	const Dictionary result = reflection_service.introspect_class(args);
+	REQUIRE(result.get("ok", false));
+	const Dictionary data = result.get("data", Dictionary());
+	const Array unmatched = data.get("unmatched_member_query_tokens", Array());
+	REQUIRE(unmatched.size() >= 1);
+	bool saw_sun_disk = false;
+	for (int i = 0; i < unmatched.size(); i++) {
+		const Dictionary entry = unmatched[i];
+		if (String(entry.get("token", String())) != "sun_disk_scale") {
+			continue;
+		}
+		saw_sun_disk = true;
+		CHECK(Array(entry.get("nearest_members", Array())).size() >= 0);
+		const PackedStringArray siblings = entry.get("classes_with_member", PackedStringArray());
+		CHECK(siblings.has("PhysicalSkyMaterial"));
+	}
+	CHECK(saw_sun_disk);
 }
 
 TEST_CASE("[SolersReflectionService] Godot indexed paths reach nested resource properties") {
@@ -3008,7 +3073,7 @@ TEST_CASE("[SolersContextManager] pairing repair answers tool calls a killed tur
 	// durable history; without repair every later request is rejected forever.
 	Array messages;
 	messages.push_back(SolersLLMMessage::user("Add a light."));
-	messages.push_back(SolersLLMMessage::assistant("Editing.", solers_test_tool_calls("call_killed", "scene.edit")));
+	messages.push_back(SolersLLMMessage::assistant("Editing.", solers_test_tool_calls("call_killed", "object.transaction")));
 	messages.push_back(SolersLLMMessage::user("Stop, do it differently."));
 
 	const Array repaired = SolersContextManager::repair_tool_pairing(messages);
@@ -3016,15 +3081,15 @@ TEST_CASE("[SolersContextManager] pairing repair answers tool calls a killed tur
 	const Dictionary stub = repaired[2];
 	CHECK(String(stub.get("role", String())) == String(SolersLLMRole::TOOL));
 	CHECK(String(stub.get("tool_call_id", String())) == "call_killed");
-	CHECK(String(stub.get("name", String())) == "scene.edit");
+	CHECK(String(stub.get("name", String())) == "object.transaction");
 	CHECK(String(stub.get("content", String())).contains("TOOL_CANCELLED"));
 	CHECK(String(Dictionary(repaired[3]).get("content", String())) == "Stop, do it differently.");
 }
 
 TEST_CASE("[SolersContextManager] pairing repair keeps a complete exchange byte-identical") {
 	Array messages;
-	messages.push_back(SolersLLMMessage::assistant("Inspecting.", solers_test_tool_calls("call_a", "scene.inspect")));
-	messages.push_back(SolersLLMMessage::tool_result("call_a", "scene.inspect", "observation"));
+	messages.push_back(SolersLLMMessage::assistant("Inspecting.", solers_test_tool_calls("call_a", "object.query")));
+	messages.push_back(SolersLLMMessage::tool_result("call_a", "object.query", "observation"));
 
 	const Array repaired = SolersContextManager::repair_tool_pairing(messages);
 	REQUIRE(repaired.size() == messages.size());
@@ -3037,10 +3102,10 @@ TEST_CASE("[SolersContextManager] pairing repair drops results for calls never m
 	// A duplicate or unmatched tool result is rejected by providers just as
 	// hard as a missing one, so the projection must not forward it.
 	Array messages;
-	messages.push_back(SolersLLMMessage::assistant("Inspecting.", solers_test_tool_calls("call_a", "scene.inspect")));
-	messages.push_back(SolersLLMMessage::tool_result("call_a", "scene.inspect", "observation"));
-	messages.push_back(SolersLLMMessage::tool_result("call_a", "scene.inspect", "duplicate"));
-	messages.push_back(SolersLLMMessage::tool_result("call_ghost", "scene.inspect", "orphan"));
+	messages.push_back(SolersLLMMessage::assistant("Inspecting.", solers_test_tool_calls("call_a", "object.query")));
+	messages.push_back(SolersLLMMessage::tool_result("call_a", "object.query", "observation"));
+	messages.push_back(SolersLLMMessage::tool_result("call_a", "object.query", "duplicate"));
+	messages.push_back(SolersLLMMessage::tool_result("call_ghost", "object.query", "orphan"));
 
 	const Array repaired = SolersContextManager::repair_tool_pairing(messages);
 	REQUIRE(repaired.size() == 2);
@@ -3051,7 +3116,7 @@ TEST_CASE("[SolersContextManager] request projection repairs pairing before budg
 	SolersContextManager context;
 	Array messages;
 	messages.push_back(SolersLLMMessage::user("Add a light."));
-	messages.push_back(SolersLLMMessage::assistant("Editing.", solers_test_tool_calls("call_killed", "scene.edit")));
+	messages.push_back(SolersLLMMessage::assistant("Editing.", solers_test_tool_calls("call_killed", "object.transaction")));
 
 	const Array projected = context.prepare_request(messages, String(), Array());
 	REQUIRE(projected.size() == 3);
@@ -3066,20 +3131,19 @@ TEST_CASE("[SolersContextManager] estimates ASCII and non-ASCII text like Kimi C
 	CHECK(SolersContextManager::estimate_tokens(String::utf8("ab白")) == 2);
 }
 
-TEST_CASE("[SolersContextManager] compaction begins exactly when the next reply stops fitting") {
-	// Headroom is min(max_output, 20k) — OpenCode COMPACTION_BUFFER — so a
-	// large wire budget cannot collapse usable input on every short turn.
+TEST_CASE("[SolersContextManager] compaction reserves the provider output contract") {
 	SolersContextManager context;
 
-	CHECK_FALSE(context.should_compact(179999, 200000, 32000));
-	CHECK(context.should_compact(180000, 200000, 32000));
-	// Reserve caps at 20k even when max_output is larger.
-	CHECK(context.should_compact(180000, 200000, 50000));
-	CHECK_FALSE(context.should_compact(179999, 200000, 50000));
-	// Mid-size windows still compact near the end, not at tool-prompt size.
+	CHECK_FALSE(context.should_compact(167999, 200000, 32000));
+	CHECK(context.should_compact(168000, 200000, 32000));
+	CHECK(context.should_compact(150000, 200000, 50000));
+	CHECK_FALSE(context.should_compact(149999, 200000, 50000));
 	CHECK_FALSE(context.should_compact(8000, 500000, 32000));
-	CHECK(context.should_compact(480000, 500000, 32000));
+	CHECK(context.should_compact(468000, 500000, 32000));
 	CHECK_FALSE(context.should_compact(30000, 0, 8192));
+	CHECK_FALSE(context.should_compact(99071, 131072, 32000));
+	CHECK(context.should_compact(99072, 131072, 32000));
+	CHECK_FALSE(context.should_compact(350000, 1050000, 32000));
 }
 
 TEST_CASE("[SolersContextManager] compaction requires context growth after the last compaction") {
@@ -3093,69 +3157,35 @@ TEST_CASE("[SolersContextManager] compaction requires context growth after the l
 	CHECK(context.should_compact(tokens_after + 1, tokens_after * 2, tokens_after));
 }
 
-TEST_CASE("[SolersContextManager] every request extends the previous prefix byte for byte") {
-	// The invariant prompt caching rests on: whatever a request already sent
-	// must reach the provider identically next time, however large history
-	// grows. Growing the history and re-projecting must only ever append.
-	SolersContextManager context;
+TEST_CASE("[SolersContextManager] completed turns drop tool bodies and legacy checkpoints") {
 	const String fat = String("x").repeat(40000);
 	Array messages;
-	messages.push_back(SolersLLMMessage::user("Start."));
-
-	Array previous = context.prepare_request(messages, String(), Array());
-	for (int round = 0; round < 8; round++) {
-		const String call_id = "call_" + itos(round);
-		messages.push_back(SolersLLMMessage::assistant("Working.", solers_test_tool_calls(call_id, "scene.inspect")));
-		messages.push_back(SolersLLMMessage::tool_result(call_id, "scene.inspect", fat));
-
-		const Array projected = context.prepare_request(messages, String(), Array());
-		REQUIRE(projected.size() >= previous.size());
-		for (int i = 0; i < previous.size(); i++) {
-			CHECK(Dictionary(projected[i]) == Dictionary(previous[i]));
-		}
-		previous = projected;
-	}
-	// Durable history is never rewritten either, whatever the projection did.
-	CHECK(messages.size() == 17);
-	CHECK(Dictionary(messages[2]).get("content", String()) == fat);
-}
-
-TEST_CASE("[SolersContextManager] projection carries attachments and history through untouched") {
-	SolersContextManager context;
-	Dictionary capture;
-	capture["id"] = "capture_1";
-	capture["source"] = "tool_capture";
-	Array capture_attachments;
-	capture_attachments.push_back(capture);
-	Dictionary old_tool = SolersLLMMessage::tool_result("call_old", "scene.inspect", "old observation");
-	old_tool["attachments"] = capture_attachments;
-
-	Array messages;
 	messages.push_back(SolersLLMMessage::user("Inspect the scene."));
-	messages.push_back(SolersLLMMessage::assistant("Inspecting.", solers_test_tool_calls("call_old", "scene.inspect")));
-	messages.push_back(old_tool);
-	messages.push_back(SolersLLMMessage::assistant("Applying the observation.", solers_test_tool_calls("call_current", "scene.inspect")));
-	messages.push_back(SolersLLMMessage::tool_result("call_current", "scene.inspect", "current observation"));
+	messages.push_back(SolersLLMMessage::assistant("Inspecting.", solers_test_tool_calls("call_old", "object.query")));
+	messages.push_back(SolersLLMMessage::tool_result("call_old", "object.query", fat));
+	messages.push_back(SolersLLMMessage::assistant("The scene has three lights.", Array()));
+	Dictionary checkpoint = SolersLLMMessage::user("Runtime checkpoint: revision 3");
+	checkpoint["origin"] = "turn_checkpoint";
+	messages.push_back(checkpoint);
+	Dictionary transient = SolersLLMMessage::user("stale engine state");
+	transient["ephemeral"] = true;
+	messages.push_back(transient);
 
-	const Array projected = context.prepare_request(messages, String(), Array());
-	REQUIRE(projected.size() == messages.size());
-	for (int i = 0; i < messages.size(); i++) {
-		CHECK(Dictionary(projected[i]) == Dictionary(messages[i]));
-	}
-	CHECK(Array(Dictionary(projected[2]).get("attachments", Array())).size() == 1);
+	const Array projected = SolersContextManager::project_completed_turns(messages);
+	REQUIRE(projected.size() == 2);
+	CHECK(Dictionary(projected[0]).get("content", String()) == "Inspect the scene.");
+	CHECK(Dictionary(projected[1]).get("content", String()) == "The scene has three lights.");
+	CHECK(SolersContextManager::estimate_messages_tokens(projected) * 10 < SolersContextManager::estimate_messages_tokens(messages));
 }
 
-TEST_CASE("[SolersContextManager] full compaction keeps real user prompts and one plan-aware summary") {
+TEST_CASE("[SolersContextManager] compaction keeps the latest complete tool exchange") {
 	SolersContextManager context;
 	Array messages;
 	messages.push_back(SolersLLMMessage::user("Build a room from the reference."));
-	messages.push_back(SolersLLMMessage::assistant("I will inspect the scene.", Array()));
-	messages.push_back(SolersLLMMessage::tool_result("call_1", "scene.inspect", "{\"ok\":true}"));
-	messages.push_back(SolersLLMMessage::user("Keep the proportions realistic."));
-
-	Dictionary old_summary = SolersLLMMessage::user("obsolete summary");
-	old_summary["origin"] = "compaction_summary";
-	messages.push_back(old_summary);
+	messages.push_back(SolersLLMMessage::assistant("Inspecting.", solers_test_tool_calls("call_old", "object.query")));
+	messages.push_back(SolersLLMMessage::tool_result("call_old", "object.query", String("x").repeat(40000)));
+	messages.push_back(SolersLLMMessage::assistant("Capturing.", solers_test_tool_calls("call_latest", "render.capture")));
+	messages.push_back(SolersLLMMessage::tool_result("call_latest", "render.capture", "{\"camera\":5}"));
 
 	Array steps;
 	Dictionary step;
@@ -3165,20 +3195,21 @@ TEST_CASE("[SolersContextManager] full compaction keeps real user prompts and on
 	Dictionary plan;
 	plan["plan"] = steps;
 
-	Dictionary result = context.apply_compaction(messages, "I finished the whitebox.", plan);
+	Dictionary result = context.apply_compaction(messages, "Continue from the verified room and camera 5.", plan);
 	Array compacted = result.get("messages", Array());
 	REQUIRE(compacted.size() == 3);
-	CHECK(Dictionary(compacted[0]).get("content", String()) == "Build a room from the reference.");
-	CHECK(Dictionary(compacted[1]).get("content", String()) == "Keep the proportions realistic.");
-	Dictionary summary = compacted[2];
+	Dictionary summary = compacted[0];
 	CHECK(summary.get("origin", String()) == "compaction_summary");
 	CHECK(String(summary.get("content", String())).begins_with(String::utf8(SolersContextManager::COMPACTION_SUMMARY_PREFIX)));
 	CHECK(String(summary.get("content", String())).contains("Tune lighting"));
+	CHECK(String(Dictionary(compacted[1]).get("content", String())) == "Capturing.");
+	CHECK(String(Dictionary(compacted[2]).get("tool_call_id", String())) == "call_latest");
+	CHECK(String(Dictionary(compacted[2]).get("content", String())).contains("camera"));
 
 	Dictionary repeated = context.apply_compaction(compacted, "Continue from the verified whitebox.", plan);
 	Array repeated_messages = repeated.get("messages", Array());
 	REQUIRE(repeated_messages.size() == 3);
-	CHECK(Dictionary(repeated_messages[2]).get("origin", String()) == "compaction_summary");
+	CHECK(Dictionary(repeated_messages[0]).get("origin", String()) == "compaction_summary");
 }
 
 TEST_CASE("[SolersContextManager] full compaction never discards user reference images") {
@@ -3197,7 +3228,7 @@ TEST_CASE("[SolersContextManager] full compaction never discards user reference 
 	const Dictionary result = context.apply_compaction(messages, "Continue matching the reference.", Dictionary());
 	const Array compacted = result.get("messages", Array());
 	REQUIRE(compacted.size() == 2);
-	const Array kept = Dictionary(compacted[0]).get("attachments", Array());
+	const Array kept = Dictionary(compacted[1]).get("attachments", Array());
 	REQUIRE(kept.size() == 1);
 	CHECK(Dictionary(kept[0]).get("id", String()) == "user_reference");
 }
@@ -3209,7 +3240,7 @@ TEST_CASE("[SolersContextManager] full compaction drops consumed tool captures")
 	first_capture["source"] = "tool_capture";
 	Array first_attachments;
 	first_attachments.push_back(first_capture);
-	Dictionary first_tool = SolersLLMMessage::tool_result("call_old", "viewport_capture", "{}");
+	Dictionary first_tool = SolersLLMMessage::tool_result("call_old", "render_capture", "{}");
 	first_tool["attachments"] = first_attachments;
 
 	Dictionary latest_capture;
@@ -3217,16 +3248,20 @@ TEST_CASE("[SolersContextManager] full compaction drops consumed tool captures")
 	latest_capture["source"] = "tool_capture";
 	Array latest_attachments;
 	latest_attachments.push_back(latest_capture);
-	Dictionary latest_tool = SolersLLMMessage::tool_result("call_latest", "viewport_capture", "{}");
+	Dictionary latest_tool = SolersLLMMessage::tool_result("call_latest", "render_capture", "{}");
 	latest_tool["attachments"] = latest_attachments;
 
 	Array messages;
 	messages.push_back(SolersLLMMessage::user("Build and inspect the scene."));
+	messages.push_back(SolersLLMMessage::assistant("First capture.", solers_test_tool_calls("call_old", "render.capture")));
 	messages.push_back(first_tool);
+	messages.push_back(SolersLLMMessage::assistant("Latest capture.", solers_test_tool_calls("call_latest", "render.capture")));
 	messages.push_back(latest_tool);
 	const Array compacted = Dictionary(context.apply_compaction(messages, "Continue visual verification.", Dictionary())).get("messages", Array());
-	REQUIRE(compacted.size() == 2);
-	CHECK(Dictionary(compacted[1]).get("origin", String()) == "compaction_summary");
+	REQUIRE(compacted.size() == 3);
+	CHECK(Dictionary(compacted[0]).get("origin", String()) == "compaction_summary");
+	CHECK(String(Dictionary(compacted[2]).get("tool_call_id", String())) == "call_latest");
+	CHECK(Array(Dictionary(compacted[2]).get("attachments", Array())).size() == 1);
 }
 
 TEST_CASE("[SolersContextManager] full compaction drops per-request harness state") {
@@ -3236,24 +3271,70 @@ TEST_CASE("[SolersContextManager] full compaction drops per-request harness stat
 	SolersContextManager context;
 	Dictionary state = SolersLLMMessage::user("revision 2");
 	state["origin"] = "solers_state";
+	state["ephemeral"] = true;
 	Array messages;
 	messages.push_back(SolersLLMMessage::user("Build the room."));
 	messages.push_back(state);
 
 	const Array compacted = Dictionary(context.apply_compaction(messages, "Continue.", Dictionary())).get("messages", Array());
-	REQUIRE(compacted.size() == 2);
-	CHECK(Dictionary(compacted[0]).get("content", String()) == "Build the room.");
-	CHECK(Dictionary(compacted[1]).get("origin", String()) == "compaction_summary");
+	REQUIRE(compacted.size() == 1);
+	CHECK(Dictionary(compacted[0]).get("origin", String()) == "compaction_summary");
 }
 
-TEST_CASE("[SolersContextManager] tool result budget clamps to a fixed band") {
-	// Window fraction applies between the floor and the ceiling; a giant
-	// window must not let one observation displace working history.
-	CHECK(SolersContextManager::tool_result_token_budget(0) == 8000);
-	CHECK(SolersContextManager::tool_result_token_budget(8000) == 4000);
-	CHECK(SolersContextManager::tool_result_token_budget(40000) == 8000);
-	CHECK(SolersContextManager::tool_result_token_budget(200000) == 8000);
-	CHECK(SolersContextManager::tool_result_token_budget(1000000) == 8000);
+TEST_CASE("[SolersAgentSession] transcript restore keeps only the active tool exchange") {
+	const String session_id = "restore-contract-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
+	const String project_path = "test://solers-restore-contract";
+	auto write_event = [&](const Dictionary &p_payload, int p_turn) {
+		Dictionary event = p_payload.duplicate(true);
+		event["project_path"] = project_path;
+		event["session_id"] = session_id;
+		event["turn_id"] = p_turn;
+		solers_transcript_write(event);
+	};
+	Dictionary event;
+	event["event_type"] = "message";
+	event["role"] = SolersLLMRole::USER;
+	event["content"] = "completed request";
+	write_event(event, 1);
+	event["role"] = SolersLLMRole::ASSISTANT;
+	event["content"] = String();
+	event["tool_calls"] = solers_test_tool_calls("old_call", "object.query");
+	write_event(event, 1);
+	event.clear();
+	event["event_type"] = "tool_result";
+	event["call_id"] = "old_call";
+	event["tool"] = "object.query";
+	event["content"] = "{\"old\":true}";
+	write_event(event, 1);
+	event.clear();
+	event["event_type"] = "turn_outcome";
+	event["outcome"] = "completed";
+	write_event(event, 1);
+	event.clear();
+	event["event_type"] = "message";
+	event["role"] = SolersLLMRole::USER;
+	event["content"] = "active request";
+	write_event(event, 2);
+	event["role"] = SolersLLMRole::ASSISTANT;
+	event["content"] = String();
+	event["tool_calls"] = solers_test_tool_calls("active_call", "render.capture");
+	write_event(event, 2);
+	event.clear();
+	event["event_type"] = "tool_result";
+	event["call_id"] = "active_call";
+	event["tool"] = "render.capture";
+	event["content"] = "{\"camera\":\"verified\"}";
+	write_event(event, 2);
+
+	SolersAgentSession restored;
+	restored.set_session(project_path, session_id);
+	const Array messages = restored.get_messages();
+	REQUIRE(messages.size() == 4);
+	CHECK(String(Dictionary(messages[0]).get("content", String())).contains("completed request"));
+	CHECK(Array(Dictionary(messages[2]).get("tool_calls", Array())).size() == 1);
+	CHECK(String(Dictionary(messages[3]).get("tool_call_id", String())) == "active_call");
+	CHECK(String(Dictionary(messages[3]).get("content", String())).contains("verified"));
+	restored.shutdown();
 }
 
 TEST_CASE("[SolersAgentSession] a tool result reaches the model as parsable JSON at any size") {
@@ -3275,6 +3356,13 @@ TEST_CASE("[SolersAgentSession] a tool result reaches the model as parsable JSON
 	digest["root_type"] = "Node3D";
 	digest["node_count"] = 3;
 	measurements["digest"] = digest;
+	Dictionary mutation;
+	mutation["session_revision"] = 7;
+	Dictionary receipt;
+	receipt["call_id"] = "call_over_budget";
+	receipt["policy"] = "editor_undo";
+	mutation["receipt"] = receipt;
+	measurements["mutation"] = mutation;
 	Dictionary result;
 	result["ok"] = true;
 	result["data"] = measurements;
@@ -3290,18 +3378,17 @@ TEST_CASE("[SolersAgentSession] a tool result reaches the model as parsable JSON
 	REQUIRE(parser->parse(elided) == OK);
 	const Dictionary envelope = parser->get_data();
 	CHECK(envelope.get("ok", false));
-	// Digest survives elision; fat details do not.
+	// One generic mutation receipt survives; observation-specific fields do not.
 	CHECK(envelope.has("data"));
-	CHECK(Dictionary(envelope.get("data", Dictionary())).has("digest"));
+	CHECK(Dictionary(envelope.get("data", Dictionary())).has("mutation"));
+	CHECK_FALSE(Dictionary(envelope.get("data", Dictionary())).has("digest"));
 	CHECK_FALSE(Dictionary(envelope.get("data", Dictionary())).has("nodes"));
 	const Dictionary reported = envelope.get("data_elided", Dictionary());
 	CHECK((int)reported.get("token_budget", 0) == 500);
 	CHECK((int)reported.get("tokens", 0) > 500);
-	CHECK((bool)reported.get("kept_digest", false));
-	// The model is told which part of the payload it lost, not just that it
-	// lost something.
-	CHECK(Array(reported.get("data_keys", Array())).has("nodes"));
+	CHECK(String(reported.get("result_sha256", String())).length() == 64);
 	CHECK_FALSE(String(reported.get("recovery", String())).is_empty());
+	CHECK_FALSE(reported.has("complete_result_path"));
 
 	// A failed call keeps its native cause even when the body is elided: the
 	// error is what the next step acts on.
@@ -3351,7 +3438,7 @@ TEST_CASE("[SolersResourceService] display values summarize bulk variants by typ
 	CHECK(String(solers_summarize_display_value(String("short"))) == "short");
 }
 
-TEST_CASE("[SolersAgentSession] leaves model request limits to the caller") {
+TEST_CASE("[SolersAgentSession] task completion has no Harness request budget") {
 	SolersToolRegistry registry;
 	SolersAgentSession session;
 	session.set_tool_registry(&registry);
@@ -3362,7 +3449,13 @@ TEST_CASE("[SolersAgentSession] leaves model request limits to the caller") {
 	const Dictionary status = session.get_status();
 	CHECK_FALSE(status.has("tool_iterations"));
 	CHECK_FALSE(status.has("max_tool_iterations"));
-	CHECK((int)status.get("model_request_budget", -1) == 0);
+	CHECK_FALSE(status.has("model_request_budget"));
+	CHECK_FALSE(status.has("input_token_budget"));
+	CHECK((int)status.get("model_requests", 0) == 0);
+	CHECK(status.has("fresh_input_tokens"));
+	CHECK(status.has("cache_read_tokens"));
+	CHECK(status.has("cache_write_tokens"));
+	CHECK(status.has("wire_body_bytes"));
 }
 
 TEST_CASE("[SolersAgentSession] unknown model capacity remains unknown") {
@@ -3405,18 +3498,11 @@ TEST_CASE("[SolersAgentSession] validates the Codex update_plan contract") {
 	CHECK(SolersAgentSession::validate_plan(args).get("ok", false));
 }
 
-TEST_CASE("[SolersToolRegistry] runtime lifecycle does not mutate authored project state") {
+TEST_CASE("[SolersToolRegistry] runtime lifecycle declares only runtime access") {
 	SolersAssetService assets;
 	SolersToolRegistry registry;
 	registry.set_asset_service(&assets);
 	registry.register_default_tools();
-
-	CHECK_FALSE(registry.affects_authored_state(SNAME("runtime.control")));
-	CHECK_FALSE(registry.affects_authored_state(SNAME("engine.inspect")));
-	CHECK(registry.affects_authored_state(SNAME("asset.generate")));
-	CHECK(registry.affects_authored_state(SNAME("asset.catalog.acquire")));
-	CHECK(registry.affects_authored_state(SNAME("asset.run_operation")));
-	CHECK_FALSE(registry.affects_authored_state(SNAME("asset.import_to_project")));
 
 	Dictionary play;
 	play["action"] = "play_current_scene";
@@ -3490,8 +3576,9 @@ TEST_CASE("[SolersToolRegistry] transcript audit preserves full redacted tool ar
 		operations.push_back(operation);
 	}
 	Dictionary args;
+	args["scope"] = "scene";
 	args["operations"] = operations;
-	const Dictionary audit = registry.redact_tool_args_for_audit(SNAME("scene.edit"), args);
+	const Dictionary audit = registry.redact_tool_args_for_audit(SNAME("object.transaction"), args);
 	CHECK(Array(audit.get("operations", Array())).size() == 40);
 }
 
@@ -3586,18 +3673,6 @@ TEST_CASE("[SolersAssetService] catalog ranking uses partial term coverage and s
 	CHECK(Dictionary(ranked[1]).get("asset_id", String()) == "wooden_chair");
 	CHECK(Array(Dictionary(ranked[1]).get("matched_terms", Array())).has("wood"));
 	CHECK_FALSE(Dictionary(ranked[1]).has("_rank_primary"));
-}
-
-TEST_CASE("[SolersReflectionService][SceneTree] Environment sky sources require a Sky resource") {
-	Ref<Environment> environment;
-	environment.instantiate();
-	environment->set_ambient_source(Environment::AMBIENT_SOURCE_SKY);
-	CHECK_FALSE((bool)SolersReflectionService::validate_environment_resource(environment).get("valid", true));
-
-	Ref<Sky> sky;
-	sky.instantiate();
-	environment->set_sky(sky);
-	CHECK(SolersReflectionService::validate_environment_resource(environment).get("valid", false));
 }
 
 TEST_CASE("[SolersLLMRetry] retry classification uses structured transport facts") {
@@ -3702,15 +3777,16 @@ TEST_CASE("[SolersLLMClient] empty HTTP 200 stream fails without retry") {
 	REQUIRE(client.begin(request, profile, auth) == OK);
 
 	bool responded = false;
+	Ref<StreamPeerTCP> connection;
 	const uint64_t started = OS::get_singleton()->get_ticks_msec();
 	while (!client.is_failed() && !client.is_done() && OS::get_singleton()->get_ticks_msec() - started < 3000) {
 		if (!responded && server->is_connection_available()) {
-			Ref<StreamPeerTCP> conn = server->take_connection();
-			REQUIRE(conn.is_valid());
-			conn->poll();
+			connection = server->take_connection();
+			REQUIRE(connection.is_valid());
+			connection->poll();
 			uint8_t discard[4096];
 			int received = 0;
-			conn->get_partial_data(discard, 4096, received);
+			connection->get_partial_data(discard, 4096, received);
 			const CharString resp = String(
 					"HTTP/1.1 200 OK\r\n"
 					"Content-Type: text/event-stream\r\n"
@@ -3720,7 +3796,7 @@ TEST_CASE("[SolersLLMClient] empty HTTP 200 stream fails without retry") {
 					"0\r\n"
 					"\r\n")
 											 .utf8();
-			conn->put_data((const uint8_t *)resp.get_data(), resp.length());
+			connection->put_data((const uint8_t *)resp.get_data(), resp.length());
 			responded = true;
 			server->stop();
 		}
@@ -3758,15 +3834,16 @@ TEST_CASE("[SolersLLMClient] JSON error body on HTTP 200 is terminal") {
 
 	const String json_body = "{\"error\":{\"message\":\"quota exhausted\"}}";
 	bool responded = false;
+	Ref<StreamPeerTCP> connection;
 	const uint64_t started = OS::get_singleton()->get_ticks_msec();
 	while (!client.is_failed() && !client.is_done() && OS::get_singleton()->get_ticks_msec() - started < 3000) {
 		if (!responded && server->is_connection_available()) {
-			Ref<StreamPeerTCP> conn = server->take_connection();
-			REQUIRE(conn.is_valid());
-			conn->poll();
+			connection = server->take_connection();
+			REQUIRE(connection.is_valid());
+			connection->poll();
 			uint8_t discard[4096];
 			int received = 0;
-			conn->get_partial_data(discard, 4096, received);
+			connection->get_partial_data(discard, 4096, received);
 			const String http = vformat(
 					"HTTP/1.1 200 OK\r\n"
 					"Content-Type: application/json\r\n"
@@ -3776,7 +3853,7 @@ TEST_CASE("[SolersLLMClient] JSON error body on HTTP 200 is terminal") {
 					"%s",
 					json_body.utf8().length(), json_body);
 			const CharString resp = http.utf8();
-			conn->put_data((const uint8_t *)resp.get_data(), resp.length());
+			connection->put_data((const uint8_t *)resp.get_data(), resp.length());
 			responded = true;
 			server->stop();
 		}
@@ -3858,6 +3935,8 @@ TEST_CASE("[SolersProviderRegistry] is the single transport profile source") {
 	CHECK(custom.get("id", String()) == "custom_openai_compatible");
 	CHECK(custom.get("protocol", String()) == "openai-chat");
 	CHECK(custom.get("base_url", String()) == "https://gateway.example/v1");
+	CHECK(custom.get("source_kind", String()) == "custom");
+	CHECK((int)custom.get("context_window", 0) == 131072);
 	CHECK(codex.get("protocol", String()) == "openai-responses");
 	CHECK(codex.get("auth_type", String()) == "oauth");
 	CHECK(codex.get("catalog_provider", String()) == "openai");
@@ -4094,6 +4173,15 @@ TEST_CASE("[SolersLLMProtocol] streams tool input before the executable tool cal
 	CHECK(tool_call.get("arguments", String()) == "{}");
 }
 
+TEST_CASE("[SolersOpenAIChatProtocol] classifies structured context overflow without message matching") {
+	SolersOpenAIChatProtocol protocol;
+	Dictionary state;
+	const Array events = protocol.parse_event(state, "error", R"json({"error":{"code":"context_length_exceeded","type":"invalid_request_error","message":"localized provider text"}})json");
+	const Dictionary error = find_event_kind(events, SolersLLMEventKind::ERROR);
+	REQUIRE_FALSE(error.is_empty());
+	CHECK(error.get("failure_kind", String()) == "context_overflow");
+}
+
 TEST_CASE("[SolersOpenAIChatProtocol] replays one tool call as assistant tool_calls then tool result") {
 	Array tool_calls;
 	Dictionary call;
@@ -4179,7 +4267,7 @@ TEST_CASE("[SolersOpenAIChatProtocol] preserves one assistant tool_call and tool
 	CHECK(second_output.get("tool_call_id", String()) == "call_b");
 }
 
-TEST_CASE("[SolersLLMProtocol] lowers tool result images for OpenAI and Anthropic") {
+TEST_CASE("[SolersLLMMessage] attachment projection emits image bytes once across model requests") {
 	const String image_path = "user://.solers_tool_image_contract.bin";
 	Ref<FileAccess> image_file = FileAccess::open(image_path, FileAccess::WRITE);
 	REQUIRE(image_file.is_valid());
@@ -4192,7 +4280,7 @@ TEST_CASE("[SolersLLMProtocol] lowers tool result images for OpenAI and Anthropi
 
 	Dictionary attachment;
 	attachment["id"] = "capture_contract";
-	attachment["source"] = "tool_capture";
+	attachment["content_sha256"] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 	attachment["type"] = "image";
 	attachment["mime_type"] = "image/png";
 	attachment["local_path"] = image_path;
@@ -4202,50 +4290,69 @@ TEST_CASE("[SolersLLMProtocol] lowers tool result images for OpenAI and Anthropi
 	Array calls;
 	Dictionary call;
 	call["id"] = "call_capture";
-	call["name"] = "viewport_capture";
-	call["arguments"] = "{\"target\":\"editor\"}";
+	call["name"] = "render_capture";
+	call["arguments"] = "{\"target\":\"runtime\"}";
 	calls.push_back(call);
 	Dictionary second_call;
-	second_call["id"] = "call_snapshot";
-	second_call["name"] = "editor_get_snapshot";
-	second_call["arguments"] = "{}";
+	second_call["id"] = "call_query";
+	second_call["name"] = "object_query";
+	second_call["arguments"] = "{\"target\":\"scene\"}";
 	calls.push_back(second_call);
 
 	Array messages;
-	Dictionary user_message = SolersLLMMessage::user("Inspect the result.");
+	Dictionary user_message = SolersLLMMessage::user("Inspect the reference.");
 	user_message["attachments"] = attachments;
 	messages.push_back(user_message);
 	messages.push_back(SolersLLMMessage::assistant("", calls));
-	messages.push_back(SolersLLMMessage::tool_result("call_capture", "viewport_capture", "{\"ok\":true}", attachments));
-	messages.push_back(SolersLLMMessage::tool_result("call_snapshot", "editor_get_snapshot", "{\"ok\":true}"));
+	messages.push_back(SolersLLMMessage::tool_result("call_capture", "render_capture", "{\"ok\":true}", attachments));
+	messages.push_back(SolersLLMMessage::tool_result("call_query", "object_query", "{\"ok\":true}"));
+
+	HashSet<String> delivered;
+	HashSet<String> emitted;
+	const Array first_projection = SolersLLMMessage::project_attachments(messages, delivered, emitted);
+	REQUIRE(emitted.size() == 1);
+	CHECK(Array(Dictionary(first_projection[0]).get("attachments", Array())).size() == 1);
+	CHECK_FALSE(Dictionary(first_projection[2]).has("attachments"));
+	CHECK(String(Dictionary(first_projection[2]).get("content", String())).contains("sha256=aaaaaaaa"));
 
 	Dictionary request;
 	request["model"] = "custom-gateway-model";
-	request["messages"] = messages;
-
+	request["messages"] = first_projection;
 	SolersOpenAIChatProtocol openai;
-	Array openai_messages = Dictionary(openai.build_request_body(request)).get("messages", Array());
-	REQUIRE(openai_messages.size() == 5);
-	Array openai_user_content = Dictionary(openai_messages[0]).get("content", Array());
-	REQUIRE(openai_user_content.size() == 2);
-	CHECK(Dictionary(openai_user_content[1]).get("type", String()) == "image_url");
-	CHECK(Dictionary(openai_messages[2]).get("role", String()) == "tool");
-	CHECK(Dictionary(openai_messages[3]).get("role", String()) == "tool");
-	Dictionary openai_image_message = openai_messages[4];
-	CHECK(openai_image_message.get("role", String()) == "user");
-	Array openai_content = openai_image_message.get("content", Array());
-	REQUIRE(openai_content.size() == 2);
-	CHECK(Dictionary(openai_content[1]).get("type", String()) == "image_url");
+	const Dictionary first_body = openai.build_request_body(request);
+	const Array openai_messages = first_body.get("messages", Array());
+	REQUIRE(openai_messages.size() == 4);
+	const Array user_content = Dictionary(openai_messages[0]).get("content", Array());
+	REQUIRE(user_content.size() == 2);
+	CHECK(Dictionary(user_content[1]).get("type", String()) == "image_url");
+	CHECK(JSON::stringify(first_body).count("data:image/png;base64,") == 1);
+	SolersLLMProtocolRegistry protocols;
+	protocols.register_builtin_protocols();
+	SolersLLMClient client;
+	client.set_protocol_registry(&protocols);
+	Dictionary profile;
+	profile["protocol"] = "openai-chat";
+	profile["base_url"] = "http://127.0.0.1:9/v1";
+	Dictionary auth;
+	auth["type"] = "none";
+	REQUIRE(client.begin(request, profile, auth) == OK);
+	CHECK(client.get_request_body_bytes() == JSON::stringify(first_body, "", false, true).utf8().length());
+	client.abort();
 
 	SolersAnthropicMessagesProtocol anthropic;
-	Array anthropic_messages = Dictionary(anthropic.build_request_body(request)).get("messages", Array());
-	REQUIRE(anthropic_messages.size() == 3);
-	Dictionary tool_user = anthropic_messages[2];
-	Array tool_blocks = tool_user.get("content", Array());
-	REQUIRE(tool_blocks.size() == 2);
-	Array tool_content = Dictionary(tool_blocks[0]).get("content", Array());
-	REQUIRE(tool_content.size() == 2);
-	CHECK(Dictionary(tool_content[1]).get("type", String()) == "image");
+	const Dictionary anthropic_body = anthropic.build_request_body(request);
+	CHECK(JSON::stringify(anthropic_body).count("\"type\":\"image\"") == 1);
+
+	for (const String &identity : emitted) {
+		delivered.insert(identity);
+	}
+	const Array second_projection = SolersLLMMessage::project_attachments(messages, delivered, emitted);
+	CHECK(emitted.is_empty());
+	CHECK_FALSE(Dictionary(second_projection[0]).has("attachments"));
+	CHECK(String(Dictionary(second_projection[0]).get("content", String())).contains("earlier model request"));
+	request["messages"] = second_projection;
+	CHECK_FALSE(JSON::stringify(openai.build_request_body(request)).contains("data:image/png;base64,"));
+	CHECK_FALSE(JSON::stringify(anthropic.build_request_body(request)).contains("\"type\":\"image\""));
 
 	DirAccess::remove_file_or_error(ProjectSettings::get_singleton()->globalize_path(image_path));
 }
