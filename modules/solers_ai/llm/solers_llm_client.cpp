@@ -93,7 +93,7 @@ void SolersLLMClient::_trace(const String &p_event, const Dictionary &p_payload)
 	file->store_line(JSON::stringify(entry, "", false, true));
 }
 
-void SolersLLMClient::_fail(const String &p_code, const String &p_message, bool p_retryable) {
+void SolersLLMClient::_fail(const String &p_code, const String &p_message, bool p_retryable, const String &p_failure_kind) {
 	// Preserve any HTTP status / response headers captured before the failure so
 	// the retry layer can classify (5xx vs 4xx) and honor Retry-After headers.
 	const Variant http_status = last_error.get("http_status", Variant());
@@ -103,6 +103,9 @@ void SolersLLMClient::_fail(const String &p_code, const String &p_message, bool 
 	last_error["message"] = p_message;
 	const int status = http_status.get_type() == Variant::NIL ? 0 : (int)http_status;
 	last_error["retryable"] = p_retryable || status == 429 || status >= 500;
+	if (!p_failure_kind.is_empty() || status == 413) {
+		last_error["failure_kind"] = status == 413 ? "context_overflow" : p_failure_kind;
+	}
 	if (http_status.get_type() != Variant::NIL) {
 		last_error["http_status"] = http_status;
 	}
@@ -556,7 +559,7 @@ void SolersLLMClient::_drain_records(Array &r_events) {
 				} else if (kind == SolersLLMEventKind::ERROR) {
 					// Protocol already named the failure — don't wait for a missing
 					// finish_reason and relabel it as STREAM_ENDED_WITHOUT_FINISH.
-					_fail(String(event.get("code", "PROVIDER_STREAM_ERROR")), String(event.get("message", "Provider stream reported an error.")), false);
+					_fail(String(event.get("code", "PROVIDER_STREAM_ERROR")), String(event.get("message", "Provider stream reported an error.")), false, event.get("failure_kind", String()));
 					last_error["response_bytes"] = response_bytes;
 					if (!response_prefix.is_empty()) {
 						last_error["body_prefix"] = response_prefix.substr(0, MIN(512, response_prefix.length()));
@@ -589,18 +592,20 @@ void SolersLLMClient::_complete_stream(Array &r_batch) {
 	const String raw = response_prefix.strip_edges();
 	const bool looks_json = raw.begins_with("{") && !raw.begins_with("data:") && !raw.contains("\ndata:");
 	if (looks_json) {
+		String code = "PROVIDER_ERROR";
 		String message = "Provider returned an error body without a stream.";
 		const Variant parsed = JSON::parse_string(raw);
 		if (parsed.get_type() == Variant::DICTIONARY) {
 			const Dictionary obj = parsed;
 			const Dictionary err = obj.get("error", Dictionary());
+			code = err.get("code", obj.get("code", code));
 			if (!String(err.get("message", String())).is_empty()) {
 				message = err.get("message", String());
 			} else if (!String(obj.get("message", String())).is_empty()) {
 				message = obj.get("message", String());
 			}
 		}
-		_fail("PROVIDER_ERROR", message, false);
+		_fail(code, message, false, code == "context_length_exceeded" ? "context_overflow" : String());
 		last_error["response_bytes"] = response_bytes;
 		last_error["body_prefix"] = raw.substr(0, MIN(512, raw.length()));
 		return;

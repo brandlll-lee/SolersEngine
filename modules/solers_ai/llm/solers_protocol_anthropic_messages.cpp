@@ -73,6 +73,10 @@ String SolersAnthropicMessagesProtocol::_map_stop_reason(const String &p_native)
 Array SolersAnthropicMessagesProtocol::_lower_messages(const Dictionary &p_request) const {
 	Array out;
 	const Array messages = p_request.get("messages", Array());
+	auto append_attachment_blocks = [&](Array &r_content, const Dictionary &p_attachment) {
+		const Dictionary image_block = _anthropic_image_block(p_attachment);
+		r_content.push_back(image_block.is_empty() ? _anthropic_missing_image_block(p_attachment) : image_block);
+	};
 
 	// Tool results must be collapsed into a single user message of tool_result
 	// blocks. Buffer consecutive tool messages and flush them as one user turn.
@@ -106,8 +110,7 @@ Array SolersAnthropicMessagesProtocol::_lower_messages(const Dictionary &p_reque
 				text_block["text"] = m.get("content", String());
 				content.push_back(text_block);
 				for (int a = 0; a < attachments.size(); a++) {
-					const Dictionary image_block = _anthropic_image_block(attachments[a]);
-					content.push_back(image_block.is_empty() ? _anthropic_missing_image_block(attachments[a]) : image_block);
+					append_attachment_blocks(content, attachments[a]);
 				}
 				block["content"] = content;
 			}
@@ -152,8 +155,7 @@ Array SolersAnthropicMessagesProtocol::_lower_messages(const Dictionary &p_reque
 				text_block["text"] = m.get("content", String());
 				content.push_back(text_block);
 				for (int a = 0; a < attachments.size(); a++) {
-					const Dictionary image_block = _anthropic_image_block(attachments[a]);
-					content.push_back(image_block.is_empty() ? _anthropic_missing_image_block(attachments[a]) : image_block);
+					append_attachment_blocks(content, attachments[a]);
 				}
 				x["content"] = content;
 			} else {

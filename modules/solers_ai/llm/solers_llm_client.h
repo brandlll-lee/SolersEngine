@@ -97,7 +97,7 @@ private:
 	void _trace(const String &p_event, const Dictionary &p_payload = Dictionary()) const;
 	void _drain_records(Array &r_events);
 	void _complete_stream(Array &r_batch);
-	void _fail(const String &p_code, const String &p_message, bool p_retryable = false);
+	void _fail(const String &p_code, const String &p_message, bool p_retryable = false, const String &p_failure_kind = String());
 
 	static void _thread_func(void *p_userdata);
 	void _run_worker();
@@ -123,6 +123,7 @@ public:
 	bool is_failed() const;
 	Dictionary get_error() const;
 	Dictionary take_auth_update();
+	int64_t get_request_body_bytes() const { return request_body.utf8().length(); }
 
 	void abort();
 

@@ -102,6 +102,10 @@ String SolersOpenAIChatProtocol::_map_finish_reason(const String &p_native) {
 Array SolersOpenAIChatProtocol::_lower_messages(const Dictionary &p_request) const {
 	Array out;
 	Array pending_tool_images;
+	auto append_attachment_parts = [&](Array &r_content, const Dictionary &p_attachment) {
+		const Dictionary image_part = _openai_image_part(p_attachment);
+		r_content.push_back(image_part.is_empty() ? _openai_missing_image_part(p_attachment) : image_part);
+	};
 	auto flush_tool_images = [&]() {
 		if (pending_tool_images.is_empty()) {
 			return;
@@ -112,8 +116,7 @@ Array SolersOpenAIChatProtocol::_lower_messages(const Dictionary &p_request) con
 		text_part["text"] = "Visual result returned by the tool call.";
 		content.push_back(text_part);
 		for (int i = 0; i < pending_tool_images.size(); i++) {
-			const Dictionary image_part = _openai_image_part(pending_tool_images[i]);
-			content.push_back(image_part.is_empty() ? _openai_missing_image_part(pending_tool_images[i]) : image_part);
+			append_attachment_parts(content, pending_tool_images[i]);
 		}
 		if (content.size() > 1) {
 			Dictionary image_message;
@@ -182,8 +185,7 @@ Array SolersOpenAIChatProtocol::_lower_messages(const Dictionary &p_request) con
 				text_part["text"] = m.get("content", String());
 				content.push_back(text_part);
 				for (int a = 0; a < attachments.size(); a++) {
-					const Dictionary image_part = _openai_image_part(attachments[a]);
-					content.push_back(image_part.is_empty() ? _openai_missing_image_part(attachments[a]) : image_part);
+					append_attachment_parts(content, attachments[a]);
 				}
 				x["content"] = content;
 			} else {
@@ -267,14 +269,15 @@ Array SolersOpenAIChatProtocol::parse_event(Dictionary &r_state, const String &p
 		if (message.is_empty()) {
 			message = "Provider stream reported an error.";
 		}
+		const String provider_code = String(err.get("code", String())).strip_edges();
 		String code = String(err.get("type", String())).strip_edges();
 		if (code.is_empty()) {
-			code = String(err.get("code", String())).strip_edges();
+			code = provider_code;
 		}
 		if (code.is_empty()) {
 			code = "PROVIDER_STREAM_ERROR";
 		}
-		events.push_back(SolersLLMEvent::error(code, message));
+		events.push_back(SolersLLMEvent::error(code, message, provider_code == "context_length_exceeded" ? "context_overflow" : String()));
 		return events;
 	}
 

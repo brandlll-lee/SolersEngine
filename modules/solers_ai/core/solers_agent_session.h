@@ -64,9 +64,7 @@ class SolersAgentSession : public Object {
 		PHASE_WAITING,
 	};
 
-	// Transient LLM failures retry with backoff at most this many times per
-	// request before the turn fails (mirrors opencode's retry budget).
-	static constexpr int MAX_LLM_RETRY_ATTEMPTS = 10;
+	static constexpr int MAX_LLM_RETRY_ATTEMPTS = 3;
 
 	SolersToolRegistry *tool_registry = nullptr;
 	SolersSettingsService *settings_service = nullptr;
@@ -81,11 +79,7 @@ class SolersAgentSession : public Object {
 
 	int context_window = 0; // Unknown until provider/model metadata says otherwise.
 	int max_output_tokens = 8192;
-	// Upper bound proved by a rejected request. Advertised metadata (gateway
-	// catalogs especially) can promise far more than the endpoint accepts.
-	int learned_context_ceiling = 0;
-
-	Array messages; // canonical conversation history
+	Array messages; // active model projection; transcript is the full audit history
 	String system_prompt;
 	String current_text; // assistant text accumulated this model turn
 	String current_reasoning; // reasoning/thinking text accumulated this model turn
@@ -104,6 +98,8 @@ class SolersAgentSession : public Object {
 	HashMap<String, Dictionary> readonly_cache;
 	HashSet<StringName> task_deferred_tools;
 	Array turn_attachments;
+	HashSet<String> delivered_model_attachments;
+	HashSet<String> pending_model_attachments;
 	Array turn_mentions;
 	int tool_queue_index = 0; // next provider-ordered call to start
 	int tool_delivery_index = 0; // next provider-ordered terminal result to deliver
@@ -121,8 +117,6 @@ class SolersAgentSession : public Object {
 	Dictionary deferred_initial_args;
 	Array deferred_resource_accesses;
 	Dictionary deferred_result;
-	uint64_t deferred_scene_digest_before = 0;
-	uint64_t deferred_geometry_digest_before = 0;
 	SolersPreparedToolCall *deferred_prepared_call = nullptr;
 	bool deferred_done = false;
 	bool deferred_polling = false;
@@ -144,15 +138,16 @@ class SolersAgentSession : public Object {
 	int turn_id = 0;
 	int retry_attempt = 0;
 	int model_request_index = 0;
-	int model_request_budget = 0;
+	int64_t turn_fresh_input_tokens = 0;
+	int64_t turn_cache_read_tokens = 0;
+	int64_t turn_cache_write_tokens = 0;
+	int64_t turn_output_tokens = 0;
+	int64_t turn_wire_body_bytes = 0;
 	uint64_t retry_resume_msec = 0;
 	int text_delta_count = 0;
 	uint64_t last_text_delta_msec = 0;
-	uint64_t last_assistant_msec = 0;
 	Array compaction_source_messages;
-	int compaction_request_attempt = 0;
 	int overflow_compaction_attempts = 0;
-	bool compaction_triggered_by_overflow = false;
 	bool turn_runtime_owned = false;
 	SolersToolRegistry *session_tools_registry = nullptr;
 	String project_path;
@@ -171,16 +166,9 @@ class SolersAgentSession : public Object {
 	Dictionary main_thread_tool_audit; // active only while a native handler is on-stack
 	Dictionary deferred_window_audit; // the single parked tool whose continuation owns the main thread between polls
 	Dictionary attributable_tool_errors; // call_id -> scoped Godot error evidence
-	uint64_t authored_revision = 0;
+	uint64_t authored_revision = 0; // Session-local ordering only; native receipts carry authority.
 	uint64_t runtime_epoch = 0;
-	uint64_t scene_revision = 0;
-	uint64_t geometry_revision = 0;
 	uint64_t observed_revision = 0;
-	uint64_t editor_capture_revision = 0;
-	uint64_t camera_capture_revision = 0;
-	uint64_t runtime_capture_revision = 0;
-	uint64_t scene_validation_revision = 0;
-	uint64_t scene_validation_demanded_revision = 0; // geometry the door has already asked about
 	uint64_t runtime_observation_cursor = 0;
 	Dictionary render_artifacts; // artifact kind -> versioned native-tool result
 	// Aggregated by (severity, message, call_id) at ingestion: a repeated
@@ -196,7 +184,7 @@ class SolersAgentSession : public Object {
 	// Fresh engine facts for one request, carried as the final projected user
 	// message (origin solers_state) so the system prompt stays byte-stable
 	// and provider prompt caching keeps its prefix hits.
-	Dictionary _environment_context_message(bool p_include_observation_delta);
+	Dictionary _environment_context_message();
 	String _make_session_id() const;
 	Dictionary _read_transcript_state(const String &p_project_path, const String &p_session_id) const;
 	void _stamp_transcript_event(Dictionary &r_event) const;
@@ -210,20 +198,15 @@ class SolersAgentSession : public Object {
 	void _register_worker_tool_audit(uint64_t p_thread_id, const String &p_call_id, const String &p_tool, const Array &p_resource_accesses);
 	Dictionary _consume_attributable_tool_error(const String &p_call_id);
 	Dictionary _take_godot_diagnostics();
-	bool _poll_state_observation();
 	String _readonly_cache_key(const StringName &p_name, const Dictionary &p_args) const;
 	Array _collect_tools() const;
 	bool _refresh_active_model_limits();
-	void _learn_context_ceiling();
-	// Full body of an over-budget tool result, so the complete data stays one
-	// file read away instead of forcing the tool to be run again.
-	static String _spill_tool_result(const String &p_call_id, const String &p_content);
 	int _active_model_input_support(const String &p_modality) const;
 	Dictionary _build_request(const Array &p_messages, const String &p_request_system_prompt) const;
-	Dictionary _redacted_request_graph(const Dictionary &p_request, const Dictionary &p_profile) const;
 	Dictionary _provider_dispatch_error() const;
 	Error _dispatch_model_request(bool p_skip_compaction = false);
 	Error _dispatch_compaction_request();
+	void _commit_attachment_projection();
 	Error _begin_compaction(bool p_from_overflow);
 	void _poll_compaction();
 	void _on_compaction_complete();
@@ -234,7 +217,6 @@ class SolersAgentSession : public Object {
 	Dictionary _surface_tool_call(const Dictionary &p_call);
 	Array _attachments_for_ids(const Array &p_ids) const;
 	void _on_model_turn_complete();
-	bool _demand_scene_validation();
 	void _finish_turn(const String &p_outcome, const String &p_message, const Dictionary &p_error = Dictionary());
 	void _poll_tool_queue();
 	void _poll_awaiting_approval();
@@ -255,7 +237,6 @@ class SolersAgentSession : public Object {
 	void _register_session_tools();
 	Dictionary _handle_update_plan(const Dictionary &p_args);
 	bool _flush_pending_steering();
-	Dictionary _commit_dirty_scene_if_needed();
 	bool _append_background_asset_deltas(bool p_waited_only);
 	void _resume_next_background_asset();
 	void _write_transcript_message(const String &p_role, const String &p_content, const Array &p_mentions = Array(), const Array &p_tool_calls = Array(), const String &p_reasoning = String(), const Array &p_attachments = Array()) const;

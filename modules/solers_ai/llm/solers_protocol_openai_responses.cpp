@@ -296,7 +296,7 @@ Array SolersOpenAIResponsesProtocol::parse_event(Dictionary &r_state, const Stri
 		const Dictionary nested = response.get("error", Dictionary());
 		const String code = obj.get("code", nested.get("code", "OPENAI_RESPONSES_ERROR"));
 		const String message = obj.get("message", nested.get("message", "OpenAI Responses reported an error."));
-		events.push_back(SolersLLMEvent::error(code, message));
+		events.push_back(SolersLLMEvent::error(code, message, code == "context_length_exceeded" ? "context_overflow" : String()));
 	}
 	return events;
 }

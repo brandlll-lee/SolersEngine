@@ -13,6 +13,78 @@
 #include "core/crypto/crypto_core.h"
 #include "core/io/file_access.h"
 #include "core/templates/hash_map.h"
+#include "core/templates/hash_set.h"
+
+String SolersLLMMessage::attachment_identity(const Dictionary &p_attachment) {
+	const String sha = String(p_attachment.get("content_sha256", String())).strip_edges();
+	if (!sha.is_empty()) {
+		return "sha256:" + sha;
+	}
+	const String id = String(p_attachment.get("id", String())).strip_edges();
+	if (!id.is_empty()) {
+		return "id:" + id;
+	}
+	const String path = String(p_attachment.get("local_path", String())).strip_edges();
+	if (!path.is_empty()) {
+		return "path:" + path;
+	}
+	return String();
+}
+
+static String _solers_attachment_reference(const Dictionary &p_attachment, bool p_prior_request) {
+	const String id = String(p_attachment.get("id", String())).strip_edges();
+	const String sha = String(p_attachment.get("content_sha256", String())).strip_edges();
+	String identity;
+	if (!id.is_empty()) {
+		identity += " id=" + id;
+	}
+	if (!sha.is_empty()) {
+		identity += " sha256=" + sha;
+	}
+	return vformat("[Image evidence%s was delivered %s; use its recorded facts or request a fresh capture.]", identity, p_prior_request ? "in an earlier model request" : "earlier in this request");
+}
+
+Array SolersLLMMessage::project_attachments(const Array &p_messages, const HashSet<String> &p_delivered, HashSet<String> &r_emitted) {
+	r_emitted.clear();
+	HashSet<String> seen = p_delivered;
+	Array projected;
+	for (int i = 0; i < p_messages.size(); i++) {
+		Dictionary message = Dictionary(p_messages[i]).duplicate(true);
+		const Array attachments = message.get("attachments", Array());
+		if (attachments.is_empty()) {
+			projected.push_back(message);
+			continue;
+		}
+		Array wire_attachments;
+		String content = message.get("content", String());
+		for (int a = 0; a < attachments.size(); a++) {
+			const Dictionary attachment = attachments[a];
+			const String key = attachment_identity(attachment);
+			const bool already_delivered = !key.is_empty() && p_delivered.has(key);
+			const bool duplicate = !key.is_empty() && seen.has(key);
+			if (duplicate) {
+				if (!content.is_empty()) {
+					content += "\n";
+				}
+				content += _solers_attachment_reference(attachment, already_delivered);
+				continue;
+			}
+			wire_attachments.push_back(attachment);
+			if (!key.is_empty()) {
+				seen.insert(key);
+				r_emitted.insert(key);
+			}
+		}
+		message["content"] = content;
+		if (wire_attachments.is_empty()) {
+			message.erase("attachments");
+		} else {
+			message["attachments"] = wire_attachments;
+		}
+		projected.push_back(message);
+	}
+	return projected;
+}
 
 Dictionary SolersLLMMessage::encode_image_attachment(const Dictionary &p_attachment) {
 	const String path = String(p_attachment.get("local_path", String())).strip_edges();

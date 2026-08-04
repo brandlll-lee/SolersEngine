@@ -108,8 +108,13 @@ void SolersModelsDev::_load_seed() {
 }
 
 void SolersModelsDev::_ingest(const Dictionary &p_root) {
-	// Build off-lock, then short-swap — UI readers must not wait on full rebuild.
+	// Overlay fetched catalog entries without deleting offline seed providers
+	// that the remote catalog does not declare (notably local endpoints).
 	HashMap<StringName, Dictionary> next;
+	{
+		MutexLock lock(providers_mutex);
+		next = providers;
+	}
 	const Array provider_ids = p_root.keys();
 	for (int i = 0; i < provider_ids.size(); i++) {
 		const String provider_id = provider_ids[i];

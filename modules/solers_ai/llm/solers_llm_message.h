@@ -31,6 +31,7 @@
 #pragma once
 
 #include "core/string/ustring.h"
+#include "core/templates/hash_set.h"
 #include "core/variant/array.h"
 #include "core/variant/dictionary.h"
 #include "core/variant/variant.h"
@@ -157,11 +158,14 @@ public:
 		return e;
 	}
 
-	static Dictionary error(const String &p_code, const String &p_message) {
+	static Dictionary error(const String &p_code, const String &p_message, const String &p_failure_kind = String()) {
 		Dictionary e;
 		e["kind"] = SolersLLMEventKind::ERROR;
 		e["code"] = p_code;
 		e["message"] = p_message;
+		if (!p_failure_kind.is_empty()) {
+			e["failure_kind"] = p_failure_kind;
+		}
 		return e;
 	}
 };
@@ -170,6 +174,11 @@ public:
 class SolersLLMMessage {
 public:
 	static Dictionary encode_image_attachment(const Dictionary &p_attachment);
+	// Stable content-addressed identity: sha256, then attachment id, then path.
+	static String attachment_identity(const Dictionary &p_attachment);
+	// Build the wire projection once for every protocol. Previously delivered
+	// images become compact hash references; new images appear exactly once.
+	static Array project_attachments(const Array &p_messages, const HashSet<String> &p_delivered, HashSet<String> &r_emitted);
 
 	static Dictionary system(const String &p_text) {
 		Dictionary m;

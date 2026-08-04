@@ -59,34 +59,6 @@ int SolersContextManager::estimate_messages_tokens(const Array &p_messages) {
 	return total;
 }
 
-String SolersContextManager::_truncate_text(const String &p_text, int p_max_tokens) {
-	if (p_max_tokens <= 0) {
-		return String();
-	}
-	int ascii_count = 0;
-	int non_ascii_count = 0;
-	int end = 0;
-	for (int i = 0; i < p_text.length(); i++) {
-		if (p_text[i] <= 127) {
-			ascii_count++;
-		} else {
-			non_ascii_count++;
-		}
-		if ((ascii_count + 3) / 4 + non_ascii_count > p_max_tokens) {
-			break;
-		}
-		end = i + 1;
-	}
-	return p_text.left(end);
-}
-
-int SolersContextManager::tool_result_token_budget(int p_context_window) {
-	if (p_context_window <= 0) {
-		return TOOL_RESULT_MAX_TOKENS;
-	}
-	return CLAMP(p_context_window / TOOL_RESULT_WINDOW_FRACTION, TOOL_RESULT_MIN_TOKENS, TOOL_RESULT_MAX_TOKENS);
-}
-
 Array SolersContextManager::repair_tool_pairing(const Array &p_messages) {
 	Array repaired;
 	Vector<String> open_ids; // calls of the assistant turn currently being answered
@@ -139,39 +111,20 @@ Array SolersContextManager::repair_tool_pairing(const Array &p_messages) {
 	return repaired;
 }
 
-Array SolersContextManager::_select_recent_user_messages(const Array &p_messages) {
-	Array candidates;
+Array SolersContextManager::project_completed_turns(const Array &p_messages) {
+	Array projected;
 	for (int i = 0; i < p_messages.size(); i++) {
 		const Dictionary message = p_messages[i];
-		const String origin = message.get("origin", String());
-		if (String(message.get("role", String())) == String(SolersLLMRole::USER) &&
-				origin != "compaction_summary" && origin != "tool_capture" && origin != "solers_state" && origin != "solers_continuation" && origin != "background_job_delta") {
-			candidates.push_back(message);
-		}
-	}
-
-	Array reverse_selected;
-	int remaining = COMPACT_USER_MESSAGE_MAX_TOKENS;
-	for (int i = candidates.size() - 1; i >= 0 && remaining > 0; i--) {
-		Dictionary message = Dictionary(candidates[i]).duplicate(true);
-		const int tokens = _estimate_message_tokens(message);
-		if (tokens <= remaining) {
-			reverse_selected.push_back(message);
-			remaining -= tokens;
+		const String role = message.get("role", String());
+		if ((bool)message.get("ephemeral", false) || String(message.get("origin", String())) == "turn_checkpoint" || role == String(SolersLLMRole::TOOL)) {
 			continue;
 		}
-		const int non_content_tokens = tokens - estimate_tokens(String(message.get("content", String())));
-		message["content"] = _truncate_text(String(message.get("content", String())), MAX(0, remaining - non_content_tokens));
-		message.erase("tool_calls");
-		reverse_selected.push_back(message);
-		break;
+		if (role == String(SolersLLMRole::ASSISTANT) && !Array(message.get("tool_calls", Array())).is_empty()) {
+			continue;
+		}
+		projected.push_back(message);
 	}
-
-	Array selected;
-	for (int i = reverse_selected.size() - 1; i >= 0; i--) {
-		selected.push_back(reverse_selected[i]);
-	}
-	return selected;
+	return projected;
 }
 
 String SolersContextManager::_build_summary_text(const String &p_summary, const Dictionary &p_plan) {
@@ -222,12 +175,7 @@ bool SolersContextManager::should_compact(int p_used_tokens, int p_context_windo
 	if (last_compacted_token_count >= 0 && p_used_tokens <= last_compacted_token_count) {
 		return false;
 	}
-	// OpenCode COMPACTION_BUFFER: reserve min(20k, maxOutput), not the full
-	// wire budget — otherwise a large (but capped) max_output still collapses
-	// usable input toward zero on mid-size windows.
-	static constexpr int COMPACTION_BUFFER = 20000;
-	const int reserve = MIN(p_max_output_tokens, COMPACTION_BUFFER);
-	return p_used_tokens + reserve >= p_context_window;
+	return p_used_tokens + p_max_output_tokens >= p_context_window;
 }
 
 bool SolersContextManager::should_compact(const Array &p_messages, const String &p_system_prompt, const Array &p_tools, int p_context_window, int p_max_output_tokens) const {
@@ -249,13 +197,52 @@ Array SolersContextManager::prepare_request(const Array &p_messages, const Strin
 }
 
 Dictionary SolersContextManager::apply_compaction(const Array &p_messages, const String &p_summary, const Dictionary &p_plan) {
-	const int tokens_before = estimate_messages_tokens(p_messages);
-	Array compacted = _select_recent_user_messages(p_messages);
-	const int kept_user_message_count = compacted.size();
+	const Array repaired = repair_tool_pairing(p_messages);
+	const int tokens_before = estimate_messages_tokens(repaired);
+	int suffix_start = repaired.size();
+	for (int i = repaired.size() - 1; i >= 0; i--) {
+		const Dictionary message = repaired[i];
+		if (String(message.get("role", String())) == String(SolersLLMRole::ASSISTANT) && !Array(message.get("tool_calls", Array())).is_empty()) {
+			suffix_start = i;
+			break;
+		}
+	}
+
+	Array compacted;
 	const String context_summary = _build_summary_text(p_summary, p_plan);
 	Dictionary summary_message = SolersLLMMessage::user(context_summary);
 	summary_message["origin"] = "compaction_summary";
 	compacted.push_back(summary_message);
+
+	Array retained_attachments;
+	HashSet<String> attachment_ids;
+	for (int i = 0; i < suffix_start; i++) {
+		const Dictionary message = repaired[i];
+		if (String(message.get("role", String())) != String(SolersLLMRole::USER)) {
+			continue;
+		}
+		const Array attachments = message.get("attachments", Array());
+		for (int attachment_index = 0; attachment_index < attachments.size(); attachment_index++) {
+			const Dictionary attachment = attachments[attachment_index];
+			const String id = attachment.get("id", String());
+			if (!id.is_empty() && !attachment_ids.has(id)) {
+				attachment_ids.insert(id);
+				retained_attachments.push_back(attachment);
+			}
+		}
+	}
+	if (!retained_attachments.is_empty()) {
+		Dictionary references = SolersLLMMessage::user("User reference attachments retained across context compaction.");
+		references["origin"] = "compaction_attachments";
+		references["attachments"] = retained_attachments;
+		compacted.push_back(references);
+	}
+	for (int i = suffix_start; i < repaired.size(); i++) {
+		if (!(bool)Dictionary(repaired[i]).get("ephemeral", false)) {
+			compacted.push_back(repaired[i]);
+		}
+	}
+	const int kept_message_count = compacted.size() - 1;
 
 	const int tokens_after = estimate_messages_tokens(compacted);
 	authoritative_tokens = tokens_after;
@@ -268,40 +255,10 @@ Dictionary SolersContextManager::apply_compaction(const Array &p_messages, const
 	result["messages"] = compacted;
 	result["summary"] = p_summary.strip_edges();
 	result["context_summary"] = context_summary;
-	result["compacted_count"] = p_messages.size();
+	result["compacted_count"] = repaired.size() - kept_message_count;
 	result["tokens_before"] = tokens_before;
 	result["tokens_after"] = tokens_after;
-	result["kept_user_message_count"] = kept_user_message_count;
-	return result;
-}
-
-Array SolersContextManager::shrink_compaction_history(const Array &p_messages, int p_attempt) const {
-	static const double ratios[] = { 0.7, 0.5, 0.35 };
-	if (p_messages.size() <= 1) {
-		return p_messages.duplicate(true);
-	}
-	const int ratio_index = CLAMP(p_attempt - 1, 0, 2);
-	const int token_budget = (int)((double)estimate_messages_tokens(p_messages) * ratios[ratio_index]);
-	int start = p_messages.size();
-	int tokens = 0;
-	for (int i = p_messages.size() - 1; i >= 0; i--) {
-		const int message_tokens = _estimate_message_tokens(p_messages[i]);
-		if (tokens + message_tokens > token_budget) {
-			break;
-		}
-		tokens += message_tokens;
-		start = i;
-	}
-	if (start == 0) {
-		start = 1;
-	}
-	while (start < p_messages.size() && String(Dictionary(p_messages[start]).get("role", String())) == String(SolersLLMRole::TOOL)) {
-		start++;
-	}
-	Array result;
-	for (int i = start; i < p_messages.size(); i++) {
-		result.push_back(p_messages[i]);
-	}
+	result["kept_message_count"] = kept_message_count;
 	return result;
 }
 
