@@ -32,13 +32,9 @@
 
 #include "core/io/resource.h"
 #include "core/object/object.h"
-#include "core/templates/hash_map.h"
 #include "core/variant/dictionary.h"
 
-class Node;
-
 bool solers_coerce_property_value(Object *p_object, const StringName &p_property, const Variant &p_value, Variant &r_out, String &r_error);
-bool solers_call_method(Object *p_object, const MethodInfo &p_method, const Array &p_args, Variant &r_result, String &r_error_code, String &r_error);
 Variant solers_summarize_display_value(const Variant &p_value);
 PackedStringArray solers_nearest_names(const String &p_needle, const PackedStringArray &p_candidates, int p_max = 5);
 String solers_property_suggestions(Object *p_object, const String &p_property);
@@ -47,9 +43,6 @@ String solers_file_suggestions(const String &p_res_path);
 
 class SolersResourceService : public Object {
 	GDCLASS(SolersResourceService, Object);
-
-	mutable HashMap<ObjectID, Ref<RefCounted>> retained_refcounted;
-	mutable HashMap<ObjectID, Node *> temp_nodes;
 
 	Dictionary _ok(const Variant &p_data) const;
 	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
@@ -71,18 +64,10 @@ public:
 	Dictionary create_resource(const Dictionary &p_args) const;
 	Dictionary get_resource_property(const Dictionary &p_args) const;
 	Dictionary set_resource_property(const Dictionary &p_args) const;
-	Dictionary native_instantiate(const Dictionary &p_args) const;
-	Dictionary native_load(const Dictionary &p_args) const;
 	Dictionary native_list_properties(const Dictionary &p_args) const;
 	Dictionary native_get(const Dictionary &p_args) const;
-	Dictionary native_set(const Dictionary &p_args) const;
-	Dictionary native_list_methods(const Dictionary &p_args) const;
-	Dictionary native_call(const Dictionary &p_args) const;
-	Dictionary native_save(const Dictionary &p_args) const;
-	Dictionary native_free(const Dictionary &p_args) const;
 	Dictionary list_export_presets(const Dictionary &p_args) const;
 	Dictionary validate_export_presets(const Dictionary &p_args) const;
 	Dictionary run_export_preset(const Dictionary &p_args) const;
 
-	~SolersResourceService();
 };

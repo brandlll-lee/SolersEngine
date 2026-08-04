@@ -40,7 +40,7 @@ Use for RPC, scene replication, peer authority, ENet/WebSocket/WebRTC, lobbies, 
 | Godot 3 `rpc_id` habits without 4 `@rpc` annotations | Use current `@rpc` + ClassDB |
 
 ## Verify
-1. `scene.inspect` / `script.validate` authority and RPC annotations.
+1. `object.query target=scene` / `script.validate` authority and RPC annotations.
 2. Two peers via `runtime.control` (or documented multi-instance); force latency if available.
 3. `runtime.observe` for RPC errors, desync, disconnect/reconnect.
 4. Attempt illegal client mutation — must be rejected.

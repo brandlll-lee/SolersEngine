@@ -248,6 +248,13 @@ Dictionary SolersFileCheckpoint::restore_checkpoint_state(const Dictionary &p_ch
 	return result;
 }
 
+void SolersFileCheckpoint::discard_checkpoint_state(const Dictionary &p_checkpoint) {
+	const String checkpoint_path = String(p_checkpoint.get("checkpoint_path", String())).simplify_path();
+	if (!checkpoint_path.is_empty() && checkpoint_path.begins_with(_checkpoint_root()) && FileAccess::exists(checkpoint_path)) {
+		DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(checkpoint_path));
+	}
+}
+
 Dictionary SolersFileCheckpoint::get_checkpoint_root_info() const {
 	Dictionary data;
 	const String root = _checkpoint_root();

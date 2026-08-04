@@ -36,7 +36,7 @@ Use for 2D worlds, sprites, tile maps, parallax, CanvasItem draw order, 2D light
 ## Traps
 | Wrong | Correct |
 |-------|---------|
-| Assuming Godot 3 `TileMap.set_cell(x,y,tile)` is the 4.x way | Use `TileMapLayer` APIs / current ClassDB (`engine.inspect`) |
+| Assuming Godot 3 `TileMap.set_cell(x,y,tile)` is the 4.x way | Use `TileMapLayer` APIs / current ClassDB (`engine.describe`) |
 | Mixing pixel sizes (16px tiles + 1080p free camera) | One PPU / stretch contract |
 | Hard-coded screen coordinates for world gameplay | World space + Camera2D / UI on separate CanvasLayer |
 | Stale TileSet after atlas resize | Reimport / fix atlas; re-assign sources |
@@ -44,7 +44,7 @@ Use for 2D worlds, sprites, tile maps, parallax, CanvasItem draw order, 2D light
 | Expecting Container-less Control layout rules in 2D world | World = Node2D tree; UI = Control tree |
 
 ## Verify
-1. `scene.inspect` layers, TileSet paths, Camera2D limits, stretch settings (`project.edit` / project info).
+1. `object.query target=scene` for layers, TileSet paths, Camera2D limits, stretch settings (`project.edit` / project info).
 2. `runtime.control` at target resolutions.
-3. `viewport.capture` — draw order, filtering, parallax, light masks.
+3. `render.capture` — draw order, filtering, parallax, light masks.
 4. `runtime.observe` for missing textures / tile errors.

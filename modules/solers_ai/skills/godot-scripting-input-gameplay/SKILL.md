@@ -11,21 +11,23 @@ Use for game rules, interaction, input, lifecycle, state ownership, Autoloads, o
 ## Facts
 | Concern | Authority |
 |---------|-----------|
-| Script language | GDScript 2.0 (Godot 4.x). Unknown API → `engine.inspect` |
+| Script language | GDScript 2.0 (Godot 4.x). Unknown API → `engine.describe` |
 | Input | `InputMap` actions + `Input.get_vector` / `is_action_*` — not raw `KEY_*` as the primary path |
 | InputMap persistence | Running games read **project** InputMap (`project.godot` / `ProjectSettings`). Editor-only `InputMap.action_add_event` does **not** make Play see actions |
 | Events | `_input` → `_shortcut_input` → `_gui_input` (Controls) → `_unhandled_input` / `_unhandled_key_input` |
 | Frame work | `_physics_process` for movement/physics; `_process` for visuals/UI; match the phase |
 | Mutable state | One owner node/script per fact; others read signals or call into the owner |
 | Scene ready | Children `_ready` before parent; `@onready` runs before `_ready` |
+| `@tool` rebuild | Soft script reload does **not** re-run `_ready`; editor tree keeps old dynamic children until `scene.reload` |
 | Pause | `Node.process_mode` (`PROCESS_MODE_INHERIT/PAUSABLE/WHEN_PAUSED/ALWAYS/DISABLED`) + `get_tree().paused` |
 | Persist | Prefer `user://` for saves; `res://` is read-only in exported games |
 
 ## Laws
 - One owner per mutable gameplay fact; no duplicate state machines.
 - Prefer signals over polling; prefer InputMap over hard-coded keys.
-- Do not invent ClassDB methods — `engine.inspect` first.
+- Do not invent ClassDB methods — `engine.describe` first.
 - Do not put physics motion in `_process` unless intentionally frame-rate coupled.
+- Prefer `object.transaction` for visible world nodes. If a root `@tool` script builds children in `_ready` and `script.edit` sets `affects_edited_scene_root_script`, call `scene.reload` before editor `render.capture`.
 
 ## Recipes
 **InputMap move vector (4.x):**
@@ -57,11 +59,13 @@ cfg.save("user://save.cfg")
 | `pause_mode` | `process_mode` |
 | Listening only in `_input` for gameplay that UI might consume | Use `_unhandled_input` so Controls can mark handled |
 | Editing Autoload scripts as if they were scene-unique | Autoloads are singletons — one instance, careful with scene-specific state |
+| Expecting 3D viewport to match `@tool` `_ready` edits after `script.edit` alone | `scene.reload`, then `render.capture target=editor\|camera` — Play/runtime is a different tree |
 | Registering InputMap only in the editor session, then Play | Persist with `project.edit` first; Play uses the project map |
 
 ## Verify
 1. `project.search` / `script.edit` / `script.validate`.
 2. Confirm InputMap actions exist in project settings before `runtime.control` play.
-3. `runtime.control` play → exercise InputMap paths (or inject `InputEventAction` via `script.run` / `engine.execute` for automated Verify).
-4. `runtime.observe` digest for errors; confirm pause/`process_mode` behavior if used.
-5. Reload scene / re-open project if Autoload or InputMap changed.
+3. If `affects_edited_scene_root_script` is true: `scene.reload`, then `render.capture target=editor|camera` + `source_state` before claiming the 3D view matches.
+4. `runtime.control` play → exercise InputMap paths through the gameplay API or a project test script.
+5. `runtime.observe` digest for errors; confirm pause/`process_mode` behavior if used.
+6. Reload scene / re-open project if Autoload or InputMap changed.

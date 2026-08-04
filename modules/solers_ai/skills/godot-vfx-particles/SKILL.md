@@ -43,6 +43,6 @@ Use for impacts, trails, weather, fire/smoke, magics, decals, debris bursts, or 
 | CPU particles “because habit” on desktop | GPU path first |
 
 ## Verify
-1. `scene.inspect` particle amount, material, decals, debris layers.
-2. `runtime.control` trigger → `viewport.capture`; watch settle.
+1. `object.query target=scene` for particle amount, material, decals, debris layers.
+2. `runtime.control` trigger → `render.capture`; watch settle.
 3. `runtime.observe` — zero compressed-texture spam; stable timing during bursts.

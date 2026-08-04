@@ -21,7 +21,6 @@
 
 class Node;
 class Node3D;
-class Environment;
 class SolersActionTimeline;
 struct MethodInfo;
 
@@ -54,7 +53,6 @@ class SolersReflectionService : public Object {
 	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
 
 	Node *_resolve_node(const String &p_node_path, String &r_error) const;
-	Dictionary _call_method_on_object(Object *p_object, const String &p_owner, const String &p_method, const MethodInfo &p_info, const Array &p_args) const;
 
 	bool _coerce_value(Node *p_node, const StringName &p_property, const Variant &p_value, Variant &r_out, String &r_error) const;
 	bool _apply_initial_properties(Node *p_node, const Dictionary &p_properties, Dictionary &r_applied, String &r_error) const;
@@ -72,8 +70,6 @@ class SolersReflectionService : public Object {
 	Array _nested_instance_scenes(const Array &p_results) const;
 
 	Dictionary _create_node(const Dictionary &p_args);
-	Dictionary _validate_scene_placements(const Vector<Node *> &p_structure_roots, const Dictionary &p_args) const;
-	Dictionary _validate_reference_layout(const Dictionary &p_layout) const;
 	Dictionary _reparent_node(const Dictionary &p_args);
 	Dictionary _connect_signal(const Dictionary &p_args);
 	Dictionary _attach_script(const Dictionary &p_args);
@@ -97,30 +93,20 @@ public:
 
 	Dictionary introspect_class(const Dictionary &p_args);
 
-	Dictionary get_property(const Dictionary &p_args);
-
 	Dictionary set_property(const Dictionary &p_args);
 
-	Dictionary call_method(const Dictionary &p_args);
-
-	Dictionary invoke_editor(const Dictionary &p_args);
 	Dictionary inspect_nodes(const Dictionary &p_args);
 	Dictionary instantiate_scene(const Dictionary &p_args);
 	Dictionary validate_spatial_relations(const Dictionary &p_args) const;
 	static real_t get_aabb_max_gap(const AABB &p_a, const AABB &p_b);
-	Dictionary validate_structure_topology(const Array &p_members, const Array &p_relations) const;
-	Dictionary validate_placement_topology(const Array &p_members, const Array &p_relations) const;
-	Dictionary validate_structure(const Dictionary &p_args) const;
 	Dictionary bake_csg(const Dictionary &p_args);
-	Dictionary scatter_instances(const Dictionary &p_args);
+	Dictionary open_scene(const Dictionary &p_args);
+	Dictionary reload_scene(const Dictionary &p_args);
 	Dictionary unwrap_uv2(const Dictionary &p_args, const String &p_operation_id = String());
 	Dictionary poll_uv2_unwrap(const Dictionary &p_args);
 	bool is_uv2_unwrap_ready(const Dictionary &p_args) const;
 	void cancel_uv2_unwrap(const String &p_operation_id);
 	Dictionary bake_lightmap(const Dictionary &p_args);
-	static Dictionary validate_environment_resource(const Ref<Environment> &p_environment);
-	Dictionary get_render_pipeline_state() const;
-	uint64_t get_scene_state_digest() const;
 	uint64_t get_spatial_geometry_digest() const;
 	uint64_t get_lightmap_input_digest() const;
 

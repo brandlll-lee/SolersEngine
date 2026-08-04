@@ -44,7 +44,9 @@ class SolersObservationService : public Object {
 
 
 	uint64_t capture_sequence = 0;
+	uint64_t render_post_draw_sequence = 0;
 	HashMap<String, Dictionary> pending_captures;
+	HashMap<String, Dictionary> last_render_by_view;
 	ObjectID observed_debugger_id;
 	uint64_t runtime_cursor = 0;
 	uint64_t runtime_epoch = 0;
@@ -64,8 +66,11 @@ class SolersObservationService : public Object {
 	void _collect_project_files(const String &p_dir, const String &p_query, int p_max_files, Array &r_files, int &r_scanned_count, bool &r_truncated, uint64_t p_deadline_msec) const;
 	Dictionary _search_project_paths(const String &p_query, int p_max_files) const;
 	void _collect_resource_references(class EditorFileSystemDirectory *p_dir, const String &p_target, Array &r_results, int p_max_results, int &r_scanned, bool &r_truncated) const;
+	void _render_frame_post_draw();
 	Dictionary _capture_error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
+	Dictionary _runtime_capture_unavailable() const;
 	Dictionary _capture_image(const Ref<Image> &p_image, const String &p_target, const String &p_capture_id = String());
+	Dictionary _attach_render_receipt(Dictionary p_result, const Dictionary &p_pending);
 	Dictionary _register_pending_capture(const String &p_target, const Dictionary &p_extra);
 	Dictionary _poll_pending_capture(const String &p_capture_id);
 	Dictionary _finish_frame_gated_capture(const String &p_capture_id, const Dictionary &p_data);
@@ -109,7 +114,6 @@ public:
 	Dictionary observe_runtime(const Dictionary &p_args);
 	bool is_runtime_observation_ready(const Dictionary &p_args) const;
 	Dictionary get_editor_logs(int p_max_messages = 200) const;
-	Dictionary get_editor_snapshot(int p_max_scene_depth = 4, int p_max_children_per_node = 64, bool p_include_remote_scene = false) const;
 	Dictionary capture_viewport(const Dictionary &p_args);
 	Dictionary poll_viewport_capture(const Dictionary &p_args);
 	bool is_viewport_capture_ready(const Dictionary &p_args);

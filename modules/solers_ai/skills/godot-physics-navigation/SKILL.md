@@ -56,7 +56,7 @@ func _physics_process(delta: float) -> void:
 | Godot 3 `KinematicBody` / `move_and_slide()` old signature | `CharacterBody3D` + velocity property API |
 
 ## Verify
-1. `scene.inspect` bodies, shapes, layers/masks, region/agent setup.
+1. `object.query target=scene` for bodies, shapes, layers/masks, region/agent setup.
 2. `runtime.control` → slopes, edges, triggers, reachable/unreachable goals.
 3. `runtime.observe` for physics errors; confirm no transform-fighting rigid bodies.
-4. Optional: `viewport.capture` for contact/debug shapes if using debug draw.
+4. Optional: `render.capture` for contact/debug shapes if using debug draw.

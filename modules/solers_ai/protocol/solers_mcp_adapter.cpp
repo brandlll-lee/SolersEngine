@@ -226,7 +226,16 @@ Dictionary SolersMCPAdapter::read_resource(const Dictionary &p_params) const {
 
 	Variant data;
 	if (uri == "solers://editor/snapshot") {
-		data = observation_service ? observation_service->get_editor_snapshot(4, 64) : Dictionary();
+		Dictionary snapshot;
+		if (observation_service) {
+			snapshot["project"] = observation_service->get_project_info();
+			snapshot["project_settings"] = observation_service->get_project_settings_summary();
+			snapshot["open_scenes"] = observation_service->get_open_scenes(1, 64);
+			snapshot["selection"] = observation_service->get_selection(1, 64);
+			snapshot["runtime"] = observation_service->get_runtime_status();
+			snapshot["editor_log"] = observation_service->get_editor_logs(40);
+		}
+		data = snapshot;
 	} else if (uri == "solers://timeline/actions") {
 		data = action_timeline ? action_timeline->list_actions(100) : Array();
 	} else {

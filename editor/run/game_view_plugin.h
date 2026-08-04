@@ -83,6 +83,8 @@ public:
 	virtual bool has_capture(const String &p_capture) const override;
 
 	static bool request_root_viewport_screenshot(const Callable &p_callback);
+	// Authoritative: at least one GameView debugger session can accept rq_screenshot.
+	static bool has_active_capture_session();
 	bool add_screenshot_callback(const Callable &p_callaback, const Rect2i &p_rect);
 
 	void set_suspend(bool p_enabled);

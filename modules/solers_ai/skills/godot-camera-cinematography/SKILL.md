@@ -6,7 +6,7 @@ description: Generic Godot 4 camera building blocks - Camera3D authority, Spring
 # Camera Cinematography (Generic)
 
 ## When to use
-Use for gameplay cameras, film-like moves into dialogue/shop/cut-ins, over-the-shoulder (OTS) framing, scripted fly-throughs, FOV/DOF changes, and returning to player control. Use whenever the Agent must **drive or blend cameras with Godot nodes**, not only compose a still for `viewport.capture`.
+Use for gameplay cameras, film-like moves into dialogue/shop/cut-ins, over-the-shoulder (OTS) framing, scripted fly-throughs, FOV/DOF changes, and returning to player control. Use whenever the Agent must **drive or blend cameras with Godot nodes**, not only compose a still for `render.capture`.
 
 For photoreal exposure/DOF look recipes, also read `godot-3d-rendering`. This skill owns **who moves the camera and how**.
 
@@ -31,14 +31,14 @@ For photoreal exposure/DOF look recipes, also read `godot-3d-rendering`. This sk
 | `Area3D` | Enter/exit shot triggers (`body_entered` / `body_exited`) |
 | `SubViewport` + extra `Camera3D` | Picture-in-picture / render-to-texture; separate Viewport current-camera authority |
 
-Instance property values: `scene.inspect` / `resource.inspect`. Use `engine.inspect` only when a ClassDB class or method name is unknown.
+Instance property values: `object.query target=scene|resource`. Use `engine.describe` only when a ClassDB class or method name is unknown.
 
 ## Agent tool sequence
 1. `skill.read` this skill (and `godot-scripting-input-gameplay` if input ownership is unclear).
-2. `scene.inspect` the live camera (`current`, `fov`, `global_transform`, parent rig).
-3. `scene.edit` to create Marker shots, Area triggers, cinematic `Camera3D`, connections, and hierarchy layout.
-4. `script.edit` for the transition controller (not `script.run` for scaffolding).
-5. `runtime.control` → play → trigger → `viewport.capture target=runtime` (and `target=camera` with `node_path` when needed) → `runtime.observe`. Spatial placement still requires `scene.validate`, not a capture.
+2. `object.query target=scene` for the live camera (`current`, `fov`, `global_transform`, parent rig).
+3. `object.transaction scope=scene` with the inspected state receipt to create Marker shots, Area triggers, cinematic `Camera3D`, connections, and hierarchy layout.
+4. `script.edit` for the transition controller.
+5. `runtime.control` → play → trigger → `render.capture target=runtime` (and `target=camera` with `node_path` when needed) → `runtime.observe`. Spatial placement still requires `object.query target=relations`, not a capture.
 
 There is **no** `camera.*` tool. Capabilities are native nodes + scripts.
 
@@ -122,7 +122,7 @@ All shot ids and paths are **authored**; the Agent must not infer them from mesh
 ## Verify
 1. `runtime.control` play the scene.  
 2. Trigger the shot (walk into Area or call `play`).  
-3. `viewport.capture target=runtime` at start, mid-blend, and end — no pop at `make_current`, continuous motion, intended framing.  
+3. `render.capture target=runtime` at start, mid-blend, and end — no pop at `make_current`, continuous motion, intended framing.
 4. `runtime.observe` — no spam from competing camera writers; SpringArm not fighting Tween.  
 5. Confirm input disabled during blend and restored after return.
 

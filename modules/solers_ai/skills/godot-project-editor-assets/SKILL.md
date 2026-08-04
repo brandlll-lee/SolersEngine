@@ -36,12 +36,12 @@ Use for project settings, folder layout, imports, resources, editor state, addon
 |-------|---------|
 | Hand-editing `.import` | Importer UI / reimport |
 | Hardcoding vendor model tier names in generic advice | `asset.capabilities` → `provider_options` schema |
-| Guessing addon method names | `addon.inspect` + `engine.inspect` |
+| Guessing addon method names | `addon.inspect` + `engine.describe` |
 | `import_profile: baked_static` “just in case” | Only when UV2/lightmap bake is real |
 | Treating download bytes as a Godot resource without import | Wait for verified import paths |
 
 ## Verify
-1. `project.search` / `resource.inspect` paths resolve; sidecars present after moves.
+1. `project.search` / `object.query target=resource` paths resolve; sidecars present after moves.
 2. After generate/acquire: imported `res://` paths load; provenance exists.
 3. Reopen scene/project; `runtime.observe` for import errors.
 4. Addon path: inspect Contract, then validate ClassDB types exist post-enable.

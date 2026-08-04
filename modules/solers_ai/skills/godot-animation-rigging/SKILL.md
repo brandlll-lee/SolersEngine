@@ -41,8 +41,8 @@ Use for clips, skeletons, retargeting, AnimationTree graphs, IK, one-shots, or r
 | Ignoring loop end pops | Check track interpolation and loop wrap |
 
 ## Verify
-1. `resource.inspect` / `scene.inspect` skeleton, libraries, Tree parameters.
+1. `object.query target=resource|scene` for skeleton, libraries, and Tree parameters.
 2. `runtime.control` — each clip, interrupt, blend; watch feet/hands.
-3. For locomotion transitions (Idle/Walk/Run): drive state via gameplay API or inject `InputEventAction` with `script.run` / `engine.execute`, then `viewport.capture` while moving — do not claim transitions from a static Idle frame alone.
+3. For locomotion transitions (Idle/Walk/Run): drive state through the gameplay API or a project test script, then `render.capture` while moving — do not claim transitions from a static Idle frame alone.
 4. `runtime.observe` digest for missing tracks / errors.
 5. Confirm no double translation when root motion enabled.

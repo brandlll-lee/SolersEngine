@@ -34,13 +34,13 @@ Use for heightmaps, procedural ground meshes, vegetation instancing, terrain col
 | Wrong | Correct |
 |-------|---------|
 | Hardcoding a vendor terrain class in generic plans | Contract from `addon.inspect` |
-| Inventing `terrain.sculpt` tools | `scene.edit` / addon ClassDB / native mesh |
+| Inventing `terrain.sculpt` tools | `object.transaction` / addon ClassDB / native mesh |
 | Height scale mismatch (cm vs m) | Measure extents; fix noise amplitude |
 | Navmesh before holes/collision final | Bake after walkable surface settles |
 | No far-camera perf check | Capture near + far; watch draw cost |
 
 ## Verify
-1. `scene.inspect` / `resource.inspect` bounds, materials, collision, nav.
-2. `runtime.control` traversal; near/far `viewport.capture`.
+1. `object.query target=scene|resource` for bounds, materials, collision, and navigation.
+2. `runtime.control` traversal; near/far `render.capture`.
 3. `runtime.observe` for shader/addon errors after reload.
 4. If addon: Contract validation checklist must pass (regions present, data reloads).

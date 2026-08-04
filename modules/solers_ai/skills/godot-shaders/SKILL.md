@@ -20,7 +20,7 @@ Use for `.gdshader` / ShaderMaterial work: custom lighting response, dissolve, o
 | Convert | `StandardMaterial3D` → convert to shader code as a starting point when stuck |
 
 ## Laws
-- Do not invent shader built-ins or render_mode tokens — verify against engine docs/`engine.inspect` materials.
+- Do not invent shader built-ins or render_mode tokens — verify against engine docs/`engine.describe` materials.
 - Keep one concern per shader; stack materials sparingly.
 - Mobile/XR: minimize dependent texture reads and overdraw; test on target renderer.
 - Drive gameplay knobs via `set_shader_parameter` — not by rewriting shader text each frame.
@@ -41,7 +41,7 @@ Use for `.gdshader` / ShaderMaterial work: custom lighting response, dissolve, o
 | Editing imported material internals | ShaderMaterial on a wrapper mesh/surface |
 
 ## Verify
-1. Assign ShaderMaterial; `resource.inspect` uniforms.
-2. `runtime.control` + `viewport.capture` under game lighting (not empty grey void only).
-3. `runtime.observe` for shader compile errors; fix before claiming VFX done.
+1. Assign ShaderMaterial; `object.query target=resource` for uniforms.
+2. Static look: `render.capture target=camera|editor` + `source_state`. If `@tool` `_ready` builds the mesh, `scene.reload` first. Use runtime only for gameplay lighting.
+3. `runtime.observe` only when Play is needed for compile/runtime errors.
 4. Toggle parameters via script once to prove the contract.

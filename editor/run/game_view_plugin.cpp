@@ -290,6 +290,18 @@ bool GameViewDebugger::request_root_viewport_screenshot(const Callable &p_callba
 	return singleton && singleton->add_screenshot_callback(p_callback, Rect2i());
 }
 
+bool GameViewDebugger::has_active_capture_session() {
+	if (!singleton) {
+		return false;
+	}
+	for (const Ref<EditorDebuggerSession> &session : singleton->sessions) {
+		if (session.is_valid() && session->is_active()) {
+			return true;
+		}
+	}
+	return false;
+}
+
 bool GameViewDebugger::add_screenshot_callback(const Callable &p_callaback, const Rect2i &p_rect) {
 	bool found = false;
 	for (Ref<EditorDebuggerSession> &I : sessions) {

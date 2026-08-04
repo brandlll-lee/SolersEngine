@@ -89,9 +89,6 @@ struct SolersToolCapability {
 	// When true, identical read-only calls reuse the session cache across
 	// authored revision bumps (ClassDB/catalog facts do not change with edits).
 	bool cache_across_revisions = false;
-	// Successful completion proves spatial relations for the current scene
-	// revision. Declared by the validation tool, never inferred from its name.
-	bool produces_scene_validation = false;
 	// Godot/editor APIs stay on the main thread. Handlers opt into a worker
 	// only when they are explicitly thread-safe.
 	SolersToolExecution execution = SolersToolExecution::MAIN_THREAD;

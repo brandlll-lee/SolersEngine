@@ -35,15 +35,13 @@
 #include "core/core_bind.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
+#include "core/io/json.h"
 #include "core/io/resource_format_binary.h"
 #include "core/io/resource_importer.h"
 #include "core/io/resource_loader.h"
-#include "core/io/logger.h"
-#include "core/object/callable_method_pointer.h"
 #include "core/object/class_db.h"
 #include "core/object/script_language.h"
 #include "core/os/os.h"
-#include "editor/editor_interface.h"
 #include "editor/editor_node.h"
 #include "scene/main/node.h"
 #include "editor/editor_undo_redo_manager.h"
@@ -56,9 +54,6 @@
 #include "servers/rendering/shader_preprocessor.h"
 #include "servers/rendering/shader_types.h"
 
-#include <cstdarg>
-#include <cstdio>
-
 void SolersScriptService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_action_timeline", "action_timeline"), &SolersScriptService::set_action_timeline);
 	ClassDB::bind_method(D_METHOD("write_file", "args"), &SolersScriptService::write_file);
@@ -66,7 +61,6 @@ void SolersScriptService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("edit_project", "args"), &SolersScriptService::edit_project);
 	ClassDB::bind_method(D_METHOD("edit_script", "args"), &SolersScriptService::edit_script);
 	ClassDB::bind_method(D_METHOD("validate_script", "args"), &SolersScriptService::validate_script);
-	ClassDB::bind_method(D_METHOD("run_script", "args"), &SolersScriptService::run_script);
 	ClassDB::bind_method(D_METHOD("_apply_project_settings", "values", "erase"), &SolersScriptService::_apply_project_settings);
 }
 
@@ -288,7 +282,7 @@ Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
 		return _error("EDITOR_OWNED_FILE", "Modify project.godot through project.edit settings so the live ProjectSettings state stays synchronized.");
 	}
 	if (_solers_is_native_serialized_resource_path(res_path)) {
-		return _error("NATIVE_RESOURCE_WRITE_BLOCKED", "Godot serialized resources must be edited through scene.edit or resource.edit, not raw file writes.");
+		return _error("NATIVE_RESOURCE_WRITE_BLOCKED", "Godot serialized resources must be edited through object.transaction, not raw file writes.");
 	}
 
 	const bool existed_before = FileAccess::exists(res_path);
@@ -299,6 +293,15 @@ Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
 		return _error("FILE_NOT_FOUND", vformat("File does not exist and create=false: %s", res_path));
 	}
 	const bool is_script_text = has_text_content && _solers_is_script_source_path(res_path);
+	Dictionary validation_data;
+	if (is_script_text) {
+		validation_data = _validate_source(res_path, content);
+		if (!(bool)validation_data.get("valid", false)) {
+			Dictionary failure = _error("SCRIPT_VALIDATION_FAILED", "The proposed source is invalid; the file was not changed.");
+			failure["data"] = validation_data;
+			return failure;
+		}
+	}
 
 	Vector<uint8_t> bytes;
 	if (has_binary_content) {
@@ -315,28 +318,29 @@ Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
 		return _error("DIRECTORY_CREATE_FAILED", vformat("Failed to create parent directory, error code %d.", dir_err));
 	}
 
+	const String absolute_path = ProjectSettings::get_singleton()->globalize_path(res_path);
+	const String temporary_path = absolute_path + ".solers-" + String::num_uint64(OS::get_singleton()->get_ticks_usec()) + ".tmp";
 	Error write_err = OK;
-	Ref<FileAccess> file = FileAccess::open(res_path, FileAccess::WRITE, &write_err);
+	Ref<FileAccess> file = FileAccess::open(temporary_path, FileAccess::WRITE, &write_err);
 	if (file.is_null() || write_err != OK) {
-		return _error("FILE_WRITE_FAILED", vformat("Failed to open file for writing, error code %d.", write_err));
+		return _error("FILE_WRITE_FAILED", vformat("Failed to open temporary file for writing, error code %d.", write_err));
 	}
 	const bool stored = has_binary_content ? file->store_buffer(bytes) : file->store_string(content);
 	if (!stored) {
+		file.unref();
+		DirAccess::remove_absolute(temporary_path);
 		return _error("FILE_WRITE_FAILED", "Failed to store file content.");
 	}
 	file.unref();
-
-	EditorFileSystem *filesystem = Engine::get_singleton()->is_editor_hint() ? EditorFileSystem::get_singleton() : nullptr;
-	if (filesystem && filesystem->get_filesystem() && !filesystem->is_scanning()) {
-		filesystem->update_file(res_path);
+	const Error replace_err = DirAccess::rename_absolute(temporary_path, absolute_path);
+	if (replace_err != OK) {
+		DirAccess::remove_absolute(temporary_path);
+		return _error("FILE_WRITE_FAILED", vformat("Failed to replace the target file, error code %d.", replace_err));
 	}
 
-	// Post-write diagnostics: the file is committed either way, and the model
-	// reads the exact parser output to self-correct. Reversal stays available
-	// through the file checkpoint (history.revert).
-	Dictionary validation_data;
-	if (is_script_text) {
-		validation_data = _validate_source(res_path, content);
+	EditorFileSystem *filesystem = Engine::get_singleton()->is_editor_hint() ? EditorFileSystem::get_singleton() : nullptr;
+	if (filesystem && filesystem->get_filesystem()) {
+		filesystem->update_file(res_path);
 	}
 
 	Dictionary data;
@@ -346,10 +350,20 @@ Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
 	data["size_bytes"] = has_binary_content ? bytes.size() : content.utf8().length();
 	data["sha256"] = FileAccess::get_sha256(res_path);
 	data["binary"] = has_binary_content;
+	data["filesystem_synced"] = filesystem && filesystem->get_filesystem();
 	data["import_valid"] = ResourceLoader::is_import_valid(res_path);
 	if (is_script_text) {
 		data["valid"] = validation_data.get("valid", true);
 		data["validation"] = validation_data;
+		bool affects_root = false;
+		EditorNode *editor = EditorNode::get_singleton();
+		if (editor && EditorNode::get_editor_data().get_edited_scene_count() > 0) {
+			if (Node *root = editor->get_edited_scene()) {
+				const Ref<Script> root_script = root->get_script();
+				affects_root = root_script.is_valid() && root_script->get_path() == res_path;
+			}
+		}
+		data["affects_edited_scene_root_script"] = affects_root;
 	}
 
 	if (action_timeline) {
@@ -648,7 +662,7 @@ Dictionary SolersScriptService::patch_file(const Dictionary &p_args) {
 		return _error("FILE_NOT_FOUND", vformat("File does not exist: %s.%s", res_path, solers_file_suggestions(res_path)));
 	}
 	if (_solers_is_native_serialized_resource_path(res_path)) {
-		return _error("NATIVE_RESOURCE_PATCH_BLOCKED", "Godot serialized resources must be edited through scene.edit or resource.edit, not text replacement.");
+		return _error("NATIVE_RESOURCE_PATCH_BLOCKED", "Godot serialized resources must be edited through object.transaction, not text replacement.");
 	}
 
 	Error read_err = OK;
@@ -826,7 +840,7 @@ Dictionary SolersScriptService::edit_project(const Dictionary &p_args) {
 		return _error("PROJECT_FILE_TYPE_BLOCKED", "Script sources are edited through script.edit so parser diagnostics stay attached to the write.");
 	}
 	if (_solers_is_native_serialized_resource_path(path)) {
-		return _error("PROJECT_FILE_TYPE_BLOCKED", "Godot serialized scenes and resources are edited through scene.edit or resource.edit, not raw file writes.");
+		return _error("PROJECT_FILE_TYPE_BLOCKED", "Godot serialized scenes and resources are edited through object.transaction, not raw file writes.");
 	}
 	ResourceFormatImporter *format_importer = ResourceFormatImporter::get_singleton();
 	if (format_importer && format_importer->get_importer_by_file(path).is_valid()) {
@@ -894,316 +908,207 @@ Dictionary SolersScriptService::validate_script(const Dictionary &p_args) const 
 	return _ok(_validate_source(res_path, source));
 }
 
-// Captures engine log output while a script.run entry point executes so the
-// caller receives the same prints and errors a developer would see in the
-// editor log. Registered once; the composite logger owns and frees it.
-class SolersRunCaptureLogger : public ::Logger {
-	static constexpr int MAX_CAPTURE_CHARS = 32768;
-
-	void _append(String &r_target, const String &p_text) {
-		if (r_target.length() >= MAX_CAPTURE_CHARS) {
-			return;
-		}
-		r_target += p_text;
-		if (r_target.length() > MAX_CAPTURE_CHARS) {
-			r_target = r_target.substr(0, MAX_CAPTURE_CHARS) + "\n[capture truncated]";
-		}
+void SolersScriptService::_cleanup_compute(PendingCompute &r_compute) {
+	if (r_compute.process_id && OS::get_singleton()->is_process_running(r_compute.process_id)) {
+		OS::get_singleton()->kill(r_compute.process_id);
 	}
-
-public:
-	bool active = false;
-	String output;
-	String errors;
-
-	void begin() {
-		output = String();
-		errors = String();
-		active = true;
+	Ref<DirAccess> directory = DirAccess::open(r_compute.directory);
+	if (directory.is_valid()) {
+		directory->erase_contents_recursive();
 	}
+	DirAccess::remove_absolute(r_compute.directory);
+	r_compute.process_id = 0;
+}
 
-	void end() {
-		active = false;
-	}
-
-	virtual void logv(const char *p_format, va_list p_list, bool p_err) override {
-		if (!active) {
-			return;
-		}
-		va_list list_copy;
-		va_copy(list_copy, p_list);
-		const int length = vsnprintf(nullptr, 0, p_format, list_copy);
-		va_end(list_copy);
-		if (length <= 0) {
-			return;
-		}
-		Vector<char> buffer;
-		buffer.resize(length + 1);
-		vsnprintf(buffer.ptrw(), buffer.size(), p_format, p_list);
-		_append(p_err ? errors : output, String::utf8(buffer.ptr(), length));
-	}
-
-	virtual void log_error(const char *p_function, const char *p_file, int p_line, const char *p_code, const char *p_rationale, bool p_editor_notify, ErrorType p_type, const Vector<Ref<ScriptBacktrace>> &p_script_backtraces) override {
-		if (!active) {
-			return;
-		}
-		const char *details = (p_rationale && p_rationale[0]) ? p_rationale : p_code;
-		_append(errors, vformat("%s: %s (%s:%d)\n", String(error_type_string(p_type)), String::utf8(details), String::utf8(p_file), p_line));
-	}
-};
-
-static SolersRunCaptureLogger *solers_run_capture_logger = nullptr;
-
-// Converts a run() return value into data every provider can serialize:
-// JSON-native types pass through, containers recurse with bounded depth and
-// size, and engine types fall back to their human-readable string form.
-static Variant _solers_run_jsonable(const Variant &p_value, int p_depth = 0) {
-	switch (p_value.get_type()) {
-		case Variant::NIL:
-		case Variant::BOOL:
-		case Variant::INT:
-		case Variant::FLOAT:
-		case Variant::STRING:
-		case Variant::STRING_NAME:
-			return p_value;
-		case Variant::ARRAY: {
-			if (p_depth >= 8) {
-				return String(p_value);
-			}
-			const Array source_array = p_value;
-			Array converted;
-			const int limit = MIN(source_array.size(), 256);
-			for (int i = 0; i < limit; i++) {
-				converted.push_back(_solers_run_jsonable(source_array[i], p_depth + 1));
-			}
-			if (source_array.size() > limit) {
-				converted.push_back(vformat("[%d more items omitted]", source_array.size() - limit));
-			}
-			return converted;
-		}
-		case Variant::DICTIONARY: {
-			if (p_depth >= 8) {
-				return String(p_value);
-			}
-			const Dictionary source_dict = p_value;
-			Dictionary converted;
-			for (const Variant *key = source_dict.next(nullptr); key; key = source_dict.next(key)) {
-				converted[String(*key)] = _solers_run_jsonable(source_dict[*key], p_depth + 1);
-			}
-			return converted;
-		}
-		default:
-			return String(p_value);
+SolersScriptService::~SolersScriptService() {
+	for (KeyValue<String, PendingCompute> &entry : pending_computes) {
+		_cleanup_compute(entry.value);
 	}
 }
 
-Dictionary SolersScriptService::run_script(const Dictionary &p_args) {
+Dictionary SolersScriptService::compute_script(const String &p_call_id, const Dictionary &p_args) {
 	const String source = p_args.get("source", String());
-	if (source.strip_edges().is_empty()) {
-		return _error("INVALID_ARGUMENT", "source is required.");
+	const Array requested_outputs = p_args.get("outputs", Array());
+	if (p_call_id.is_empty() || source.strip_edges().is_empty() || requested_outputs.is_empty()) {
+		return _error("INVALID_ARGUMENT", "script.compute requires source and at least one declared output.");
 	}
-	const bool persist_children = p_args.get("persist_host_children", false);
-	if (persist_children) {
-		EditorInterface *editor_interface = EditorInterface::get_singleton();
-		if (!editor_interface || !editor_interface->get_edited_scene_root()) {
-			return _error("PERSIST_TARGET_MISSING", "persist_host_children needs an open edited scene to hand the nodes to; open or create a scene first.");
+	if (pending_computes.has(p_call_id)) {
+		return _error("COMPUTE_ALREADY_RUNNING", "This script.compute call is already running.", false);
+	}
+
+	const Dictionary validation = _validate_source("res://compute.gd", source);
+	if (!(bool)validation.get("valid", false)) {
+		Dictionary failure = _error("SCRIPT_PARSE_FAILED", "The compute script does not parse.");
+		failure["data"] = validation;
+		return failure;
+	}
+
+	Array outputs;
+	for (int i = 0; i < requested_outputs.size(); i++) {
+		const Dictionary requested = requested_outputs[i];
+		const String from = String(requested.get("from", String())).replace_char('\\', '/').simplify_path();
+		String to;
+		String path_error;
+		if (from.is_empty() || from.is_absolute_path() || from.begins_with("res://") || from.contains("..")) {
+			return _error("INVALID_OUTPUT_SOURCE", "Compute output sources must be relative paths inside the isolated project.");
 		}
-	}
-
-	const Dictionary validation = _validate_source("res://.solers/script_run.gd", source);
-	if (validation.has("ok") && !(bool)validation.get("ok", true)) {
-		return validation;
-	}
-	if (!(bool)validation.get("valid", true)) {
-		Dictionary result = _error("SCRIPT_PARSE_FAILED", "The script does not parse; fix the reported diagnostics.");
-		result["data"] = validation;
-		return result;
-	}
-
-	Ref<Script> script = Object::cast_to<Script>(ClassDB::instantiate(SNAME("GDScript")));
-	if (script.is_null()) {
-		return _error("GDSCRIPT_UNAVAILABLE", "The GDScript language module is unavailable in this build.", false);
-	}
-	script->set_source_code(source);
-	const Error compile_error = script->reload();
-	if (compile_error != OK) {
-		return _error("SCRIPT_COMPILE_FAILED", vformat("GDScript compilation failed (error %d).", (int)compile_error));
-	}
-	if (!script->is_tool()) {
-		return _error("TOOL_ANNOTATION_REQUIRED", "Start the source with @tool so it can run inside the editor process.");
-	}
-	const StringName base_type = script->get_instance_base_type();
-	if (!ClassDB::is_parent_class(base_type, SNAME("RefCounted"))) {
-		return _error("REFCOUNTED_BASE_REQUIRED", vformat("script.run sources must extend a RefCounted type such as the default base or EditorScript; got %s.", String(base_type)));
-	}
-	Ref<RefCounted> instance = Object::cast_to<RefCounted>(ClassDB::instantiate(base_type));
-	if (instance.is_null()) {
-		return _error("SCRIPT_INSTANTIATION_FAILED", vformat("Could not instantiate script base type %s.", String(base_type)), false);
-	}
-	instance->set_script(script);
-	const StringName entry = instance->has_method(SNAME("run")) ? SNAME("run") : (instance->has_method(SNAME("_run")) ? SNAME("_run") : StringName());
-	if (entry == StringName()) {
-		return _error("RUN_ENTRY_MISSING", "Define func run() (or EditorScript-style _run()) as the entry point.");
-	}
-
-	// The host is a temporary Node already inside the editor scene tree, so
-	// scripts have a legitimate place for nodes that only initialize in-tree
-	// (GDExtension terrain, physics helpers). Its lifetime is bound to this
-	// tool call: whatever the script parents under it is freed with it, so a
-	// failed script can never leak nodes into the editor UI tree.
-	Node *host = nullptr;
-	if (EditorNode::get_singleton()) {
-		host = memnew(Node);
-		host->set_name("SolersScriptRunHost");
-		EditorNode::get_singleton()->add_child(host);
-	}
-	const ObjectID host_id = host ? host->get_instance_id() : ObjectID();
-	const int64_t source_bytes = source.utf8().length();
-
-	if (!solers_run_capture_logger) {
-		solers_run_capture_logger = memnew(SolersRunCaptureLogger);
-		OS::get_singleton()->add_logger(solers_run_capture_logger);
-	}
-	solers_run_capture_logger->begin();
-	Callable::CallError call_error;
-	Variant return_value;
-	bool argument_count_valid = false;
-	const int argument_count = instance->get_method_argument_count(entry, &argument_count_valid);
-	if (host && argument_count_valid && argument_count >= 1) {
-		Variant host_variant = host;
-		const Variant *argptrs[1] = { &host_variant };
-		return_value = instance->callp(entry, argptrs, 1, call_error);
-	} else {
-		return_value = instance->callp(entry, nullptr, 0, call_error);
-	}
-
-	if (call_error.error != Callable::CallError::CALL_OK) {
-		solers_run_capture_logger->end();
-		Dictionary data;
-		data["entry"] = String(entry);
-		data["output"] = solers_run_capture_logger->output;
-		data["error_output"] = solers_run_capture_logger->errors;
-		if (host) {
-			host->queue_free();
+		if (!_normalize_project_path(requested.get("to", String()), to, path_error) || _solers_is_project_settings_path(to)) {
+			return _error("INVALID_OUTPUT_TARGET", path_error.is_empty() ? "Use project.edit for project.godot." : path_error);
 		}
-		Dictionary result = _error("SCRIPT_RUN_FAILED", vformat("Calling %s() failed: %s", String(entry), Variant::get_call_error_text(instance.ptr(), entry, nullptr, 0, call_error)));
-		result["data"] = data;
-		return result;
+		Dictionary output;
+		output["from"] = from;
+		output["to"] = to;
+		output["resource_type"] = String(requested.get("resource_type", String())).strip_edges();
+		outputs.push_back(output);
 	}
 
-	// An awaiting run() hands back a suspended coroutine instead of a result.
-	// Keep the coroutine (and the script instance) alive and complete through
-	// the registry's ready/poll continuation once its "completed" signal
-	// fires, so awaited work is a first-class citizen rather than a leak.
-	Object *state_object = return_value.get_type() == Variant::OBJECT ? (Object *)return_value : nullptr;
-	if (state_object && state_object->get_class() == SNAME("GDScriptFunctionState")) {
-		const int64_t run_id = next_run_id++;
-		PendingRun pending;
-		pending.instance = instance;
-		pending.state = Ref<RefCounted>(Object::cast_to<RefCounted>(state_object));
-		pending.host_id = host_id;
-		pending.entry = String(entry);
-		pending.source_bytes = source_bytes;
-		pending.persist_children = persist_children;
-		pending_runs.insert(run_id, pending);
-		state_object->connect(SNAME("completed"), callable_mp(this, &SolersScriptService::_on_run_completed).bind(run_id), Object::CONNECT_ONE_SHOT);
-		Dictionary poll_args;
-		poll_args["run_id"] = run_id;
-		poll_args["deadline_msec"] = (int64_t)(OS::get_singleton()->get_ticks_msec() + 30000);
+	PendingCompute compute;
+	compute.directory = OS::get_singleton()->get_temp_path().path_join("solers-compute-" + p_call_id.sha256_text().left(16));
+	compute.outputs = outputs;
+	Ref<DirAccess> stale = DirAccess::open(compute.directory);
+	if (stale.is_valid()) {
+		stale->erase_contents_recursive();
+	}
+	DirAccess::remove_absolute(compute.directory);
+	if (DirAccess::make_dir_recursive_absolute(compute.directory) != OK) {
+		return _error("COMPUTE_DIRECTORY_FAILED", "Unable to create the isolated compute project.", false);
+	}
+
+	auto write_text = [&](const String &p_path, const String &p_text) -> Error {
+		Error error = OK;
+		Ref<FileAccess> file = FileAccess::open(p_path, FileAccess::WRITE, &error);
+		if (file.is_null() || error != OK || !file->store_string(p_text)) {
+			return error == OK ? ERR_FILE_CANT_WRITE : error;
+		}
+		return OK;
+	};
+	if (write_text(compute.directory.path_join("project.godot"), "[application]\nconfig/name=\"Solers Compute\"\n") != OK ||
+			write_text(compute.directory.path_join("compute.gd"), source) != OK) {
+		_cleanup_compute(compute);
+		return _error("COMPUTE_SETUP_FAILED", "Unable to write the isolated compute project.", false);
+	}
+
+	List<String> arguments;
+	arguments.push_back("--headless");
+	arguments.push_back("--path");
+	arguments.push_back(compute.directory);
+	arguments.push_back("--script");
+	arguments.push_back("res://compute.gd");
+	const Error start_error = OS::get_singleton()->create_process(OS::get_singleton()->get_executable_path(), arguments, &compute.process_id);
+	if (start_error != OK) {
+		_cleanup_compute(compute);
+		return _error("COMPUTE_START_FAILED", vformat("Unable to start isolated Godot (error %d).", start_error), false);
+	}
+	pending_computes[p_call_id] = compute;
+
+	Dictionary data;
+	data["status"] = "pending";
+	data["poll_args"] = Dictionary();
+	return _ok(data);
+}
+
+bool SolersScriptService::compute_script_ready(const String &p_call_id) const {
+	const PendingCompute *compute = pending_computes.getptr(p_call_id);
+	return !compute || !OS::get_singleton()->is_process_running(compute->process_id);
+}
+
+Dictionary SolersScriptService::compute_script_finalize(const String &p_call_id) {
+	PendingCompute *stored = pending_computes.getptr(p_call_id);
+	if (!stored) {
+		return _error("COMPUTE_STATE_MISSING", "The isolated compute state is gone.", false);
+	}
+	if (OS::get_singleton()->is_process_running(stored->process_id)) {
 		Dictionary data;
 		data["status"] = "pending";
-		data["poll_args"] = poll_args;
-		return _ok(data); // The capture logger stays active until finalize.
+		data["poll_args"] = Dictionary();
+		return _ok(data);
 	}
 
-	solers_run_capture_logger->end();
-	return _finish_run(String(entry), source_bytes, return_value, host_id, persist_children);
-}
+	PendingCompute compute = *stored;
+	pending_computes.erase(p_call_id);
+	const int exit_code = OS::get_singleton()->get_process_exit_code(compute.process_id);
+	if (exit_code != 0) {
+		_cleanup_compute(compute);
+		return _error("COMPUTE_FAILED", vformat("Isolated Godot exited with code %d.", exit_code));
+	}
 
-void SolersScriptService::_on_run_completed(const Variant &p_result, int64_t p_run_id) {
-	PendingRun *pending = pending_runs.getptr(p_run_id);
-	if (pending) {
-		pending->completed = true;
-		pending->result = p_result;
+	EditorUndoRedoManager *undo_manager = EditorUndoRedoManager::get_singleton();
+	Node *edited_root = EditorNode::get_singleton() ? EditorNode::get_editor_data().get_edited_scene_root() : nullptr;
+	const int history_id = edited_root ? EditorNode::get_editor_data().get_current_edited_scene_history_id() : EditorUndoRedoManager::INVALID_HISTORY;
+	Array committed;
+	PackedStringArray changed_paths;
+	for (int i = 0; i < compute.outputs.size(); i++) {
+		const Dictionary output = compute.outputs[i];
+		const String source_path = compute.directory.path_join(output.get("from", String()));
+		const String target_path = output.get("to", String());
+		if (!FileAccess::exists(source_path)) {
+			_cleanup_compute(compute);
+			return _error("COMPUTE_OUTPUT_MISSING", vformat("Declared output was not produced: %s.", output.get("from", String())));
+		}
+		if (edited_root && edited_root->get_scene_file_path() == target_path && undo_manager && undo_manager->is_history_unsaved(history_id)) {
+			_cleanup_compute(compute);
+			return _error("SCENE_UNSAVED", "Refusing to replace an open scene while its native UndoRedo history is unsaved.");
+		}
+		const String target_absolute = ProjectSettings::get_singleton()->globalize_path(target_path);
+		if (DirAccess::make_dir_recursive_absolute(target_absolute.get_base_dir()) != OK) {
+			_cleanup_compute(compute);
+			return _error("OUTPUT_DIRECTORY_FAILED", vformat("Unable to create the parent directory for %s.", target_path), false);
+		}
+		const String temporary = target_absolute + ".solers-" + String::num_uint64(OS::get_singleton()->get_ticks_usec()) + ".tmp";
+		const Error copy_error = DirAccess::copy_absolute(source_path, temporary);
+		const Error replace_error = copy_error == OK ? DirAccess::rename_absolute(temporary, target_absolute) : copy_error;
+		if (replace_error != OK) {
+			DirAccess::remove_absolute(temporary);
+			_cleanup_compute(compute);
+			return _error("OUTPUT_COMMIT_FAILED", vformat("Unable to atomically commit %s (error %d).", target_path, replace_error), false);
+		}
+		const String source_sha = FileAccess::get_sha256(source_path);
+		const String saved_sha = FileAccess::get_sha256(target_path);
+		const String resource_type = output.get("resource_type", String());
+		Error load_error = OK;
+		const Ref<Resource> loaded = resource_type.is_empty() ? Ref<Resource>() : ResourceLoader::load(target_path, resource_type, ResourceFormatLoader::CACHE_MODE_IGNORE_DEEP, &load_error);
+		if (source_sha != saved_sha || (!resource_type.is_empty() && (loaded.is_null() || load_error != OK || !loaded->is_class(resource_type)))) {
+			DirAccess::remove_absolute(target_absolute);
+			_cleanup_compute(compute);
+			return _error("OUTPUT_VERIFY_FAILED", vformat("Committed output did not verify as %s.", resource_type.is_empty() ? String("bytes") : resource_type), false);
+		}
+		Dictionary receipt;
+		receipt["path"] = target_path;
+		receipt["sha256"] = saved_sha;
+		committed.push_back(receipt);
+		changed_paths.push_back(target_path);
 	}
-}
 
-bool SolersScriptService::run_script_ready(const Dictionary &p_args) const {
-	const int64_t run_id = p_args.get("run_id", 0);
-	const PendingRun *pending = pending_runs.getptr(run_id);
-	if (!pending || pending->completed) {
-		return true;
-	}
-	return OS::get_singleton()->get_ticks_msec() >= (uint64_t)(int64_t)p_args.get("deadline_msec", 0);
-}
-
-Dictionary SolersScriptService::run_script_finalize(const Dictionary &p_args) {
-	const int64_t run_id = p_args.get("run_id", 0);
-	if (!pending_runs.has(run_id)) {
-		return _error("RUN_STATE_MISSING", "The awaited script state is gone; run the script again.", false);
-	}
-	PendingRun pending = pending_runs[run_id];
-	pending_runs.erase(run_id);
-	if (solers_run_capture_logger) {
-		solers_run_capture_logger->end();
-	}
-	if (!pending.completed) {
-		// Dropping the coroutine and instance references abandons the
-		// suspended run(); freeing the host clears its temporary nodes.
-		// A timed-out run never persists: its nodes are half-built.
-		Dictionary finished = _finish_run(pending.entry, pending.source_bytes, Variant(), pending.host_id);
-		Dictionary result = _error("SCRIPT_RUN_TIMEOUT", "run() was still awaiting after 30 seconds; the coroutine was abandoned and its host node freed.");
-		result["data"] = finished.get("data", Dictionary());
-		return result;
-	}
-	return _finish_run(pending.entry, pending.source_bytes, pending.result, pending.host_id, pending.persist_children);
-}
-
-Dictionary SolersScriptService::_finish_run(const String &p_entry, int64_t p_source_bytes, const Variant &p_return_value, ObjectID p_host_id, bool p_persist_children) {
 	Dictionary data;
-	data["entry"] = p_entry;
-	data["output"] = solers_run_capture_logger ? solers_run_capture_logger->output : String();
-	data["error_output"] = solers_run_capture_logger ? solers_run_capture_logger->errors : String();
-	data["result"] = _solers_run_jsonable(p_return_value);
-	Node *host = Object::cast_to<Node>(ObjectDB::get_instance(p_host_id));
-	EditorInterface *editor_interface = EditorInterface::get_singleton();
-	Node *scene_root = editor_interface ? editor_interface->get_edited_scene_root() : nullptr;
-	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
-	if (host && p_persist_children && host->get_child_count() > 0 && scene_root && undo_redo) {
-		// Hand the computed nodes over to the edited scene as one undoable
-		// transaction: this is the single boundary between script.run's
-		// throwaway compute space and durable authored content.
-		Vector<Node *> handover;
-		while (host->get_child_count() > 0) {
-			Node *child = host->get_child(0);
-			host->remove_child(child);
-			handover.push_back(child);
+	data["outputs"] = committed;
+	const String result_path = compute.directory.path_join("result.json");
+	if (FileAccess::exists(result_path)) {
+		const Variant parsed = JSON::parse_string(FileAccess::get_file_as_string(result_path));
+		if (parsed.get_type() != Variant::NIL) {
+			data["result"] = parsed;
 		}
-		undo_redo->create_action("Script run: persist nodes");
-		for (Node *child : handover) {
-			undo_redo->add_do_method(scene_root, "add_child", child, true);
-			// propagate_call assigns ownership through the whole subtree so
-			// every scripted descendant is saved with the scene.
-			undo_redo->add_do_method(child, "propagate_call", "set_owner", varray(scene_root), false);
-			undo_redo->add_do_reference(child);
-			undo_redo->add_undo_method(scene_root, "remove_child", child);
-		}
-		undo_redo->commit_action();
-		Array persisted_paths;
-		for (Node *child : handover) {
-			persisted_paths.push_back(String(scene_root->get_path_to(child)));
-		}
-		data["persisted_node_paths"] = persisted_paths;
-		data["scene_state_changed"] = true;
 	}
-	if (host) {
-		data["host_children_freed"] = host->get_child_count();
-		host->queue_free();
+	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
+	if (filesystem && filesystem->get_filesystem()) {
+		filesystem->update_files(changed_paths);
+		data["filesystem_synced"] = true;
 	}
+	if (edited_root && changed_paths.has(edited_root->get_scene_file_path())) {
+		data["requires_scene_reload"] = true;
+	}
+	data["authored_state_changed"] = true;
 	if (action_timeline) {
-		Dictionary event;
-		event["entry"] = p_entry;
-		event["source_bytes"] = p_source_bytes;
-		action_timeline->record_event("script_run", event);
+		action_timeline->record_event("script_compute", data);
 	}
+	_cleanup_compute(compute);
 	return _ok(data);
+}
+
+void SolersScriptService::compute_script_complete(const String &p_call_id) {
+	PendingCompute *compute = pending_computes.getptr(p_call_id);
+	if (!compute) {
+		return;
+	}
+	_cleanup_compute(*compute);
+	pending_computes.erase(p_call_id);
 }

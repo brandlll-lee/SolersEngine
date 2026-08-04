@@ -67,7 +67,6 @@ class SolersToolRegistry : public Object {
 			std::function<Array(const Dictionary &)> p_resource_access = {},
 			bool p_cache_across_revisions = false,
 			SolersFunctionTool::PollHandler p_poll_handler = {},
-			bool p_produces_scene_validation = false,
 			SolersFunctionTool::ReadyHandler p_ready_handler = {},
 			SolersFunctionTool::CompletionHandler p_completion_handler = {},
 			std::function<SolersPermissionManager::Permission(const Dictionary &)> p_permission_resolver = {},
@@ -95,7 +94,7 @@ class SolersToolRegistry : public Object {
 	void _register_skill_tools();
 	void _register_search_tools();
 	Dictionary _inspect_engine(const Dictionary &p_args);
-	Dictionary _execute_engine(const Dictionary &p_args);
+	Dictionary _transact_objects(const Dictionary &p_args);
 	Dictionary _compact_addon_contract(const SolersToolContext &p_context, const Dictionary &p_result);
 	Dictionary _run_control(const Dictionary &p_args) const;
 	Dictionary _poll_runtime_control(const Dictionary &p_args) const;
@@ -103,6 +102,7 @@ class SolersToolRegistry : public Object {
 	Dictionary _revert_latest(const SolersToolContext &p_context, const Dictionary &p_args);
 	void _persist_reversal_event(const SolersToolContext &p_context, const String &p_event, const Dictionary &p_record = Dictionary()) const;
 	Dictionary _prepare_reversal(SolersPreparedToolCall &r_call);
+	void _discard_reversal(const Dictionary &p_record);
 	Dictionary _finalize_prepared_result(SolersPreparedToolCall &r_call, const Dictionary &p_result);
 	Dictionary _preflight_tool_call(const StringName &p_name, const Dictionary &p_args, const SolersToolContext &p_context, Dictionary &r_args);
 	Dictionary _prepare_tool_call(const StringName &p_name, const Dictionary &p_args, const SolersToolContext &p_context, SolersPreparedToolCall &r_call);
@@ -136,16 +136,13 @@ public:
 	String get_model_tool_name(const StringName &p_name) const;
 	StringName resolve_model_tool_name(const String &p_model_name) const;
 	bool caches_across_revisions(const StringName &p_name) const;
-	bool affects_authored_state(const StringName &p_name) const;
-	bool affects_scene_state(const StringName &p_name) const;
-	bool produces_scene_validation(const StringName &p_name) const;
+	bool affects_scene_state(const StringName &p_name, const Dictionary &p_args = Dictionary()) const;
 	bool is_read_only(const StringName &p_name, const Dictionary &p_args = Dictionary()) const;
 	Array resolve_resource_access(const StringName &p_name, const Dictionary &p_args) const;
 	static bool has_write_conflict(const Array &p_left, const Array &p_right);
 	Dictionary normalize_tool_args(const StringName &p_name, const Dictionary &p_args) const;
 	Dictionary redact_tool_args_for_audit(const StringName &p_name, const Dictionary &p_args) const;
 	Dictionary protect_tool_args_for_replay(const StringName &p_name, const Dictionary &p_args) const;
-	Dictionary restore_tool_args_from_replay(const StringName &p_name, const Dictionary &p_args) const;
 	Dictionary summarize_tool_args_for_audit(const StringName &p_name, const Dictionary &p_args) const;
 	String summarize_tool_result_for_audit(const Dictionary &p_result) const;
 	Dictionary call_tool(const StringName &p_name, const Dictionary &p_args);

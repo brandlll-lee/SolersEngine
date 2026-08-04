@@ -50,6 +50,7 @@
 #include "editor/editor_log.h"
 #include "editor/editor_main_screen.h"
 #include "editor/editor_node.h"
+#include "editor/editor_undo_redo_manager.h"
 #include "core/debugger/debugger_marshalls.h"
 #include "editor/debugger/editor_debugger_node.h"
 #include "editor/debugger/script_editor_debugger.h"
@@ -74,6 +75,23 @@ static constexpr int SOLERS_RUNTIME_EVENT_LIMIT = 512;
 // Keep encoded captures small enough for model requests without losing layout
 // readability.
 static constexpr int SOLERS_CAPTURE_MAX_DIMENSION = 1280;
+
+static bool _solers_capture_source_is_current(const Dictionary &p_source) {
+	if (p_source.is_empty()) {
+		return true;
+	}
+	EditorNode *editor = EditorNode::get_singleton();
+	Node *root = editor && EditorNode::get_editor_data().get_edited_scene_count() > 0 ? editor->get_edited_scene() : nullptr;
+	EditorUndoRedoManager *manager = EditorUndoRedoManager::get_singleton();
+	const int history_id = root ? EditorNode::get_editor_data().get_current_edited_scene_history_id() : EditorUndoRedoManager::INVALID_HISTORY;
+	if (!root || !manager || history_id == EditorUndoRedoManager::INVALID_HISTORY) {
+		return false;
+	}
+	const uint64_t version = manager->get_or_create_history(history_id).undo_redo->get_version();
+	return (int64_t)p_source.get("history_id", -1) == history_id &&
+			(uint64_t)(int64_t)p_source.get("version", -1) == version &&
+			(!p_source.has("root_object_id") || (uint64_t)(int64_t)p_source.get("root_object_id", 0) == (uint64_t)root->get_instance_id());
+}
 
 static Array _solers_vector3_array(const Vector3 &p_vector) {
 	// Snapped to 1e-4: full double precision multiplies the serialized tree
@@ -213,8 +231,11 @@ void SolersObservationService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_runtime_status"), &SolersObservationService::get_runtime_status);
 	ClassDB::bind_method(D_METHOD("observe_runtime", "args"), &SolersObservationService::observe_runtime);
 	ClassDB::bind_method(D_METHOD("get_editor_logs", "max_messages"), &SolersObservationService::get_editor_logs, DEFVAL(200));
-	ClassDB::bind_method(D_METHOD("get_editor_snapshot", "max_scene_depth", "max_children_per_node", "include_remote_scene"), &SolersObservationService::get_editor_snapshot, DEFVAL(4), DEFVAL(64), DEFVAL(false));
 	ClassDB::bind_method(D_METHOD("capture_viewport", "args"), &SolersObservationService::capture_viewport);
+}
+
+void SolersObservationService::_render_frame_post_draw() {
+	render_post_draw_sequence++;
 }
 
 Dictionary SolersObservationService::_capture_error(const String &p_code, const String &p_message, bool p_recoverable) const {
@@ -226,6 +247,14 @@ Dictionary SolersObservationService::_capture_error(const String &p_code, const 
 	result["ok"] = false;
 	result["error"] = error;
 	return result;
+}
+
+Dictionary SolersObservationService::_runtime_capture_unavailable() const {
+	Dictionary failure = _capture_error("RUNTIME_CAPTURE_UNAVAILABLE", "Runtime capture transport cannot request a root viewport screenshot.", true);
+	Dictionary data;
+	data["runtime"] = get_runtime_status();
+	failure["data"] = data;
+	return failure;
 }
 
 Dictionary SolersObservationService::image_statistics(const Ref<Image> &p_image) {
@@ -303,6 +332,26 @@ Dictionary SolersObservationService::image_statistics(const Ref<Image> &p_image)
 		}
 		statistics[percentile_names[percentile]] = (double)MIN(value, 255) / 255.0;
 	}
+	// Compress the 256-bin histogram into 8 equal exposure bands so the model
+	// gets a structured ladder without inventing bedroom-specific thresholds.
+	Array exposure_bands;
+	exposure_bands.resize(8);
+	if (pixel_count > 0) {
+		for (int band = 0; band < 8; band++) {
+			int64_t band_count = 0;
+			const int start = band * 32;
+			const int end = start + 32;
+			for (int value = start; value < end; value++) {
+				band_count += histogram[value];
+			}
+			exposure_bands[band] = (double)band_count / (double)pixel_count;
+		}
+	} else {
+		for (int band = 0; band < 8; band++) {
+			exposure_bands[band] = 0.0;
+		}
+	}
+	statistics["exposure_bands_8"] = exposure_bands;
 	return statistics;
 }
 
@@ -339,6 +388,8 @@ Dictionary SolersObservationService::_capture_image(const Ref<Image> &p_image, c
 	attachment["type"] = "image";
 	attachment["mime_type"] = "image/png";
 	attachment["local_path"] = absolute_path;
+	attachment["width"] = image->get_width();
+	attachment["height"] = image->get_height();
 
 	Dictionary data;
 	data["status"] = "complete";
@@ -347,7 +398,9 @@ Dictionary SolersObservationService::_capture_image(const Ref<Image> &p_image, c
 	data["width"] = image->get_width();
 	data["height"] = image->get_height();
 	data["visual_statistics"] = image_statistics(image);
-	data["content_sha256"] = FileAccess::get_sha256(absolute_path);
+	const String content_sha256 = FileAccess::get_sha256(absolute_path);
+	data["content_sha256"] = content_sha256;
+	attachment["content_sha256"] = content_sha256;
 	data["attachment"] = attachment;
 
 	Array attachments;
@@ -357,6 +410,57 @@ Dictionary SolersObservationService::_capture_image(const Ref<Image> &p_image, c
 	result["data"] = data;
 	result["attachments"] = attachments;
 	return result;
+}
+
+Dictionary SolersObservationService::_attach_render_receipt(Dictionary p_result, const Dictionary &p_pending) {
+	if (!(bool)p_result.get("ok", false)) {
+		return p_result;
+	}
+	Dictionary data = p_result.get("data", Dictionary());
+	Dictionary receipt;
+	const String target = data.get("target", p_pending.get("target", String()));
+	const String capture_id = data.get("capture_id", p_pending.get("capture_id", String()));
+	receipt["capture_id"] = capture_id;
+	receipt["target"] = target;
+	receipt["render_sequence"] = p_pending.get("render_sequence", 0);
+	receipt["runtime_epoch"] = p_pending.get("runtime_epoch", 0);
+	receipt["requested_frame"] = p_pending.get("start_frame", 0);
+	receipt["captured_frame"] = (int64_t)Engine::get_singleton()->get_frames_drawn();
+	receipt["requested_post_draw_sequence"] = p_pending.get("start_post_draw", 0);
+	receipt["captured_post_draw_sequence"] = (int64_t)render_post_draw_sequence;
+	receipt["viewport_object_id"] = p_pending.get("viewport_id", 0);
+	receipt["viewport_rid"] = p_pending.get("viewport_rid", 0);
+	receipt["source_state"] = p_pending.get("source_state", Dictionary());
+	receipt["image_sha256"] = data.get("content_sha256", String());
+
+	const Dictionary source_state = receipt.get("source_state", Dictionary());
+	String view_key = target + ":" + String(source_state.get("scene_path", String()));
+	for (const char *field : { "camera_path", "view_spec_hash" }) {
+		if (p_pending.has(field)) {
+			view_key += ":" + String(p_pending[field]);
+		}
+	}
+	if (target == "editor") {
+		view_key += ":" + String::num_int64((int64_t)p_pending.get("viewport_rid", 0));
+	} else if (target == "runtime") {
+		view_key += ":" + String::num_int64((int64_t)p_pending.get("runtime_epoch", 0));
+	}
+	receipt["view_key"] = view_key.sha256_text();
+	const Dictionary *previous = last_render_by_view.getptr(view_key);
+	const bool same_pixels = previous && String(previous->get("image_sha256", String())) == String(receipt.get("image_sha256", String()));
+	receipt["same_pixels"] = same_pixels;
+	if (same_pixels) {
+		receipt["same_as"] = previous->get("capture_id", String());
+		receipt["same_as_source_state"] = previous->get("source_state", Dictionary());
+	}
+	Dictionary current;
+	current["capture_id"] = capture_id;
+	current["image_sha256"] = receipt.get("image_sha256", String());
+	current["source_state"] = receipt.get("source_state", Dictionary());
+	last_render_by_view[view_key] = current;
+	data["render_receipt"] = receipt;
+	p_result["data"] = data;
+	return p_result;
 }
 
 Dictionary SolersObservationService::_editor_3d_viewport_state() const {
@@ -374,7 +478,8 @@ Dictionary SolersObservationService::_editor_3d_viewport_state() const {
 	result["material_preview"] = debug_draw == Viewport::DEBUG_DRAW_DISABLED;
 	Array containing_geometry;
 	Camera3D *camera = editor_viewport->get_camera_3d();
-	Node *edited_root = EditorInterface::get_singleton()->get_edited_scene_root();
+	EditorNode *editor = EditorNode::get_singleton();
+	Node *edited_root = editor && EditorNode::get_editor_data().get_edited_scene_count() > 0 ? editor->get_edited_scene() : nullptr;
 	if (camera && edited_root) {
 		result["camera_position"] = _solers_vector3_array(camera->get_global_position());
 		_solers_collect_geometry_containing_point(edited_root, edited_root, camera->get_global_position(), containing_geometry);
@@ -396,7 +501,8 @@ void SolersObservationService::_runtime_screenshot_ready(int64_t p_width, int64_
 	// that stopped and restarted since the request went out. Either way this
 	// frame is evidence for nothing anyone is still waiting on, and writing it
 	// back would resurrect a dead entry.
-	const uint64_t requested_epoch = entry ? (uint64_t)(int64_t)Dictionary(entry->get("data", Dictionary())).get("runtime_epoch", 0) : 0;
+	const Dictionary pending_data = entry ? Dictionary(entry->get("data", Dictionary())) : Dictionary();
+	const uint64_t requested_epoch = (uint64_t)(int64_t)pending_data.get("runtime_epoch", 0);
 	if (!entry || requested_epoch != runtime_epoch) {
 		if (!p_path.is_empty()) {
 			DirAccess::remove_absolute(p_path);
@@ -419,10 +525,13 @@ void SolersObservationService::_runtime_screenshot_ready(int64_t p_width, int64_
 		data["frame_valid"] = true;
 		result["data"] = data;
 	}
-	pending_captures[p_capture_id] = result;
+	pending_captures[p_capture_id] = _attach_render_receipt(result, pending_data);
 }
 
 static void _solers_free_capture_viewport(const Dictionary &p_data) {
+	if (!(bool)p_data.get("owns_viewport", false)) {
+		return;
+	}
 	const int64_t viewport_id = p_data.get("viewport_id", 0);
 	if (viewport_id == 0) {
 		return;
@@ -454,6 +563,7 @@ Dictionary SolersObservationService::_register_pending_capture(const String &p_t
 	const String capture_id = vformat("%s_%d", p_target, ++capture_sequence);
 	Dictionary data;
 	data["status"] = "pending";
+	data["render_sequence"] = (int64_t)capture_sequence;
 	data["target"] = p_target;
 	data["capture_id"] = capture_id;
 	data["deadline_msec"] = (int64_t)(OS::get_singleton()->get_ticks_msec() + SOLERS_CAPTURE_TIMEOUT_MSEC);
@@ -462,6 +572,19 @@ Dictionary SolersObservationService::_register_pending_capture(const String &p_t
 	data["runtime_epoch"] = (int64_t)runtime_epoch;
 	for (const Variant *key = p_extra.next(nullptr); key; key = p_extra.next(key)) {
 		data[*key] = p_extra[*key];
+	}
+	if (p_target == "runtime") {
+		Dictionary source_state;
+		source_state["runtime_epoch"] = (int64_t)runtime_epoch;
+		data["source_state"] = source_state;
+	} else if (p_target == "editor") {
+		Node3DEditor *editor_3d = Node3DEditor::get_singleton();
+		Node3DEditorViewport *editor_viewport = editor_3d ? editor_3d->get_last_used_viewport() : nullptr;
+		Viewport *viewport = editor_viewport ? editor_viewport->get_viewport_node() : nullptr;
+		if (viewport) {
+			data["viewport_id"] = (int64_t)(uint64_t)viewport->get_instance_id();
+			data["viewport_rid"] = (int64_t)viewport->get_viewport_rid().get_id();
+		}
 	}
 	if (p_target != "runtime") {
 		if (p_target == "editor") {
@@ -477,6 +600,8 @@ Dictionary SolersObservationService::_register_pending_capture(const String &p_t
 		const int render_frames = MAX(1, (int)data.get("render_frames_required", 1));
 		data["start_frame"] = (int64_t)start_frame;
 		data["ready_frame"] = (int64_t)(start_frame + render_frames);
+		data["start_post_draw"] = (int64_t)render_post_draw_sequence;
+		data["ready_post_draw"] = (int64_t)(render_post_draw_sequence + render_frames);
 		_solers_request_editor_redraw();
 	}
 	Dictionary poll_args;
@@ -492,6 +617,10 @@ Dictionary SolersObservationService::_register_pending_capture(const String &p_t
 
 Dictionary SolersObservationService::_finish_frame_gated_capture(const String &p_capture_id, const Dictionary &p_data) {
 	const String target = p_data.get("target", String());
+	if (!_solers_capture_source_is_current(p_data.get("source_state", Dictionary()))) {
+		_solers_free_capture_viewport(p_data);
+		return _capture_error("CAPTURE_SOURCE_CHANGED", "The edited scene changed while the requested viewport frame was rendering.", true);
+	}
 	if (target == "editor") {
 		Node3DEditor *editor_3d = Node3DEditor::get_singleton();
 		Node3DEditorViewport *editor_viewport = editor_3d ? editor_3d->get_last_used_viewport() : nullptr;
@@ -503,16 +632,18 @@ Dictionary SolersObservationService::_finish_frame_gated_capture(const String &p
 			Dictionary data = result.get("data", Dictionary());
 			const Dictionary viewport_state = _editor_3d_viewport_state();
 			const int64_t frames_waited = (int64_t)Engine::get_singleton()->get_frames_drawn() - (int64_t)p_data.get("start_frame", 0);
-			const bool settled = frames_waited >= (int64_t)p_data.get("render_frames_required", 1);
+			const int64_t post_draws_waited = (int64_t)render_post_draw_sequence - (int64_t)p_data.get("start_post_draw", 0);
+			const bool settled = post_draws_waited >= (int64_t)p_data.get("render_frames_required", 1);
 			data["editor_viewport"] = viewport_state;
 			data["material_preview"] = viewport_state.get("material_preview", false);
 			data["frame_valid"] = settled && (bool)viewport_state.get("frame_valid", false);
 			data["render_frames_required"] = p_data.get("render_frames_required", 1);
 			data["render_frames_waited"] = frames_waited;
+			data["render_post_draws_waited"] = post_draws_waited;
 			data["sdfgi_enabled"] = p_data.get("sdfgi_enabled", false);
 			result["data"] = data;
 		}
-		return result;
+		return _attach_render_receipt(result, p_data);
 	}
 
 	// camera / top_down render into a transient SubViewport that shares the
@@ -528,20 +659,29 @@ Dictionary SolersObservationService::_finish_frame_gated_capture(const String &p
 	if ((bool)result.get("ok", false)) {
 		Dictionary data = result.get("data", Dictionary());
 		const int64_t frames_waited = (int64_t)Engine::get_singleton()->get_frames_drawn() - (int64_t)p_data.get("start_frame", 0);
-		const bool settled = frames_waited >= (int64_t)p_data.get("render_frames_required", 1);
+		const int64_t post_draws_waited = (int64_t)render_post_draw_sequence - (int64_t)p_data.get("start_post_draw", 0);
+		const bool settled = post_draws_waited >= (int64_t)p_data.get("render_frames_required", 1);
 		data["material_preview"] = true;
 		data["frame_valid"] = settled;
 		data["render_frames_required"] = p_data.get("render_frames_required", 1);
 		data["render_frames_waited"] = frames_waited;
+		data["render_post_draws_waited"] = post_draws_waited;
 		data["sdfgi_enabled"] = p_data.get("sdfgi_enabled", false);
 		for (const char *key : { "camera_path", "camera_forward_hit_node", "camera_forward_hit_distance", "orientation", "axis", "direction", "section_position", "focus_paths", "view_spec_hash" }) {
 			if (p_data.has(key)) {
 				data[key] = p_data[key];
 			}
 		}
+		if (data.has("camera_forward_hit_node") || data.has("camera_forward_hit_distance")) {
+			Dictionary framing;
+			framing["camera_path"] = data.get("camera_path", String());
+			framing["hit_node"] = data.get("camera_forward_hit_node", String());
+			framing["hit_distance"] = data.get("camera_forward_hit_distance", 0.0);
+			data["framing"] = framing;
+		}
 		result["data"] = data;
 	}
-	return result;
+	return _attach_render_receipt(result, p_data);
 }
 
 Dictionary SolersObservationService::_poll_pending_capture(const String &p_capture_id) {
@@ -565,11 +705,14 @@ Dictionary SolersObservationService::_poll_pending_capture(const String &p_captu
 			// The epoch is stamped when the request actually goes out, not when
 			// the capture was parked: the runtime only started just now.
 			data["runtime_epoch"] = (int64_t)runtime_epoch;
+			Dictionary source_state;
+			source_state["runtime_epoch"] = (int64_t)runtime_epoch;
+			data["source_state"] = source_state;
 			result["data"] = data;
 			pending_captures[p_capture_id] = result;
 			if (!_request_runtime_screenshot(p_capture_id)) {
 				pending_captures.erase(p_capture_id);
-				return _capture_error("RUNTIME_NOT_RUNNING", "No active runtime debugger session can capture the game root viewport.", true);
+				return _runtime_capture_unavailable();
 			}
 			entry = pending_captures.getptr(p_capture_id);
 			return entry ? *entry : result;
@@ -581,7 +724,7 @@ Dictionary SolersObservationService::_poll_pending_capture(const String &p_captu
 		return result;
 	}
 
-	if (target != "runtime" && Engine::get_singleton()->get_frames_drawn() >= (uint64_t)(int64_t)data.get("ready_frame", 0)) {
+	if (target != "runtime" && render_post_draw_sequence >= (uint64_t)(int64_t)data.get("ready_post_draw", 0)) {
 		const Dictionary final_result = _finish_frame_gated_capture(p_capture_id, data);
 		pending_captures.erase(p_capture_id);
 		return final_result;
@@ -746,6 +889,11 @@ Dictionary SolersObservationService::_begin_scene_view_capture(const String &p_t
 		camera->look_at_from_position(camera->get_global_position(), orthographic_target, up);
 	}
 	extra["viewport_id"] = (int64_t)(uint64_t)viewport->get_instance_id();
+	extra["owns_viewport"] = true;
+	extra["viewport_rid"] = (int64_t)viewport->get_viewport_rid().get_id();
+	if (p_args.has("_source_state")) {
+		extra["source_state"] = p_args["_source_state"];
+	}
 	return _register_pending_capture(p_target, extra);
 }
 
@@ -766,24 +914,27 @@ Dictionary SolersObservationService::capture_viewport(const Dictionary &p_args) 
 		if (!editor_viewport || !editor_viewport->get_viewport_node()) {
 			return _capture_error("EDITOR_VIEWPORT_UNAVAILABLE", "The active 3D editor viewport is unavailable.", true);
 		}
-		return _register_pending_capture("editor", Dictionary());
+		Dictionary extra;
+		if (p_args.has("_source_state")) {
+			extra["source_state"] = p_args["_source_state"];
+		}
+		return _register_pending_capture("editor", extra);
 	}
 	if (target == "camera" || target == "top_down" || target == "orthographic") {
 		return _begin_scene_view_capture(target, p_args);
 	}
 	if (target == "runtime") {
-		// Same pending/poll contract as editor captures: do not request a
-		// screenshot until runtime visual readiness is an authoritative fact.
 		if (!_is_runtime_visual_ready()) {
 			Dictionary extra;
 			extra["awaiting_runtime_ready"] = true;
+			extra["runtime"] = get_runtime_status();
 			return _register_pending_capture("runtime", extra);
 		}
 		const Dictionary pending = _register_pending_capture("runtime", Dictionary());
 		const String capture_id = Dictionary(pending.get("data", Dictionary())).get("capture_id", String());
 		if (!_request_runtime_screenshot(capture_id)) {
 			pending_captures.erase(capture_id);
-			return _capture_error("RUNTIME_NOT_RUNNING", "No active runtime debugger session can capture the game root viewport.", true);
+			return _runtime_capture_unavailable();
 		}
 		return pending;
 	}
@@ -817,7 +968,7 @@ bool SolersObservationService::is_viewport_capture_ready(const Dictionary &p_arg
 		// request can start; after that, wait for the callback or deadline.
 		return (bool)data.get("awaiting_runtime_ready", false) && _is_runtime_visual_ready();
 	}
-	const bool ready = Engine::get_singleton()->get_frames_drawn() >= (uint64_t)(int64_t)data.get("ready_frame", 0);
+	const bool ready = render_post_draw_sequence >= (uint64_t)(int64_t)data.get("ready_post_draw", 0);
 	if (!ready) {
 		_solers_request_editor_redraw();
 	}
@@ -1113,59 +1264,9 @@ Dictionary SolersObservationService::_serialize_node(Node *p_node, Node *p_edite
 	return node_data;
 }
 
-static void _skip_remote_node(const LocalVector<SceneDebuggerTree::RemoteNode> &p_nodes, int &r_index) {
-	if (r_index >= (int)p_nodes.size()) {
-		return;
-	}
-	const int child_count = p_nodes[r_index++].child_count;
-	for (int i = 0; i < child_count; i++) {
-		_skip_remote_node(p_nodes, r_index);
-	}
-}
-
-static Dictionary _serialize_remote_node(const LocalVector<SceneDebuggerTree::RemoteNode> &p_nodes, int &r_index, int p_depth, int p_max_depth, int p_max_children_per_node) {
-	Dictionary node_data;
-	if (r_index >= (int)p_nodes.size()) {
-		node_data["valid"] = false;
-		return node_data;
-	}
-	const SceneDebuggerTree::RemoteNode &node = p_nodes[r_index++];
-	node_data["valid"] = true;
-	node_data["name"] = node.name;
-	node_data["type"] = node.type_name;
-	node_data["id"] = String::num_uint64((uint64_t)node.id);
-	node_data["scene_file_path"] = node.scene_file_path;
-	node_data["child_count"] = node.child_count;
-	if (node.view_flags & SceneDebuggerTree::RemoteNode::VIEW_HAS_VISIBLE_METHOD) {
-		node_data["visible"] = (node.view_flags & SceneDebuggerTree::RemoteNode::VIEW_VISIBLE) != 0;
-		node_data["visible_in_tree"] = (node.view_flags & SceneDebuggerTree::RemoteNode::VIEW_VISIBLE_IN_TREE) != 0;
-	}
-	if (p_depth >= p_max_depth) {
-		node_data["children_truncated_by_depth"] = node.child_count > 0;
-		for (int i = 0; i < node.child_count; i++) {
-			_skip_remote_node(p_nodes, r_index);
-		}
-		return node_data;
-	}
-	Array children;
-	const int child_limit = MIN(node.child_count, MAX(0, p_max_children_per_node));
-	for (int i = 0; i < node.child_count; i++) {
-		if (i < child_limit) {
-			children.push_back(_serialize_remote_node(p_nodes, r_index, p_depth + 1, p_max_depth, p_max_children_per_node));
-		} else {
-			_skip_remote_node(p_nodes, r_index);
-		}
-	}
-	node_data["children"] = children;
-	if (node.child_count > child_limit) {
-		node_data["children_truncated_count"] = node.child_count - child_limit;
-	}
-	return node_data;
-}
-
 Array SolersObservationService::_serialize_node_array(const TypedArray<Node> &p_nodes, Node *p_edited_root, int p_max_depth, int p_max_children_per_node) const {
 	Array serialized;
-	int token_budget = SolersContextManager::tool_result_token_budget(0);
+	int token_budget = INT32_MAX;
 	int elided_nodes = 0;
 	for (int i = 0; i < p_nodes.size(); i++) {
 		Node *node = Object::cast_to<Node>(p_nodes[i]);
@@ -1880,10 +1981,10 @@ Dictionary SolersObservationService::read_project_file(const String &p_path, int
 		const Dictionary observed = observe_path(res_path, true);
 		result["ok"] = false;
 		result["code"] = "SCENE_TEXT_DENIED";
-		result["error"] = "PackedScene source text is not the scene fact model. The digest field is the complete answer for structure/identity — do not retry with raw=true. Use scene.inspect(path=...) for live details. Pass raw=true only when editing .tscn/.scn source text.";
+		result["error"] = "PackedScene source text is not the scene fact model. The digest field is the complete answer for structure/identity — do not retry with raw=true. Use object.query target=scene for live details. Pass raw=true only when editing .tscn/.scn source text.";
 		result["path"] = res_path;
 		result["resource_type"] = resource_type;
-		result["recovery"] = "Use digest (already included) or scene.inspect(path=...). Do not call project.read_file with raw=true for observation.";
+		result["recovery"] = "Use the included digest or object.query target=scene. Do not call project.read_file with raw=true for observation.";
 		if ((bool)observed.get("ok", false) && observed.has("digest")) {
 			result["digest"] = observed["digest"];
 		}
@@ -1963,7 +2064,7 @@ Dictionary SolersObservationService::get_scene_tree(int p_max_depth, int p_max_c
 		return result;
 	}
 
-	const int token_budget_start = SolersContextManager::tool_result_token_budget(0);
+	const int token_budget_start = INT32_MAX;
 	int token_budget = token_budget_start;
 	int elided_nodes = 0;
 	result["root"] = _serialize_node(edited_root, edited_root, 0, p_max_depth, p_max_children_per_node, token_budget, elided_nodes);
@@ -1992,6 +2093,7 @@ Dictionary SolersObservationService::get_runtime_status() const {
 	result["error_count"] = debugger ? debugger->get_error_count() : 0;
 	result["warning_count"] = debugger ? debugger->get_warning_count() : 0;
 	result["runtime_epoch"] = (int64_t)runtime_epoch;
+	result["capture_ready"] = _is_runtime_visual_ready();
 	return result;
 }
 
@@ -2016,9 +2118,7 @@ void SolersObservationService::_append_runtime_event(const StringName &p_type, c
 }
 
 bool SolersObservationService::_is_runtime_visual_ready() const {
-	EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
-	ScriptEditorDebugger *debugger = debugger_node ? debugger_node->get_current_debugger() : nullptr;
-	if (!debugger || !debugger->is_session_active()) {
+	if (!GameViewDebugger::has_active_capture_session()) {
 		return false;
 	}
 	for (int i = runtime_events.size() - 1; i >= 0; i--) {
@@ -2329,63 +2429,8 @@ Dictionary SolersObservationService::get_editor_logs(int p_max_messages) const {
 	return result;
 }
 
-Dictionary SolersObservationService::get_editor_snapshot(int p_max_scene_depth, int p_max_children_per_node, bool p_include_remote_scene) const {
-	Dictionary snapshot;
-	const Dictionary project = get_project_info();
-	snapshot["project"] = project;
-	snapshot["main_scene"] = project.get("main_scene", String());
-	snapshot["project_settings"] = get_project_settings_summary();
-	snapshot["open_scenes"] = get_open_scenes(1, p_max_children_per_node);
-	snapshot["scene_tree"] = get_scene_tree(p_max_scene_depth, p_max_children_per_node);
-	snapshot["selection"] = get_selection(1, p_max_children_per_node);
-	snapshot["runtime"] = get_runtime_status();
-	snapshot["editor_log"] = get_editor_logs(40);
-	snapshot["editor_3d_viewport"] = _editor_3d_viewport_state();
-
-	Dictionary file_index = list_project_files(96);
-	const Array paths = file_index.get("files", Array());
-	Dictionary extensions;
-	for (int i = 0; i < paths.size(); i++) {
-		const String path = paths[i];
-		String ext = path.get_extension().to_lower();
-		if (ext.is_empty()) {
-			ext = "<none>";
-		}
-		extensions[ext] = (int)extensions.get(ext, 0) + 1;
-	}
-	file_index["extension_counts"] = extensions;
-	file_index.erase("files");
-	snapshot["file_index"] = file_index;
-	if (p_include_remote_scene) {
-		EditorRunBar *run_bar = EditorRunBar::get_singleton();
-		if (!run_bar || !run_bar->is_playing()) {
-			snapshot["remote_scene"] = Variant();
-			snapshot["remote_scene_reason"] = "not_playing";
-		} else {
-			EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
-			ScriptEditorDebugger *debugger = debugger_node ? debugger_node->get_current_debugger() : nullptr;
-			const SceneDebuggerTree *remote_tree = debugger ? debugger->get_remote_tree() : nullptr;
-			if (!remote_tree) {
-				if (debugger) {
-					debugger->request_remote_tree();
-				}
-				snapshot["remote_scene"] = Variant();
-				snapshot["remote_scene_reason"] = "unavailable";
-			} else {
-				LocalVector<SceneDebuggerTree::RemoteNode> nodes;
-				for (const SceneDebuggerTree::RemoteNode &node : remote_tree->nodes) {
-					nodes.push_back(node);
-				}
-				int index = 0;
-				Dictionary remote;
-				remote["node_count"] = nodes.size();
-				remote["root"] = nodes.is_empty() ? Dictionary() : _serialize_remote_node(nodes, index, 0, p_max_scene_depth, p_max_children_per_node);
-				snapshot["remote_scene"] = remote;
-			}
-		}
-	}
-	return snapshot;
-}
-
 SolersObservationService::SolersObservationService() {
+	if (RenderingServer::get_singleton()) {
+		RenderingServer::get_singleton()->connect(SNAME("frame_post_draw"), callable_mp(this, &SolersObservationService::_render_frame_post_draw));
+	}
 }

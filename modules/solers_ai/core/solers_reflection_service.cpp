@@ -11,6 +11,7 @@
 #include "solers_reflection_service.h"
 
 #include "core/config/project_settings.h"
+#include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/json.h"
 #include "core/io/resource.h"
@@ -38,6 +39,9 @@
 #include "scene/3d/gpu_particles_3d.h"
 #include "scene/3d/light_3d.h"
 #include "scene/3d/lightmap_gi.h"
+#include "scene/resources/camera_attributes.h"
+#include "scene/resources/sky.h"
+#include "scene/resources/3d/sky_material.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/multimesh_instance_3d.h"
 #include "scene/3d/node_3d.h"
@@ -56,10 +60,6 @@
 #include "scene/resources/mesh.h"
 #include "servers/rendering/rendering_server.h"
 
-static constexpr int SOLERS_INTROSPECT_METHOD_CAP = 400;
-static constexpr int SOLERS_INTROSPECT_PROPERTY_CAP = 400;
-static constexpr int SOLERS_INTROSPECT_SIGNAL_CAP = 200;
-static constexpr int SOLERS_INTROSPECT_CONSTANT_CAP = 400;
 static constexpr int SOLERS_CLASS_SEARCH_DEFAULT_CAP = 40;
 static constexpr int SOLERS_CLASS_SEARCH_MAX_CAP = 200;
 
@@ -119,7 +119,25 @@ static String _solers_member_doc(const StringName &p_class, const String &p_memb
 }
 
 static bool _solers_doc_matches(const String &p_name, const String &p_description, const String &p_query) {
-	return p_query.is_empty() || p_name.to_lower().contains(p_query) || p_description.to_lower().contains(p_query);
+	if (p_query.is_empty()) {
+		return true;
+	}
+	// Whitespace-separated tokens match independently (OR). A single token keeps
+	// substring semantics; space-delimited member names from the model must not
+	// be treated as one impossible compound needle.
+	const String name_l = p_name.to_lower();
+	const String desc_l = p_description.to_lower();
+	const PackedStringArray tokens = p_query.split(" ", false);
+	for (int i = 0; i < tokens.size(); i++) {
+		const String token = String(tokens[i]).strip_edges();
+		if (token.is_empty()) {
+			continue;
+		}
+		if (name_l.contains(token) || desc_l.contains(token)) {
+			return true;
+		}
+	}
+	return false;
 }
 
 enum class SolersBatchOperationKind {
@@ -193,11 +211,10 @@ static Array _solers_vector3_array(const Vector3 &p_vector) {
 void SolersReflectionService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("search_classes", "args"), &SolersReflectionService::search_classes);
 	ClassDB::bind_method(D_METHOD("introspect_class", "args"), &SolersReflectionService::introspect_class);
-	ClassDB::bind_method(D_METHOD("get_property", "args"), &SolersReflectionService::get_property);
 	ClassDB::bind_method(D_METHOD("set_property", "args"), &SolersReflectionService::set_property);
-	ClassDB::bind_method(D_METHOD("call_method", "args"), &SolersReflectionService::call_method);
-	ClassDB::bind_method(D_METHOD("invoke_editor", "args"), &SolersReflectionService::invoke_editor);
 	ClassDB::bind_method(D_METHOD("batch", "args"), &SolersReflectionService::batch);
+	ClassDB::bind_method(D_METHOD("open_scene", "args"), &SolersReflectionService::open_scene);
+	ClassDB::bind_method(D_METHOD("reload_scene", "args"), &SolersReflectionService::reload_scene);
 }
 
 Dictionary SolersReflectionService::_ok(const Variant &p_data) const {
@@ -408,22 +425,6 @@ static Vector<StringName> _property_path_subnames(const String &p_property) {
 	return out;
 }
 
-Dictionary SolersReflectionService::_call_method_on_object(Object *p_object, const String &p_owner, const String &p_method, const MethodInfo &p_info, const Array &p_args) const {
-	Variant ret;
-	String error_code;
-	String error;
-	if (!solers_call_method(p_object, p_info, p_args, ret, error_code, error)) {
-		return _error(error_code, error + " Check the exact signature in engine.inspect.");
-	}
-
-	Dictionary data;
-	data["method"] = p_method;
-	data["arg_count"] = p_args.size();
-	data["return_type"] = Variant::get_type_name(p_info.return_val.type);
-	data["result"] = _reflect_displayable(ret);
-	return _ok(data);
-}
-
 Dictionary SolersReflectionService::search_classes(const Dictionary &p_args) {
 	const String query = String(p_args.get("query", String())).strip_edges();
 	const String inherits = String(p_args.get("inherits", String())).strip_edges();
@@ -500,6 +501,8 @@ Dictionary SolersReflectionService::introspect_class(const Dictionary &p_args) {
 	const String class_name = p_args.get("class_name", String());
 	const bool include_inherited = p_args.get("include_inherited", true);
 	const String member_query = String(p_args.get("member_query", String())).strip_edges().to_lower();
+	const int member_cursor = MAX(0, (int)p_args.get("cursor", 0));
+	const int max_members = CLAMP((int)p_args.get("max_members", 64), 1, 256);
 	if (class_name.strip_edges().is_empty()) {
 		return _error("INVALID_ARGUMENT", "class_name is required.");
 	}
@@ -509,18 +512,72 @@ Dictionary SolersReflectionService::introspect_class(const Dictionary &p_args) {
 	}
 	const bool no_inheritance = !include_inherited;
 
-	Array methods_out;
+	PackedStringArray all_member_names;
 	List<MethodInfo> methods;
 	ClassDB::get_method_list(class_sn, &methods, no_inheritance);
-	bool methods_truncated = false;
+	for (const MethodInfo &method : methods) {
+		all_member_names.push_back(String(method.name));
+	}
+	List<PropertyInfo> properties;
+	ClassDB::get_property_list(class_sn, &properties, no_inheritance);
+	for (const PropertyInfo &property : properties) {
+		if (!(property.usage & PROPERTY_USAGE_EDITOR) && !(property.usage & PROPERTY_USAGE_STORAGE)) {
+			continue;
+		}
+		all_member_names.push_back(String(property.name));
+	}
+	List<MethodInfo> signals;
+	ClassDB::get_signal_list(class_sn, &signals, no_inheritance);
+	for (const MethodInfo &signal : signals) {
+		all_member_names.push_back(String(signal.name));
+	}
+	List<String> constants;
+	ClassDB::get_integer_constant_list(class_sn, &constants, no_inheritance);
+	for (const String &constant : constants) {
+		all_member_names.push_back(constant);
+	}
+
+	Dictionary data;
+	data["class_name"] = class_name;
+	data["parent_class"] = String(ClassDB::get_parent_class(class_sn));
+	data["can_instantiate"] = ClassDB::can_instantiate(class_sn);
+	data["is_node"] = ClassDB::is_parent_class(class_sn, SNAME("Node"));
+	data["member_query"] = member_query;
+	data["member_count"] = all_member_names.size();
+	data["cursor"] = member_cursor;
+
+	// Lean default: names only. Typed signatures/docs require member_query.
+	if (member_query.is_empty()) {
+		PackedStringArray member_names;
+		for (int i = member_cursor; i < MIN(member_cursor + max_members, all_member_names.size()); i++) {
+			member_names.push_back(all_member_names[i]);
+		}
+		data["member_names"] = member_names;
+		data["truncated"] = member_cursor + member_names.size() < all_member_names.size();
+		if ((bool)data["truncated"]) {
+			data["next_cursor"] = member_cursor + member_names.size();
+		}
+		return _ok(data);
+	}
+
+	Array methods_out;
+	int matched_member_count = 0;
+	int emitted_member_count = 0;
+	auto take_member = [&]() {
+		const bool take = matched_member_count >= member_cursor && emitted_member_count < max_members;
+		matched_member_count++;
+		if (take) {
+			emitted_member_count++;
+		}
+		return take;
+	};
 	for (const MethodInfo &method : methods) {
 		const String description = _solers_member_doc(class_sn, method.name, SolersDocMemberKind::METHOD, include_inherited);
 		if (!_solers_doc_matches(method.name, description, member_query)) {
 			continue;
 		}
-		if (methods_out.size() >= SOLERS_INTROSPECT_METHOD_CAP) {
-			methods_truncated = true;
-			break;
+		if (!take_member()) {
+			continue;
 		}
 		Dictionary md;
 		md["name"] = method.name;
@@ -537,16 +594,13 @@ Dictionary SolersReflectionService::introspect_class(const Dictionary &p_args) {
 			args_out.push_back(ad);
 		}
 		md["arguments"] = args_out;
-		if (!member_query.is_empty() && !description.is_empty()) {
+		if (!description.is_empty()) {
 			md["description"] = description;
 		}
 		methods_out.push_back(md);
 	}
 
 	Array properties_out;
-	List<PropertyInfo> properties;
-	ClassDB::get_property_list(class_sn, &properties, no_inheritance);
-	bool properties_truncated = false;
 	for (const PropertyInfo &property : properties) {
 		if (!(property.usage & PROPERTY_USAGE_EDITOR) && !(property.usage & PROPERTY_USAGE_STORAGE)) {
 			continue;
@@ -555,33 +609,30 @@ Dictionary SolersReflectionService::introspect_class(const Dictionary &p_args) {
 		if (!_solers_doc_matches(property.name, description, member_query)) {
 			continue;
 		}
-		if (properties_out.size() >= SOLERS_INTROSPECT_PROPERTY_CAP) {
-			properties_truncated = true;
-			break;
+		if (!take_member()) {
+			continue;
 		}
 		Dictionary pd;
 		pd["name"] = property.name;
 		pd["type"] = Variant::get_type_name(property.type);
 		pd["class_name"] = String(property.class_name);
+		pd["hint"] = (int)property.hint;
 		pd["hint_string"] = property.hint_string;
-		if (!member_query.is_empty() && !description.is_empty()) {
+		pd["usage"] = (int64_t)property.usage;
+		if (!description.is_empty()) {
 			pd["description"] = description;
 		}
 		properties_out.push_back(pd);
 	}
 
 	Array signals_out;
-	List<MethodInfo> signals;
-	ClassDB::get_signal_list(class_sn, &signals, no_inheritance);
-	bool signals_truncated = false;
 	for (const MethodInfo &signal : signals) {
 		const String description = _solers_member_doc(class_sn, signal.name, SolersDocMemberKind::SIGNAL, include_inherited);
 		if (!_solers_doc_matches(signal.name, description, member_query)) {
 			continue;
 		}
-		if (signals_out.size() >= SOLERS_INTROSPECT_SIGNAL_CAP) {
-			signals_truncated = true;
-			break;
+		if (!take_member()) {
+			continue;
 		}
 		Dictionary sd;
 		sd["name"] = signal.name;
@@ -595,27 +646,22 @@ Dictionary SolersReflectionService::introspect_class(const Dictionary &p_args) {
 			args_out.push_back(ad);
 		}
 		sd["arguments"] = args_out;
-		if (!member_query.is_empty() && !description.is_empty()) {
+		if (!description.is_empty()) {
 			sd["description"] = description;
 		}
 		signals_out.push_back(sd);
 	}
 
 	Dictionary constants_out;
-	List<String> constants;
-	ClassDB::get_integer_constant_list(class_sn, &constants, no_inheritance);
-	bool constants_truncated = false;
-	int constant_count = 0;
 	for (const String &constant : constants) {
 		const String description = _solers_member_doc(class_sn, constant, SolersDocMemberKind::CONSTANT, include_inherited);
 		if (!_solers_doc_matches(constant, description, member_query)) {
 			continue;
 		}
-		if (constant_count >= SOLERS_INTROSPECT_CONSTANT_CAP) {
-			constants_truncated = true;
-			break;
+		if (!take_member()) {
+			continue;
 		}
-		if (member_query.is_empty() || description.is_empty()) {
+		if (description.is_empty()) {
 			constants_out[constant] = ClassDB::get_integer_constant(class_sn, StringName(constant));
 		} else {
 			Dictionary constant_data;
@@ -623,90 +669,63 @@ Dictionary SolersReflectionService::introspect_class(const Dictionary &p_args) {
 			constant_data["description"] = description;
 			constants_out[constant] = constant_data;
 		}
-		constant_count++;
 	}
 
-	Dictionary data;
-	data["class_name"] = class_name;
-	data["parent_class"] = String(ClassDB::get_parent_class(class_sn));
-	data["can_instantiate"] = ClassDB::can_instantiate(class_sn);
-	data["is_node"] = ClassDB::is_parent_class(class_sn, SNAME("Node"));
-	data["member_query"] = member_query;
 	const DocData::ClassDoc *doc = _solers_class_doc(class_name);
 	if (doc) {
 		data["brief_description"] = doc->brief_description;
 		data["description"] = doc->description;
-		Array tutorials;
-		for (const DocData::TutorialDoc &tutorial : doc->tutorials) {
-			Dictionary tutorial_data;
-			tutorial_data["title"] = tutorial.title;
-			tutorial_data["link"] = tutorial.link;
-			tutorials.push_back(tutorial_data);
-		}
-		data["tutorials"] = tutorials;
 	}
 	data["methods"] = methods_out;
 	data["properties"] = properties_out;
 	data["signals"] = signals_out;
 	data["constants"] = constants_out;
-	data["truncated"] = methods_truncated || properties_truncated || signals_truncated || constants_truncated;
-	return _ok(data);
-}
-
-Dictionary SolersReflectionService::get_property(const Dictionary &p_args) {
-	const String node_path = p_args.get("node_path", ".");
-	const String property = p_args.get("property", String());
-	if (property.strip_edges().is_empty()) {
-		return _error("INVALID_ARGUMENT", "property is required.");
+	data["matched_member_count"] = matched_member_count;
+	data["truncated"] = member_cursor + emitted_member_count < matched_member_count;
+	if ((bool)data["truncated"]) {
+		data["next_cursor"] = member_cursor + emitted_member_count;
 	}
 
-	String error;
-	Node *node = _resolve_node(node_path, error);
-	if (!node) {
-		return _error("NODE_NOT_FOUND", error);
-	}
-
-	if (property.find("/") >= 0 || property.find(":") >= 0) {
-		const String normalized = property.replace(":", "/");
-		const Vector<StringName> subnames = _property_path_subnames(property);
-		bool valid = false;
-		const Variant value = node->get_indexed(subnames, &valid);
-		if (!valid) {
-			return _error("INVALID_PROPERTY_PATH", vformat("Property path '%s' is not valid on %s. Use '/' for nested resource properties, e.g. environment/ambient_light_energy.", normalized, node->get_class()));
+	Array unmatched_tokens;
+	const PackedStringArray tokens = member_query.split(" ", false);
+	for (int i = 0; i < tokens.size(); i++) {
+		const String token = String(tokens[i]).strip_edges().to_lower();
+		if (token.is_empty()) {
+			continue;
 		}
-		String safe_path;
-		_safe_node_path(node, safe_path);
-		Dictionary data;
-		data["node_path"] = safe_path;
-		data["property"] = normalized;
-		data["type"] = Variant::get_type_name(value.get_type());
-		data["value"] = _reflect_displayable(value);
-		return _ok(data);
-	}
-
-	const StringName property_sn = StringName(property);
-	bool valid = false;
-	Variant::Type property_type = Variant::NIL;
-	List<PropertyInfo> property_list;
-	node->get_property_list(&property_list);
-	for (const PropertyInfo &info : property_list) {
-		if (info.name == property_sn) {
-			valid = true;
-			property_type = info.type;
-			break;
+		bool hit = false;
+		for (int j = 0; j < all_member_names.size(); j++) {
+			if (all_member_names[j].to_lower().contains(token)) {
+				hit = true;
+				break;
+			}
 		}
+		if (hit) {
+			continue;
+		}
+		Dictionary unmatched;
+		unmatched["token"] = token;
+		unmatched["nearest_members"] = solers_nearest_names(token, all_member_names, 5);
+		PackedStringArray classes_with_member;
+		const StringName exact_member(token);
+		LocalVector<StringName> class_list;
+		ClassDB::get_class_list(class_list);
+		for (const StringName &other_class : class_list) {
+			if (other_class == class_sn) {
+				continue;
+			}
+			if (ClassDB::has_property(other_class, exact_member) || ClassDB::has_method(other_class, exact_member)) {
+				classes_with_member.push_back(String(other_class));
+				if (classes_with_member.size() >= 8) {
+					break;
+				}
+			}
+		}
+		unmatched["classes_with_member"] = classes_with_member;
+		unmatched_tokens.push_back(unmatched);
 	}
-	if (!valid) {
-		return _error("UNKNOWN_PROPERTY", vformat("Property '%s' is not exposed by %s.%s Check the exact member with engine.inspect.", property, node->get_class(), solers_property_suggestions(node, property)));
-	}
+	data["unmatched_member_query_tokens"] = unmatched_tokens;
 
-	String safe_path;
-	_safe_node_path(node, safe_path);
-	Dictionary data;
-	data["node_path"] = safe_path;
-	data["property"] = property;
-	data["type"] = Variant::get_type_name(property_type);
-	data["value"] = _reflect_displayable(node->get(property_sn));
 	return _ok(data);
 }
 
@@ -805,61 +824,6 @@ Dictionary SolersReflectionService::set_property(const Dictionary &p_args) {
 	data["property"] = property;
 	data["value"] = _reflect_displayable(node->get(property_sn));
 	return _ok(data);
-}
-
-Dictionary SolersReflectionService::call_method(const Dictionary &p_args) {
-	const String node_path = p_args.get("node_path", ".");
-	const String method = p_args.get("method", String());
-	if (method.strip_edges().is_empty()) {
-		return _error("INVALID_ARGUMENT", "method is required.");
-	}
-
-	String error;
-	Node *node = _resolve_node(node_path, error);
-	if (!node) {
-		return _error("NODE_NOT_FOUND", error);
-	}
-
-	const StringName method_sn = StringName(method);
-	if (!node->has_method(method_sn)) {
-		return _error("UNKNOWN_METHOD", vformat("Method '%s' is not available on %s. Request the exact member with engine.inspect.", method, node->get_class()));
-	}
-
-	MethodInfo method_info;
-	if (!ClassDB::get_method_info(node->get_class_name(), method_sn, &method_info)) {
-		method_info.name = method;
-	}
-	Dictionary result = _call_method_on_object(node, node->get_class(), method, method_info, p_args.get("args", Array()));
-	if (!(bool)result.get("ok", false)) {
-		return result;
-	}
-	Dictionary data = result.get("data", Dictionary());
-
-	String safe_path;
-	_safe_node_path(node, safe_path);
-	data["node_path"] = safe_path;
-	return _ok(data);
-}
-
-Dictionary SolersReflectionService::invoke_editor(const Dictionary &p_args) {
-	EditorInterface *editor_interface = EditorInterface::get_singleton();
-	ERR_FAIL_NULL_V(editor_interface, _error("EDITOR_INTERFACE_UNAVAILABLE", "EditorInterface is not available.", false));
-
-	const String method = p_args.get("method", String());
-	if (method.strip_edges().is_empty()) {
-		return _error("INVALID_ARGUMENT", "method is required.");
-	}
-
-	const StringName method_sn = StringName(method);
-	MethodInfo method_info;
-	if (!ClassDB::get_method_info(SNAME("EditorInterface"), method_sn, &method_info)) {
-		return _error("UNKNOWN_METHOD", vformat("EditorInterface.%s is not exposed by ClassDB. Request the exact member with engine.inspect.", method));
-	}
-	if (!editor_interface->has_method(method_sn)) {
-		return _error("UNKNOWN_METHOD", vformat("EditorInterface.%s is not callable on this editor instance.", method));
-	}
-
-	return _call_method_on_object(editor_interface, "EditorInterface", method, method_info, p_args.get("args", Array()));
 }
 
 Dictionary SolersReflectionService::inspect_nodes(const Dictionary &p_args) {
@@ -961,6 +925,7 @@ Dictionary SolersReflectionService::_create_node(const Dictionary &p_args) {
 	if (properties_value.get_type() != Variant::DICTIONARY) {
 		return _error("INVALID_ARGUMENT", "create_node properties must be an object.");
 	}
+	const Dictionary properties = properties_value;
 
 	Object *object = ClassDB::instantiate(type_sn);
 	Node *node = Object::cast_to<Node>(object);
@@ -974,7 +939,6 @@ Dictionary SolersReflectionService::_create_node(const Dictionary &p_args) {
 		node->set_name(requested_name);
 	}
 
-	const Dictionary properties = properties_value;
 	Dictionary applied_properties;
 	if (!_apply_initial_properties(node, properties, applied_properties, error)) {
 		memdelete(node);
@@ -1058,7 +1022,7 @@ Dictionary SolersReflectionService::instantiate_scene(const Dictionary &p_args) 
 	}
 	const Variant properties_value = p_args.get("properties", Dictionary());
 	if (properties_value.get_type() != Variant::DICTIONARY) {
-		return _error("INVALID_ARGUMENT", "scene.edit instantiate properties must be an object.");
+		return _error("INVALID_ARGUMENT", "object.transaction scene instantiate properties must be an object.");
 	}
 
 	EditorInterface *editor_interface = EditorInterface::get_singleton();
@@ -1360,6 +1324,7 @@ Dictionary SolersReflectionService::_remove_node(const Dictionary &p_args) {
 	ERR_FAIL_NULL_V(undo_redo, _error("UNDO_REDO_UNAVAILABLE", "EditorUndoRedoManager is not available.", false));
 
 	const int original_index = node->get_index(false);
+	const Dictionary removed_object = _reflect_object_handle(node);
 	if (!batch_action_active) {
 		undo_redo->create_action("Solers: Remove Node", UndoRedo::MERGE_DISABLE, parent);
 	}
@@ -1383,6 +1348,7 @@ Dictionary SolersReflectionService::_remove_node(const Dictionary &p_args) {
 	_safe_node_path(parent, parent_safe_path);
 	Dictionary data;
 	data["removed_node"] = node_path;
+	data["object"] = removed_object;
 	data["parent_path"] = parent_safe_path;
 	data["original_index"] = original_index;
 	return _ok(data);
@@ -1477,33 +1443,6 @@ Dictionary SolersReflectionService::_list_signal_connections(const Dictionary &p
 	return _ok(data);
 }
 
-static void _solers_collect_spatial_state(Node *p_node, HashMap<ObjectID, AABB> &r_state) {
-	if (!p_node) {
-		return;
-	}
-	if (GeometryInstance3D *geometry = Object::cast_to<GeometryInstance3D>(p_node)) {
-		if (geometry->is_inside_tree()) {
-			r_state[geometry->get_instance_id()] = geometry->get_global_transform().xform(geometry->get_aabb());
-		}
-	}
-	for (int i = 0; i < p_node->get_child_count(); i++) {
-		_solers_collect_spatial_state(p_node->get_child(i), r_state);
-	}
-}
-
-static bool _solers_spatial_state_equal(const HashMap<ObjectID, AABB> &p_left, const HashMap<ObjectID, AABB> &p_right) {
-	if (p_left.size() != p_right.size()) {
-		return false;
-	}
-	for (const KeyValue<ObjectID, AABB> &E : p_left) {
-		const AABB *other = p_right.getptr(E.key);
-		if (!other || *other != E.value) {
-			return false;
-		}
-	}
-	return true;
-}
-
 static bool _solers_batch_operation_mutates(SolersBatchOperationKind p_kind) {
 	switch (p_kind) {
 		case SolersBatchOperationKind::CREATE_NODE:
@@ -1527,8 +1466,6 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 	EditorNode *editor_node = EditorNode::get_singleton();
 	const bool has_scene_slot = editor_node && EditorNode::get_editor_data().get_edited_scene_count() > 0;
 	Node *initial_root = has_scene_slot ? editor_node->get_edited_scene() : nullptr;
-	HashMap<ObjectID, AABB> spatial_state_before;
-	_solers_collect_spatial_state(initial_root, spatial_state_before);
 	bool has_mutation = false;
 	for (int i = 0; i < operations.size(); i++) {
 		if (operations[i].get_type() == Variant::DICTIONARY) {
@@ -1624,29 +1561,37 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 	}
 
 	Dictionary data;
-	HashMap<ObjectID, AABB> spatial_state_after;
-	_solers_collect_spatial_state(has_scene_slot ? editor_node->get_edited_scene() : nullptr, spatial_state_after);
-	data["results"] = results;
 	data["count"] = results.size();
 	data["ok_count"] = ok_count;
 	data["error_count"] = error_count;
 	data["completed"] = error_count == 0;
 	data["rolled_back"] = rolled_back;
 	data["authored_state_changed"] = has_mutation && error_count == 0;
-	data["spatial_geometry_changed"] = !_solers_spatial_state_equal(spatial_state_before, spatial_state_after);
 	if (error_count == 0) {
 		const Array affected = _spatial_digest_for_results(results);
 		if (!affected.is_empty()) {
 			data["affected_nodes"] = affected;
 		}
+		// Success: path receipts only — not a full per-op node dump.
+		Array path_receipts;
+		for (int i = 0; i < results.size(); i++) {
+			const Dictionary entry = results[i];
+			Dictionary receipt;
+			receipt["index"] = entry.get("index", i);
+			receipt["op"] = entry.get("op", String());
+			const Dictionary result_data = Dictionary(entry.get("result", Dictionary())).get("data", Dictionary());
+			const String path = result_data.get("node_path", result_data.get("path", String()));
+			if (!path.is_empty()) {
+				receipt["node_path"] = path;
+			}
+			path_receipts.push_back(receipt);
+		}
+		data["results"] = path_receipts;
+	} else {
+		data["results"] = results;
 	}
 	if (has_mutation && error_count == 0) {
-		// UndoRedo only moves the live tree; naming who writes the file keeps
-		// the model from either claiming a saved file or spending calls saving
-		// one the session already commits for it.
 		Node *root = has_scene_slot ? editor_node->get_edited_scene() : nullptr;
-		data["committed_to_disk"] = false;
-		data["commit_owner"] = "Solers commits target_scene_path on every terminal path of this turn, and the engine saves it before playback. Do not save it yourself.";
 		data["target_scene_path"] = root ? root->get_scene_file_path() : String();
 		const Array nested = _nested_instance_scenes(results);
 		if (!nested.is_empty()) {
@@ -1655,7 +1600,7 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 		}
 	}
 	if (error_count > 0) {
-		Dictionary result = _error("SCENE_EDIT_FAILED", "scene.edit stopped at the first failed operation and rolled the transaction back.");
+		Dictionary result = _error("SCENE_EDIT_FAILED", "The scene transaction stopped at the first failed operation and rolled back.");
 		result["data"] = data;
 		return result;
 	}
@@ -2021,854 +1966,6 @@ uint64_t SolersReflectionService::get_lightmap_input_digest() const {
 	return entries.hash();
 }
 
-static void _solers_collect_scene_state(Node *p_node, Array &r_entries) {
-	if (!p_node) {
-		return;
-	}
-	Dictionary entry;
-	entry["path"] = String(p_node->get_path());
-	entry["class"] = p_node->get_class();
-	Dictionary properties;
-	List<PropertyInfo> property_list;
-	p_node->get_property_list(&property_list);
-	for (const PropertyInfo &property : property_list) {
-		if (!(property.usage & PROPERTY_USAGE_STORAGE)) {
-			continue;
-		}
-		bool valid = false;
-		const Variant value = p_node->get(property.name, &valid);
-		if (valid) {
-			properties[property.name] = value;
-		}
-	}
-	entry["properties"] = properties;
-	r_entries.push_back(entry);
-	for (int i = 0; i < p_node->get_child_count(); i++) {
-		_solers_collect_scene_state(p_node->get_child(i), r_entries);
-	}
-}
-
-uint64_t SolersReflectionService::get_scene_state_digest() const {
-	Node *root = EditorInterface::get_singleton() ? EditorInterface::get_singleton()->get_edited_scene_root() : nullptr;
-	Array entries;
-	_solers_collect_scene_state(root, entries);
-	return entries.hash();
-}
-
-Dictionary SolersReflectionService::validate_structure_topology(const Array &p_members, const Array &p_relations) const {
-	HashSet<String> member_set;
-	HashMap<String, Array> contacts;
-	for (int i = 0; i < p_members.size(); i++) {
-		const String path = String(p_members[i]).strip_edges();
-		if (path.is_empty() || member_set.has(path)) {
-			return _error("INVALID_STRUCTURE_CONTRACT", "Structural members must be non-empty and unique.");
-		}
-		member_set.insert(path);
-		contacts.insert(path, Array());
-	}
-	if (member_set.is_empty()) {
-		return _error("EMPTY_STRUCTURE", "The structural contract contains no logical geometry members.");
-	}
-
-	HashSet<String> referenced_paths;
-	HashSet<String> relation_keys;
-	int contact_count = 0;
-	for (int i = 0; i < p_relations.size(); i++) {
-		if (p_relations[i].get_type() != Variant::DICTIONARY) {
-			return _error("INVALID_ARGUMENT", vformat("relations[%d] must be an object.", i));
-		}
-		const Dictionary relation = p_relations[i];
-		const String a = String(relation.get("a", String())).strip_edges();
-		const String b = String(relation.get("b", String())).strip_edges();
-		const String kind = String(relation.get("kind", String())).strip_edges();
-		if (!member_set.has(a) || !member_set.has(b)) {
-			return _error("INVALID_STRUCTURE_CONTRACT", vformat("relations[%d] references geometry outside the declared logical structure roots.", i));
-		}
-		if (a == b) {
-			return _error("INVALID_STRUCTURE_CONTRACT", vformat("relations[%d] is a self-relation; structural contacts require two distinct nodes.", i));
-		}
-		if (kind != "max_gap" && kind != "contains" && kind != "align" && kind != "no_overlap") {
-			return _error("INVALID_ARGUMENT", vformat("relations[%d].kind must be max_gap, contains, align, or no_overlap.", i));
-		}
-		const Array axes = relation.get("axes", Array());
-		if (kind == "max_gap" && !axes.is_empty()) {
-			return _error("INVALID_STRUCTURE_CONTRACT", vformat("relations[%d] is a structural contact and must validate all three axes; omit axes.", i));
-		}
-		if (kind == "align") {
-			const String axis = String(relation.get("axis", String())).to_lower();
-			const String a_anchor = String(relation.get("a_anchor", "center")).to_lower();
-			const String b_anchor = String(relation.get("b_anchor", "center")).to_lower();
-			const bool valid_a_anchor = a_anchor == "min" || a_anchor == "center" || a_anchor == "max";
-			const bool valid_b_anchor = b_anchor == "min" || b_anchor == "center" || b_anchor == "max";
-			if (_solers_axis_index(axis) < 0 || !axes.is_empty() || !valid_a_anchor || !valid_b_anchor) {
-				return _error("INVALID_STRUCTURE_CONTRACT", vformat("relations[%d] align requires axis=x|y|z, optional min|center|max anchors, and no axes array.", i));
-			}
-		}
-		if (relation.has("tolerance")) {
-			return _error("INVALID_STRUCTURE_CONTRACT", vformat("relations[%d] cannot relax structural contact tolerance; use scene.validate mode=spatial for diagnostic tolerances.", i));
-		}
-		String relation_key;
-		if (kind == "contains") {
-			relation_key = a + "|" + b + "|" + kind + "|" + JSON::stringify(axes);
-		} else if (kind == "align") {
-			relation_key = a + "|" + b + "|" + kind + "|" + String(relation.get("axis", String())) + "|" + String(relation.get("a_anchor", "center")) + "|" + String(relation.get("b_anchor", "center"));
-		} else {
-			relation_key = (a < b ? a + "|" + b : b + "|" + a) + "|" + kind;
-		}
-		if (relation_keys.has(relation_key)) {
-			return _error("INVALID_STRUCTURE_CONTRACT", vformat("relations[%d] duplicates an existing structural contract.", i));
-		}
-		relation_keys.insert(relation_key);
-		referenced_paths.insert(a);
-		referenced_paths.insert(b);
-		if (kind == "max_gap") {
-			contacts.getptr(a)->push_back(b);
-			contacts.getptr(b)->push_back(a);
-			contact_count++;
-		}
-	}
-
-	Array missing_members;
-	for (const String &path : member_set) {
-		if (!referenced_paths.has(path) && member_set.size() > 1) {
-			missing_members.push_back(path);
-		}
-	}
-	if (!missing_members.is_empty()) {
-		Dictionary data;
-		data["live_members"] = p_members;
-		data["missing_members"] = missing_members;
-		Dictionary result = _error("INCOMPLETE_STRUCTURE_CONTRACT", "The structural contract does not cover every logical geometry member.");
-		result["data"] = data;
-		return result;
-	}
-
-	HashSet<String> visited;
-	Vector<String> pending;
-	pending.push_back(String(p_members[0]));
-	while (!pending.is_empty()) {
-		const String current = pending[pending.size() - 1];
-		pending.resize(pending.size() - 1);
-		if (visited.has(current)) {
-			continue;
-		}
-		visited.insert(current);
-		const Array *neighbors = contacts.getptr(current);
-		if (!neighbors) {
-			continue;
-		}
-		for (int i = 0; i < neighbors->size(); i++) {
-			const String neighbor = String((*neighbors)[i]);
-			if (!visited.has(neighbor)) {
-				pending.push_back(neighbor);
-			}
-		}
-	}
-	if (visited.size() != member_set.size()) {
-		Array disconnected_members;
-		for (const String &path : member_set) {
-			if (!visited.has(path)) {
-				disconnected_members.push_back(path);
-			}
-		}
-		Dictionary data;
-		data["live_members"] = p_members;
-		data["disconnected_members"] = disconnected_members;
-		data["contact_count"] = contact_count;
-		Dictionary result = _error("DISCONNECTED_STRUCTURE_CONTRACT", "Every logical structural member must join one graph of passing three-axis max_gap contacts; contains, align, and no_overlap relations are geometric checks, not contacts.");
-		result["data"] = data;
-		return result;
-	}
-
-	Dictionary data;
-	data["contact_count"] = contact_count;
-	return _ok(data);
-}
-
-Dictionary SolersReflectionService::validate_placement_topology(const Array &p_members, const Array &p_relations) const {
-	HashSet<String> member_set;
-	for (int i = 0; i < p_members.size(); i++) {
-		const String member = String(p_members[i]).strip_edges();
-		if (member.is_empty() || member_set.has(member)) {
-			return _error("INVALID_PLACEMENT_CONTRACT", "Placement members must be non-empty and unique.");
-		}
-		member_set.insert(member);
-	}
-	if (member_set.is_empty()) {
-		if (p_relations.is_empty()) {
-			Dictionary data;
-			data["placement_count"] = 0;
-			return _ok(data);
-		}
-		return _error("INVALID_PLACEMENT_CONTRACT", "Placement relations were supplied without any logical placement members.");
-	}
-
-	HashMap<String, String> support_members;
-	HashSet<String> covered;
-	for (int i = 0; i < p_relations.size(); i++) {
-		if (p_relations[i].get_type() != Variant::DICTIONARY) {
-			return _error("INVALID_ARGUMENT", vformat("placements[%d] must be an object.", i));
-		}
-		const Dictionary relation = p_relations[i];
-		const String member = String(relation.get("member", String())).strip_edges();
-		const String supported_by = String(relation.get("supported_by", String())).strip_edges();
-		const String support_member = String(relation.get("support_member", String())).strip_edges();
-		if (!member_set.has(member)) {
-			return _error("INVALID_PLACEMENT_CONTRACT", vformat("placements[%d] references a member outside the complete placement set: %s", i, member));
-		}
-		if (supported_by.is_empty()) {
-			return _error("INVALID_PLACEMENT_CONTRACT", vformat("placements[%d].supported_by is required.", i));
-		}
-		if (covered.has(member)) {
-			return _error("INVALID_PLACEMENT_CONTRACT", vformat("Placement member '%s' has more than one support relation.", member));
-		}
-		if (member == supported_by || member == support_member) {
-			return _error("INVALID_PLACEMENT_CONTRACT", vformat("Placement member '%s' cannot support itself.", member));
-		}
-		covered.insert(member);
-		if (!support_member.is_empty()) {
-			if (!member_set.has(support_member)) {
-				return _error("INVALID_PLACEMENT_CONTRACT", vformat("placements[%d] names an unknown support_member: %s", i, support_member));
-			}
-			support_members[member] = support_member;
-		}
-	}
-
-	Array unsupported;
-	for (const String &member : member_set) {
-		if (!covered.has(member)) {
-			unsupported.push_back(member);
-		}
-	}
-	if (!unsupported.is_empty()) {
-		Dictionary data;
-		data["unsupported_members"] = unsupported;
-		Dictionary result = _error("INCOMPLETE_PLACEMENT_CONTRACT", "Every logical placement member must declare exactly one physical support relation.");
-		result["data"] = data;
-		return result;
-	}
-
-	for (const String &member : member_set) {
-		HashSet<String> chain;
-		String current = member;
-		while (support_members.has(current)) {
-			if (chain.has(current)) {
-				return _error("CYCLIC_PLACEMENT_SUPPORT", vformat("Placement support chain contains a cycle at '%s'.", current));
-			}
-			chain.insert(current);
-			current = support_members[current];
-		}
-	}
-
-	Dictionary data;
-	data["placement_count"] = p_members.size();
-	data["support_relation_count"] = p_relations.size();
-	return _ok(data);
-}
-
-struct SolersSurfaceGeometry {
-	bool has_bounds = false;
-	AABB bounds;
-	Vector<Face3> faces;
-};
-
-static bool _solers_is_physical_geometry(Node *p_node) {
-	if (MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(p_node)) {
-		return mesh_instance->get_mesh().is_valid();
-	}
-#ifdef MODULE_CSG_ENABLED
-	if (CSGShape3D *csg = Object::cast_to<CSGShape3D>(p_node)) {
-		return csg->is_root_shape();
-	}
-#endif
-	return false;
-}
-
-static void _solers_collect_physical_geometry(Node *p_node, Vector<Node *> &r_geometry) {
-	if (!p_node) {
-		return;
-	}
-	if (_solers_is_physical_geometry(p_node)) {
-		r_geometry.push_back(p_node);
-	}
-	for (int i = 0; i < p_node->get_child_count(); i++) {
-		_solers_collect_physical_geometry(p_node->get_child(i), r_geometry);
-	}
-}
-
-static bool _solers_node_within(Node *p_node, Node *p_root) {
-	return p_node && p_root && (p_node == p_root || p_root->is_ancestor_of(p_node));
-}
-
-static bool _solers_node_within_any(Node *p_node, const Vector<Node *> &p_roots) {
-	for (Node *root : p_roots) {
-		if (_solers_node_within(p_node, root)) {
-			return true;
-		}
-	}
-	return false;
-}
-
-static void _solers_add_surface_mesh(const Ref<Mesh> &p_mesh, const Transform3D &p_transform, SolersSurfaceGeometry &r_surface) {
-	if (p_mesh.is_null()) {
-		return;
-	}
-	const Vector<Face3> faces = p_mesh->get_faces();
-	for (const Face3 &face : faces) {
-		const Face3 world_face(p_transform.xform(face.vertex[0]), p_transform.xform(face.vertex[1]), p_transform.xform(face.vertex[2]));
-		r_surface.faces.push_back(world_face);
-		const AABB face_bounds = world_face.get_aabb();
-		r_surface.bounds = r_surface.has_bounds ? r_surface.bounds.merge(face_bounds) : face_bounds;
-		r_surface.has_bounds = true;
-	}
-}
-
-static void _solers_collect_surface_geometry(Node *p_node, bool p_recursive, SolersSurfaceGeometry &r_surface) {
-	if (!p_node) {
-		return;
-	}
-	if (MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(p_node)) {
-		_solers_add_surface_mesh(mesh_instance->get_mesh(), mesh_instance->get_global_transform(), r_surface);
-	}
-#ifdef MODULE_CSG_ENABLED
-	else if (CSGShape3D *csg = Object::cast_to<CSGShape3D>(p_node)) {
-		if (csg->is_root_shape()) {
-			csg->call(SNAME("_update_shape"));
-			const Array meshes = csg->get_meshes();
-			if (meshes.size() >= 2) {
-				const Transform3D local_transform = meshes[0];
-				const Ref<Mesh> mesh = meshes[1];
-				_solers_add_surface_mesh(mesh, csg->get_global_transform() * local_transform, r_surface);
-			}
-		}
-	}
-#endif
-	if (!p_recursive) {
-		return;
-	}
-	for (int i = 0; i < p_node->get_child_count(); i++) {
-		Node *child = p_node->get_child(i);
-		if (child->has_meta(SNAME("_solers_baked_from"))) {
-			continue;
-		}
-		_solers_collect_surface_geometry(child, true, r_surface);
-	}
-}
-
-static Node *_solers_placement_instance_root(Node *p_geometry, Node *p_placement_root) {
-	Node *instance_root = nullptr;
-	for (Node *current = p_geometry; current; current = current->get_parent()) {
-		if (!current->get_scene_file_path().is_empty()) {
-			instance_root = current;
-		}
-		if (current == p_placement_root) {
-			break;
-		}
-	}
-	return instance_root ? instance_root : p_geometry;
-}
-
-static Dictionary _solers_validate_surface_support(const SolersSurfaceGeometry &p_member, const SolersSurfaceGeometry &p_support, int p_axis, bool p_positive, real_t p_tolerance) {
-	Dictionary measurement;
-	measurement["axis"] = p_axis == Vector3::AXIS_X ? "x" : (p_axis == Vector3::AXIS_Y ? "y" : "z");
-	measurement["direction"] = p_positive ? "positive" : "negative";
-	measurement["tolerance"] = p_tolerance;
-	if (!p_member.has_bounds || p_member.faces.is_empty() || !p_support.has_bounds || p_support.faces.is_empty()) {
-		measurement["passed"] = false;
-		measurement["reason"] = "Member and support must expose real Mesh or CSG triangle surfaces.";
-		return measurement;
-	}
-
-	const real_t member_plane = p_positive ? _solers_axis_min(p_member.bounds, p_axis) : _solers_axis_max(p_member.bounds, p_axis);
-	const real_t support_plane = p_positive ? _solers_axis_max(p_support.bounds, p_axis) : _solers_axis_min(p_support.bounds, p_axis);
-	const real_t plane_distance = Math::abs(member_plane - support_plane);
-	measurement["plane_distance"] = plane_distance;
-	bool projection_overlap = true;
-	Dictionary overlaps;
-	for (int axis = 0; axis < 3; axis++) {
-		if (axis == p_axis) {
-			continue;
-		}
-		const real_t overlap = MIN(_solers_axis_max(p_member.bounds, axis), _solers_axis_max(p_support.bounds, axis)) - MAX(_solers_axis_min(p_member.bounds, axis), _solers_axis_min(p_support.bounds, axis));
-		overlaps[axis == Vector3::AXIS_X ? "x" : (axis == Vector3::AXIS_Y ? "y" : "z")] = overlap;
-		projection_overlap = projection_overlap && overlap > 0.0;
-	}
-	measurement["projection_overlap"] = overlaps;
-	if (!projection_overlap || plane_distance > p_tolerance) {
-		measurement["passed"] = false;
-		measurement["reason"] = !projection_overlap ? "Member and support do not overlap on the support plane." : "Member is separated from or penetrates the support plane beyond tolerance.";
-		return measurement;
-	}
-
-	const real_t numerical_span = MAX(p_tolerance, (real_t)CMP_EPSILON * 4.0);
-	Vector3 outward;
-	outward[p_axis] = p_positive ? 1.0 : -1.0;
-	bool surface_contact = false;
-	Vector3 contact_point;
-	for (const Face3 &member_face : p_member.faces) {
-		for (int vertex_index = 0; vertex_index < 3 && !surface_contact; vertex_index++) {
-			const Vector3 candidate = member_face.vertex[vertex_index];
-			if (Math::abs(candidate[p_axis] - member_plane) > numerical_span) {
-				continue;
-			}
-			const Vector3 segment_from = candidate + outward * numerical_span;
-			const Vector3 segment_to = candidate - outward * numerical_span;
-			for (const Face3 &support_face : p_support.faces) {
-				if (Geometry3D::segment_intersects_triangle(segment_from, segment_to, support_face.vertex[0], support_face.vertex[1], support_face.vertex[2], &contact_point)) {
-					surface_contact = true;
-					break;
-				}
-			}
-		}
-		if (surface_contact) {
-			break;
-		}
-	}
-	measurement["surface_contact"] = surface_contact;
-	measurement["passed"] = surface_contact;
-	if (surface_contact) {
-		measurement["contact_point"] = _solers_vector3_array(contact_point);
-	} else {
-		measurement["reason"] = "World AABBs overlap, but transformed Mesh/CSG surfaces do not contact within tolerance.";
-	}
-	return measurement;
-}
-
-Dictionary SolersReflectionService::_validate_scene_placements(const Vector<Node *> &p_structure_roots, const Dictionary &p_args) const {
-	Node *edited_root = EditorInterface::get_singleton() ? EditorInterface::get_singleton()->get_edited_scene_root() : nullptr;
-	if (!edited_root) {
-		return _error("EDITED_SCENE_UNAVAILABLE", "The editor has no active scene to validate.", false);
-	}
-	const Array requested_roots = p_args.get("placement_roots", Array());
-	Vector<Node *> placement_roots;
-	Array placement_root_paths;
-	String resolve_error;
-	for (int i = 0; i < requested_roots.size(); i++) {
-		Node *root = _resolve_node(String(requested_roots[i]), resolve_error);
-		if (!root) {
-			return _error("PLACEMENT_ROOT_NOT_FOUND", resolve_error);
-		}
-		for (Node *structure_root : p_structure_roots) {
-			if (_solers_node_within(root, structure_root) || _solers_node_within(structure_root, root)) {
-				return _error("INVALID_PLACEMENT_CONTRACT", "placement_roots cannot overlap architectural structure roots.");
-			}
-		}
-		for (Node *existing : placement_roots) {
-			if (_solers_node_within(root, existing) || _solers_node_within(existing, root)) {
-				return _error("INVALID_PLACEMENT_CONTRACT", "placement_roots must be unique, non-overlapping scene subtrees.");
-			}
-		}
-		String path;
-		_safe_node_path(root, path);
-		placement_root_paths.push_back(path);
-		placement_roots.push_back(root);
-	}
-
-	Vector<Node *> all_geometry;
-	_solers_collect_physical_geometry(edited_root, all_geometry);
-	Array unclassified;
-	for (Node *geometry : all_geometry) {
-		if (geometry->has_meta(SNAME("_solers_baked_from")) || _solers_node_within_any(geometry, p_structure_roots) || _solers_node_within_any(geometry, placement_roots)) {
-			continue;
-		}
-		String path;
-		_safe_node_path(geometry, path);
-		unclassified.push_back(path);
-	}
-	if (!unclassified.is_empty()) {
-		Dictionary data;
-		data["unclassified_geometry"] = unclassified;
-		Dictionary result = _error("UNCLASSIFIED_PLACEMENT_GEOMETRY", "Every physical Mesh/CSG node outside the architectural roots must belong to one placement root.");
-		result["data"] = data;
-		return result;
-	}
-
-	Vector<Node *> member_nodes;
-	HashSet<ObjectID> member_ids;
-	for (Node *placement_root : placement_roots) {
-		Vector<Node *> geometry_nodes;
-		_solers_collect_physical_geometry(placement_root, geometry_nodes);
-		for (Node *geometry : geometry_nodes) {
-			if (geometry->has_meta(SNAME("_solers_baked_from"))) {
-				continue;
-			}
-			Node *member = _solers_placement_instance_root(geometry, placement_root);
-			if (!member_ids.has(member->get_instance_id())) {
-				member_ids.insert(member->get_instance_id());
-				member_nodes.push_back(member);
-			}
-		}
-	}
-	Array members;
-	for (Node *member : member_nodes) {
-		String path;
-		_safe_node_path(member, path);
-		members.push_back(path);
-	}
-
-	const Array requested_relations = p_args.get("placements", Array());
-	Array normalized_relations;
-	Array measurements;
-	int failure_count = 0;
-	for (int i = 0; i < requested_relations.size(); i++) {
-		if (requested_relations[i].get_type() != Variant::DICTIONARY) {
-			return _error("INVALID_ARGUMENT", vformat("placements[%d] must be an object.", i));
-		}
-		Dictionary relation = Dictionary(requested_relations[i]).duplicate(true);
-		const String member_path = String(relation.get("member", String())).strip_edges();
-		const String support_path = String(relation.get("supported_by", String())).strip_edges();
-		const String axis_name = String(relation.get("axis", String())).to_lower();
-		const String direction = String(relation.get("direction", String())).to_lower();
-		if (!relation.has("tolerance") || (relation["tolerance"].get_type() != Variant::FLOAT && relation["tolerance"].get_type() != Variant::INT)) {
-			return _error("INVALID_ARGUMENT", vformat("placements[%d].tolerance must be an explicit non-negative project-unit value.", i));
-		}
-		const real_t tolerance = relation["tolerance"];
-		const int axis = _solers_axis_index(axis_name);
-		if (member_path.is_empty() || support_path.is_empty() || axis < 0 || (direction != "positive" && direction != "negative") || tolerance < 0.0) {
-			return _error("INVALID_ARGUMENT", vformat("placements[%d] requires member, supported_by, axis=x|y|z, direction=positive|negative, and a non-negative tolerance.", i));
-		}
-		Node *requested_member = _resolve_node(member_path, resolve_error);
-		if (!requested_member) {
-			return _error("PLACEMENT_MEMBER_NOT_FOUND", resolve_error);
-		}
-		Node *logical_member = nullptr;
-		for (Node *candidate : member_nodes) {
-			if (_solers_node_within(requested_member, candidate)) {
-				logical_member = candidate;
-				break;
-			}
-		}
-		if (!logical_member) {
-			return _error("INVALID_PLACEMENT_CONTRACT", vformat("placements[%d].member is outside the complete placement member set.", i));
-		}
-		Node *support = _resolve_node(support_path, resolve_error);
-		if (!support) {
-			return _error("PLACEMENT_SUPPORT_NOT_FOUND", resolve_error);
-		}
-		String logical_member_path;
-		String normalized_support_path;
-		_safe_node_path(logical_member, logical_member_path);
-		_safe_node_path(support, normalized_support_path);
-		relation["member"] = logical_member_path;
-		relation["supported_by"] = normalized_support_path;
-		for (Node *candidate : member_nodes) {
-			if (_solers_node_within(support, candidate)) {
-				String support_member_path;
-				_safe_node_path(candidate, support_member_path);
-				relation["support_member"] = support_member_path;
-				break;
-			}
-		}
-		normalized_relations.push_back(relation);
-
-		SolersSurfaceGeometry member_surface;
-		const bool member_is_instance = !logical_member->get_scene_file_path().is_empty();
-		_solers_collect_surface_geometry(logical_member, member_is_instance || !Object::cast_to<GeometryInstance3D>(logical_member), member_surface);
-		SolersSurfaceGeometry support_surface;
-		_solers_collect_surface_geometry(support, true, support_surface);
-		Dictionary measurement = _solers_validate_surface_support(member_surface, support_surface, axis, direction == "positive", tolerance);
-		measurement["member"] = logical_member_path;
-		measurement["supported_by"] = normalized_support_path;
-		measurements.push_back(measurement);
-		if (!(bool)measurement.get("passed", false)) {
-			failure_count++;
-		}
-	}
-
-	Dictionary topology = validate_placement_topology(members, normalized_relations);
-	if (!(bool)topology.get("ok", false)) {
-		Dictionary data = topology.get("data", Dictionary());
-		data["placement_roots"] = placement_root_paths;
-		data["members"] = members;
-		topology["data"] = data;
-		return topology;
-	}
-	Dictionary data;
-	data["placement_roots"] = placement_root_paths;
-	data["members"] = members;
-	data["placements"] = measurements;
-	data["placement_count"] = members.size();
-	data["failure_count"] = failure_count;
-	if (failure_count > 0) {
-		Dictionary result = _error("PLACEMENT_VALIDATION_FAILED", vformat("%d of %d physical placement relations failed.", failure_count, measurements.size()));
-		result["data"] = data;
-		return result;
-	}
-	return _ok(data);
-}
-
-Dictionary SolersReflectionService::_validate_reference_layout(const Dictionary &p_layout) const {
-	const String attachment_id = String(p_layout.get("attachment_id", String())).strip_edges();
-	const Array constraints = p_layout.get("constraints", Array());
-	if (attachment_id.is_empty() || constraints.is_empty()) {
-		return _error("INVALID_REFERENCE_LAYOUT", "reference_layout requires the exact reference attachment_id and at least one measurable constraint.");
-	}
-
-	Array measurements;
-	int failure_count = 0;
-	bool needs_front = false;
-	bool needs_side = false;
-	String resolve_error;
-	for (int i = 0; i < constraints.size(); i++) {
-		if (constraints[i].get_type() != Variant::DICTIONARY) {
-			return _error("INVALID_REFERENCE_LAYOUT", vformat("reference_layout.constraints[%d] must be an object.", i));
-		}
-		const Dictionary constraint = constraints[i];
-		const String kind = String(constraint.get("kind", String())).to_lower();
-		const bool alignment = kind == "axis_alignment";
-		const String axis_name = String(constraint.get(alignment ? "world_axis" : "axis", String())).to_lower();
-		const int axis = _solers_axis_index(axis_name);
-		const Variant minimum_value = alignment ? Variant((real_t)0.0) : constraint.get("min", Variant());
-		const Variant maximum_value = alignment ? constraint.get("max_angle_degrees", Variant()) : constraint.get("max", Variant());
-		if (axis < 0 || (minimum_value.get_type() != Variant::FLOAT && minimum_value.get_type() != Variant::INT) ||
-				(maximum_value.get_type() != Variant::FLOAT && maximum_value.get_type() != Variant::INT)) {
-			return _error("INVALID_REFERENCE_LAYOUT", vformat("reference_layout.constraints[%d] requires a valid axis and numeric bounds.", i));
-		}
-		const real_t minimum = minimum_value;
-		const real_t maximum = maximum_value;
-		if (minimum > maximum) {
-			return _error("INVALID_REFERENCE_LAYOUT", vformat("reference_layout.constraints[%d].min cannot exceed max.", i));
-		}
-		needs_front = needs_front || axis == Vector3::AXIS_X || axis == Vector3::AXIS_Y;
-		needs_side = needs_side || axis == Vector3::AXIS_Z;
-
-		Dictionary measurement = constraint.duplicate(true);
-		real_t actual = 0.0;
-		if (kind == "extent") {
-			Node *member = _resolve_node(String(constraint.get("member", String())), resolve_error);
-			if (!member) {
-				return _error("REFERENCE_LAYOUT_MEMBER_NOT_FOUND", resolve_error);
-			}
-			SolersSurfaceGeometry surface;
-			_solers_collect_surface_geometry(member, true, surface);
-			if (!surface.has_bounds) {
-				return _error("REFERENCE_LAYOUT_EMPTY_MEMBER", vformat("Constraint member '%s' has no measurable Mesh/CSG geometry.", String(constraint.get("member", String()))));
-			}
-			actual = surface.bounds.size[axis];
-			measurement["world_aabb"] = solers_aabb_data(surface.bounds);
-		} else if (kind == "anchor_distance") {
-			Node *a = _resolve_node(String(constraint.get("a", String())), resolve_error);
-			if (!a) {
-				return _error("REFERENCE_LAYOUT_MEMBER_NOT_FOUND", resolve_error);
-			}
-			Node *b = _resolve_node(String(constraint.get("b", String())), resolve_error);
-			if (!b) {
-				return _error("REFERENCE_LAYOUT_MEMBER_NOT_FOUND", resolve_error);
-			}
-			const String a_anchor = String(constraint.get("a_anchor", String())).to_lower();
-			const String b_anchor = String(constraint.get("b_anchor", String())).to_lower();
-			if ((a_anchor != "min" && a_anchor != "center" && a_anchor != "max") || (b_anchor != "min" && b_anchor != "center" && b_anchor != "max")) {
-				return _error("INVALID_REFERENCE_LAYOUT", vformat("reference_layout.constraints[%d] requires min|center|max anchors.", i));
-			}
-			SolersSurfaceGeometry a_surface;
-			SolersSurfaceGeometry b_surface;
-			_solers_collect_surface_geometry(a, true, a_surface);
-			_solers_collect_surface_geometry(b, true, b_surface);
-			if (!a_surface.has_bounds || !b_surface.has_bounds) {
-				return _error("REFERENCE_LAYOUT_EMPTY_MEMBER", vformat("reference_layout.constraints[%d] references a node without measurable Mesh/CSG geometry.", i));
-			}
-			actual = _solers_axis_anchor(b_surface.bounds, axis, b_anchor) - _solers_axis_anchor(a_surface.bounds, axis, a_anchor);
-		} else if (kind == "axis_alignment") {
-			Node3D *member = Object::cast_to<Node3D>(_resolve_node(String(constraint.get("member", String())), resolve_error));
-			const int local_axis = _solers_axis_index(String(constraint.get("local_axis", String())).to_lower());
-			const int world_axis = _solers_axis_index(String(constraint.get("world_axis", String())).to_lower());
-			const int direction = constraint.get("direction", 0);
-			if (!member || local_axis < 0 || world_axis < 0 || (direction != -1 && direction != 1)) {
-				return _error("INVALID_REFERENCE_LAYOUT", vformat("reference_layout.constraints[%d] axis_alignment requires a Node3D member, local_axis/world_axis, and direction -1 or 1.", i));
-			}
-			Vector3 target;
-			target[world_axis] = direction;
-			const Vector3 aligned_axis = member->get_global_basis().get_column(local_axis).normalized();
-			actual = Math::rad_to_deg(Math::acos(CLAMP(aligned_axis.dot(target), (real_t)-1.0, (real_t)1.0)));
-			measurement["aligned_axis"] = solers_vector3_data(aligned_axis);
-			measurement["target_axis"] = solers_vector3_data(target);
-		} else {
-			return _error("INVALID_REFERENCE_LAYOUT", vformat("Unsupported reference layout constraint kind '%s'.", kind));
-		}
-		const bool passed = actual >= minimum && actual <= maximum;
-		measurement["actual"] = actual;
-		measurement["passed"] = passed;
-		measurements.push_back(measurement);
-		failure_count += passed ? 0 : 1;
-	}
-
-	Array required_views;
-	Dictionary editor_view;
-	editor_view["target"] = "editor";
-	required_views.push_back(editor_view);
-	Dictionary top_view;
-	top_view["target"] = "top_down";
-	required_views.push_back(top_view);
-	if (needs_front) {
-		Dictionary front;
-		front["target"] = "orthographic";
-		front["axis"] = "z";
-		front["direction"] = "negative";
-		required_views.push_back(front);
-	}
-	if (needs_side) {
-		Dictionary side;
-		side["target"] = "orthographic";
-		side["axis"] = "x";
-		side["direction"] = "positive";
-		required_views.push_back(side);
-	}
-
-	Dictionary data;
-	data["attachment_id"] = attachment_id;
-	data["contract_hash"] = String::num_uint64(p_layout.hash());
-	data["constraints"] = measurements;
-	data["constraint_count"] = measurements.size();
-	data["failure_count"] = failure_count;
-	data["required_views"] = required_views;
-	if (failure_count > 0) {
-		Dictionary result = _error("REFERENCE_LAYOUT_FAILED", vformat("%d of %d reference layout constraints failed.", failure_count, measurements.size()));
-		result["data"] = data;
-		return result;
-	}
-	return _ok(data);
-}
-
-Dictionary SolersReflectionService::validate_structure(const Dictionary &p_args) const {
-	Array requested_roots = p_args.get("structure_roots", Array());
-	if (requested_roots.is_empty()) {
-		return _error("INVALID_ARGUMENT", "structure_roots must contain every architectural geometry root.");
-	}
-
-	String resolve_error;
-	Vector<Node *> structure_roots;
-	Array root_paths;
-	Vector<GeometryInstance3D *> geometry_nodes;
-	for (int i = 0; i < requested_roots.size(); i++) {
-		Node *structure_root = _resolve_node(String(requested_roots[i]), resolve_error);
-		if (!structure_root) {
-			return _error("STRUCTURE_ROOT_NOT_FOUND", resolve_error);
-		}
-		for (Node *existing : structure_roots) {
-			if (existing == structure_root || existing->is_ancestor_of(structure_root) || structure_root->is_ancestor_of(existing)) {
-				return _error("INVALID_STRUCTURE_CONTRACT", "structure_roots must be unique, non-overlapping scene subtrees.");
-			}
-		}
-		String normalized_root_path;
-		_safe_node_path(structure_root, normalized_root_path);
-		root_paths.push_back(normalized_root_path);
-		structure_roots.push_back(structure_root);
-		_solers_collect_geometry_nodes(structure_root, geometry_nodes);
-	}
-	if (geometry_nodes.is_empty()) {
-		return _error("EMPTY_STRUCTURE", "structure_roots contain no GeometryInstance3D nodes.");
-	}
-
-	const Array relations = p_args.get("relations", Array());
-	if (relations.is_empty() && geometry_nodes.size() > 1) {
-		return _error("INVALID_ARGUMENT", "relations must describe the complete structural geometry set.");
-	}
-	Array members;
-	Array artifact_members;
-	for (GeometryInstance3D *geometry : geometry_nodes) {
-		String path;
-		_safe_node_path(geometry, path);
-		if (geometry->has_meta(SNAME("_solers_baked_from"))) {
-			artifact_members.push_back(path);
-			continue;
-		}
-		members.push_back(path);
-	}
-	if (members.is_empty()) {
-		return _error("EMPTY_STRUCTURE", "structure_roots contain only generated artifacts and no logical source geometry.");
-	}
-
-	Array normalized_relations;
-	for (int i = 0; i < relations.size(); i++) {
-		if (relations[i].get_type() != Variant::DICTIONARY) {
-			return _error("INVALID_ARGUMENT", vformat("relations[%d] must be an object.", i));
-		}
-		Dictionary relation = Dictionary(relations[i]).duplicate(true);
-		const String requested_a = String(relation.get("a", String())).strip_edges();
-		const String requested_b = String(relation.get("b", String())).strip_edges();
-		Node *a_node = _resolve_node(requested_a, resolve_error);
-		if (!a_node) {
-			return _error("GEOMETRY_NODE_NOT_FOUND", resolve_error);
-		}
-		Node *b_node = _resolve_node(requested_b, resolve_error);
-		if (!b_node) {
-			return _error("GEOMETRY_NODE_NOT_FOUND", resolve_error);
-		}
-		GeometryInstance3D *a = Object::cast_to<GeometryInstance3D>(a_node);
-		GeometryInstance3D *b = Object::cast_to<GeometryInstance3D>(b_node);
-		if (!a || !b) {
-			return _error("GEOMETRY_NODE_NOT_FOUND", vformat("relations[%d] must reference GeometryInstance3D nodes.", i));
-		}
-		String a_path;
-		String b_path;
-		_safe_node_path(a, a_path);
-		_safe_node_path(b, b_path);
-		relation["a"] = a_path;
-		relation["b"] = b_path;
-		normalized_relations.push_back(relation);
-	}
-
-	Dictionary topology = validate_structure_topology(members, normalized_relations);
-	if (!(bool)topology.get("ok", false)) {
-		Dictionary data = topology.get("data", Dictionary());
-		data["structure_roots"] = root_paths;
-		data["artifact_members"] = artifact_members;
-		topology["data"] = data;
-		return topology;
-	}
-
-	Dictionary validation_args;
-	for (int i = 0; i < normalized_relations.size(); i++) {
-		Dictionary relation = normalized_relations[i];
-		relation["tolerance"] = 0.0;
-		normalized_relations[i] = relation;
-	}
-	validation_args["relations"] = normalized_relations;
-	Dictionary result;
-	if (normalized_relations.is_empty()) {
-		Dictionary empty_validation;
-		empty_validation["relations"] = Array();
-		empty_validation["checked_relation_count"] = 0;
-		empty_validation["failure_count"] = 0;
-		result = _ok(empty_validation);
-	} else {
-		result = validate_spatial_relations(validation_args);
-	}
-	if (!(bool)result.get("ok", false)) {
-		return result;
-	}
-	Dictionary data = result.get("data", Dictionary());
-	data["structure_roots"] = root_paths;
-	data["member_count"] = members.size();
-	data["members"] = members;
-	data["artifact_members"] = artifact_members;
-	data["contact_count"] = Dictionary(topology.get("data", Dictionary())).get("contact_count", 0);
-	data["geometry_digest"] = String::num_uint64(get_spatial_geometry_digest());
-	const bool placement_requested = p_args.has("placement_roots") || p_args.has("placements");
-	if (placement_requested) {
-		if (!p_args.has("placement_roots") || !p_args.has("placements")) {
-			return _error("INVALID_PLACEMENT_CONTRACT", "placement_roots and placements must be supplied together when physical support validation is requested.");
-		}
-		Dictionary placement = _validate_scene_placements(structure_roots, p_args);
-		if (!(bool)placement.get("ok", false)) {
-			return placement;
-		}
-		data["placement_validation"] = placement.get("data", Dictionary());
-	}
-	const Variant layout_value = p_args.get("reference_layout", Variant());
-	if (layout_value.get_type() != Variant::NIL) {
-		if (layout_value.get_type() != Variant::DICTIONARY) {
-			return _error("INVALID_REFERENCE_LAYOUT", "reference_layout must be an object.");
-		}
-		Dictionary layout = _validate_reference_layout(layout_value);
-		if (!(bool)layout.get("ok", false)) {
-			return layout;
-		}
-		data["reference_layout"] = layout.get("data", Dictionary());
-	}
-	return _ok(data);
-}
-
 #ifdef MODULE_CSG_ENABLED
 Dictionary SolersReflectionService::bake_csg(const Dictionary &p_args) {
 	const Array node_paths = p_args.get("node_paths", Array());
@@ -2946,9 +2043,6 @@ Dictionary SolersReflectionService::bake_csg(const Dictionary &p_args) {
 	Dictionary data;
 	data["artifact"] = artifact;
 	data["output_paths"] = output_paths;
-	data["scene_state_changed"] = true;
-	data["spatial_geometry_changed"] = true;
-	data["preserves_structure_validation"] = true;
 	return _ok(data);
 }
 #else
@@ -2956,175 +2050,6 @@ Dictionary SolersReflectionService::bake_csg(const Dictionary &) {
 	return _error("CSG_MODULE_UNAVAILABLE", "This build does not include the CSG module.", false);
 }
 #endif
-
-// Rejection sampling (slope filter) gets this many candidate draws per
-// requested instance before the tool reports what it actually placed.
-static constexpr int SOLERS_SCATTER_OVERSAMPLE_LIMIT = 8;
-
-Dictionary SolersReflectionService::scatter_instances(const Dictionary &p_args) {
-	String resolve_error;
-	MeshInstance3D *surface = Object::cast_to<MeshInstance3D>(_resolve_node(String(p_args.get("surface_path", String())), resolve_error));
-	if (!surface || surface->get_mesh().is_null()) {
-		return _error("SCATTER_SURFACE_INVALID", resolve_error.is_empty() ? "surface_path must reference a MeshInstance3D with a mesh." : resolve_error);
-	}
-	const String mesh_path = p_args.get("mesh_path", String());
-	const Ref<Mesh> instance_mesh = ResourceLoader::load(mesh_path, "Mesh");
-	if (instance_mesh.is_null()) {
-		return _error("SCATTER_MESH_INVALID", vformat("mesh_path does not load as a Mesh: %s", mesh_path));
-	}
-	const int requested = (int)p_args.get("count", 0);
-	if (requested <= 0) {
-		return _error("INVALID_ARGUMENT", "count must be a positive integer.");
-	}
-	const double scale_min = p_args.get("scale_min", 1.0);
-	const double scale_max = p_args.get("scale_max", scale_min);
-	if (scale_min <= 0.0 || scale_max < scale_min) {
-		return _error("INVALID_ARGUMENT", "Scale range requires 0 < scale_min <= scale_max.");
-	}
-	const bool align_to_normal = p_args.get("align_to_normal", true);
-	const bool random_yaw = p_args.get("random_yaw", true);
-	const double max_slope_degrees = CLAMP((double)p_args.get("max_slope_degrees", 90.0), 0.0, 90.0);
-	const double min_up_dot = Math::cos(Math::deg_to_rad(max_slope_degrees));
-
-	EditorInterface *editor_interface = EditorInterface::get_singleton();
-	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
-	Node *owner = editor_interface ? editor_interface->get_edited_scene_root() : nullptr;
-	if (!undo_redo || !owner) {
-		return _error("EDITOR_CONTEXT_UNAVAILABLE", "Scattering requires an edited scene and EditorUndoRedoManager.", false);
-	}
-
-	const Vector<Face3> faces = surface->get_mesh()->get_faces();
-	if (faces.is_empty()) {
-		return _error("SCATTER_SURFACE_INVALID", "The surface mesh has no triangles to scatter onto.");
-	}
-	// Area-weighted CDF over the surface triangles, measured in world units so
-	// a scaled surface node cannot bias the sample density.
-	const Transform3D surface_xform = surface->get_global_transform();
-	Vector<double> cumulative_area;
-	cumulative_area.resize(faces.size());
-	double total_area = 0.0;
-	for (int i = 0; i < faces.size(); i++) {
-		Face3 world_face = faces[i];
-		for (int j = 0; j < 3; j++) {
-			world_face.vertex[j] = surface_xform.xform(world_face.vertex[j]);
-		}
-		total_area += world_face.get_area();
-		cumulative_area.write[i] = total_area;
-	}
-	if (total_area <= 0.0) {
-		return _error("SCATTER_SURFACE_INVALID", "The surface mesh has zero area.");
-	}
-	// Correct normal transport under non-uniform surface scale.
-	const Basis world_normal_xform = surface_xform.basis.inverse().transposed();
-
-	RandomPCG rng((uint64_t)(int64_t)p_args.get("seed", 0));
-	LocalVector<Transform3D> placed;
-	placed.reserve(requested);
-	const int64_t max_attempts = (int64_t)requested * SOLERS_SCATTER_OVERSAMPLE_LIMIT;
-	for (int64_t attempt = 0; attempt < max_attempts && (int)placed.size() < requested; attempt++) {
-		const double pick = rng.randd() * total_area;
-		int low = 0;
-		int high = faces.size() - 1;
-		while (low < high) {
-			const int mid = (low + high) / 2;
-			if (cumulative_area[mid] < pick) {
-				low = mid + 1;
-			} else {
-				high = mid;
-			}
-		}
-		const Face3 &face = faces[low];
-		const Vector3 local_normal = face.get_plane().normal;
-		if (world_normal_xform.xform(local_normal).normalized().y < min_up_dot) {
-			continue;
-		}
-		// Uniform barycentric sample inside the triangle.
-		double u = rng.randd();
-		double v = rng.randd();
-		if (u + v > 1.0) {
-			u = 1.0 - u;
-			v = 1.0 - v;
-		}
-		const Vector3 position = face.vertex[0] + (face.vertex[1] - face.vertex[0]) * u + (face.vertex[2] - face.vertex[0]) * v;
-
-		Basis basis;
-		if (align_to_normal) {
-			const Vector3 up = local_normal;
-			const Vector3 reference = Math::abs(up.y) < (real_t)0.99 ? Vector3(0, 1, 0) : Vector3(1, 0, 0);
-			const Vector3 tangent = reference.cross(up).normalized();
-			basis = Basis(tangent, up, up.cross(tangent));
-		}
-		if (random_yaw) {
-			basis = basis * Basis(Vector3(0, 1, 0), rng.randd() * Math::TAU);
-		}
-		basis.scale(Vector3(1, 1, 1) * (real_t)(scale_min + rng.randd() * (scale_max - scale_min)));
-		placed.push_back(Transform3D(basis, position));
-	}
-	if (placed.is_empty()) {
-		return _error("SCATTER_NO_VALID_SURFACE", "No sample passed the slope filter; loosen max_slope_degrees or pick another surface.");
-	}
-
-	// One flat buffer upload instead of tens of thousands of per-instance
-	// RenderingServer calls. Layout: 3 rows of (basis row, origin component).
-	Ref<MultiMesh> multimesh;
-	multimesh.instantiate();
-	multimesh->set_transform_format(MultiMesh::TRANSFORM_3D);
-	multimesh->set_mesh(instance_mesh);
-	multimesh->set_instance_count((int)placed.size());
-	Vector<float> buffer;
-	buffer.resize((int)placed.size() * 12);
-	float *buffer_write = buffer.ptrw();
-	for (uint32_t i = 0; i < placed.size(); i++) {
-		const Transform3D &t = placed[i];
-		float *dst = buffer_write + i * 12;
-		for (int row = 0; row < 3; row++) {
-			dst[row * 4 + 0] = t.basis.rows[row][0];
-			dst[row * 4 + 1] = t.basis.rows[row][1];
-			dst[row * 4 + 2] = t.basis.rows[row][2];
-			dst[row * 4 + 3] = t.origin[row];
-		}
-	}
-	// set_buffer is C++-protected but exposed as the "buffer" property.
-	multimesh->set(SNAME("buffer"), buffer);
-
-	const String node_name = p_args.get("name", mesh_path.get_file().get_basename().to_pascal_case() + "Scatter");
-	String multimesh_path = p_args.get("multimesh_path", String());
-	if (multimesh_path.is_empty()) {
-		const String scene_path = owner->get_scene_file_path();
-		multimesh_path = (scene_path.is_empty() ? String("res://") : scene_path.get_base_dir()).path_join(node_name.to_snake_case() + ".multimesh.res");
-	}
-	// The transform payload lives in its own binary resource so the scene file
-	// stays reviewable no matter how many instances were placed.
-	multimesh->set_path(multimesh_path, true);
-	const Error save_error = ResourceSaver::save(multimesh, multimesh_path);
-	if (save_error != OK) {
-		return _error("SCATTER_SAVE_FAILED", vformat("Could not save the MultiMesh resource to %s (error %d).", multimesh_path, (int)save_error));
-	}
-
-	MultiMeshInstance3D *instances = memnew(MultiMeshInstance3D);
-	instances->set_name(node_name);
-	instances->set_multimesh(multimesh);
-	// Child of the surface: the buffer transforms are in surface-local space,
-	// so the instances follow the surface if it is moved later.
-	undo_redo->create_action("Scatter instances");
-	undo_redo->add_do_method(surface, "add_child", instances, true);
-	undo_redo->add_do_method(instances, "set_owner", owner);
-	undo_redo->add_do_reference(instances);
-	undo_redo->add_undo_method(surface, "remove_child", instances);
-	undo_redo->commit_action();
-
-	String output_path;
-	_safe_node_path(instances, output_path);
-	Dictionary data;
-	data["node_path"] = output_path;
-	data["multimesh_path"] = multimesh_path;
-	data["requested_count"] = requested;
-	data["placed_count"] = (int)placed.size();
-	data["surface_area"] = total_area;
-	data["scene_state_changed"] = true;
-	data["spatial_geometry_changed"] = true;
-	return _ok(data);
-}
 
 static bool _solers_mesh_has_uv2(const Ref<Mesh> &p_mesh) {
 	if (p_mesh.is_null() || p_mesh->get_surface_count() == 0) {
@@ -3196,7 +2121,6 @@ Dictionary SolersReflectionService::_fail_uv2_unwrap(UV2UnwrapTask *p_task, cons
 	Dictionary data;
 	data["processed_count"] = p_task ? p_task->next_index : 0;
 	data["total_count"] = p_task ? p_task->node_paths.size() : 0;
-	data["scene_state_changed"] = false;
 	result["data"] = data;
 	_free_uv2_unwrap(p_task, true);
 	return result;
@@ -3291,11 +2215,80 @@ Dictionary SolersReflectionService::_advance_uv2_unwrap(UV2UnwrapTask *p_task) {
 	data["processed_count"] = p_task->node_paths.size();
 	data["already_valid_count"] = p_task->already_valid_count;
 	data["unwrapped_count"] = changed_count;
-	data["scene_state_changed"] = changed_count > 0;
 	data["mesh_data_changed"] = changed_count > 0;
-	data["spatial_geometry_changed"] = false;
 	_free_uv2_unwrap(p_task, true);
 	return _ok(data);
+}
+
+static Dictionary _solers_scene_state_receipt(const String &p_path) {
+	Dictionary data;
+	data["path"] = p_path;
+	data["authored_state_changed"] = true;
+	const int history_id = EditorNode::get_editor_data().get_current_edited_scene_history_id();
+	data["history_id"] = history_id;
+	if (Node *root = EditorNode::get_singleton() ? EditorNode::get_singleton()->get_edited_scene() : nullptr) {
+		data["root_object_id"] = (int64_t)root->get_instance_id();
+		data["scene_path"] = root->get_scene_file_path();
+	}
+	EditorUndoRedoManager *manager = EditorUndoRedoManager::get_singleton();
+	if (manager && history_id != EditorUndoRedoManager::INVALID_HISTORY) {
+		data["version"] = (int64_t)manager->get_or_create_history(history_id).undo_redo->get_version();
+	}
+	return data;
+}
+
+Dictionary SolersReflectionService::open_scene(const Dictionary &p_args) {
+	EditorNode *editor = EditorNode::get_singleton();
+	EditorInterface *editor_interface = EditorInterface::get_singleton();
+	if (!editor || !editor_interface) {
+		return _error("EDITOR_UNAVAILABLE", "Editor is not available.", false);
+	}
+	String path = ProjectSettings::get_singleton()->localize_path(String(p_args.get("path", String())).strip_edges());
+	if (path.is_empty() || !path.begins_with("res://")) {
+		return _error("SCENE_PATH_REQUIRED", "scene.open requires a res:// path.", true);
+	}
+	if (!FileAccess::exists(path)) {
+		return _error("SCENE_NOT_FOUND", vformat("Scene file not found: %s", path), true);
+	}
+	if (editor->is_changing_scene()) {
+		return _error("SCENE_BUSY", "Editor is already changing scenes; retry shortly.", true);
+	}
+	editor_interface->open_scene_from_path(path, p_args.get("set_inherited", false));
+	return _ok(_solers_scene_state_receipt(path));
+}
+
+Dictionary SolersReflectionService::reload_scene(const Dictionary &p_args) {
+	EditorNode *editor = EditorNode::get_singleton();
+	EditorInterface *editor_interface = EditorInterface::get_singleton();
+	if (!editor || !editor_interface || EditorNode::get_editor_data().get_edited_scene_count() <= 0) {
+		return _error("NO_EDITED_SCENE", "Open a scene before scene.reload.", true);
+	}
+	String path = String(p_args.get("path", String())).strip_edges();
+	if (path.is_empty()) {
+		Node *root = editor_interface->get_edited_scene_root();
+		path = root ? root->get_scene_file_path() : String();
+	}
+	if (path.is_empty()) {
+		return _error("SCENE_PATH_REQUIRED", "Edited scene has no save path; save it before reload.", true);
+	}
+	path = ProjectSettings::get_singleton()->localize_path(path);
+	int scene_idx = -1;
+	for (int i = 0; i < EditorNode::get_editor_data().get_edited_scene_count(); i++) {
+		if (EditorNode::get_editor_data().get_scene_path(i) == path) {
+			scene_idx = i;
+			break;
+		}
+	}
+	if (scene_idx < 0) {
+		return _error("SCENE_NOT_OPEN", vformat("Scene is not open in the editor: %s", path), true);
+	}
+	const int history_id = EditorNode::get_editor_data().get_scene_history_id(scene_idx);
+	EditorUndoRedoManager *manager = EditorUndoRedoManager::get_singleton();
+	if (manager && history_id != EditorUndoRedoManager::INVALID_HISTORY && manager->is_history_unsaved(history_id)) {
+		return _error("SCENE_UNSAVED", "Persist unsaved scene edits before scene.reload; reload rebuilds the edited tree from disk.", true);
+	}
+	editor->reload_scene(path);
+	return _ok(_solers_scene_state_receipt(path));
 }
 
 Dictionary SolersReflectionService::unwrap_uv2(const Dictionary &p_args, const String &p_operation_id) {
@@ -3568,115 +2561,7 @@ Dictionary SolersReflectionService::bake_lightmap(const Dictionary &p_args) {
 	data["data_path"] = light_data->get_path();
 	data["user_count"] = light_data->get_user_count();
 	data["scope"] = scope;
-	data["scene_state_changed"] = true;
-	data["spatial_geometry_changed"] = false;
 	return _ok(data);
-}
-
-Dictionary SolersReflectionService::validate_environment_resource(const Ref<Environment> &p_environment) {
-	Dictionary state;
-	state["has_environment"] = p_environment.is_valid();
-	if (p_environment.is_null()) {
-		state["valid"] = false;
-		state["reason"] = "WorldEnvironment has no Environment resource.";
-		return state;
-	}
-	state["background_mode"] = (int)p_environment->get_background();
-	state["ambient_source"] = (int)p_environment->get_ambient_source();
-	state["reflection_source"] = (int)p_environment->get_reflection_source();
-	state["has_sky"] = p_environment->get_sky().is_valid();
-	const bool needs_sky = p_environment->get_background() == Environment::BG_SKY || p_environment->get_ambient_source() == Environment::AMBIENT_SOURCE_SKY || p_environment->get_reflection_source() == Environment::REFLECTION_SOURCE_SKY;
-	state["requires_sky"] = needs_sky;
-	state["valid"] = !needs_sky || p_environment->get_sky().is_valid();
-	if (!(bool)state["valid"]) {
-		state["reason"] = "Environment selects Sky as a render source but has no Sky resource.";
-	}
-	return state;
-}
-
-static void _solers_collect_render_pipeline_state(Node *p_node, const String &p_lightmap_input_digest, Array &r_missing_uv2, Array &r_lightmaps, Array &r_environments, Array &r_stale_users, int &r_static_meshes, int &r_visible_csg) {
-	if (!p_node) {
-		return;
-	}
-	if (MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(p_node)) {
-		if (mesh_instance->get_gi_mode() == GeometryInstance3D::GI_MODE_STATIC && mesh_instance->is_visible_in_tree()) {
-			r_static_meshes++;
-			Ref<Mesh> mesh = mesh_instance->get_mesh();
-			bool has_uv2 = mesh.is_valid() && mesh->get_surface_count() > 0;
-			for (int surface = 0; surface < (mesh.is_valid() ? mesh->get_surface_count() : 0); surface++) {
-				has_uv2 = has_uv2 && (bool)(mesh->surface_get_format(surface) & Mesh::ARRAY_FORMAT_TEX_UV2);
-			}
-			if (!has_uv2) {
-				r_missing_uv2.push_back(String(mesh_instance->get_path()));
-			}
-		}
-	}
-	if (p_node->is_class("CSGShape3D")) {
-		Node3D *node_3d = Object::cast_to<Node3D>(p_node);
-		if (node_3d && node_3d->is_visible_in_tree()) {
-			r_visible_csg++;
-		}
-	}
-	if (LightmapGI *lightmap = Object::cast_to<LightmapGI>(p_node)) {
-		Dictionary lightmap_state;
-		lightmap_state["path"] = String(lightmap->get_path());
-		Ref<LightmapGIData> data = lightmap->get_light_data();
-		lightmap_state["has_data"] = data.is_valid();
-		lightmap_state["user_count"] = data.is_valid() ? data->get_user_count() : 0;
-		lightmap_state["data_path"] = data.is_valid() ? data->get_path() : String();
-		lightmap_state["baked_data_path"] = lightmap->get_meta(SNAME("_solers_lightmap_data_path"), String());
-		lightmap_state["data_path_matches"] = data.is_valid() && !String(lightmap_state["baked_data_path"]).is_empty() && String(lightmap_state["baked_data_path"]).simplify_path() == data->get_path().simplify_path() && FileAccess::exists(data->get_path());
-		lightmap_state["baked_input_digest"] = lightmap->get_meta(SNAME("_solers_lightmap_input_digest"), String());
-		lightmap_state["input_digest_matches"] = !String(lightmap_state["baked_input_digest"]).is_empty() && String(lightmap_state["baked_input_digest"]) == p_lightmap_input_digest;
-		if (data.is_valid()) {
-			for (int i = 0; i < data->get_user_count(); i++) {
-				const NodePath user_path = data->get_user_path(i);
-				if (!lightmap->get_node_or_null(user_path)) {
-					r_stale_users.push_back(String(user_path));
-				}
-			}
-		}
-		r_lightmaps.push_back(lightmap_state);
-	}
-	if (WorldEnvironment *world_environment = Object::cast_to<WorldEnvironment>(p_node)) {
-		Dictionary environment_state = SolersReflectionService::validate_environment_resource(world_environment->get_environment());
-		environment_state["path"] = String(world_environment->get_path());
-		r_environments.push_back(environment_state);
-	}
-	for (int i = 0; i < p_node->get_child_count(); i++) {
-		_solers_collect_render_pipeline_state(p_node->get_child(i), p_lightmap_input_digest, r_missing_uv2, r_lightmaps, r_environments, r_stale_users, r_static_meshes, r_visible_csg);
-	}
-}
-
-Dictionary SolersReflectionService::get_render_pipeline_state() const {
-	Node *root = EditorInterface::get_singleton() ? EditorInterface::get_singleton()->get_edited_scene_root() : nullptr;
-	Array missing_uv2;
-	Array lightmaps;
-	Array environments;
-	Array stale_users;
-	int static_mesh_count = 0;
-	int visible_csg_count = 0;
-	const String lightmap_input_digest = String::num_uint64(get_lightmap_input_digest());
-	_solers_collect_render_pipeline_state(root, lightmap_input_digest, missing_uv2, lightmaps, environments, stale_users, static_mesh_count, visible_csg_count);
-	Dictionary state;
-	state["static_mesh_count"] = static_mesh_count;
-	state["visible_csg_count"] = visible_csg_count;
-	state["missing_uv2"] = missing_uv2;
-	state["lightmaps"] = lightmaps;
-	state["environments"] = environments;
-	state["stale_lightmap_users"] = stale_users;
-	bool lightmap_data_valid = true;
-	for (int i = 0; i < lightmaps.size(); i++) {
-		const Dictionary lightmap = lightmaps[i];
-		lightmap_data_valid = lightmap_data_valid && (bool)lightmap.get("has_data", false) && (int)lightmap.get("user_count", 0) > 0 && (bool)lightmap.get("data_path_matches", false) && (bool)lightmap.get("input_digest_matches", false);
-	}
-	bool environments_valid = true;
-	for (int i = 0; i < environments.size(); i++) {
-		environments_valid = environments_valid && (bool)Dictionary(environments[i]).get("valid", false);
-	}
-	state["valid"] = environments_valid && stale_users.is_empty() && (lightmaps.is_empty() || (visible_csg_count == 0 && missing_uv2.is_empty() && lightmap_data_valid));
-	state["lightmap_input_digest"] = lightmap_input_digest;
-	return state;
 }
 
 Array SolersReflectionService::resolve_batch_resource_access(const Dictionary &p_args) const {
@@ -3892,10 +2777,39 @@ static Dictionary _solers_material_facts(MeshInstance3D *p_mesh_instance) {
 	return facts;
 }
 
+static Dictionary _solers_camera_attributes_facts(const Ref<CameraAttributes> &p_attributes) {
+	Dictionary facts;
+	if (p_attributes.is_null()) {
+		return facts;
+	}
+	facts["class_name"] = p_attributes->get_class();
+	facts["exposure_multiplier"] = p_attributes->get_exposure_multiplier();
+	facts["exposure_sensitivity"] = p_attributes->get_exposure_sensitivity();
+	facts["auto_exposure_enabled"] = p_attributes->is_auto_exposure_enabled();
+	if (const CameraAttributesPhysical *physical = Object::cast_to<CameraAttributesPhysical>(p_attributes.ptr())) {
+		facts["exposure_aperture"] = physical->get_aperture();
+		facts["exposure_shutter_speed"] = physical->get_shutter_speed();
+	}
+	return facts;
+}
+
 static Dictionary _solers_light_facts(Light3D *p_light) {
 	Dictionary facts;
+	const bool physical_units = GLOBAL_GET("rendering/lights_and_shadows/use_physical_light_units");
+	facts["use_physical_light_units"] = physical_units;
 	facts["light_color"] = _solers_color_array(p_light->get_color());
+	// PARAM_ENERGY is the dimensionless multiplier; PARAM_INTENSITY is lux/lumens
+	// when physical units are on. Report both ClassDB axes — never conflate them.
 	facts["light_energy"] = p_light->get_param(Light3D::PARAM_ENERGY);
+	facts["light_intensity"] = p_light->get_param(Light3D::PARAM_INTENSITY);
+	if (physical_units) {
+		if (p_light->get_light_type() == RenderingServer::LIGHT_DIRECTIONAL) {
+			facts["light_intensity_lux"] = p_light->get_param(Light3D::PARAM_INTENSITY);
+		} else {
+			facts["light_intensity_lumens"] = p_light->get_param(Light3D::PARAM_INTENSITY);
+		}
+		facts["light_temperature"] = p_light->get_temperature();
+	}
 	facts["light_indirect_energy"] = p_light->get_param(Light3D::PARAM_INDIRECT_ENERGY);
 	facts["light_specular"] = p_light->get_param(Light3D::PARAM_SPECULAR);
 	facts["shadow_enabled"] = p_light->has_shadow();
@@ -3904,6 +2818,7 @@ static Dictionary _solers_light_facts(Light3D *p_light) {
 	facts["bake_mode"] = (int)p_light->get_bake_mode();
 	if (DirectionalLight3D *directional = Object::cast_to<DirectionalLight3D>(p_light)) {
 		facts["sky_mode"] = (int)directional->get_sky_mode();
+		facts["light_angular_distance"] = directional->get_param(Light3D::PARAM_SIZE);
 	}
 	return facts;
 }
@@ -3913,17 +2828,21 @@ static Dictionary _solers_environment_facts(const Ref<Environment> &p_environmen
 	facts["background"] = (int)p_environment->get_background();
 	facts["background_color"] = _solers_color_array(p_environment->get_bg_color());
 	facts["background_energy"] = p_environment->get_bg_energy_multiplier();
+	facts["background_intensity"] = p_environment->get_bg_intensity();
 	facts["sky"] = _solers_resource_id(p_environment->get_sky());
 	facts["ambient_source"] = (int)p_environment->get_ambient_source();
 	facts["ambient_color"] = _solers_color_array(p_environment->get_ambient_light_color());
 	facts["ambient_energy"] = p_environment->get_ambient_light_energy();
+	facts["ambient_sky_contribution"] = p_environment->get_ambient_light_sky_contribution();
 	facts["reflection_source"] = (int)p_environment->get_reflection_source();
-	facts["tonemapper"] = (int)p_environment->get_tonemapper();
+	facts["tonemap_mode"] = (int)p_environment->get_tonemapper();
 	facts["tonemap_exposure"] = p_environment->get_tonemap_exposure();
 	facts["tonemap_white"] = p_environment->get_tonemap_white();
 	facts["glow_enabled"] = p_environment->is_glow_enabled();
 	facts["ssao_enabled"] = p_environment->is_ssao_enabled();
+	facts["ssil_enabled"] = p_environment->is_ssil_enabled();
 	facts["sdfgi_enabled"] = p_environment->is_sdfgi_enabled();
+	facts["sdfgi_read_sky_light"] = p_environment->is_sdfgi_reading_sky_light();
 	facts["fog_enabled"] = p_environment->is_fog_enabled();
 	return facts;
 }
@@ -3947,8 +2866,28 @@ Dictionary SolersReflectionService::_subsystem_facts(Node *p_node) const {
 		facts["particles"] = _solers_particles_facts(Object::cast_to<GeometryInstance3D>(p_node));
 	} else if (MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(p_node)) {
 		facts["material"] = _solers_material_facts(mesh_instance);
+#ifdef MODULE_CSG_ENABLED
+	} else if (Object::cast_to<CSGShape3D>(p_node)) {
+		Dictionary material;
+		const Variant csg_material = p_node->get("material");
+		if (csg_material.get_type() == Variant::OBJECT) {
+			material["csg_material"] = _solers_resource_id(csg_material);
+		}
+		if (GeometryInstance3D *geometry = Object::cast_to<GeometryInstance3D>(p_node)) {
+			material["material_override"] = _solers_resource_id(geometry->get_material_override());
+			const bool has_override = geometry->get_material_override().is_valid();
+			const bool has_csg = csg_material.get_type() == Variant::OBJECT && ((Ref<Resource>)csg_material).is_valid();
+			material["resolved"] = has_override ? "material_override" : (has_csg ? "csg_material" : "none");
+		}
+		facts["material"] = material;
+#endif
 	} else if (Light3D *light = Object::cast_to<Light3D>(p_node)) {
 		facts["light"] = _solers_light_facts(light);
+	} else if (Camera3D *camera = Object::cast_to<Camera3D>(p_node)) {
+		Dictionary camera_facts;
+		camera_facts["current"] = camera->is_current();
+		camera_facts["attributes"] = _solers_camera_attributes_facts(camera->get_attributes());
+		facts["camera"] = camera_facts;
 	} else if (WorldEnvironment *world_environment = Object::cast_to<WorldEnvironment>(p_node)) {
 		const Ref<Environment> environment = world_environment->get_environment();
 		if (environment.is_valid()) {
@@ -3958,6 +2897,7 @@ Dictionary SolersReflectionService::_subsystem_facts(Node *p_node) const {
 			// against the fallback grey instead of the authored sky.
 			facts["environment_missing"] = true;
 		}
+		facts["camera_attributes"] = _solers_camera_attributes_facts(world_environment->get_camera_attributes());
 	}
 	return facts;
 }

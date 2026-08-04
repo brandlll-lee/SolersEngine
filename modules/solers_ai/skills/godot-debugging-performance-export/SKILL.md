@@ -40,6 +40,6 @@ Use for runtime errors, profiling, optimization, export presets, packaging, or r
 
 ## Verify
 1. Same scenario before/after via `runtime.control` + `runtime.observe`.
-2. Optional `viewport.capture` if visual regression risk.
+2. Optional `render.capture` if visual regression risk.
 3. Export preset validation; artifact launch checklist.
 4. Stop when scenario passes and metrics meet the stated budget (or report the remaining gap truthfully).
