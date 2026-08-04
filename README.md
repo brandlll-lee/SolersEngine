@@ -1,48 +1,62 @@
 <div align="center">
-  <img src="branding/generated/solers02_icon_transparent_1024.png" width="112" alt="Solers Engine"/>
+  <img src="branding/generated/solers02_icon_transparent_1024.png" width="128" alt="Solers V2 logo"/>
 
 # Solers
 
-### Build playable worlds by talking to the engine.
+**AI-native game engine (Godot fork) where AI acts as a first-class native
+operator for collaborative game development.**
 
-**Solers is an open-source, AI-native game engine built on Godot.**
+[Build from source](#build-from-source) · [Architecture](docs/SOLERS_ARCHITECTURE.md) · [License](LICENSE.txt)
 
-Describe a world, a mechanic, or a problem. Solers works inside the real editor:
-it can understand your project, make the change, run the game, look at the
-result, read the errors, and keep going.
-
-[Getting started](#getting-started) · [Documentation](docs/SOLERS_ARCHITECTURE.md) · [Contributing](CONTRIBUTING.md)
-
-Godot 4.6.3 · Standard Godot projects · Bring your own model
+Godot 4.6.3 · Standard Godot projects · Open model access
 
 </div>
 
 ---
 
-## What Solers controls
+## Features
 
-- **Understand the entire game** — read the project, scenes, resources, code,
-  imported assets, editor state, logs, and the running game.
-- **Build the world** — create and refine 2D or 3D scenes, geometry, materials,
-  physics, navigation, animation, cameras, and reusable resources.
-- **Program the experience** — write and validate scripts, connect systems, and
-  implement interactions, player controls, and game rules.
-- **Direct the visual pipeline** — control lighting, environments, shaders, GI,
-  shadows, reflections, UVs, lightmaps, rendering, and baking.
-- **Manage the content pipeline** — find, generate, process, organize, and import
-  models, materials, HDRIs, music, and sound effects.
-- **Run, debug, and ship** — play the game, inspect its output, capture visual
-  evidence, fix failures, validate the result, and export playable builds.
-- **Work autonomously, under your control** — plan long tasks, continue across
-  background jobs or restarts, request approval, preserve history, and undo
-  supported edits.
+### Engine-native agent
 
-Your work is never trapped in a private format. A Solers project is a normal
-Godot project that you can open, edit, and ship with familiar Godot tools.
+Solers runs inside the Godot editor. It works from live scenes, resources,
+scripts, editor state, errors, and the running game.
 
-## Getting started
+### Build, run, inspect
 
-Solers is currently an active-development build. Clone the source first:
+Create and edit 2D or 3D worlds, write gameplay code, manage assets, run the
+game, inspect failures, capture rendered output, and continue from evidence.
+
+### Native, recoverable changes
+
+Scene edits use Godot's native transactions and save validation. File and
+resource changes use state checks and recoverable checkpoints.
+
+### Long-running work
+
+The agent loop has no fixed request-count cutoff. Completed tool traffic is
+compacted, active work can be restored, and background jobs can resume.
+
+### Open model access
+
+Sign in to ChatGPT Codex, select a provider from the model catalog, or connect
+an OpenAI-compatible local, private, or hosted endpoint.
+
+### Extensible tools
+
+Solers exposes focused engine tools for scenes, scripts, runtime observation,
+rendering, assets, addons, search, and reusable skills. External agents can use
+the same engine through a local MCP-compatible interface.
+
+## Why a Godot fork?
+
+Solers integrates the agent runtime, permissions, context, and tools directly
+into the editor instead of operating as a sidecar. Projects remain standard
+Godot projects that can be opened, edited, and shipped with familiar tools.
+
+## Build from source
+
+Solers is under active development. Clone the repository and use the standard
+[Godot build toolchain](https://docs.godotengine.org/en/stable/engine_details/development/compiling/index.html).
 
 ```bash
 git clone https://github.com/brandlll-lee/SolersEngine.git
@@ -51,78 +65,37 @@ cd SolersEngine
 
 ### Windows
 
-Install the standard
-[Godot build toolchain](https://docs.godotengine.org/en/stable/engine_details/development/compiling/index.html),
-then build and run:
-
 ```powershell
-python -m SCons platform=windows target=editor dev_build=yes tests=yes -j4
+python -m SCons platform=windows target=editor dev_build=yes -j4
 .\bin\solers.windows.editor.dev.x86_64.exe
 ```
 
-### Linux (Ubuntu/Debian)
-
-Install the native dependencies, then build and run:
+### Linux
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y build-essential scons pkg-config \
-  libx11-dev libxcursor-dev libxinerama-dev libxi-dev libxrandr-dev \
-  libgl1-mesa-dev libglu1-mesa-dev libasound2-dev libpulse-dev \
-  libudev-dev libwayland-dev libwayland-bin
-
-scons platform=linuxbsd target=editor dev_build=yes tests=yes -j4
+scons platform=linuxbsd target=editor dev_build=yes -j4
 ./bin/solers.linuxbsd.editor.dev.x86_64
 ```
 
-For other distributions, see the
-[official Linux build guide](https://docs.godotengine.org/en/stable/engine_details/development/compiling/compiling_for_linuxbsd.html).
+See the [official Linux build guide](https://docs.godotengine.org/en/stable/engine_details/development/compiling/compiling_for_linuxbsd.html)
+for distribution-specific dependencies. On macOS, use the same SCons flow with
+`platform=macos`.
 
-Then:
+Then open or create a project, connect a model in **AI Setup**, and open the
+**Solers** panel.
 
-1. Open or create a Godot project.
-2. Open **AI Setup** and connect a model provider.
-3. Open the **Solers** panel and describe what you want.
+## Developing
 
-```text
-Use these reference images to build a warm, lived-in bedroom.
-Run the scene, inspect the result and errors, fix any visible problems, then save it.
+Read the [Solers architecture notes](docs/SOLERS_ARCHITECTURE.md) before changing
+the agent runtime or engine tools. Solers follows Godot's
+[contribution workflow](CONTRIBUTING.md) for engine development.
+
+To include the Solers behavior tests in a Windows development build:
+
+```powershell
+python -m SCons platform=windows target=editor dev_build=yes tests=yes -j4
+.\bin\solers.windows.editor.dev.x86_64.tests.console.exe --test '--test-case=*[Solers*'
 ```
-
-macOS follows the same SCons flow with `platform=macos`.
-
-## Models
-
-Use the model access you already have:
-
-- sign in with ChatGPT to use **Codex**
-- connect **OpenAI, Anthropic, Gemini, DeepSeek, or Qwen**
-- run locally with **Ollama or LM Studio**
-- use any compatible private or hosted OpenAI-style endpoint
-
-Solers only shows connected providers. Image input and reasoning effort appear
-when the selected model supports them.
-
-## How Solers works
-
-Solers is built into the editor, so its AI acts on live engine state instead of
-a text-only copy of the project. It uses composable native operations, keeps
-long tasks recoverable, and verifies the result before declaring success.
-External agents can use the same capabilities through a local MCP-compatible
-interface.
-
-## Privacy
-
-Projects and session history stay on your machine. When you choose a remote
-model or asset service, the information needed for that request is sent directly
-to that provider under its own terms. Local models can be used without a remote
-LLM provider, and remote access is blocked while Privacy Mode is enabled.
-
-## Contributing
-
-Solers is built in public. Contributions that make the engine simpler, more
-capable, or more trustworthy are welcome. Start with the
-[contribution guide](CONTRIBUTING.md) and [architecture notes](docs/SOLERS_ARCHITECTURE.md).
 
 ## License
 
