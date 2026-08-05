@@ -302,6 +302,7 @@ private:
 
 	// Split containers.
 	DockSplitContainer *left_l_vsplit = nullptr;
+	VBoxContainer *editor_side_panel = nullptr;
 	DockSplitContainer *left_r_vsplit = nullptr;
 	DockSplitContainer *main_hsplit = nullptr;
 	DockSplitContainer *right_l_vsplit = nullptr;
@@ -751,6 +752,7 @@ public:
 	static EditorFolding &get_editor_folding() { return singleton->editor_folding; }
 
 	static EditorTitleBar *get_title_bar() { return singleton->title_bar; }
+	static VBoxContainer *get_editor_side_panel() { return singleton->editor_side_panel; }
 	static VSplitContainer *get_top_split() { return singleton->top_split; }
 	static DockSplitContainer *get_center_split() { return singleton->center_split; }
 	static EditorBottomPanel *get_bottom_panel() { return singleton->bottom_panel; }

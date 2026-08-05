@@ -44,16 +44,14 @@ class SolersEditorPlugin : public EditorPlugin {
 
 	void _select_session(const String &p_session_id);
 	void _new_session();
-	void _toggle_workspace();
 
 protected:
 	void _notification(int p_what);
 
 public:
 	String get_plugin_name() const override { return "Solers"; }
-	const Ref<Texture2D> get_plugin_icon() const override;
-	bool has_main_screen() const override { return true; }
-	void make_visible(bool p_visible) override;
+	void set_window_layout(Ref<ConfigFile> p_layout) override;
+	void get_window_layout(Ref<ConfigFile> p_layout) override;
 
 	SolersEditorPlugin();
 	~SolersEditorPlugin();

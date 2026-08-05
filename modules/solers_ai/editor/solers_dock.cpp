@@ -888,12 +888,6 @@ void SolersDock::_on_stop_chat_pressed() {
 	_update_send_enabled();
 }
 
-void SolersDock::_on_workspace_toggle_pressed() {
-	if (workspace_toggle_callback.is_valid()) {
-		workspace_toggle_callback.call();
-	}
-}
-
 void SolersDock::_toggle_session_sidebar() {
 	if (!session_sidebar) {
 		return;
@@ -2688,25 +2682,14 @@ void SolersDock::make_visible() {
 	if (session_sidebar && EditorSettings::get_singleton()) {
 		const bool show = EditorSettings::get_singleton()->get_project_metadata("solers", "session_sidebar_visible", false);
 		session_sidebar->set_visible(show);
-		if (session_button) {
-			session_button->set_accent(show ? solers_accent() : Color(0, 0, 0, 0));
-		}
+		session_button->set_accent(show ? solers_accent() : Color(0, 0, 0, 0));
 		if (show) {
 			_request_session_list_refresh();
 		}
 	}
 }
 
-void SolersDock::set_workspace_toggle_callback(const Callable &p_callback) {
-	workspace_toggle_callback = p_callback;
-	if (panel_button) {
-		panel_button->set_visible(workspace_toggle_callback.is_valid());
-	}
-}
-
 SolersDock::SolersDock() {
-	set_name(TTRC("Solers"));
-	set_custom_minimum_size(Size2(340 * EDSCALE, 0));
 	set_h_size_flags(Control::SIZE_FILL);
 	set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	// Cursor-flat shell: fill only — no inset card border. Pane edges come from
@@ -2804,16 +2787,6 @@ SolersDock::SolersDock() {
 	session_button->configure(SNAME("panel"), SolersGlyphButton::SKIN_GHOST, TTR("Sessions"), 15);
 	session_button->set_pressed_callback(callable_mp(this, &SolersDock::_toggle_session_sidebar));
 	topbar_content->add_child(session_button);
-
-	Control *topbar_spacer = memnew(Control);
-	topbar_spacer->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	topbar_content->add_child(topbar_spacer);
-
-	panel_button = memnew(SolersGlyphButton);
-	panel_button->configure(SNAME("panel"), SolersGlyphButton::SKIN_GHOST, TTR("Toggle workspace"), 15);
-	panel_button->set_pressed_callback(callable_mp(this, &SolersDock::_on_workspace_toggle_pressed));
-	panel_button->hide();
-	topbar_content->add_child(panel_button);
 
 	empty_home = memnew(VBoxContainer);
 	empty_home->set_h_size_flags(Control::SIZE_EXPAND_FILL);

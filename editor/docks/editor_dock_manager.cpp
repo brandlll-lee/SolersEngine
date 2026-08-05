@@ -196,53 +196,56 @@ void EditorDockManager::_update_layout() {
 }
 
 void EditorDockManager::update_docks_menu() {
-	docks_menu->clear();
-	docks_menu->reset_size();
-
-	const Ref<Texture2D> default_icon = docks_menu->get_editor_theme_icon(SNAME("Window"));
 	const Color closed_icon_color_mod = Color(1, 1, 1, 0.5);
-
-	bool global_menu = !bool(EDITOR_GET("interface/editor/appearance/use_embedded_menu")) && NativeMenu::get_singleton()->has_feature(NativeMenu::FEATURE_GLOBAL_MENU);
 	bool dark_mode = DisplayServer::get_singleton()->is_dark_mode_supported() && DisplayServer::get_singleton()->is_dark_mode();
 	int icon_max_width = EditorNode::get_singleton()->get_editor_theme()->get_constant(SNAME("class_icon_size"), EditorStringName(Editor));
 
-	// Add docks.
 	docks_menu_docks.clear();
-	int id = 0;
-	const Callable icon_fetch = callable_mp(EditorNode::get_singleton(), &EditorNode::get_editor_theme_native_menu_icon).bind(global_menu, dark_mode);
 	for (EditorDock *dock : all_docks) {
-		if (!dock->enabled || !dock->global) {
-			continue;
+		if (dock->enabled && dock->global) {
+			docks_menu_docks.push_back(dock);
 		}
-		if (dock->shortcut.is_valid()) {
-			docks_menu->add_shortcut(dock->shortcut, id);
-			docks_menu->set_item_text(id, dock->get_display_title());
-		} else {
-			docks_menu->add_item(dock->get_display_title(), id);
-		}
-		docks_menu->set_item_icon_max_width(id, icon_max_width);
+	}
 
-		const Ref<Texture2D> icon = dock->get_effective_icon(icon_fetch);
-		docks_menu->set_item_icon(id, icon.is_valid() ? icon : default_icon);
-		if (!dock->is_open) {
-			docks_menu->set_item_icon_modulate(id, closed_icon_color_mod);
-			docks_menu->set_item_tooltip(id, vformat(TTR("Open the %s dock."), TTR(dock->get_display_title())));
-		} else {
-			docks_menu->set_item_tooltip(id, vformat(TTR("Focus on the %s dock."), TTR(dock->get_display_title())));
+	PopupMenu *menus[] = { docks_menu, dock_palette_menu };
+	for (PopupMenu *menu : menus) {
+		menu->clear();
+		menu->reset_size();
+		const bool global_menu = menu == docks_menu && !bool(EDITOR_GET("interface/editor/appearance/use_embedded_menu")) && NativeMenu::get_singleton()->has_feature(NativeMenu::FEATURE_GLOBAL_MENU);
+		const Callable icon_fetch = callable_mp(EditorNode::get_singleton(), &EditorNode::get_editor_theme_native_menu_icon).bind(global_menu, dark_mode);
+		const Ref<Texture2D> default_icon = menu->get_editor_theme_icon(SNAME("Window"));
+
+		for (int id = 0; id < (int)docks_menu_docks.size(); id++) {
+			EditorDock *dock = docks_menu_docks[id];
+			if (dock->shortcut.is_valid()) {
+				menu->add_shortcut(dock->shortcut, id);
+				menu->set_item_text(id, dock->get_display_title());
+			} else {
+				menu->add_item(dock->get_display_title(), id);
+			}
+			menu->set_item_icon_max_width(id, icon_max_width);
+			const Ref<Texture2D> icon = dock->get_effective_icon(icon_fetch);
+			menu->set_item_icon(id, icon.is_valid() ? icon : default_icon);
+			if (!dock->is_open) {
+				menu->set_item_icon_modulate(id, closed_icon_color_mod);
+				menu->set_item_tooltip(id, vformat(TTR("Open the %s dock."), TTR(dock->get_display_title())));
+			} else {
+				menu->set_item_tooltip(id, vformat(TTR("Focus on the %s dock."), TTR(dock->get_display_title())));
+			}
 		}
-		docks_menu_docks.push_back(dock);
-		id++;
 	}
 }
 
-void EditorDockManager::_docks_menu_option(int p_id) {
+void EditorDockManager::_docks_menu_option(int p_id, PopupMenu *p_menu) {
+	ERR_FAIL_INDEX(p_id, (int)docks_menu_docks.size());
 	EditorDock *dock = docks_menu_docks[p_id];
 	ERR_FAIL_NULL(dock);
 	ERR_FAIL_COND_MSG(!all_docks.has(dock), vformat("Menu option for unknown dock '%s'.", dock->get_display_title()));
 	if (dock->enabled && dock->is_open) {
-		PopupMenu *parent_menu = Object::cast_to<PopupMenu>(docks_menu->get_parent());
-		ERR_FAIL_NULL(parent_menu);
-		parent_menu->hide();
+		PopupMenu *parent_menu = Object::cast_to<PopupMenu>(p_menu->get_parent());
+		if (parent_menu) {
+			parent_menu->hide();
+		}
 	}
 	focus_dock(dock);
 }
@@ -633,6 +636,28 @@ void EditorDockManager::set_dock_enabled(EditorDock *p_dock, bool p_enabled) {
 	}
 }
 
+void EditorDockManager::consolidate_vertical_docks(EditorDock::DockSlot p_target) {
+	ERR_FAIL_INDEX(p_target, EditorDock::DOCK_SLOT_MAX);
+	DockTabContainer *target = dock_slots[p_target];
+	ERR_FAIL_COND(target->layout != EditorDock::DOCK_LAYOUT_VERTICAL);
+
+	int tab_index = 0;
+	for (EditorDock *dock : all_docks) {
+		const EditorDock::DockSlot default_slot = dock->default_slot;
+		if (!dock->global || dock->transient || !(dock->available_layouts & EditorDock::DOCK_LAYOUT_VERTICAL) || default_slot < EditorDock::DOCK_SLOT_LEFT_UL || default_slot > EditorDock::DOCK_SLOT_RIGHT_BR) {
+			continue;
+		}
+
+		dock->is_open = true;
+		_move_dock(dock, target, tab_index++, false);
+		if (default_slot != p_target) {
+			dock->is_open = false;
+			_move_dock(dock, closed_dock_parent);
+		}
+	}
+	_update_layout();
+}
+
 void EditorDockManager::close_dock(EditorDock *p_dock) {
 	ERR_FAIL_NULL(p_dock);
 	ERR_FAIL_COND_MSG(!all_docks.has(p_dock), vformat("Cannot close unknown dock '%s'.", p_dock->get_display_title()));
@@ -818,6 +843,14 @@ void EditorDockManager::register_dock_slot(DockTabContainer *p_tab_container) {
 	p_tab_container->connect("active_tab_rearranged", callable_mp(this, &EditorDockManager::_update_layout).unbind(1));
 }
 
+void EditorDockManager::set_dock_palette_slot(EditorDock::DockSlot p_slot) {
+	ERR_FAIL_INDEX(p_slot, EditorDock::DOCK_SLOT_MAX);
+	DockTabContainer *slot = dock_slots[p_slot];
+	ERR_FAIL_NULL(slot);
+	slot->set_popup(dock_palette_menu);
+	slot->set_theme_type_variation("DockPaletteTabContainer");
+}
+
 int EditorDockManager::get_vsplit_count() const {
 	return vsplits.size();
 }
@@ -839,7 +872,10 @@ EditorDockManager::EditorDockManager() {
 
 	docks_menu = memnew(PopupMenu);
 	docks_menu->set_hide_on_item_selection(false);
-	docks_menu->connect(SceneStringName(id_pressed), callable_mp(this, &EditorDockManager::_docks_menu_option));
+	docks_menu->connect(SceneStringName(id_pressed), callable_mp(this, &EditorDockManager::_docks_menu_option).bind(docks_menu));
+	dock_palette_menu = memnew(PopupMenu);
+	dock_palette_menu->connect(SceneStringName(id_pressed), callable_mp(this, &EditorDockManager::_docks_menu_option).bind(dock_palette_menu));
+	EditorNode::get_singleton()->get_gui_base()->add_child(dock_palette_menu);
 	EditorNode::get_singleton()->get_gui_base()->connect(SceneStringName(theme_changed), callable_mp(this, &EditorDockManager::update_docks_menu));
 }
 

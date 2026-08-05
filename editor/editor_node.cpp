@@ -6875,6 +6875,7 @@ void EditorNode::update_distraction_free_mode() {
 
 void EditorNode::set_distraction_free_mode(bool p_enter) {
 	distraction_free->set_pressed(p_enter);
+	editor_side_panel->set_visible(!p_enter && editor_side_panel->get_child_count() > 0);
 
 	if (p_enter) {
 		if (editor_dock_manager->are_docks_visible()) {
@@ -8711,6 +8712,12 @@ EditorNode::EditorNode() {
 	left_l_vsplit->set_vertical(true);
 	main_hsplit->add_child(left_l_vsplit);
 
+	editor_side_panel = memnew(VBoxContainer);
+	editor_side_panel->set_name("EditorSidePanel");
+	editor_side_panel->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	editor_side_panel->hide();
+	left_l_vsplit->add_child(editor_side_panel);
+
 	LocalVector<DockTabContainer *> dock_slots;
 	{
 		DockTabContainer *dock_container = memnew(SideDockTabContainer(EditorDock::DOCK_SLOT_LEFT_UL, Rect2i(0, 0, 1, 3)));
@@ -9189,45 +9196,18 @@ EditorNode::EditorNode() {
 
 	history_dock = memnew(HistoryDock);
 	editor_dock_manager->add_dock(history_dock);
+	editor_dock_manager->consolidate_vertical_docks(EditorDock::DOCK_SLOT_RIGHT_UL);
+	editor_dock_manager->set_dock_palette_slot(EditorDock::DOCK_SLOT_RIGHT_UL);
 
-	// Add some offsets to make LEFT_R and RIGHT_L docks wider than minsize.
+	// Keep the native dock palette wide enough for its toolbar and content.
 	const int dock_hsize = 280;
-	// By default there is only 3 visible, so set 2 split offsets for them.
 	const int dock_hsize_scaled = dock_hsize * EDSCALE;
-	main_hsplit->set_split_offsets({ dock_hsize_scaled, -dock_hsize_scaled });
+	main_hsplit->set_split_offsets({ -dock_hsize_scaled });
 
 	// Define corresponding default layout.
 
 	const String docks_section = "docks";
 	default_layout.instantiate();
-	// Dock numbers are based on DockSlot enum value + 1.
-	{
-		const String scene_key = SceneTreeDock::get_singleton()->get_effective_layout_key();
-		const String import_key = ImportDock::get_singleton()->get_effective_layout_key();
-		default_layout->set_value(docks_section, "dock_3", vformat("%s,%s", scene_key, import_key));
-		default_layout->set_value(docks_section, "dock_3_selected_tab_idx", 0);
-	}
-	{
-		const String filesystem_key = filesystem_dock->get_effective_layout_key();
-		const String history_key = history_dock->get_effective_layout_key();
-		default_layout->set_value(docks_section, "dock_4", vformat("%s,%s", filesystem_key, history_key));
-		default_layout->set_value(docks_section, "dock_4_selected_tab_idx", 0);
-	}
-	{
-		const String inspector_key = InspectorDock::get_singleton()->get_effective_layout_key();
-		const String signals_key = SignalsDock::get_singleton()->get_effective_layout_key();
-		const String groups_key = GroupsDock::get_singleton()->get_effective_layout_key();
-		default_layout->set_value(docks_section, "dock_5", vformat("%s,%s,%s", inspector_key, signals_key, groups_key));
-		default_layout->set_value(docks_section, "dock_5_selected_tab_idx", 0);
-	}
-
-	int hsplits[] = { 0, dock_hsize, -dock_hsize, 0 };
-	for (int i = 0; i < (int)std_size(hsplits); i++) {
-		default_layout->set_value(docks_section, "dock_hsplit_" + itos(i + 1), hsplits[i]);
-	}
-	for (int i = 0; i < editor_dock_manager->get_vsplit_count(); i++) {
-		default_layout->set_value(docks_section, "dock_split_" + itos(i + 1), 0);
-	}
 
 	{
 		Dictionary offsets;
@@ -9235,8 +9215,6 @@ EditorNode::EditorNode() {
 		offsets["Output"] = -270;
 		default_layout->set_value(EDITOR_NODE_CONFIG_SECTION, "bottom_panel_offsets", offsets);
 	}
-
-	_update_layouts_menu();
 
 	// Bottom panels.
 
@@ -9247,6 +9225,8 @@ EditorNode::EditorNode() {
 
 	log = memnew(EditorLog);
 	editor_dock_manager->add_dock(log);
+	editor_dock_manager->save_docks_to_config(default_layout, docks_section);
+	_update_layouts_menu();
 
 	center_split->connect(SceneStringName(resized), callable_mp(this, &EditorNode::_vp_resized));
 

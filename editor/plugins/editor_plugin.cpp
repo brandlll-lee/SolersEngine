@@ -144,6 +144,11 @@ void EditorPlugin::add_control_to_container(CustomControlContainer p_location, C
 		case CONTAINER_TOOLBAR: {
 			EditorNode::get_title_bar()->add_child(p_control);
 		} break;
+		case CONTAINER_EDITOR_SIDE_LEFT: {
+			VBoxContainer *side_panel = EditorNode::get_editor_side_panel();
+			side_panel->add_child(p_control);
+			side_panel->set_visible(!EditorNode::get_singleton()->is_distraction_free_mode_enabled());
+		} break;
 
 		case CONTAINER_SPATIAL_EDITOR_MENU: {
 			Node3DEditor::get_singleton()->add_control_to_menu_panel(p_control);
@@ -195,6 +200,11 @@ void EditorPlugin::remove_control_from_container(CustomControlContainer p_locati
 	switch (p_location) {
 		case CONTAINER_TOOLBAR: {
 			EditorNode::get_title_bar()->remove_child(p_control);
+		} break;
+		case CONTAINER_EDITOR_SIDE_LEFT: {
+			VBoxContainer *side_panel = EditorNode::get_editor_side_panel();
+			side_panel->remove_child(p_control);
+			side_panel->set_visible(side_panel->get_child_count() > 0 && !EditorNode::get_singleton()->is_distraction_free_mode_enabled());
 		} break;
 
 		case CONTAINER_SPATIAL_EDITOR_MENU: {
@@ -720,6 +730,7 @@ void EditorPlugin::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("project_settings_changed"));
 
 	BIND_ENUM_CONSTANT(CONTAINER_TOOLBAR);
+	BIND_ENUM_CONSTANT(CONTAINER_EDITOR_SIDE_LEFT);
 	BIND_ENUM_CONSTANT(CONTAINER_SPATIAL_EDITOR_MENU);
 	BIND_ENUM_CONSTANT(CONTAINER_SPATIAL_EDITOR_SIDE_LEFT);
 	BIND_ENUM_CONSTANT(CONTAINER_SPATIAL_EDITOR_SIDE_RIGHT);

@@ -105,6 +105,7 @@ private:
 
 	DockContextPopup *dock_context_popup = nullptr;
 	PopupMenu *docks_menu = nullptr;
+	PopupMenu *dock_palette_menu = nullptr;
 	LocalVector<EditorDock *> docks_menu_docks;
 	Control *closed_dock_parent = nullptr;
 
@@ -113,7 +114,7 @@ private:
 	void _dock_split_dragged(int p_offset);
 	void _update_layout();
 
-	void _docks_menu_option(int p_id);
+	void _docks_menu_option(int p_id, PopupMenu *p_menu);
 
 	void _window_close_request(WindowWrapper *p_wrapper);
 	EditorDock *_close_window(WindowWrapper *p_wrapper);
@@ -138,6 +139,7 @@ public:
 	void set_main_hsplit(DockSplitContainer *p_split);
 	void set_bottom_hsplit(DockSplitContainer *p_split);
 	void register_dock_slot(DockTabContainer *p_tab_container);
+	void set_dock_palette_slot(EditorDock::DockSlot p_slot);
 	int get_vsplit_count() const;
 	PopupMenu *get_docks_menu();
 
@@ -145,6 +147,7 @@ public:
 	void load_docks_from_config(Ref<ConfigFile> p_layout, const String &p_section, bool p_first_load = false);
 
 	void set_dock_enabled(EditorDock *p_dock, bool p_enabled);
+	void consolidate_vertical_docks(EditorDock::DockSlot p_target);
 	void close_dock(EditorDock *p_dock);
 	void open_dock(EditorDock *p_dock, bool p_set_current = true);
 	void focus_dock(EditorDock *p_dock);
