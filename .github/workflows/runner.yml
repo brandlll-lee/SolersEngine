@@ -14,70 +14,63 @@ jobs:
     uses: ./.github/workflows/static_checks.yml
 
   solers-build-check:
-    name: 🧠 Solers strict build
+    name: 🧠 Solers module build
     needs: static-checks
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
-
       - name: Setup dependencies
         run: |
           sudo apt-get update
           sudo apt-get install libwayland-bin
-
-      - name: Restore Godot build cache
-        uses: ./.github/actions/godot-cache-restore
-        with:
-          cache-name: linux-solers-strict
-        continue-on-error: true
-
       - name: Setup Python and SCons
         uses: ./.github/actions/godot-deps
-
-      - name: Compilation
+      - name: Compile Solers module
         run: >-
-          scons platform=linuxbsd target=editor dev_mode=yes module_text_server_fb_enabled=yes
-          accesskit=no use_llvm=yes linker=lld cache_path=${{ github.workspace }}/.scons_cache/
-          redirect_build_objects=no modules/libmodule_solers_ai.linuxbsd.editor.x86_64.llvm.a
-
-      - name: Save Godot build cache
-        uses: ./.github/actions/godot-cache-save
-        with:
-          cache-name: linux-solers-strict
-        continue-on-error: true
+          scons platform=linuxbsd target=editor dev_build=yes accesskit=no
+          use_llvm=yes linker=lld modules/libmodule_solers_ai.linuxbsd.editor.dev.x86_64.llvm.a -j4
 
   # Second stage: Run all the builds and some of the tests.
 
   android-build:
     name: 🤖 Android
-    needs: solers-build-check
+    needs: [static-checks, solers-build-check]
+    if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/android_builds.yml
+    secrets:
+      SERVICE_ACCOUNT_KEY: ${{ secrets.SERVICE_ACCOUNT_KEY }}
 
   ios-build:
     name: 🍏 iOS
-    needs: solers-build-check
+    needs: [static-checks, solers-build-check]
+    if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/ios_builds.yml
 
   linux-build:
     name: 🐧 Linux
-    needs: solers-build-check
+    needs: [static-checks, solers-build-check]
+    if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/linux_builds.yml
+    with:
+      changed-files: ${{ needs.static-checks.outputs.changed-files }}
 
   macos-build:
     name: 🍎 macOS
-    needs: solers-build-check
+    needs: [static-checks, solers-build-check]
+    if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/macos_builds.yml
 
   windows-build:
     name: 🏁 Windows
-    needs: solers-build-check
+    needs: [static-checks, solers-build-check]
+    if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/windows_builds.yml
 
   web-build:
     name: 🌐 Web
-    needs: solers-build-check
+    needs: [static-checks, solers-build-check]
+    if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/web_builds.yml

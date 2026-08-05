@@ -33,6 +33,7 @@
 
 #include "core/config/project_settings.h"
 #include "core/input/input.h"
+#include "core/object/class_db.h"
 #include "core/os/keyboard.h"
 #include "core/os/os.h"
 #include "core/variant/typed_array.h"
@@ -205,6 +206,22 @@ void InputMap::action_add_event(const StringName &p_action, RequiredParam<InputE
 		return; // Already added.
 	}
 
+	// Normalize legacy device IDs: before the device ID change,
+	// keyboard and mouse events defaulted to device=0.
+	if (p_event->get_device() == 0) {
+		switch (p_event->get_type()) {
+			case InputEventType::KEY:
+				p_event->set_device(InputEvent::DEVICE_ID_KEYBOARD);
+				break;
+			case InputEventType::MOUSE_BUTTON:
+			case InputEventType::MOUSE_MOTION:
+				p_event->set_device(InputEvent::DEVICE_ID_MOUSE);
+				break;
+			default:
+				break;
+		}
+	}
+
 	input_map[p_action].inputs.push_back(p_event);
 }
 
@@ -319,6 +336,11 @@ void InputMap::load_from_project_settings() {
 		String name = pi.name.substr(pi.name.find_char('/') + 1);
 
 		Dictionary action = GLOBAL_GET(pi.name);
+
+		if (!action.has("events")) {
+			continue;
+		}
+
 		float deadzone = action.has("deadzone") ? (float)action["deadzone"] : DEFAULT_DEADZONE;
 		Array events = action["events"];
 
@@ -559,6 +581,8 @@ const HashMap<String, List<Ref<InputEvent>>> &InputMap::get_builtins() {
 	inputs = List<Ref<InputEvent>>();
 	inputs.push_back(InputEventKey::create_reference(Key::ENTER));
 	inputs.push_back(InputEventKey::create_reference(Key::KP_ENTER));
+	inputs.push_back(InputEventKey::create_reference(KeyModifierMask::SHIFT | Key::ENTER));
+	inputs.push_back(InputEventKey::create_reference(KeyModifierMask::SHIFT | Key::KP_ENTER));
 	default_builtin_cache.insert("ui_text_newline", inputs);
 
 	inputs = List<Ref<InputEvent>>();
@@ -904,7 +928,7 @@ const HashMap<String, List<Ref<InputEvent>>> &InputMap::get_builtins_with_featur
 }
 
 void InputMap::load_default() {
-	HashMap<String, List<Ref<InputEvent>>> builtins = get_builtins_with_feature_overrides_applied();
+	HashMap<String, List<Ref<InputEvent>>> builtins(get_builtins_with_feature_overrides_applied());
 
 	for (const KeyValue<String, List<Ref<InputEvent>>> &E : builtins) {
 		String name = E.key;

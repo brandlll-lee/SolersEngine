@@ -30,7 +30,17 @@
 
 #include "register_types.h"
 
+#include "core/object/class_db.h"
+
 #ifdef TOOLS_ENABLED
+#include "plugins/solers_plugin.h"
+#include "plugins/solers_plugin_ambientcg.h"
+#include "plugins/solers_plugin_elevenlabs.h"
+#include "plugins/solers_plugin_meshy.h"
+#include "plugins/solers_plugin_polyhaven.h"
+#include "protocol/solers_mcp_adapter.h"
+#include "protocol/solers_rpc_server.h"
+
 #include "core/solers_action_timeline.h"
 #include "core/solers_agent_session.h"
 #include "core/solers_asset_service.h"
@@ -44,16 +54,11 @@
 #include "core/solers_settings_service.h"
 #include "core/solers_tool_registry.h"
 #include "core/solers_trace.h"
+#include "editor/plugins/editor_plugin.h"
 #include "editor/solers_chat_cells.h"
 #include "editor/solers_chat_widgets.h"
 #include "editor/solers_dock.h"
-#include "plugins/solers_plugin.h"
-#include "plugins/solers_plugin_ambientcg.h"
-#include "plugins/solers_plugin_elevenlabs.h"
-#include "plugins/solers_plugin_meshy.h"
-#include "plugins/solers_plugin_polyhaven.h"
-#include "protocol/solers_mcp_adapter.h"
-#include "protocol/solers_rpc_server.h"
+#include "editor/solers_editor_plugin.h"
 
 #endif // TOOLS_ENABLED
 
@@ -92,6 +97,7 @@ void initialize_solers_ai_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(SolersToolCell);
 		GDREGISTER_CLASS(SolersToolGroupCell);
 		GDREGISTER_CLASS(SolersStatusCell);
+		EditorPlugins::add_by_type<SolersEditorPlugin>();
 		SolersPluginRegistry::register_builtins();
 	}
 #endif // TOOLS_ENABLED

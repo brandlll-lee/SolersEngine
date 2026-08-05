@@ -31,42 +31,34 @@
 #pragma once
 
 #include "core/object/script_language.h"
+#include "core/os/process_id.h"
 #include "core/templates/safe_refcount.h"
 #include "editor/editor_data.h"
 #include "editor/plugins/editor_plugin.h"
 #include "editor/settings/editor_folding.h"
+#include "servers/display/display_server_enums.h"
 
 typedef void (*EditorNodeInitCallback)();
 typedef void (*EditorPluginInitializeCallback)();
 typedef bool (*EditorBuildCallback)();
 
 class AcceptDialog;
-class Button;
 class ColorPicker;
 class ConfirmationDialog;
 class Control;
 class FileDialog;
 class HBoxContainer;
-class HSplitContainer;
 class ImageTexture;
-class InputEvent;
-class Label;
 class MenuBar;
 class MenuButton;
 class OptionButton;
 class Panel;
 class PanelContainer;
-class PopupMenu;
 class RichTextLabel;
-class SolersAgentRuntime;
-class SolersDock;
-class SolersGlyphButton;
-class TabContainer;
 class SubViewport;
 class TextureProgressBar;
 class Timer;
 class Translation;
-class Tween;
 class Tree;
 class VBoxContainer;
 class VSplitContainer;
@@ -82,7 +74,6 @@ class EditorAbout;
 class EditorBuildProfileManager;
 class EditorBottomPanel;
 class EditorCommandPalette;
-class EditorDock;
 class EditorDockManager;
 class EditorExport;
 class EditorExportPreset;
@@ -226,10 +217,11 @@ public:
 
 		// Non-menu options.
 		SCENE_TAB_CLOSE,
-		SCENE_TAB_SET_AS_MAIN_SCENE,
+		SCENE_TAB_SAVE_SCENE,
+		SCENE_TAB_SAVE_AS_AND_RUN,
+		SCENE_TAB_SAVE_AS_MAIN_SCENE,
 		SAVE_AND_RUN,
 		SAVE_AND_RUN_MAIN_SCENE,
-		SAVE_AND_SET_MAIN_SCENE,
 		RESOURCE_SAVE,
 		RESOURCE_SAVE_AS,
 		SETTINGS_PICK_MAIN_SCENE,
@@ -315,35 +307,6 @@ private:
 	DockSplitContainer *right_l_vsplit = nullptr;
 	DockSplitContainer *right_r_vsplit = nullptr;
 	DockSplitContainer *center_split = nullptr;
-	HSplitContainer *solers_editor_split = nullptr;
-	VBoxContainer *solers_editor_host = nullptr;
-	HSplitContainer *solers_workspace_split = nullptr;
-	PanelContainer *solers_side_panel = nullptr;
-	HBoxContainer *solers_main_screen_buttons = nullptr;
-	HBoxContainer *solers_side_tabs = nullptr;
-	TabContainer *solers_side_pages = nullptr;
-	Control *solers_native_scene_host = nullptr;
-	DockSplitContainer *solers_native_file_split = nullptr;
-	Control *solers_native_file_top = nullptr;
-	Control *solers_native_file_bottom = nullptr;
-	Control *solers_bottom_dock_host = nullptr;
-	EditorDock *solers_hosted_bottom_dock = nullptr;
-	PopupMenu *solers_side_more_popup = nullptr;
-	bool solers_suppress_bottom_host = false;
-	bool solers_side_layout = false;
-	Node *solers_scene_original_parent = nullptr;
-	Node *solers_filesystem_original_parent = nullptr;
-	Node *solers_inspector_original_parent = nullptr;
-	int solers_scene_original_index = -1;
-	int solers_filesystem_original_index = -1;
-	int solers_inspector_original_index = -1;
-	Tree *solers_changes_tree = nullptr;
-	Label *solers_changes_empty_label = nullptr;
-	SolersAgentRuntime *solers_agent_runtime = nullptr;
-	SolersDock *solers_home_dock = nullptr;
-	String solers_project_path;
-	String solers_session_id;
-	bool solers_side_panel_visible = false;
 
 	// Main tabs.
 	EditorSceneTabs *scene_tabs = nullptr;
@@ -356,7 +319,7 @@ private:
 	bool exiting = false;
 	bool dimmed = false;
 
-	DisplayServer::WindowMode prev_mode = DisplayServer::WINDOW_MODE_MAXIMIZED;
+	DisplayServerEnums::WindowMode prev_mode = DisplayServerEnums::WINDOW_MODE_MAXIMIZED;
 	int old_split_ofs = 0;
 	VSplitContainer *top_split = nullptr;
 	Control *vp_base = nullptr;
@@ -388,8 +351,6 @@ private:
 
 	Timer *screenshot_timer = nullptr;
 
-	uint64_t started_timestamp = 0;
-
 	RichTextLabel *load_errors = nullptr;
 	AcceptDialog *load_error_dialog = nullptr;
 	bool load_errors_queued_to_display = false;
@@ -413,6 +374,7 @@ private:
 
 	ConfirmationDialog *confirmation = nullptr;
 	bool stop_project_confirmation = false;
+	bool stop_download_confirmation = false;
 	Button *confirmation_button = nullptr;
 	ConfirmationDialog *save_confirmation = nullptr;
 	ConfirmationDialog *import_confirmation = nullptr;
@@ -490,8 +452,6 @@ private:
 	bool waiting_for_first_scan = true;
 	bool load_editor_layout_done = false;
 
-	bool select_current_scene_file_requested = false;
-
 	HashSet<Ref<Translation>> tracked_translations;
 	bool pending_translation_notification = false;
 
@@ -518,6 +478,7 @@ private:
 	HashSet<String> textfile_extensions;
 	HashSet<String> other_file_extensions;
 	HashSet<FileDialog *> file_dialogs;
+	LocalVector<ObjectID> hdr_viewports;
 
 	Vector<Ref<EditorResourceConversionPlugin>> resource_conversion_plugins;
 	PrintHandlerList print_handler;
@@ -539,8 +500,6 @@ private:
 	static Vector<EditorNodeInitCallback> _init_callbacks;
 
 	String _get_system_info() const;
-
-	bool _should_display_update_spinner() const;
 
 	static void _dependency_error_report(const String &p_path, const String &p_dep, const String &p_type) {
 		DEV_ASSERT(Thread::get_caller_id() == Thread::get_main_id());
@@ -599,7 +558,7 @@ private:
 	void _palette_quick_open_dialog();
 
 	void _remove_plugin_from_enabled(const String &p_name);
-	void _plugin_over_edit(EditorPlugin *p_plugin, Object *p_object);
+	void _plugin_over_edit(EditorPlugin *p_plugin, Object *p_object, bool p_set_current = true);
 	void _plugin_over_self_own(EditorPlugin *p_plugin);
 
 	void _fs_changed();
@@ -626,7 +585,7 @@ private:
 	void _save_scene_silently();
 
 	void _set_current_scene(int p_idx);
-	void _set_current_scene_nocheck(int p_idx);
+	void _set_current_scene_nocheck(int p_idx, bool p_ignore_state = false);
 	void _nav_to_selected_scene();
 	bool _validate_scene_recursive(const String &p_filename, Node *p_node);
 	void _save_scene(String p_file, int idx = -1);
@@ -675,15 +634,12 @@ private:
 	virtual void input(const Ref<InputEvent> &p_event) override;
 	virtual void shortcut_input(const Ref<InputEvent> &p_event) override;
 
-	bool has_main_screen() const { return true; }
-
 	void _remove_edited_scene(bool p_change_tab = true);
-	void _remove_scene(int index, bool p_change_tab = true);
+	void _remove_scene(int p_idx, bool p_change_tab = true);
 	bool _find_and_save_resource(Ref<Resource> p_res, HashMap<Ref<Resource>, bool> &processed, int32_t flags);
 	bool _find_and_save_edited_subresources(Object *obj, HashMap<Ref<Resource>, bool> &processed, int32_t flags);
 	void _save_edited_subresources(Node *scene, HashMap<Ref<Resource>, bool> &processed, int32_t flags);
 	void _mark_unsaved_scenes();
-	bool _is_scene_unsaved(int p_idx);
 
 	void _find_node_types(Node *p_node, int &count_2d, int &count_3d);
 	void _save_scene_with_preview(String p_file, int p_idx = -1);
@@ -697,7 +653,8 @@ private:
 	void _restart_editor(bool p_goto_project_manager = false);
 
 	Dictionary _get_main_scene_state();
-	void _set_main_scene_state(Dictionary p_state, Node *p_for_scene);
+	void _set_main_scene_state(const Dictionary &p_state);
+	Ref<ConfigFile> _load_scene_config(const String &p_scene_path);
 
 	void _save_editor_layout();
 	void _load_editor_layout();
@@ -768,25 +725,6 @@ private:
 	void _add_to_main_menu(const String &p_name, PopupMenu *p_menu);
 
 	void _bottom_panel_resized();
-	void _solers_session_pressed(const String &p_session_id);
-	void _solers_new_session_pressed();
-	void _set_solers_session(const String &p_project_path, const String &p_session_id);
-	void _set_solers_side_panel_visible(bool p_visible);
-	void _toggle_solers_side_panel();
-	void _solers_side_tab_pressed(int p_tab);
-	void _solers_bottom_dock_tab_pressed(Object *p_dock);
-	void _solers_side_more_pressed();
-	void _solers_side_more_id_pressed(int p_id);
-	void _sync_solers_side_tabs();
-	void _rebuild_solers_side_strip();
-	void _rebuild_solers_side_panel();
-	void _populate_solers_changes_tree();
-	void _show_solers_native_scene_panel();
-	void _restore_solers_native_scene_panel();
-	void _show_solers_native_file_panel();
-	void _restore_solers_native_file_panel();
-	void _solers_host_bottom_dock(EditorDock *p_dock);
-	void _restore_solers_hosted_bottom_dock();
 
 protected:
 	friend class FileSystemDock;
@@ -795,9 +733,10 @@ protected:
 	void _notification(int p_what);
 
 public:
-	// Public for use with callable_mp.
-	void init_plugins();
+	// Public for use as signal callback.
 	void _on_plugin_ready(Object *p_script, const String &p_activate_name);
+
+	void init_plugins();
 
 	bool call_build();
 	void call_run_scene(const String &p_scene, Vector<String> &r_args);
@@ -818,12 +757,6 @@ public:
 	static EditorMainScreen *get_editor_main_screen() { return singleton->editor_main_screen; }
 
 	static Button *get_distraction_free_button() { return singleton->distraction_free; }
-
-	bool is_solers_side_layout() const { return solers_side_layout; }
-	Control *get_solers_bottom_dock_host() const { return solers_bottom_dock_host; }
-	bool solers_try_host_bottom_dock(EditorDock *p_dock);
-	void solers_unhost_bottom_dock();
-	void solers_notify_docks_changed();
 
 	static String adjust_scene_name_casing(const String &p_root_name);
 	static String adjust_script_name_casing(const String &p_file_name, ScriptLanguage::ScriptNameCasing p_auto_casing);
@@ -904,7 +837,7 @@ public:
 	void push_item(Object *p_object, const String &p_property = "", bool p_inspector_only = false);
 	void push_item_no_inspector(Object *p_object);
 	void edit_previous_item();
-	void edit_item(Object *p_object, Object *p_editing_owner);
+	void edit_item(Object *p_object, Object *p_editing_owner, bool p_set_current = true);
 	void push_node_item(Node *p_node);
 	void hide_unused_editors(const Object *p_editing_owner = nullptr);
 
@@ -933,7 +866,8 @@ public:
 	void set_preview_locale(const String &p_locale);
 
 	int new_scene();
-	Error load_scene(const String &p_scene, bool p_ignore_broken_deps = false, bool p_set_inherited = false, bool p_force_open_imported = false, bool p_silent_change_tab = false);
+	Error load_scene(const String &p_scene, bool p_ignore_broken_deps = false, bool p_set_inherited = false, bool p_force_open_imported = false, bool p_update_tabs = true);
+	Error open_scene(const String &p_scene, bool p_ignore_broken_deps = false, bool p_set_inherited = false, bool p_force_open_imported = false);
 	Error load_resource(const String &p_resource, bool p_ignore_broken_deps = false);
 	Error load_scene_or_resource(const String &p_file, bool p_ignore_broken_deps = false, bool p_change_scene_tab_if_already_open = true);
 
@@ -1009,7 +943,9 @@ public:
 	bool is_scene_open(const String &p_path);
 	bool is_multi_window_enabled() const;
 
+	static void setup_built_in_resource(const Ref<Resource> &p_resource, const String &p_owner_path);
 	void setup_color_picker(ColorPicker *p_picker);
+	void register_hdr_viewport(Viewport *p_viewport);
 
 	void request_instantiate_scene(const String &p_path);
 	void request_instantiate_scenes(const Vector<String> &p_files);
@@ -1018,8 +954,8 @@ public:
 
 	void notify_all_debug_sessions_exited();
 
-	OS::ProcessID has_child_process(OS::ProcessID p_pid) const;
-	void stop_child_process(OS::ProcessID p_pid);
+	ProcessID has_child_process(ProcessID p_pid) const;
+	void stop_child_process(ProcessID p_pid);
 
 	Ref<Theme> get_editor_theme() const { return theme; }
 	void update_preview_themes(int p_mode);
@@ -1112,6 +1048,7 @@ public:
 	bool ensure_main_scene(bool p_from_native);
 	bool validate_custom_directory();
 	void run_editor_script(const Ref<Script> &p_script);
+	bool is_scene_unsaved(int p_idx);
 };
 
 struct EditorProgressBG {

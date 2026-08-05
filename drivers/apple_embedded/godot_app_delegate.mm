@@ -30,8 +30,8 @@
 
 #import "godot_app_delegate.h"
 
-#import "app_delegate_service.h"
 #include "core/typedefs.h"
+#import "drivers/apple_embedded/app_delegate_service.h"
 
 @implementation GDTApplicationDelegate
 
@@ -118,6 +118,36 @@ static NSMutableArray<GDTAppDelegateServiceProtocol *> *services = nil;
 }
 
 - (void)application:(UIApplication *)application didDiscardSceneSessions:(NSSet<UISceneSession *> *)sceneSessions API_AVAILABLE(ios(13.0), tvos(13.0), visionos(1.0)) {
+}
+
+- (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)connectionOptions API_AVAILABLE(ios(13.0), tvos(13.0), visionos(1.0)) {
+	for (GDTAppDelegateServiceProtocol *service in services) {
+		if (![service respondsToSelector:_cmd]) {
+			continue;
+		}
+
+		[service scene:scene willConnectToSession:session options:connectionOptions];
+	}
+}
+
+- (void)scene:(UIScene *)scene openURLContexts:(NSSet<UIOpenURLContext *> *)URLContexts API_AVAILABLE(ios(13.0), tvos(13.0), visionos(1.0)) {
+	for (GDTAppDelegateServiceProtocol *service in services) {
+		if (![service respondsToSelector:_cmd]) {
+			continue;
+		}
+
+		[service scene:scene openURLContexts:URLContexts];
+	}
+}
+
+- (void)scene:(UIScene *)scene continueUserActivity:(NSUserActivity *)userActivity API_AVAILABLE(ios(13.0), tvos(13.0), visionos(1.0)) {
+	for (GDTAppDelegateServiceProtocol *service in services) {
+		if (![service respondsToSelector:_cmd]) {
+			continue;
+		}
+
+		[service scene:scene continueUserActivity:userActivity];
+	}
 }
 
 // MARK: Life-Cycle

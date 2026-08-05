@@ -30,7 +30,10 @@
 
 #include "skeleton_3d_editor_plugin.h"
 
+#include "core/io/resource_loader.h"
 #include "core/io/resource_saver.h"
+#include "core/object/callable_mp.h"
+#include "core/object/class_db.h"
 #include "editor/animation/animation_player_editor_plugin.h"
 #include "editor/editor_node.h"
 #include "editor/editor_string_names.h"
@@ -46,6 +49,7 @@
 #include "scene/3d/physics/physical_bone_simulator_3d.h"
 #include "scene/gui/separator.h"
 #include "scene/gui/texture_rect.h"
+#include "scene/main/scene_tree.h"
 #include "scene/resources/3d/capsule_shape_3d.h"
 #include "scene/resources/skeleton_profile.h"
 #include "scene/resources/surface_tool.h"
@@ -619,7 +623,8 @@ PhysicalBone3D *Skeleton3DEditor::create_physical_bone(int bone_id, int bone_chi
 	const real_t half_height(child_rest.origin.length() * 0.5);
 	const real_t radius(half_height * 0.2);
 
-	CapsuleShape3D *bone_shape_capsule = memnew(CapsuleShape3D);
+	Ref<CapsuleShape3D> bone_shape_capsule;
+	bone_shape_capsule.instantiate();
 	bone_shape_capsule->set_height(half_height * 2);
 	bone_shape_capsule->set_radius(radius);
 
@@ -970,6 +975,9 @@ void Skeleton3DEditor::_update_properties() {
 	if (pose_editor) {
 		pose_editor->_update_properties();
 	}
+	if (!skeleton || !skeleton->is_inside_tree()) {
+		return;
+	}
 	Node3DEditor::get_singleton()->update_transform_gizmo();
 }
 
@@ -1189,7 +1197,6 @@ void Skeleton3DEditor::create_editors() {
 	joint_tree = memnew(Tree);
 	joint_tree->set_auto_translate_mode(AUTO_TRANSLATE_MODE_DISABLED);
 	joint_tree->set_columns(1);
-	joint_tree->set_focus_mode(Control::FOCUS_NONE);
 	joint_tree->set_select_mode(Tree::SELECT_SINGLE);
 	joint_tree->set_hide_root(true);
 	joint_tree->set_v_size_flags(SIZE_EXPAND_FILL);
@@ -1261,6 +1268,7 @@ void Skeleton3DEditor::_notification(int p_what) {
 			update_joint_tree();
 		} break;
 		case NOTIFICATION_PREDELETE: {
+			_disconnect_from_tree();
 			if (skeleton) {
 				select_bone(-1); // Requires that the joint_tree has not been deleted.
 				_disconnect_from_skeleton();
@@ -1276,16 +1284,19 @@ void Skeleton3DEditor::_notification(int p_what) {
 }
 
 void Skeleton3DEditor::_node_removed(Node *p_node) {
-	if (skeleton && p_node == skeleton) {
-		_disconnect_from_skeleton();
-		if (pose_editor) {
-			pose_editor->set_skeleton(nullptr);
-			pose_editor->set_visible(false);
-		}
-		edit_mode = false;
-		skeleton = nullptr;
-		skeleton_options->hide();
+	if (!skeleton || p_node != skeleton) {
+		return;
 	}
+
+	_disconnect_from_tree();
+	_disconnect_from_skeleton();
+	if (pose_editor) {
+		pose_editor->set_skeleton(nullptr);
+		pose_editor->set_visible(false);
+	}
+	edit_mode = false;
+	skeleton = nullptr;
+	skeleton_options->hide();
 
 	_update_properties();
 }
@@ -1306,6 +1317,21 @@ void Skeleton3DEditor::_disconnect_from_skeleton() {
 	}
 	if (skeleton->is_connected(SceneStringName(pose_updated), callable_mp(this, &Skeleton3DEditor::_update_properties))) {
 		skeleton->disconnect(SceneStringName(pose_updated), callable_mp(this, &Skeleton3DEditor::_update_properties));
+	}
+}
+
+void Skeleton3DEditor::_disconnect_from_tree() {
+	if (!is_inside_tree()) {
+		return;
+	}
+
+	SceneTree *tree = get_tree();
+	if (!tree) {
+		return;
+	}
+
+	if (tree->is_connected("node_removed", callable_mp(this, &Skeleton3DEditor::_node_removed))) {
+		tree->disconnect("node_removed", callable_mp(this, &Skeleton3DEditor::_node_removed));
 	}
 }
 

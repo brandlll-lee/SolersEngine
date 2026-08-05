@@ -1,8 +1,8 @@
 # Solers 引擎 v0.1 执行方案
 
-版本：v0.1 planning draft  
-基线：Godot `4.6.3-stable`，commit `35e80b3a8822a9df9be390814b62f44c0a9c69e8`  
-源码目录：`F:\CodeHub\solers\godot-ai-native`  
+版本：v0.1 planning draft
+基线：Godot `4.6.3-stable`，commit `35e80b3a8822a9df9be390814b62f44c0a9c69e8`
+源码目录：`F:\CodeHub\solers\godot-ai-native`
 目标：把 Solers 做成兼容 Godot 的 AI 原生游戏引擎发行版，而不是项目级聊天插件。
 
 > 历史说明：本文记录 v0.1 planning draft。当前实现以 README 和 `SOLERS_ARCHITECTURE.md` 为准；早期双截图工具与 GDScript 截图 bridge 已由单一原生 `viewport.capture` 取代。

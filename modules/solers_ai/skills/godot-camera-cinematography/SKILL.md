@@ -106,31 +106,31 @@ Use when timing is authored on a timeline (cuts, holds, multi-beat dialogue). An
 - Parallel Tween FOV with transform for “push-in” emphasis; keep changes modest for dialogue (often 5–15°).
 
 ## Building block G — multi-shot without a priority stack
-Expose `play(shot_id: StringName)` that looks up a Dictionary/`Shot` Resource. The **caller** chooses which shot runs (signal, dialogue line, quest state). That is generic and open for extension.  
+Expose `play(shot_id: StringName)` that looks up a Dictionary/`Shot` Resource. The **caller** chooses which shot runs (signal, dialogue line, quest state). That is generic and open for extension.
 Do **not** bake Unreal-style priority stacks, blend corridors, or approach-angle auto-framing into Solers or a mandatory Autoload — those are optional game-specific policies on top of `play(shot_id)`.
 
 ## Optional addon
 If the project already wants a virtual-camera plugin: `addon.search` → `addon.inspect` → `addon.ensure` using the returned `entry_classes` / Contract. Prefer native nodes first; addons are optional, not the Solers camera center.
 
 ## Shop / dialogue example (composition only)
-1. TPS rig = Building block A.  
-2. `Area3D` on shop entrance → `body_entered` → `play(&"ots_keeper")` with Marker path.  
-3. Building block C moves to OTS looking at the keeper.  
-4. On exit / cancel → reverse blend to gameplay cam.  
+1. TPS rig = Building block A.
+2. `Area3D` on shop entrance → `body_entered` → `play(&"ots_keeper")` with Marker path.
+3. Building block C moves to OTS looking at the keeper.
+4. On exit / cancel → reverse blend to gameplay cam.
 All shot ids and paths are **authored**; the Agent must not infer them from mesh names.
 
 ## Verify
-1. `runtime.control` play the scene.  
-2. Trigger the shot (walk into Area or call `play`).  
+1. `runtime.control` play the scene.
+2. Trigger the shot (walk into Area or call `play`).
 3. `render.capture target=runtime` at start, mid-blend, and end — no pop at `make_current`, continuous motion, intended framing.
-4. `runtime.observe` — no spam from competing camera writers; SpringArm not fighting Tween.  
+4. `runtime.observe` — no spam from competing camera writers; SpringArm not fighting Tween.
 5. Confirm input disabled during blend and restored after return.
 
 ## Common failures
-- `make_current` before aligning transforms (pop).  
-- Tweening a camera that is still a SpringArm child while the arm writes position every physics frame.  
-- Euler/`basis` lerp instead of `interpolate_with`.  
-- Two Tweens or gameplay look + cinematic both active.  
-- Using `RemoteTransform3D` during a blend.  
-- Guessing shot targets from node names instead of explicit paths/ids.  
+- `make_current` before aligning transforms (pop).
+- Tweening a camera that is still a SpringArm child while the arm writes position every physics frame.
+- Euler/`basis` lerp instead of `interpolate_with`.
+- Two Tweens or gameplay look + cinematic both active.
+- Using `RemoteTransform3D` during a blend.
+- Guessing shot targets from node names instead of explicit paths/ids.
 - Building a mandatory priority-stack “director” framework when `play(shot_id)` + Markers suffice.

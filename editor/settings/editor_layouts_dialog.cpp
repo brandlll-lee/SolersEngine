@@ -31,6 +31,7 @@
 #include "editor_layouts_dialog.h"
 
 #include "core/io/config_file.h"
+#include "core/object/callable_mp.h"
 #include "editor/gui/editor_validation_panel.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"

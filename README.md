@@ -6,9 +6,9 @@
 **AI-native game engine (Godot fork) where AI acts as a first-class native
 operator for collaborative game development.**
 
-[Build from source](#build-from-source) · [Architecture](docs/SOLERS_ARCHITECTURE.md) · [License](LICENSE.txt)
+[Build from source](#build-from-source) · [Architecture](docs/SOLERS_ARCHITECTURE.md) · [Upstream](docs/UPSTREAM.md) · [License](LICENSE.txt)
 
-Godot 4.6.3 · Standard Godot projects · Open model access
+Godot 4.7.1 · Standard Godot projects · Open model access
 
 </div>
 
@@ -56,7 +56,7 @@ Godot projects that can be opened, edited, and shipped with familiar tools.
 ## Build from source
 
 Solers is under active development. Clone the repository and use the standard
-[Godot build toolchain](https://docs.godotengine.org/en/stable/engine_details/development/compiling/index.html).
+[Godot 4.7 build toolchain](https://docs.godotengine.org/en/4.7/engine_details/development/compiling/index.html).
 
 ```bash
 git clone https://github.com/brandlll-lee/SolersEngine.git
@@ -77,7 +77,7 @@ scons platform=linuxbsd target=editor dev_build=yes -j4
 ./bin/solers.linuxbsd.editor.dev.x86_64
 ```
 
-See the [official Linux build guide](https://docs.godotengine.org/en/stable/engine_details/development/compiling/compiling_for_linuxbsd.html)
+See the [official Linux build guide](https://docs.godotengine.org/en/4.7/engine_details/development/compiling/compiling_for_linuxbsd.html)
 for distribution-specific dependencies. On macOS, use the same SCons flow with
 `platform=macos`.
 
@@ -94,7 +94,7 @@ To include the Solers behavior tests in a Windows development build:
 
 ```powershell
 python -m SCons platform=windows target=editor dev_build=yes tests=yes -j4
-.\bin\solers.windows.editor.dev.x86_64.tests.console.exe --test '--test-case=*[Solers*'
+.\bin\solers.windows.editor.dev.x86_64.console.exe --test '--test-case=*[Solers*'
 ```
 
 ## License

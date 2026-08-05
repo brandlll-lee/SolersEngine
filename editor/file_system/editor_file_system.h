@@ -31,14 +31,15 @@
 #pragma once
 
 #include "core/io/dir_access.h"
-#include "core/io/resource_importer.h"
-#include "core/io/resource_loader.h"
+#include "core/io/resource_loader_constants.h"
+#include "core/os/semaphore.h"
 #include "core/os/thread.h"
 #include "core/os/thread_safe.h"
 #include "core/templates/hash_set.h"
 #include "core/templates/safe_refcount.h"
 #include "scene/main/node.h"
 
+class ResourceFormatImporter;
 class FileAccess;
 
 struct EditorProgressBG;
@@ -91,6 +92,7 @@ public:
 	int get_file_count() const;
 	String get_file(int p_idx) const;
 	String get_file_path(int p_idx) const;
+	ResourceUID::ID get_file_uid(int p_idx) const;
 	StringName get_file_type(int p_idx) const;
 	StringName get_file_resource_script_class(int p_idx) const;
 	Vector<String> get_file_deps(int p_idx) const;
@@ -120,11 +122,7 @@ protected:
 	GDVIRTUAL0RC_REQUIRED(bool, _is_active)
 	GDVIRTUAL0RC_REQUIRED(Vector<String>, _get_file_extensions)
 	GDVIRTUAL0RC_REQUIRED(bool, _query)
-	static void _bind_methods() {
-		GDVIRTUAL_BIND(_is_active);
-		GDVIRTUAL_BIND(_get_file_extensions);
-		GDVIRTUAL_BIND(_query);
-	}
+	static void _bind_methods();
 
 public:
 	virtual bool is_active() const {
@@ -176,6 +174,7 @@ class EditorFileSystem : public Node {
 		~ScannedDirectory();
 	};
 
+	bool is_case_sensitive = true;
 	bool use_threads = false;
 	Thread thread;
 	static void _thread_func(void *_userdata);
@@ -183,15 +182,9 @@ class EditorFileSystem : public Node {
 	EditorFileSystemDirectory *new_filesystem = nullptr;
 	static ScannedDirectory *first_scan_root_dir;
 
-	bool filesystem_changed_queued = false;
+	SafeFlag filesystem_changed_queued;
 	bool scanning = false;
 	bool importing = false;
-	struct PendingImportOptions {
-		String importer;
-		HashMap<StringName, Variant> options;
-	};
-	Mutex pending_import_options_mutex;
-	HashMap<String, PendingImportOptions> pending_import_options;
 	bool first_scan = true;
 	bool scan_changes_pending = false;
 	float scan_total;
@@ -339,7 +332,7 @@ class EditorFileSystem : public Node {
 	ScriptClassInfo _get_global_script_class(const String &p_type, const String &p_path) const;
 
 	static Error _resource_import(const String &p_path);
-	static Ref<Resource> _load_resource_on_startup(ResourceFormatImporter *p_importer, const String &p_path, Error *r_error, bool p_use_sub_threads, float *r_progress, ResourceFormatLoader::CacheMode p_cache_mode);
+	static Ref<Resource> _load_resource_on_startup(ResourceFormatImporter *p_importer, const String &p_path, Error *r_error, bool p_use_sub_threads, float *r_progress, ResourceLoaderConstants::CacheMode p_cache_mode);
 
 	bool using_fat32_or_exfat; // Workaround for projects in FAT32 or exFAT filesystem (pendrives, most of the time)
 
@@ -365,22 +358,6 @@ class EditorFileSystem : public Node {
 	};
 
 	void _reimport_thread(uint32_t p_index, ImportThreadData *p_import_data);
-
-	// Solers: state for the incremental (frame-sliced) reimport variant used by
-	// agent-driven asset imports. See reimport_files_incremental_begin().
-	// Runs of thread-capable importers (textures and friends) execute as one
-	// WorkerThreadPool group batch that steps only poll for completion, so the
-	// editor loop never carries that import work itself.
-	struct IncrementalThreadedBatch;
-	struct IncrementalImportQueue {
-		Vector<ImportFile> files;
-		HashSet<String> groups_to_reimport;
-		int next = 0;
-		EditorProgressBG *progress = nullptr;
-		IncrementalThreadedBatch *threaded_batch = nullptr;
-	};
-	IncrementalImportQueue incremental_import;
-	bool incremental_import_active = false;
 
 	static ResourceUID::ID _resource_saver_get_resource_id_for_path(const String &p_path, bool p_generate);
 
@@ -416,6 +393,8 @@ public:
 	HashSet<String> get_valid_extensions() const;
 	void register_global_class_script(const String &p_search_path, const String &p_target_path);
 
+	void filesystem_changed();
+
 	EditorFileSystemDirectory *get_filesystem_path(const String &p_path);
 	String get_file_type(const String &p_file) const;
 	EditorFileSystemDirectory *find_file(const String &p_file, int *r_index) const;
@@ -425,16 +404,6 @@ public:
 	Error reimport_append(const String &p_file, const HashMap<StringName, Variant> &p_custom_options, const String &p_custom_importer, Variant p_generator_parameters);
 
 	void reimport_file_with_custom_parameters(const String &p_file, const String &p_importer, const HashMap<StringName, Variant> &p_custom_params);
-	void queue_import_options(const String &p_file, const String &p_importer, const HashMap<StringName, Variant> &p_custom_params);
-
-	// Solers: incremental reimport — the same per-file import kernel as
-	// reimport_files(), sliced across frames with background progress so the
-	// editor stays interactive during agent-driven imports. Each step imports
-	// whole files until the budget elapses and emits resources_reimporting /
-	// resources_reimported for exactly the files of that slice.
-	Error reimport_files_incremental_begin(const Vector<String> &p_files);
-	bool reimport_files_incremental_step(uint64_t p_budget_msec);
-	bool is_incremental_importing() const { return incremental_import_active; }
 
 	bool is_group_file(const String &p_path) const;
 	void move_group_file(const String &p_path, const String &p_new_path);

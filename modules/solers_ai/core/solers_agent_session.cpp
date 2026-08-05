@@ -31,13 +31,16 @@
 #include "solers_agent_session.h"
 
 #include "core/io/json.h"
-#include "core/object/message_queue.h"
+#include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
+#include "core/object/message_queue.h"
 #include "core/os/os.h"
 #include "core/os/time.h"
 #include "editor/editor_interface.h"
 #include "editor/editor_log.h"
 #include "editor/editor_node.h"
+#include "scene/main/node.h"
+
 #include "modules/solers_ai/core/solers_action_timeline.h"
 #include "modules/solers_ai/core/solers_asset_service.h"
 #include "modules/solers_ai/core/solers_context_manager.h"
@@ -53,7 +56,6 @@
 #include "modules/solers_ai/llm/solers_llm_protocol.h"
 #include "modules/solers_ai/llm/solers_llm_retry.h"
 #include "modules/solers_ai/llm/solers_models_dev.h"
-#include "scene/main/node.h"
 
 struct SolersAgentSession::ToolThreadState {
 	SolersToolRegistry *registry = nullptr;
@@ -2716,7 +2718,7 @@ void SolersAgentSession::_deliver_tool_result(const String &p_id, const String &
 	Dictionary result = p_result.duplicate(true);
 	result["call_id"] = p_id;
 	// A result widens the tool surface by declaring what it unlocks, so this
-	// path never has to recognise which tool produced it.
+	// path never has to recognize which tool produced it.
 	const PackedStringArray unlocked = Dictionary(result.get("data", Dictionary())).get("unlock_tools", PackedStringArray());
 	for (int i = 0; i < unlocked.size(); i++) {
 		task_deferred_tools.insert(StringName(unlocked[i]));

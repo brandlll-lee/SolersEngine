@@ -34,32 +34,31 @@
 
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
+#include "core/debugger/debugger_marshalls.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/image.h"
 #include "core/io/json.h"
 #include "core/io/resource_loader.h"
 #include "core/io/resource_uid.h"
+#include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "core/os/os.h"
 #include "core/templates/hash_set.h"
 #include "core/templates/local_vector.h"
 #include "core/version.h"
+#include "editor/debugger/editor_debugger_node.h"
+#include "editor/debugger/script_editor_debugger.h"
 #include "editor/editor_data.h"
 #include "editor/editor_interface.h"
 #include "editor/editor_log.h"
 #include "editor/editor_main_screen.h"
 #include "editor/editor_node.h"
 #include "editor/editor_undo_redo_manager.h"
-#include "core/debugger/debugger_marshalls.h"
-#include "editor/debugger/editor_debugger_node.h"
-#include "editor/debugger/script_editor_debugger.h"
 #include "editor/file_system/editor_file_system.h"
 #include "editor/run/editor_run_bar.h"
 #include "editor/run/game_view_plugin.h"
 #include "editor/scene/3d/node_3d_editor_plugin.h"
-#include "modules/solers_ai/core/solers_context_manager.h"
-#include "modules/solers_ai/core/solers_resource_service.h"
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/node_3d.h"
 #include "scene/3d/visual_instance_3d.h"
@@ -69,6 +68,9 @@
 #include "scene/resources/environment.h"
 #include "scene/resources/packed_scene.h"
 #include "servers/rendering/rendering_server.h"
+
+#include "modules/solers_ai/core/solers_context_manager.h"
+#include "modules/solers_ai/core/solers_resource_service.h"
 
 static constexpr uint64_t SOLERS_CAPTURE_TIMEOUT_MSEC = 10000;
 static constexpr int SOLERS_RUNTIME_EVENT_LIMIT = 512;
@@ -195,8 +197,8 @@ int SolersObservationService::get_capture_settle_frame_count(bool p_sdfgi_enable
 	if (!p_sdfgi_enabled) {
 		return 1;
 	}
-	static constexpr int frames[RenderingServer::ENV_SDFGI_CONVERGE_MAX] = { 5, 10, 15, 20, 25, 30 };
-	return frames[CLAMP(p_convergence_setting, 0, (int)RenderingServer::ENV_SDFGI_CONVERGE_MAX - 1)];
+	static constexpr int frames[RSE::ENV_SDFGI_CONVERGE_MAX] = { 5, 10, 15, 20, 25, 30 };
+	return frames[CLAMP(p_convergence_setting, 0, (int)RSE::ENV_SDFGI_CONVERGE_MAX - 1)];
 }
 
 static Ref<Environment> _solers_capture_environment(const Ref<World3D> &p_world, const Ref<Environment> &p_override = Ref<Environment>()) {

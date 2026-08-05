@@ -43,16 +43,17 @@
 #include "core/object/script_language.h"
 #include "core/os/os.h"
 #include "editor/editor_node.h"
-#include "scene/main/node.h"
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/file_system/editor_file_system.h"
-#include "modules/solers_ai/core/solers_action_timeline.h"
-#include "modules/solers_ai/core/solers_resource_service.h"
+#include "scene/main/node.h"
 #include "scene/resources/resource_format_text.h"
 #include "scene/resources/shader.h"
 #include "servers/rendering/shader_language.h"
 #include "servers/rendering/shader_preprocessor.h"
 #include "servers/rendering/shader_types.h"
+
+#include "modules/solers_ai/core/solers_action_timeline.h"
+#include "modules/solers_ai/core/solers_resource_service.h"
 
 void SolersScriptService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_action_timeline", "action_timeline"), &SolersScriptService::set_action_timeline);
@@ -150,9 +151,9 @@ Dictionary SolersScriptService::_validate_source(const String &p_path, const Str
 				if (!types) {
 					return _error("SHADER_VALIDATOR_UNAVAILABLE", "Godot's shader type registry is unavailable.", false);
 				}
-				compile_info.functions = types->get_functions(RenderingServer::ShaderMode(mode));
-				compile_info.render_modes = types->get_modes(RenderingServer::ShaderMode(mode));
-				compile_info.stencil_modes = types->get_stencil_modes(RenderingServer::ShaderMode(mode));
+				compile_info.functions = types->get_functions(RSE::ShaderMode(mode));
+				compile_info.render_modes = types->get_modes(RSE::ShaderMode(mode));
+				compile_info.stencil_modes = types->get_stencil_modes(RSE::ShaderMode(mode));
 				compile_info.shader_types = types->get_types();
 			}
 			validation_error = language.compile(preprocessed, compile_info);

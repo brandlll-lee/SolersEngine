@@ -1,8 +1,8 @@
 # Solers 架构与开发执行规划
 
-版本：0.1  
-日期：2026-06-06  
-基础引擎目标：优先基于 Godot 4.6.3-stable，开发过程中持续跟踪 Godot 4.7
+版本：0.1
+日期：2026-06-06
+基础引擎：Godot 4.7.1-stable，持续跟踪官方 `4.7` 分支
 
 ## 1. 产品核心判断
 
@@ -14,25 +14,25 @@ Solers 的长期目标是让 AI 可以操控约 90% 的实用 Godot 编辑器工
 
 ## 2. 不可妥协的设计原则
 
-1. Godot 兼容性优先。  
+1. Godot 兼容性优先。
    Solers 项目应尽可能保持为标准 Godot 项目：`.godot`、`.tscn`、`.scn`、`.tres`、`.res`、`.gd`、`.cs` 和标准 export preset 都应继续可用。除非某个能力明确标记为 Solers-only，否则项目应该可以被上游 Godot 打开和维护。
 
-2. AI 操作必须可观察、可撤销、可审计。  
+2. AI 操作必须可观察、可撤销、可审计。
    每个有意义的 AI 操作都应该进入 Action Timeline，并尽可能接入 Godot 的 undo/redo。操作记录应包含结构化输入、输出、影响对象、差异、日志和验证结果。
 
-3. 优先使用引擎操作，而不是直接改文件。  
+3. 优先使用引擎操作，而不是直接改文件。
    AI 不应该主要靠手写 `.tscn` 或 `.tres` 文本来修改项目。正确路径是调用 schema 化的工具，由工具使用 Godot 编辑器/运行时 API 执行操作。脚本、配置和少数受控 fallback 场景可以使用文本补丁。
 
-4. 工具面要少而精。  
+4. 工具面要少而精。
    30 到 40 个高质量、可组合、schema 清晰的工具，胜过 150 个浅层泛工具。工具数量不是护城河，工具质量和编排质量才是。
 
-5. BYOK 是底线。  
+5. BYOK 是底线。
    Solers 应支持用户自带 OpenAI、Anthropic、Google、xAI、DeepSeek、Qwen、Ollama、LM Studio 或企业私有网关密钥，而不是把用户锁定到单一模型供应商。
 
-6. 验证是生成的一部分。  
+6. 验证是生成的一部分。
    一次 Solers agent run 不应停在“改完了”。它至少要检查语法、场景有效性、编辑器错误、运行时日志、必要时的视觉输出，以及目标平台可行时的导出检查。
 
-7. 能用插件验证的，不急着深 fork。  
+7. 能用插件验证的，不急着深 fork。
    先做薄 fork 和编辑器插件。只有当公开插件 API 阻碍稳定性、用户体验、性能或安全时，才把能力下沉到 C++ fork 层。
 
 ## 3. 高层架构
@@ -477,7 +477,7 @@ Asset-aware Agent 不应盲目导入资产。license 和 source metadata 对商�
 任务：
 
 - Clone Godot 源码。
-- Checkout `4.6.3-stable`。
+- Checkout 当前锁定的 Godot stable tag。
 - 本地构建 editor。
 - 先写清 Windows 构建步骤。
 - 在不滥用 Godot 商标的前提下替换发行版品牌。
@@ -674,9 +674,9 @@ Ziva 是 in-editor agent。Solers 要更底层：AI 是引擎一等操作者，�
 
 Summer 是最接近的品类竞品。Solers 应从 BYOK、开放工程、私有化部署、Godot upstream 兼容、可审计性和专业工作流上做差异化。
 
-### Blured Engine
+### Blurred Engine
 
-Blured 验证了 fork + AI server 的方向。Solers 应通过工程纪律取胜：稀疏高质量工具、权限模型、undo/redo、验证闭环、rebase 策略、测试和兼容性。
+Blurred 验证了 fork + AI server 的方向。Solers 应通过工程纪律取胜：稀疏高质量工具、权限模型、undo/redo、验证闭环、rebase 策略、测试和兼容性。
 
 ### Cursor + Godot
 
@@ -716,7 +716,7 @@ solers/
    ```powershell
    git clone https://github.com/godotengine/godot.git godot
    cd godot
-   git checkout 4.6.3-stable
+   git checkout 4.7.1-stable
    ```
 
 2. 按 Godot 官方说明在 Windows 上构建 editor。
@@ -760,4 +760,3 @@ solers/
 8. 留下一个正常 Godot-compatible 的项目。
 
 这就是“AI 原生 Godot”的最小可信版本。
-

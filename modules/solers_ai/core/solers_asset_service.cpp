@@ -2,8 +2,30 @@
 /*  solers_asset_service.cpp                                              */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                              SOLERS ENGINE                              */
-/*                        (a fork of Godot Engine)                        */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
 #include "solers_asset_service.h"
@@ -19,6 +41,7 @@
 #include "core/io/resource_importer.h"
 #include "core/io/resource_loader.h"
 #include "core/math/math_funcs.h"
+#include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "core/os/os.h"
 #include "core/os/time.h"
@@ -28,14 +51,15 @@
 #include "editor/file_system/editor_file_system.h"
 #include "editor/file_system/editor_paths.h"
 #include "editor/settings/editor_settings.h"
-#include "modules/solers_ai/core/solers_geometry_facts.h"
-#include "modules/solers_ai/core/solers_secret_store.h"
-#include "modules/solers_ai/plugins/solers_plugin.h"
-#include "modules/zip/zip_reader.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/main/node.h"
 #include "scene/resources/mesh.h"
 #include "scene/resources/packed_scene.h"
+
+#include "modules/solers_ai/core/solers_geometry_facts.h"
+#include "modules/solers_ai/core/solers_secret_store.h"
+#include "modules/solers_ai/plugins/solers_plugin.h"
+#include "modules/zip/zip_reader.h"
 
 static constexpr const char *SOLERS_PLUGIN_LOCK_PATH = "res://.solers/plugins.lock.json";
 static constexpr const char *SOLERS_TERRAIN3D_ID = "terrain3d";
@@ -434,7 +458,6 @@ String SolersAssetService::_source_dir(const String &p_asset_id) {
 	return _asset_dir(p_asset_id).path_join("source");
 }
 
-
 static Dictionary _solers_project_request(const Dictionary &p_args, const String &p_kind, const String &p_name, const String &p_job_id) {
 	String target_dir = String(p_args.get("target_dir", String())).replace_char('\\', '/').simplify_path();
 	if (target_dir.is_empty()) {
@@ -456,7 +479,6 @@ static Dictionary _solers_project_request(const Dictionary &p_args, const String
 	result["import_options"] = import_options;
 	return result;
 }
-
 
 static String _solers_asset_status(const Dictionary &p_manifest) {
 	return String(p_manifest.get("status", "unknown")).to_lower();
@@ -516,7 +538,9 @@ static bool _solers_normalize_integer_options(Dictionary &r_options, const Dicti
 }
 
 static bool _solers_manifest_matches_operation(const Dictionary &p_manifest, const Dictionary &p_operation, String &r_reason) {
-	const Dictionary requires = p_operation.get("requires", Dictionary());
+	const Dictionary
+		requires
+	= p_operation.get("requires", Dictionary());
 	const String required_kind = String(requires.get("kind", String()));
 	if (!required_kind.is_empty() && String(p_manifest.get("kind", String())).to_lower() != required_kind) {
 		r_reason = "Asset kind does not match.";
@@ -542,7 +566,9 @@ static bool _solers_manifest_matches_operation(const Dictionary &p_manifest, con
 			return false;
 		}
 	}
-	const Array task_id_fields = requires.get("task_id_fields", Array());
+	const Array task_id_fields =
+		requires
+			.get("task_id_fields", Array());
 	if (!task_id_fields.is_empty() && SolersPlugin::first_manifest_field(p_manifest, task_id_fields).is_empty()) {
 		r_reason = "Provider task id is missing.";
 		return false;
@@ -656,7 +682,6 @@ void SolersAssetService::_download_preview(Task *p_task, Dictionary &r_state, co
 	_set_task_state(p_task, r_state);
 }
 
-
 void SolersAssetService::_set_task_state(Task *p_task, const Dictionary &p_state) {
 	{
 		MutexLock lock(p_task->mutex);
@@ -693,7 +718,6 @@ void SolersAssetService::_queue_terminal_event(Task *p_task) {
 	MutexLock lock(terminal_events_mutex);
 	terminal_events.push_back(state);
 }
-
 
 static String _project_import_transaction_key(const String &p_asset_id, const String &p_target_dir, const Array &p_files, const Array &p_hashes) {
 	String fingerprint = p_asset_id + "\n" + p_target_dir;
@@ -986,7 +1010,6 @@ static Array _solers_selected_attachments(const Array &p_attachments, const Arra
 	return selected;
 }
 
-
 void SolersAssetService::_run_task(Task *p_task) {
 	Dictionary state = _task_state(p_task);
 	const String provider = state.get("provider", String());
@@ -1195,7 +1218,6 @@ Dictionary SolersAssetService::generate(const Dictionary &p_args) {
 Dictionary SolersAssetService::generate_for_session(const Dictionary &p_args, const String &p_session_id) {
 	return _generate(p_args, p_session_id);
 }
-
 
 bool SolersAssetService::is_trusted_addon(const Dictionary &p_args) {
 	if (String(p_args.get("source", String())).to_lower() != "bundled" || String(p_args.get("plugin_id", String())).to_lower() != SOLERS_TERRAIN3D_ID) {
@@ -1940,7 +1962,9 @@ Dictionary SolersAssetService::_run_operation(const Dictionary &p_args, const St
 	if (!_solers_normalize_integer_options(options, properties, normalize_error) || !_solers_normalize_integer_options(raw_provider_options, properties, normalize_error)) {
 		return _error("INVALID_ARGUMENT", normalize_error);
 	}
-	const Dictionary requires = operation.get("requires", Dictionary());
+	const Dictionary
+		requires
+	= operation.get("requires", Dictionary());
 	const String source_task_id = SolersPlugin::first_manifest_field(source, requires.get("task_id_fields", Array()));
 	const String kind = String(source.get("kind", String())).to_lower();
 	const Dictionary provider_config = _provider_config(kind, provider);
@@ -2427,18 +2451,6 @@ Dictionary SolersAssetService::start_project_import(const Dictionary &p_args) {
 			return _error("IMPORT_FAILED", err);
 		}
 	}
-	if (EditorFileSystem *filesystem = _solers_editor_filesystem()) {
-		for (int i = 0; i < static_lightmap_import_requests.size(); i++) {
-			const Dictionary request = static_lightmap_import_requests[i];
-			HashMap<StringName, Variant> options;
-			const Dictionary desired = request.get("options", Dictionary());
-			for (const Variant *key = desired.next(nullptr); key; key = desired.next(key)) {
-				options[StringName(String(*key))] = desired[*key];
-			}
-			filesystem->queue_import_options(request.get("path", String()), request.get("importer", String()), options);
-		}
-	}
-
 	// Files Godot itself must (re)import: freshly copied sources plus any
 	// entrypoint whose queued import options change its sidecar. Every path
 	// listed here is settled exclusively by the editor's resources_reimported
@@ -2478,6 +2490,7 @@ Dictionary SolersAssetService::start_project_import(const Dictionary &p_args) {
 	state["entrypoints"] = entrypoints;
 	state["pending_files"] = pending_import_files;
 	state["deferred_register_files"] = deferred_register_files;
+	state["import_options"] = static_lightmap_import_requests;
 	state["import_file_count"] = pending_import_files.size();
 	state["result"] = result_data;
 	state["poll_args"] = poll_args;
@@ -2590,7 +2603,7 @@ Dictionary SolersAssetService::poll_project_import(const Dictionary &p_args) {
 Dictionary SolersAssetService::get_project_import_coordinator_state() const {
 	Dictionary state;
 	EditorFileSystem *filesystem = _solers_editor_filesystem();
-	state["wave_active"] = filesystem && filesystem->is_incremental_importing();
+	state["wave_active"] = filesystem && filesystem->is_importing();
 	int queued = 0;
 	int active = 0;
 	MutexLock lock(project_imports_mutex);
@@ -2741,31 +2754,21 @@ void SolersAssetService::poll(bool p_allow_new_imports) {
 		return;
 	}
 
-	// 1. Drive the active incremental batch within this frame's budget. Each
-	// step imports whole files and emits resources_reimporting/reimported per
-	// file, so the editor keeps rendering and responding between steps.
+	// Godot owns importing; Solers admits at most one native file reimport per
+	// frame and observes completion only through resources_reimported.
 	bool stepped = false;
-	if (filesystem->is_incremental_importing()) {
-		const int64_t frame_budget_msec = ProjectSettings::get_singleton()->get_setting("solers/import/frame_budget_msec", 8);
-		filesystem->reimport_files_incremental_step((uint64_t)MAX((int64_t)1, frame_budget_msec));
-		stepped = true;
-	}
-
-	// 2. Hand the next batch of queued imports to the editor once the native
-	// pipeline is free. update_files() registers every copied file in the
-	// filesystem index; the incremental queue then owns the actual imports.
-	if (p_allow_new_imports && !stepped && !filesystem->is_scanning() && !filesystem->is_importing() && !filesystem->is_incremental_importing()) {
+	if (!filesystem->is_scanning() && !filesystem->is_importing()) {
 		Vector<String> register_files;
-		Vector<String> batch_files;
-		Vector<String> batch_import_ids;
 		HashSet<String> seen_register;
-		HashSet<String> seen_batch;
+		String import_path;
+		String importer;
+		HashMap<StringName, Variant> import_options;
 		{
 			MutexLock lock(project_imports_mutex);
 			const uint64_t now = OS::get_singleton()->get_ticks_msec();
 			for (KeyValue<String, Dictionary> &E : project_imports) {
 				Dictionary state = E.value;
-				if (String(state.get("status", String())) != "pending" || String(state.get("stage", String())) != "queued") {
+				if (!p_allow_new_imports || String(state.get("status", String())) != "pending" || String(state.get("stage", String())) != "queued") {
 					continue;
 				}
 				const Array files = state.get("files", Array());
@@ -2784,40 +2787,50 @@ void SolersAssetService::poll(bool p_allow_new_imports) {
 						register_files.push_back(path);
 					}
 				}
-				const Array pending_files = state.get("pending_files", Array());
-				for (int i = 0; i < pending_files.size(); i++) {
-					const String path = pending_files[i];
-					if (!seen_batch.has(path)) {
-						seen_batch.insert(path);
-						batch_files.push_back(path);
-					}
-				}
 				state["stage"] = "importing";
 				state["last_progress_msec"] = now;
 				E.value = state;
-				batch_import_ids.push_back(E.key);
+			}
+			for (const KeyValue<String, Dictionary> &E : project_imports) {
+				const Dictionary state = E.value;
+				if (String(state.get("status", String())) != "pending" || String(state.get("stage", String())) != "importing") {
+					continue;
+				}
+				const Array pending_files = state.get("pending_files", Array());
+				if (pending_files.is_empty()) {
+					continue;
+				}
+				import_path = pending_files[0];
+				const Array requests = state.get("import_options", Array());
+				for (int i = 0; i < requests.size(); i++) {
+					const Dictionary request = requests[i];
+					if (String(request.get("path", String())) != import_path) {
+						continue;
+					}
+					importer = request.get("importer", String());
+					const Dictionary options = request.get("options", Dictionary());
+					for (const Variant *key = options.next(nullptr); key; key = options.next(key)) {
+						import_options[StringName(String(*key))] = options[*key];
+					}
+					break;
+				}
+				break;
 			}
 		}
 		if (!register_files.is_empty()) {
 			filesystem->update_files(register_files);
 		}
-		if (!batch_files.is_empty() && filesystem->reimport_files_incremental_begin(batch_files) != OK) {
-			// The pipeline was grabbed between the checks above; retry next frame.
-			MutexLock lock(project_imports_mutex);
-			for (int i = 0; i < batch_import_ids.size(); i++) {
-				Dictionary *state = project_imports.getptr(batch_import_ids[i]);
-				if (state && String(state->get("status", String())) == "pending") {
-					(*state)["stage"] = "queued";
-				}
-			}
+		if (!import_path.is_empty()) {
+			filesystem->reimport_file_with_custom_parameters(import_path, importer, import_options);
+			stepped = true;
 		}
 	}
 
-	// 3. Settle imports whose files the editor has all confirmed through
+	// Settle imports whose files the editor has all confirmed through
 	// resources_reimported. Verification loads each entrypoint once (the
 	// resource cache reuses it afterwards); one import settles per frame to
 	// bound main-thread work.
-	const bool pipeline_busy = stepped || filesystem->is_scanning() || filesystem->is_importing() || filesystem->is_incremental_importing();
+	const bool pipeline_busy = stepped || filesystem->is_scanning() || filesystem->is_importing();
 	String verify_id;
 	Dictionary verify_state;
 	{

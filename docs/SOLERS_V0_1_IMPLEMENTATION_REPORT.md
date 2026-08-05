@@ -1,7 +1,7 @@
 # Solers v0.1 实现报告
 
-日期：2026-06-06  
-Godot 基线：`4.6.3-stable`  
+日期：2026-06-06
+Godot 基线：`4.6.3-stable`
 Fork 路径：`F:\CodeHub\solers\godot-ai-native`
 
 > 本文保留 v0.1 的交付背景，但工具名和 Agent Runtime 描述已同步到当前实现。早期独立 editor/runtime 截图路径已删除，当前唯一入口是 `viewport.capture`。

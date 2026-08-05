@@ -2,10 +2,30 @@
 /*  solers_reflection_service.cpp                                         */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                              SOLERS ENGINE                              */
-/*                        (a fork of Godot Engine)                        */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
 /**************************************************************************/
-/* Solers: AI-native game engine.                                        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
 #include "solers_reflection_service.h"
@@ -21,11 +41,13 @@
 #include "core/math/random_pcg.h"
 #include "core/object/class_db.h"
 #include "core/object/script_language.h"
+#include "core/os/os.h"
 #include "core/templates/hash_set.h"
-#include "editor/editor_interface.h"
 #include "editor/doc/editor_help.h"
+#include "editor/editor_interface.h"
 #include "editor/editor_node.h"
 #include "editor/editor_undo_redo_manager.h"
+
 #include "modules/modules_enabled.gen.h"
 #include "modules/solers_ai/core/solers_action_timeline.h"
 #include "modules/solers_ai/core/solers_geometry_facts.h"
@@ -39,9 +61,6 @@
 #include "scene/3d/gpu_particles_3d.h"
 #include "scene/3d/light_3d.h"
 #include "scene/3d/lightmap_gi.h"
-#include "scene/resources/camera_attributes.h"
-#include "scene/resources/sky.h"
-#include "scene/resources/3d/sky_material.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/multimesh_instance_3d.h"
 #include "scene/3d/node_3d.h"
@@ -53,11 +72,14 @@
 #include "scene/animation/animation_player.h"
 #include "scene/animation/animation_tree.h"
 #include "scene/main/node.h"
-#include "scene/resources/packed_scene.h"
 #include "scene/resources/3d/primitive_meshes.h"
+#include "scene/resources/3d/sky_material.h"
+#include "scene/resources/camera_attributes.h"
 #include "scene/resources/environment.h"
 #include "scene/resources/material.h"
 #include "scene/resources/mesh.h"
+#include "scene/resources/packed_scene.h"
+#include "scene/resources/sky.h"
 #include "servers/rendering/rendering_server.h"
 
 static constexpr int SOLERS_CLASS_SEARCH_DEFAULT_CAP = 40;
@@ -2645,7 +2667,7 @@ static Dictionary _solers_animation_facts(AnimationMixer *p_mixer) {
 	Dictionary facts;
 	facts["animation_active"] = p_mixer->is_active();
 	facts["animation_root_node"] = String(p_mixer->get_root_node());
-	List<StringName> animation_names;
+	LocalVector<StringName> animation_names;
 	p_mixer->get_animation_list(&animation_names);
 	Array animations;
 	for (const StringName &name : animation_names) {
@@ -2665,7 +2687,7 @@ static Dictionary _solers_animation_facts(AnimationMixer *p_mixer) {
 		// An invalid tree silently drives nothing; the engine already knows why.
 		facts["tree_state_invalid"] = tree->is_state_invalid();
 		if (tree->is_state_invalid()) {
-			facts["tree_invalid_reason"] = tree->get_invalid_state_reason();
+			facts["tree_invalid_reason"] = tree->get_editor_error_message();
 		}
 		facts["tree_root"] = _solers_resource_id(tree->get_root_animation_node());
 		const Ref<AnimationNodeStateMachinePlayback> state_machine = tree->get(SNAME("parameters/playback"));
@@ -2768,7 +2790,7 @@ static Dictionary _solers_light_facts(Light3D *p_light) {
 	facts["light_energy"] = p_light->get_param(Light3D::PARAM_ENERGY);
 	facts["light_intensity"] = p_light->get_param(Light3D::PARAM_INTENSITY);
 	if (physical_units) {
-		if (p_light->get_light_type() == RenderingServer::LIGHT_DIRECTIONAL) {
+		if (p_light->get_light_type() == RSE::LIGHT_DIRECTIONAL) {
 			facts["light_intensity_lux"] = p_light->get_param(Light3D::PARAM_INTENSITY);
 		} else {
 			facts["light_intensity_lumens"] = p_light->get_param(Light3D::PARAM_INTENSITY);
@@ -2859,7 +2881,7 @@ Dictionary SolersReflectionService::_subsystem_facts(Node *p_node) const {
 			facts["environment"] = _solers_environment_facts(environment);
 		} else {
 			// An empty WorldEnvironment is the usual reason a scene renders
-			// against the fallback grey instead of the authored sky.
+			// against the fallback gray instead of the authored sky.
 			facts["environment_missing"] = true;
 		}
 		facts["camera_attributes"] = _solers_camera_attributes_facts(world_environment->get_camera_attributes());

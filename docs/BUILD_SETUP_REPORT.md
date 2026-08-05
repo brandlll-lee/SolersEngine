@@ -1,8 +1,8 @@
 # Solers Godot 4.6.3 源码环境构建报告
 
-记录时间：2026-06-06  
-工作目录：`F:\CodeHub\solers`  
-源码目录：`F:\CodeHub\solers\godot-ai-native`  
+记录时间：2026-06-06
+工作目录：`F:\CodeHub\solers`
+源码目录：`F:\CodeHub\solers\godot-ai-native`
 目标：获得一份干净、可调试、可深度修改的 Godot 4.6.3 Windows Editor 源码环境，为后续 Solers AI 原生引擎改造做准备。
 
 ## 1. 官方资料与工具调研

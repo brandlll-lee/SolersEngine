@@ -30,9 +30,11 @@
 
 #include "editor_object_selector.h"
 
+#include "core/object/callable_mp.h"
 #include "editor/editor_data.h"
 #include "editor/editor_node.h"
 #include "editor/editor_string_names.h"
+#include "scene/gui/box_container.h"
 #include "scene/gui/margin_container.h"
 
 Size2 EditorObjectSelector::get_minimum_size() const {
@@ -94,11 +96,12 @@ void EditorObjectSelector::_show_popup() {
 
 	sub_objects_menu->clear();
 
-	Size2 size = get_size();
-	Point2 gp = get_screen_position();
-	gp.y += size.y;
+	Rect2 rect = get_screen_rect();
+	rect.position.y += rect.size.height;
+	rect.size.height = 0;
 
-	sub_objects_menu->popup(Rect2(gp, Size2(size.width, 0)));
+	sub_objects_menu->set_min_size(Size2(0, 0));
+	sub_objects_menu->popup(rect);
 }
 
 void EditorObjectSelector::_about_to_show() {
@@ -234,6 +237,7 @@ EditorObjectSelector::EditorObjectSelector(EditorSelectionHistory *p_history) {
 	main_hb->add_child(sub_objects_icon);
 
 	sub_objects_menu = memnew(PopupMenu);
+	sub_objects_menu->set_shrink_width(false);
 	sub_objects_menu->set_auto_translate_mode(AUTO_TRANSLATE_MODE_DISABLED);
 	add_child(sub_objects_menu);
 	sub_objects_menu->connect("about_to_popup", callable_mp(this, &EditorObjectSelector::_about_to_show));

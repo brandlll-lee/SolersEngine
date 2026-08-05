@@ -31,6 +31,8 @@
 #include "wayland_thread.h"
 
 #include "core/config/engine.h"
+#include "core/io/image.h"
+#include "core/os/os.h"
 
 #ifdef WAYLAND_ENABLED
 
@@ -402,6 +404,31 @@ void WaylandThread::_set_current_seat(struct wl_seat *p_seat) {
 	pointer_set_constraint(pointer_constraint);
 }
 
+void WaylandThread::_window_hover(DisplayServerEnums::WindowID p_window_id) {
+	if (hovered_window_id == p_window_id) {
+		return;
+	}
+
+	Ref<WindowHoverMessage> winhov_msg;
+	winhov_msg.instantiate();
+	winhov_msg->id = p_window_id;
+
+	push_message(winhov_msg);
+
+	hovered_window_id = p_window_id;
+}
+
+// Most of the times we just want to update the hover to the currently pointed
+// window. Making this the default helps with enforcing the correct behavior.
+void WaylandThread::_window_hover() {
+	DisplayServerEnums::WindowID pointed_id = pointer_get_pointed_window_id();
+	if (window_exists(pointed_id)) {
+		_window_hover(pointed_id);
+	} else {
+		_window_hover(DisplayServerEnums::INVALID_WINDOW_ID);
+	}
+}
+
 // Returns whether it loaded the theme or not.
 bool WaylandThread::_load_cursor_theme(int p_cursor_size) {
 	if (wl_cursor_theme) {
@@ -459,7 +486,7 @@ bool WaylandThread::_load_cursor_theme(int p_cursor_size) {
 		"help"
 	};
 
-	for (int i = 0; i < DisplayServer::CURSOR_MAX; i++) {
+	for (int i = 0; i < DisplayServerEnums::CURSOR_MAX; i++) {
 		struct wl_cursor *cursor = wl_cursor_theme_get_cursor(wl_cursor_theme, cursor_names[i]);
 
 		if (!cursor && cursor_names_fallback[i]) {
@@ -509,6 +536,12 @@ void WaylandThread::_update_scale(int p_scale) {
 void WaylandThread::_wl_registry_on_global(void *data, struct wl_registry *wl_registry, uint32_t name, const char *interface, uint32_t version) {
 	RegistryState *registry = (RegistryState *)data;
 	ERR_FAIL_NULL(registry);
+
+	if (registry->global_names.has(name)) {
+		WARN_PRINT("Received duplicate Wayland global announcement!");
+	}
+
+	registry->global_names.insert(name);
 
 	if (strcmp(interface, wl_shm_interface.name) == 0) {
 		registry->wl_shm = (struct wl_shm *)wl_registry_bind(wl_registry, name, &wl_shm_interface, 1);
@@ -631,6 +664,16 @@ void WaylandThread::_wl_registry_on_global(void *data, struct wl_registry *wl_re
 		registry->wp_viewporter_name = name;
 	}
 
+	if (strcmp(interface, wp_color_manager_v1_interface.name) == 0) {
+		registry->wp_color_manager = (struct wp_color_manager_v1 *)wl_registry_bind(wl_registry, name, &wp_color_manager_v1_interface, 1);
+		registry->wp_color_manager_name = name;
+		wl_proxy_tag_godot((struct wl_proxy *)registry->wp_color_manager);
+
+		WaylandThread::ColorManagementState *color_state = memnew(WaylandThread::ColorManagementState);
+		wp_color_manager_v1_add_listener(registry->wp_color_manager, &wp_color_manager_listener, color_state);
+		return;
+	}
+
 	if (strcmp(interface, wp_cursor_shape_manager_v1_interface.name) == 0) {
 		registry->wp_cursor_shape_manager = (struct wp_cursor_shape_manager_v1 *)wl_registry_bind(wl_registry, name, &wp_cursor_shape_manager_v1_interface, 1);
 		registry->wp_cursor_shape_manager_name = name;
@@ -661,6 +704,17 @@ void WaylandThread::_wl_registry_on_global(void *data, struct wl_registry *wl_re
 	if (strcmp(interface, xdg_toplevel_icon_manager_v1_interface.name) == 0) {
 		registry->xdg_toplevel_icon_manager = (struct xdg_toplevel_icon_manager_v1 *)wl_registry_bind(wl_registry, name, &xdg_toplevel_icon_manager_v1_interface, 1);
 		registry->xdg_toplevel_icon_manager_name = name;
+
+		if (registry->wayland_thread->xdg_icon) {
+			xdg_toplevel_icon_v1_destroy(registry->wayland_thread->xdg_icon);
+			registry->wayland_thread->xdg_icon = nullptr;
+		}
+
+		if (registry->wayland_thread->icon_buffer) {
+			wl_buffer_destroy(registry->wayland_thread->icon_buffer);
+			registry->wayland_thread->icon_buffer = nullptr;
+		}
+
 		return;
 	}
 
@@ -741,6 +795,12 @@ void WaylandThread::_wl_registry_on_global(void *data, struct wl_registry *wl_re
 		return;
 	}
 
+	if (strcmp(interface, wp_pointer_warp_v1_interface.name) == 0) {
+		registry->wp_pointer_warp = (struct wp_pointer_warp_v1 *)wl_registry_bind(wl_registry, name, &wp_pointer_warp_v1_interface, 1);
+		registry->wp_pointer_warp_name = name;
+		return;
+	}
+
 	if (strcmp(interface, FIFO_INTERFACE_NAME) == 0) {
 		registry->wp_fifo_manager_name = name;
 	}
@@ -756,6 +816,10 @@ void WaylandThread::_wl_registry_on_global(void *data, struct wl_registry *wl_re
 void WaylandThread::_wl_registry_on_global_remove(void *data, struct wl_registry *wl_registry, uint32_t name) {
 	RegistryState *registry = (RegistryState *)data;
 	ERR_FAIL_NULL(registry);
+
+	if (!registry->global_names.erase(name)) {
+		WARN_PRINT("Received remove event for unknown Wayland global!");
+	}
 
 	if (name == registry->wl_shm_name) {
 		if (registry->wl_shm) {
@@ -838,7 +902,7 @@ void WaylandThread::_wl_registry_on_global_remove(void *data, struct wl_registry
 	}
 
 	if (name == registry->wp_viewporter_name) {
-		for (KeyValue<DisplayServer::WindowID, WindowState> &pair : registry->wayland_thread->windows) {
+		for (KeyValue<DisplayServerEnums::WindowID, WindowState> &pair : registry->wayland_thread->windows) {
 			WindowState &ws = pair.value;
 			if (registry->wp_viewporter) {
 				wp_viewporter_destroy(registry->wp_viewporter);
@@ -854,6 +918,32 @@ void WaylandThread::_wl_registry_on_global_remove(void *data, struct wl_registry
 		registry->wp_viewporter_name = 0;
 
 		return;
+	}
+
+	if (name == registry->wp_color_manager_name) {
+		for (KeyValue<DisplayServerEnums::WindowID, WindowState> &pair : registry->wayland_thread->windows) {
+			WindowState ws = pair.value;
+
+			if (ws.wp_color_management_surface) {
+				wp_color_management_surface_v1_destroy(ws.wp_color_management_surface);
+				ws.wp_color_management_surface = nullptr;
+			}
+
+			if (ws.wp_color_management_surface_feedback) {
+				wp_color_management_surface_feedback_v1_destroy(ws.wp_color_management_surface_feedback);
+				ws.wp_color_management_surface_feedback = nullptr;
+			}
+		}
+
+		if (registry->wp_color_manager) {
+			ColorManagementState *color_state = wp_color_manager_get_state(registry->wp_color_manager);
+			memdelete(color_state);
+
+			wp_color_manager_v1_destroy(registry->wp_color_manager);
+			registry->wp_color_manager = nullptr;
+		}
+
+		registry->wp_color_manager_name = 0;
 	}
 
 	if (name == registry->wp_cursor_shape_manager_name) {
@@ -876,7 +966,7 @@ void WaylandThread::_wl_registry_on_global_remove(void *data, struct wl_registry
 	}
 
 	if (name == registry->wp_fractional_scale_manager_name) {
-		for (KeyValue<DisplayServer::WindowID, WindowState> &pair : registry->wayland_thread->windows) {
+		for (KeyValue<DisplayServerEnums::WindowID, WindowState> &pair : registry->wayland_thread->windows) {
 			WindowState &ws = pair.value;
 
 			if (registry->wp_fractional_scale_manager) {
@@ -1112,6 +1202,17 @@ void WaylandThread::_wl_registry_on_global_remove(void *data, struct wl_registry
 		return;
 	}
 
+	if (name == registry->wp_pointer_warp_name) {
+		if (registry->wp_pointer_warp) {
+			wp_pointer_warp_v1_destroy(registry->wp_pointer_warp);
+			registry->wp_pointer_warp = nullptr;
+		}
+
+		registry->wp_pointer_warp_name = 0;
+
+		return;
+	}
+
 	{
 		// Iterate through all of the seats to find if any got removed.
 		List<struct wl_seat *>::Element *E = registry->wl_seats.front();
@@ -1238,17 +1339,6 @@ void WaylandThread::_frame_wl_callback_on_done(void *data, struct wl_callback *w
 
 	ws->frame_callback = wl_surface_frame(ws->wl_surface);
 	wl_callback_add_listener(ws->frame_callback, &frame_wl_callback_listener, ws);
-
-	if (ws->wl_surface && ws->buffer_scale_changed) {
-		// NOTE: We're only now setting the buffer scale as the idea is to get this
-		// data committed together with the new frame, all by the rendering driver.
-		// This is important because we might otherwise set an invalid combination of
-		// buffer size and scale (e.g. odd size and 2x scale). We're pretty much
-		// guaranteed to get a proper buffer in the next render loop as the rescaling
-		// method also informs the engine of a "window rect change", triggering
-		// rendering if needed.
-		wl_surface_set_buffer_scale(ws->wl_surface, window_state_get_preferred_buffer_scale(ws));
-	}
 }
 
 void WaylandThread::_wl_surface_on_leave(void *data, struct wl_surface *wl_surface, struct wl_output *wl_output) {
@@ -1376,7 +1466,7 @@ void WaylandThread::_xdg_toplevel_on_configure(void *data, struct xdg_toplevel *
 
 	// Expect the window to be in a plain state. It will get properly set if the
 	// compositor reports otherwise below.
-	ws->mode = DisplayServer::WINDOW_MODE_WINDOWED;
+	ws->mode = DisplayServerEnums::WINDOW_MODE_WINDOWED;
 	ws->maximized = false;
 	ws->fullscreen = false;
 	ws->resizing = false;
@@ -1390,12 +1480,12 @@ void WaylandThread::_xdg_toplevel_on_configure(void *data, struct xdg_toplevel *
 	wl_array_for_each(state, states) {
 		switch (*state) {
 			case XDG_TOPLEVEL_STATE_MAXIMIZED: {
-				ws->mode = DisplayServer::WINDOW_MODE_MAXIMIZED;
+				ws->mode = DisplayServerEnums::WINDOW_MODE_MAXIMIZED;
 				ws->maximized = true;
 			} break;
 
 			case XDG_TOPLEVEL_STATE_FULLSCREEN: {
-				ws->mode = DisplayServer::WINDOW_MODE_FULLSCREEN;
+				ws->mode = DisplayServerEnums::WINDOW_MODE_FULLSCREEN;
 				ws->fullscreen = true;
 			} break;
 
@@ -1441,7 +1531,7 @@ void WaylandThread::_xdg_toplevel_on_close(void *data, struct xdg_toplevel *xdg_
 	Ref<WindowEventMessage> msg;
 	msg.instantiate();
 	msg->id = ws->id;
-	msg->event = DisplayServer::WINDOW_EVENT_CLOSE_REQUEST;
+	msg->event = DisplayServerEnums::WINDOW_EVENT_CLOSE_REQUEST;
 	ws->wayland_thread->push_message(msg);
 }
 
@@ -1485,7 +1575,7 @@ void WaylandThread::_xdg_popup_on_configure(void *data, struct xdg_popup *xdg_po
 	}
 
 	if (height == 0) {
-		height = ws->rect.size.width;
+		height = ws->rect.size.height;
 	}
 
 	window_state_update_size(ws, width, height);
@@ -1521,6 +1611,7 @@ void WaylandThread::_xdg_popup_on_configure(void *data, struct xdg_popup *xdg_po
 		rect_msg->id = ws->id;
 		rect_msg->rect.position = scale_vector2i(ws->rect.position, parent_scale);
 		rect_msg->rect.size = scale_vector2i(ws->rect.size, parent_scale);
+		rect_msg->buffer_scale = window_state_get_preferred_buffer_scale(ws);
 
 		ws->wayland_thread->push_message(rect_msg);
 	}
@@ -1535,7 +1626,7 @@ void WaylandThread::_xdg_popup_on_popup_done(void *data, struct xdg_popup *xdg_p
 	Ref<WindowEventMessage> ev_msg;
 	ev_msg.instantiate();
 	ev_msg->id = ws->id;
-	ev_msg->event = DisplayServer::WINDOW_EVENT_FORCE_CLOSE;
+	ev_msg->event = DisplayServerEnums::WINDOW_EVENT_FORCE_CLOSE;
 
 	ws->wayland_thread->push_message(ev_msg);
 }
@@ -1600,7 +1691,7 @@ void WaylandThread::libdecor_frame_on_configure(struct libdecor_frame *frame, st
 
 	// Expect the window to be in a plain state. It will get properly set if the
 	// compositor reports otherwise below.
-	ws->mode = DisplayServer::WINDOW_MODE_WINDOWED;
+	ws->mode = DisplayServerEnums::WINDOW_MODE_WINDOWED;
 	ws->maximized = false;
 	ws->fullscreen = false;
 	ws->resizing = false;
@@ -1612,12 +1703,12 @@ void WaylandThread::libdecor_frame_on_configure(struct libdecor_frame *frame, st
 
 	if (libdecor_configuration_get_window_state(configuration, &window_state)) {
 		if (window_state & LIBDECOR_WINDOW_STATE_MAXIMIZED) {
-			ws->mode = DisplayServer::WINDOW_MODE_MAXIMIZED;
+			ws->mode = DisplayServerEnums::WINDOW_MODE_MAXIMIZED;
 			ws->maximized = true;
 		}
 
 		if (window_state & LIBDECOR_WINDOW_STATE_FULLSCREEN) {
-			ws->mode = DisplayServer::WINDOW_MODE_FULLSCREEN;
+			ws->mode = DisplayServerEnums::WINDOW_MODE_FULLSCREEN;
 			ws->fullscreen = true;
 		}
 
@@ -1656,7 +1747,7 @@ void WaylandThread::libdecor_frame_on_close(struct libdecor_frame *frame, void *
 	Ref<WindowEventMessage> winevent_msg;
 	winevent_msg.instantiate();
 	winevent_msg->id = ws->id;
-	winevent_msg->event = DisplayServer::WINDOW_EVENT_CLOSE_REQUEST;
+	winevent_msg->event = DisplayServerEnums::WINDOW_EVENT_CLOSE_REQUEST;
 
 	ws->wayland_thread->push_message(winevent_msg);
 
@@ -1676,10 +1767,10 @@ void WaylandThread::libdecor_frame_on_dismiss_popup(struct libdecor_frame *frame
 
 void WaylandThread::_wl_seat_on_capabilities(void *data, struct wl_seat *wl_seat, uint32_t capabilities) {
 	SeatState *ss = (SeatState *)data;
-
 	ERR_FAIL_NULL(ss);
 
-	// TODO: Handle touch.
+	WaylandThread *wayland_thread = ss->wayland_thread;
+	ERR_FAIL_NULL(wayland_thread);
 
 	// Pointer handling.
 	if (capabilities & WL_SEAT_CAPABILITY_POINTER) {
@@ -1786,6 +1877,31 @@ void WaylandThread::_wl_seat_on_capabilities(void *data, struct wl_seat *wl_seat
 			ss->wl_keyboard = nullptr;
 		}
 	}
+
+	if (capabilities & WL_SEAT_CAPABILITY_TOUCH) {
+		if (!ss->wl_touch) {
+			ss->wl_touch = wl_seat_get_touch(wl_seat);
+			wl_touch_add_listener(ss->wl_touch, &wl_touch_listener, ss);
+		}
+
+		wayland_thread->has_touch = true;
+	} else {
+		if (ss->wl_touch) {
+			wl_touch_destroy(ss->wl_touch);
+			ss->wl_touch = nullptr;
+		}
+
+		wayland_thread->has_touch = false;
+		for (struct wl_seat *i : wayland_thread->registry.wl_seats) {
+			SeatState *i_ss = wl_seat_get_seat_state(i);
+			ERR_CONTINUE(i_ss == nullptr);
+
+			if (i_ss->wl_touch != nullptr) {
+				wayland_thread->has_touch = true;
+				break;
+			}
+		}
+	}
 }
 
 void WaylandThread::_wl_seat_on_name(void *data, struct wl_seat *wl_seat, const char *name) {
@@ -1842,15 +1958,14 @@ void WaylandThread::_wl_pointer_on_leave(void *data, struct wl_pointer *wl_point
 
 	PointerData &pd = ss->pointer_data_buffer;
 
-	if (pd.pointed_id == DisplayServer::INVALID_WINDOW_ID) {
+	if (pd.pointed_id == DisplayServerEnums::INVALID_WINDOW_ID) {
 		// We're probably on a decoration or some other third-party thing.
 		return;
 	}
 
-	DisplayServer::WindowID id = pd.pointed_id;
+	DisplayServerEnums::WindowID id = pd.pointed_id;
 
-	pd.pointed_id = DisplayServer::INVALID_WINDOW_ID;
-	pd.pressed_button_mask.clear();
+	pd.pointed_id = DisplayServerEnums::INVALID_WINDOW_ID;
 
 	DEBUG_LOG_WAYLAND_THREAD(vformat("Pointer left window %d.", id));
 
@@ -1888,19 +2003,19 @@ void WaylandThread::_wl_pointer_on_button(void *data, struct wl_pointer *wl_poin
 			button_pressed = MouseButton::LEFT;
 			break;
 
-		case BTN_MIDDLE:
-			button_pressed = MouseButton::MIDDLE;
-			break;
-
 		case BTN_RIGHT:
 			button_pressed = MouseButton::RIGHT;
 			break;
 
-		case BTN_EXTRA:
-			button_pressed = MouseButton::MB_XBUTTON1;
+		case BTN_MIDDLE:
+			button_pressed = MouseButton::MIDDLE;
 			break;
 
 		case BTN_SIDE:
+			button_pressed = MouseButton::MB_XBUTTON1;
+			break;
+
+		case BTN_EXTRA:
 			button_pressed = MouseButton::MB_XBUTTON2;
 			break;
 
@@ -1959,240 +2074,238 @@ void WaylandThread::_wl_pointer_on_frame(void *data, struct wl_pointer *wl_point
 	PointerData &old_pd = ss->pointer_data;
 	PointerData &pd = ss->pointer_data_buffer;
 
-	if (pd.pointed_id != old_pd.pointed_id) {
-		if (old_pd.pointed_id != DisplayServer::INVALID_WINDOW_ID) {
-			Ref<WindowEventMessage> msg;
-			msg.instantiate();
-			msg->id = old_pd.pointed_id;
-			msg->event = DisplayServer::WINDOW_EVENT_MOUSE_EXIT;
-
-			wayland_thread->push_message(msg);
-		}
-
-		if (pd.pointed_id != DisplayServer::INVALID_WINDOW_ID) {
-			Ref<WindowEventMessage> msg;
-			msg.instantiate();
-			msg->id = pd.pointed_id;
-			msg->event = DisplayServer::WINDOW_EVENT_MOUSE_ENTER;
-
-			wayland_thread->push_message(msg);
-		}
-	}
+	bool hover_changed = false;
 
 	WindowState *ws = nullptr;
 
-	// NOTE: At least on sway, with wl_pointer version 5 or greater,
-	// wl_pointer::leave might be emitted with other events (like
-	// wl_pointer::button) within the same wl_pointer::frame. Because of this, we
-	// need to account for when the currently pointed window might be invalid
-	// (third-party or even none) and fall back to the old one.
-	if (pd.pointed_id != DisplayServer::INVALID_WINDOW_ID) {
-		ws = ss->wayland_thread->window_get_state(pd.pointed_id);
-		ERR_FAIL_NULL(ws);
-	} else if (old_pd.pointed_id != DisplayServer::INVALID_WINDOW_ID) {
-		ws = ss->wayland_thread->window_get_state(old_pd.pointed_id);
-		ERR_FAIL_NULL(ws);
-	}
-
-	if (ws == nullptr) {
-		// We're probably on a decoration or some other third-party thing. Let's
-		// "commit" the data and call it a day.
-		old_pd = pd;
-		return;
-	}
-
-	double scale = window_state_get_scale_factor(ws);
-
-	wayland_thread->_set_current_seat(ss->wl_seat);
-
-	if (old_pd.motion_time != pd.motion_time || old_pd.relative_motion_time != pd.relative_motion_time) {
-		Ref<InputEventMouseMotion> mm;
-		mm.instantiate();
-
-		// Set all pressed modifiers.
-		mm->set_shift_pressed(ss->shift_pressed);
-		mm->set_ctrl_pressed(ss->ctrl_pressed);
-		mm->set_alt_pressed(ss->alt_pressed);
-		mm->set_meta_pressed(ss->meta_pressed);
-
-		mm->set_window_id(ws->id);
-
-		mm->set_button_mask(pd.pressed_button_mask);
-
-		mm->set_position(pd.position * scale);
-		mm->set_global_position(pd.position * scale);
-
-		Vector2 pos_delta = (pd.position - old_pd.position) * scale;
-
-		if (old_pd.relative_motion_time != pd.relative_motion_time) {
-			uint32_t time_delta = pd.relative_motion_time - old_pd.relative_motion_time;
-
-			mm->set_relative(pd.relative_motion * scale);
-			mm->set_velocity((Vector2)pos_delta / time_delta);
-		} else {
-			// The spec includes the possibility of having motion events without an
-			// associated relative motion event. If that's the case, fallback to a
-			// simple delta of the position. The captured mouse won't report the
-			// relative speed anymore though.
-			uint32_t time_delta = pd.motion_time - old_pd.motion_time;
-
-			mm->set_relative(pos_delta);
-			mm->set_velocity((Vector2)pos_delta / time_delta);
-		}
-		mm->set_relative_screen_position(mm->get_relative());
-		mm->set_screen_velocity(mm->get_velocity());
-
-		Ref<InputEventMessage> msg;
-		msg.instantiate();
-
-		msg->event = mm;
-
-		wayland_thread->push_message(msg);
-	}
-
-	if (pd.discrete_scroll_vector_120 - old_pd.discrete_scroll_vector_120 != Vector2i()) {
-		// This is a discrete scroll (eg. from a scroll wheel), so we'll just emit
-		// scroll wheel buttons.
-		if (pd.scroll_vector.y != 0) {
-			MouseButton button = pd.scroll_vector.y > 0 ? MouseButton::WHEEL_DOWN : MouseButton::WHEEL_UP;
-			pd.pressed_button_mask.set_flag(mouse_button_to_mask(button));
+	if (pd.pointed_id != old_pd.pointed_id) {
+		if (old_pd.pointed_id != DisplayServerEnums::INVALID_WINDOW_ID) {
+			// We left a window. Let's release all buttons to not confuse it.
+			pd.pressed_button_mask.clear();
 		}
 
-		if (pd.scroll_vector.x != 0) {
-			MouseButton button = pd.scroll_vector.x > 0 ? MouseButton::WHEEL_RIGHT : MouseButton::WHEEL_LEFT;
-			pd.pressed_button_mask.set_flag(mouse_button_to_mask(button));
+		hover_changed = true;
+
+		// According to the spec, compositors SHOULD emit both leave and enter events
+		// in one frame. Given that the frame event groups logically related events,
+		// it makes sense that all other events outside `enter` are related to the OLD
+		// surface. Additionally, some compositors (e.g. sway) emit other events
+		// alongside a leave event in one single frame, further confirming this
+		// behavior.
+		if (wayland_thread->window_exists(old_pd.pointed_id)) {
+			ws = wayland_thread->window_get_state(old_pd.pointed_id);
+			if (ws == nullptr) {
+				// Not ERR_FAIL_* as we still want to fall through.
+				ERR_PRINT("Invalid window userdata.");
+			}
 		}
-	} else {
-		if (pd.scroll_vector - old_pd.scroll_vector != Vector2()) {
-			// This is a continuous scroll, so we'll emit a pan gesture.
-			Ref<InputEventPanGesture> pg;
-			pg.instantiate();
+	}
+
+	if (ws == nullptr && wayland_thread->window_exists(pd.pointed_id)) {
+		ws = wayland_thread->window_get_state(pd.pointed_id);
+		if (ws == nullptr) {
+			// Not ERR_FAIL_* as we still want to fall through.
+			ERR_PRINT("Invalid window userdata.");
+		}
+	}
+
+	if (ws != nullptr) {
+		double scale = window_state_get_scale_factor(ws);
+
+		wayland_thread->_set_current_seat(ss->wl_seat);
+
+		if (old_pd.motion_time != pd.motion_time || old_pd.relative_motion_time != pd.relative_motion_time) {
+			Ref<InputEventMouseMotion> mm;
+			mm.instantiate();
 
 			// Set all pressed modifiers.
-			pg->set_shift_pressed(ss->shift_pressed);
-			pg->set_ctrl_pressed(ss->ctrl_pressed);
-			pg->set_alt_pressed(ss->alt_pressed);
-			pg->set_meta_pressed(ss->meta_pressed);
+			mm->set_shift_pressed(ss->shift_pressed);
+			mm->set_ctrl_pressed(ss->ctrl_pressed);
+			mm->set_alt_pressed(ss->alt_pressed);
+			mm->set_meta_pressed(ss->meta_pressed);
 
-			pg->set_position(pd.position * scale);
+			mm->set_window_id(ws->id);
 
-			pg->set_window_id(ws->id);
+			mm->set_button_mask(pd.pressed_button_mask);
 
-			pg->set_delta(pd.scroll_vector);
+			mm->set_position(pd.position * scale);
+			mm->set_global_position(pd.position * scale);
+
+			Vector2 pos_delta = (pd.position - old_pd.position) * scale;
+
+			if (old_pd.relative_motion_time != pd.relative_motion_time) {
+				uint32_t time_delta = pd.relative_motion_time - old_pd.relative_motion_time;
+
+				mm->set_relative(pd.relative_motion * scale);
+				mm->set_velocity((Vector2)pos_delta / time_delta);
+			} else {
+				// The spec includes the possibility of having motion events without an
+				// associated relative motion event. If that's the case, fallback to a
+				// simple delta of the position. The captured mouse won't report the
+				// relative speed anymore though.
+				uint32_t time_delta = pd.motion_time - old_pd.motion_time;
+
+				mm->set_relative(pos_delta);
+				mm->set_velocity((Vector2)pos_delta / time_delta);
+			}
+			mm->set_relative_screen_position(mm->get_relative());
+			mm->set_screen_velocity(mm->get_velocity());
 
 			Ref<InputEventMessage> msg;
 			msg.instantiate();
 
-			msg->event = pg;
+			msg->event = mm;
 
 			wayland_thread->push_message(msg);
 		}
-	}
 
-	if (old_pd.pressed_button_mask != pd.pressed_button_mask) {
-		BitField<MouseButtonMask> pressed_mask_delta = old_pd.pressed_button_mask.get_different(pd.pressed_button_mask);
+		if (pd.discrete_scroll_vector_120 - old_pd.discrete_scroll_vector_120 != Vector2i()) {
+			// This is a discrete scroll (eg. from a scroll wheel), so we'll just emit
+			// scroll wheel buttons.
+			if (pd.scroll_vector.y != 0) {
+				MouseButton button = pd.scroll_vector.y > 0 ? MouseButton::WHEEL_DOWN : MouseButton::WHEEL_UP;
+				pd.pressed_button_mask.set_flag(mouse_button_to_mask(button));
+			}
 
-		const MouseButton buttons_to_test[] = {
-			MouseButton::LEFT,
-			MouseButton::MIDDLE,
-			MouseButton::RIGHT,
-			MouseButton::WHEEL_UP,
-			MouseButton::WHEEL_DOWN,
-			MouseButton::WHEEL_LEFT,
-			MouseButton::WHEEL_RIGHT,
-			MouseButton::MB_XBUTTON1,
-			MouseButton::MB_XBUTTON2,
-		};
-
-		for (MouseButton test_button : buttons_to_test) {
-			MouseButtonMask test_button_mask = mouse_button_to_mask(test_button);
-			if (pressed_mask_delta.has_flag(test_button_mask)) {
-				Ref<InputEventMouseButton> mb;
-				mb.instantiate();
+			if (pd.scroll_vector.x != 0) {
+				MouseButton button = pd.scroll_vector.x > 0 ? MouseButton::WHEEL_RIGHT : MouseButton::WHEEL_LEFT;
+				pd.pressed_button_mask.set_flag(mouse_button_to_mask(button));
+			}
+		} else {
+			if (pd.scroll_vector - old_pd.scroll_vector != Vector2()) {
+				// This is a continuous scroll, so we'll emit a pan gesture.
+				Ref<InputEventPanGesture> pg;
+				pg.instantiate();
 
 				// Set all pressed modifiers.
-				mb->set_shift_pressed(ss->shift_pressed);
-				mb->set_ctrl_pressed(ss->ctrl_pressed);
-				mb->set_alt_pressed(ss->alt_pressed);
-				mb->set_meta_pressed(ss->meta_pressed);
+				pg->set_shift_pressed(ss->shift_pressed);
+				pg->set_ctrl_pressed(ss->ctrl_pressed);
+				pg->set_alt_pressed(ss->alt_pressed);
+				pg->set_meta_pressed(ss->meta_pressed);
 
-				mb->set_window_id(ws->id);
-				mb->set_position(pd.position * scale);
-				mb->set_global_position(pd.position * scale);
+				pg->set_position(pd.position * scale);
 
-				if (test_button == MouseButton::WHEEL_UP || test_button == MouseButton::WHEEL_DOWN) {
-					// If this is a discrete scroll, specify how many "clicks" it did for this
-					// pointer frame.
-					mb->set_factor(Math::abs(pd.discrete_scroll_vector_120.y / (float)120));
-				}
+				pg->set_window_id(ws->id);
 
-				if (test_button == MouseButton::WHEEL_RIGHT || test_button == MouseButton::WHEEL_LEFT) {
-					// If this is a discrete scroll, specify how many "clicks" it did for this
-					// pointer frame.
-					mb->set_factor(std::abs(pd.discrete_scroll_vector_120.x / (float)120));
-				}
-
-				mb->set_button_mask(pd.pressed_button_mask);
-
-				mb->set_button_index(test_button);
-				mb->set_pressed(pd.pressed_button_mask.has_flag(test_button_mask));
-
-				// We have to set the last position pressed here as we can't take for
-				// granted what the individual events might have seen due to them not having
-				// a guaranteed order.
-				if (mb->is_pressed()) {
-					pd.last_pressed_position = pd.position;
-				}
-
-				if (old_pd.double_click_begun && mb->is_pressed() && pd.last_button_pressed == old_pd.last_button_pressed && (pd.button_time - old_pd.button_time) < 400 && Vector2(old_pd.last_pressed_position * scale).distance_to(Vector2(pd.last_pressed_position * scale)) < 5) {
-					pd.double_click_begun = false;
-					mb->set_double_click(true);
-				}
+				pg->set_delta(pd.scroll_vector);
 
 				Ref<InputEventMessage> msg;
 				msg.instantiate();
 
-				msg->event = mb;
+				msg->event = pg;
 
 				wayland_thread->push_message(msg);
+			}
+		}
 
-				// Send an event resetting immediately the wheel key.
-				// Wayland specification defines axis_stop events as optional and says to
-				// treat all axis events as unterminated. As such, we have to manually do
-				// it ourselves.
-				if (test_button == MouseButton::WHEEL_UP || test_button == MouseButton::WHEEL_DOWN || test_button == MouseButton::WHEEL_LEFT || test_button == MouseButton::WHEEL_RIGHT) {
-					// FIXME: This is ugly, I can't find a clean way to clone an InputEvent.
-					// This works for now, despite being horrible.
-					Ref<InputEventMouseButton> wh_up;
-					wh_up.instantiate();
+		if (old_pd.pressed_button_mask != pd.pressed_button_mask) {
+			BitField<MouseButtonMask> pressed_mask_delta = old_pd.pressed_button_mask.get_different(pd.pressed_button_mask);
 
-					wh_up->set_window_id(ws->id);
-					wh_up->set_position(pd.position * scale);
-					wh_up->set_global_position(pd.position * scale);
+			const MouseButton buttons_to_test[] = {
+				MouseButton::LEFT,
+				MouseButton::MIDDLE,
+				MouseButton::RIGHT,
+				MouseButton::WHEEL_UP,
+				MouseButton::WHEEL_DOWN,
+				MouseButton::WHEEL_LEFT,
+				MouseButton::WHEEL_RIGHT,
+				MouseButton::MB_XBUTTON1,
+				MouseButton::MB_XBUTTON2,
+			};
 
-					// We have to unset the button to avoid it getting stuck.
-					pd.pressed_button_mask.clear_flag(test_button_mask);
-					wh_up->set_button_mask(pd.pressed_button_mask);
+			for (MouseButton test_button : buttons_to_test) {
+				MouseButtonMask test_button_mask = mouse_button_to_mask(test_button);
+				if (pressed_mask_delta.has_flag(test_button_mask)) {
+					Ref<InputEventMouseButton> mb;
+					mb.instantiate();
 
-					wh_up->set_button_index(test_button);
-					wh_up->set_pressed(false);
+					// Set all pressed modifiers.
+					mb->set_shift_pressed(ss->shift_pressed);
+					mb->set_ctrl_pressed(ss->ctrl_pressed);
+					mb->set_alt_pressed(ss->alt_pressed);
+					mb->set_meta_pressed(ss->meta_pressed);
 
-					Ref<InputEventMessage> msg_up;
-					msg_up.instantiate();
-					msg_up->event = wh_up;
-					wayland_thread->push_message(msg_up);
+					mb->set_window_id(ws->id);
+					mb->set_position(pd.position * scale);
+					mb->set_global_position(pd.position * scale);
+
+					if (test_button == MouseButton::WHEEL_UP || test_button == MouseButton::WHEEL_DOWN) {
+						// If this is a discrete scroll, specify how many "clicks" it did for this
+						// pointer frame.
+						mb->set_factor(Math::abs(pd.discrete_scroll_vector_120.y / (float)120));
+					}
+
+					if (test_button == MouseButton::WHEEL_RIGHT || test_button == MouseButton::WHEEL_LEFT) {
+						// If this is a discrete scroll, specify how many "clicks" it did for this
+						// pointer frame.
+						mb->set_factor(std::abs(pd.discrete_scroll_vector_120.x / (float)120));
+					}
+
+					mb->set_button_mask(pd.pressed_button_mask);
+
+					mb->set_button_index(test_button);
+					mb->set_pressed(pd.pressed_button_mask.has_flag(test_button_mask));
+
+					// We have to set the last position pressed here as we can't take for
+					// granted what the individual events might have seen due to them not having
+					// a guaranteed order.
+					if (mb->is_pressed()) {
+						pd.last_pressed_position = pd.position;
+					}
+
+					if (old_pd.double_click_begun && mb->is_pressed() && pd.last_button_pressed == old_pd.last_button_pressed && (pd.button_time - old_pd.button_time) < 400 && Vector2(old_pd.last_pressed_position * scale).distance_to(Vector2(pd.last_pressed_position * scale)) < 5) {
+						pd.double_click_begun = false;
+						mb->set_double_click(true);
+					}
+
+					Ref<InputEventMessage> msg;
+					msg.instantiate();
+
+					msg->event = mb;
+
+					wayland_thread->push_message(msg);
+
+					// Send an event resetting immediately the wheel key.
+					// Wayland specification defines axis_stop events as optional and says to
+					// treat all axis events as unterminated. As such, we have to manually do
+					// it ourselves.
+					if (test_button == MouseButton::WHEEL_UP || test_button == MouseButton::WHEEL_DOWN || test_button == MouseButton::WHEEL_LEFT || test_button == MouseButton::WHEEL_RIGHT) {
+						// FIXME: This is ugly, I can't find a clean way to clone an InputEvent.
+						// This works for now, despite being horrible.
+						Ref<InputEventMouseButton> wh_up;
+						wh_up.instantiate();
+
+						wh_up->set_window_id(ws->id);
+						wh_up->set_position(pd.position * scale);
+						wh_up->set_global_position(pd.position * scale);
+
+						// We have to unset the button to avoid it getting stuck.
+						pd.pressed_button_mask.clear_flag(test_button_mask);
+						wh_up->set_button_mask(pd.pressed_button_mask);
+
+						wh_up->set_button_index(test_button);
+						wh_up->set_pressed(false);
+
+						Ref<InputEventMessage> msg_up;
+						msg_up.instantiate();
+						msg_up->event = wh_up;
+						wayland_thread->push_message(msg_up);
+					}
 				}
 			}
 		}
 	}
 
-	// Reset the scroll vectors as we already handled them.
 	pd.scroll_vector = Vector2();
 	pd.discrete_scroll_vector_120 = Vector2i();
 
 	// Update the data all getters read. Wayland's specification requires us to do
 	// this, since all pointer actions are sent in individual events.
 	old_pd = pd;
+
+	if (hover_changed) {
+		wayland_thread->_window_hover();
+	}
 }
 
 void WaylandThread::_wl_pointer_on_axis_source(void *data, struct wl_pointer *wl_pointer, uint32_t axis_source) {
@@ -2307,7 +2420,7 @@ void WaylandThread::_wl_keyboard_on_enter(void *data, struct wl_keyboard *wl_key
 	Ref<WindowEventMessage> msg;
 	msg.instantiate();
 	msg->id = ws->id;
-	msg->event = DisplayServer::WINDOW_EVENT_FOCUS_IN;
+	msg->event = DisplayServerEnums::WINDOW_EVENT_FOCUS_IN;
 	wayland_thread->push_message(msg);
 
 	DEBUG_LOG_WAYLAND_THREAD(vformat("Keyboard focused window %d.", ws->id));
@@ -2330,7 +2443,7 @@ void WaylandThread::_wl_keyboard_on_leave(void *data, struct wl_keyboard *wl_key
 
 	ss->repeating_keycode = XKB_KEYCODE_INVALID;
 
-	if (ss->focused_id == DisplayServer::INVALID_WINDOW_ID) {
+	if (ss->focused_id == DisplayServerEnums::INVALID_WINDOW_ID) {
 		// We're probably on a decoration or some other third-party thing.
 		return;
 	}
@@ -2338,12 +2451,12 @@ void WaylandThread::_wl_keyboard_on_leave(void *data, struct wl_keyboard *wl_key
 	WindowState *ws = wayland_thread->window_get_state(ss->focused_id);
 	ERR_FAIL_NULL(ws);
 
-	ss->focused_id = DisplayServer::INVALID_WINDOW_ID;
+	ss->focused_id = DisplayServerEnums::INVALID_WINDOW_ID;
 
 	Ref<WindowEventMessage> msg;
 	msg.instantiate();
 	msg->id = ws->id;
-	msg->event = DisplayServer::WINDOW_EVENT_FOCUS_OUT;
+	msg->event = DisplayServerEnums::WINDOW_EVENT_FOCUS_OUT;
 	wayland_thread->push_message(msg);
 
 	ss->shift_pressed = false;
@@ -2362,7 +2475,7 @@ void WaylandThread::_wl_keyboard_on_key(void *data, struct wl_keyboard *wl_keybo
 	SeatState *ss = (SeatState *)data;
 	ERR_FAIL_NULL(ss);
 
-	if (ss->focused_id == DisplayServer::INVALID_WINDOW_ID) {
+	if (ss->focused_id == DisplayServerEnums::INVALID_WINDOW_ID) {
 		return;
 	}
 
@@ -2414,6 +2527,207 @@ void WaylandThread::_wl_keyboard_on_repeat_info(void *data, struct wl_keyboard *
 	ss->repeat_start_delay_msec = delay;
 }
 
+void WaylandThread::_wl_touch_on_down(void *data, struct wl_touch *wl_touch, uint32_t serial, uint32_t time, struct wl_surface *surface, int32_t id, wl_fixed_t x, wl_fixed_t y) {
+	WindowState *ws = wl_surface_get_window_state(surface);
+	if (!ws) {
+		return;
+	}
+
+	SeatState *ss = (SeatState *)data;
+	ERR_FAIL_NULL(ss);
+
+	ss->last_touch_id = id;
+
+	TouchPoint &tp = ss->touch_points_buffer[id];
+
+	tp.down_time = time;
+
+	tp.touched_id = ws->id;
+
+	tp.position.x = wl_fixed_to_double(x);
+	tp.position.y = wl_fixed_to_double(y);
+}
+
+void WaylandThread::_wl_touch_on_up(void *data, struct wl_touch *wl_touch, uint32_t serial, uint32_t time, int32_t id) {
+	SeatState *ss = (SeatState *)data;
+	ERR_FAIL_NULL(ss);
+
+	if (!ss->touch_points_buffer.has(id)) {
+		return;
+	}
+
+	TouchPoint &tp = ss->touch_points_buffer[id];
+
+	tp.touched_id = DisplayServerEnums::INVALID_WINDOW_ID;
+	ss->touch_points_buffer.erase(id);
+
+	// Some compositors (e.g. mutter) do not send a frame event after "up" events.
+	// AFAICT, this is an acceptable interpretation of the protocol ("No further
+	// events will be sent for this touch point[...]"). Let's just emulate it here.
+	_wl_touch_on_frame(data, wl_touch);
+}
+
+void WaylandThread::_wl_touch_on_motion(void *data, struct wl_touch *wl_touch, uint32_t time, int32_t id, wl_fixed_t x, wl_fixed_t y) {
+	SeatState *ss = (SeatState *)data;
+	ERR_FAIL_NULL(ss);
+
+	ss->last_touch_id = id;
+
+	TouchPoint &tp = ss->touch_points_buffer[id];
+
+	tp.motion_time = time;
+
+	tp.position.x = wl_fixed_to_double(x);
+	tp.position.y = wl_fixed_to_double(y);
+}
+
+void WaylandThread::_wl_touch_on_frame(void *data, struct wl_touch *wl_touch) {
+	SeatState *ss = (SeatState *)data;
+	ERR_FAIL_NULL(ss);
+
+	WaylandThread *wayland_thread = ss->wayland_thread;
+	ERR_FAIL_NULL(wayland_thread);
+
+	bool hover_changed = false;
+
+	// Release handling.
+	for (KeyValue<int32_t, TouchPoint> &pair : ss->touch_points) {
+		int32_t id = pair.key;
+		TouchPoint &tp = pair.value;
+
+		WindowState *ws = wayland_thread->window_get_state(tp.touched_id);
+		if (tp.touched_id == DisplayServerEnums::INVALID_WINDOW_ID || ws == nullptr) {
+			continue;
+		}
+
+		double scale = window_state_get_scale_factor(ws);
+
+		if (!ss->touch_points_buffer.has(id)) {
+			hover_changed = true;
+
+			Ref<InputEventScreenTouch> st;
+			st.instantiate();
+			st->set_index(id);
+			st->set_position(tp.position * scale);
+			st->set_window_id(tp.touched_id);
+			st->set_pressed(false);
+
+			Ref<InputEventMessage> iev_msg;
+			iev_msg.instantiate();
+			iev_msg->event = st;
+
+			wayland_thread->push_message(iev_msg);
+		}
+	}
+
+	for (KeyValue<int32_t, TouchPoint> &pair : ss->touch_points_buffer) {
+		int32_t id = pair.key;
+		TouchPoint &tp = pair.value;
+
+		WindowState *ws = wayland_thread->window_get_state(tp.touched_id);
+		if (tp.touched_id == DisplayServerEnums::INVALID_WINDOW_ID || ws == nullptr) {
+			continue;
+		}
+
+		double scale = window_state_get_scale_factor(ws);
+
+		// Press handling.
+		if (!ss->touch_points.has(id)) {
+			hover_changed = true;
+
+			Ref<InputEventScreenTouch> st;
+			st.instantiate();
+			st->set_index(id);
+			st->set_position(tp.position * scale);
+			st->set_window_id(tp.touched_id);
+			st->set_pressed(true);
+
+			Ref<InputEventMessage> iev_msg;
+			iev_msg.instantiate();
+			iev_msg->event = st;
+
+			wayland_thread->push_message(iev_msg);
+
+			continue;
+		}
+
+		TouchPoint &tp_old = ss->touch_points[id];
+
+		if (tp.touched_id == DisplayServerEnums::INVALID_WINDOW_ID) {
+			ws = wayland_thread->window_get_state(tp.touched_id);
+		}
+
+		if (wayland_thread->window_get_state(tp.touched_id) == nullptr) {
+			continue;
+		}
+
+		if (tp.position != tp_old.position) {
+			Ref<InputEventScreenDrag> sd;
+			sd.instantiate();
+			sd->set_index(id);
+			sd->set_window_id(tp.touched_id);
+			sd->set_position(tp.position * scale);
+			sd->set_relative((tp.position - tp_old.position) * scale);
+			sd->set_relative_screen_position(sd->get_relative());
+
+			Ref<InputEventMessage> iev_msg;
+			iev_msg.instantiate();
+			iev_msg->event = sd;
+
+			wayland_thread->push_message(iev_msg);
+		}
+	}
+
+	ss->touch_points = ss->touch_points_buffer;
+
+	if (hover_changed) {
+		wayland_thread->_window_hover();
+	}
+}
+
+// NOTE: Per the spec, a frame event is not required after this event, so let's
+// assume that it's not going to happen.
+void WaylandThread::_wl_touch_on_cancel(void *data, struct wl_touch *wl_touch) {
+	SeatState *ss = (SeatState *)data;
+	ERR_FAIL_NULL(ss);
+
+	WaylandThread *wayland_thread = ss->wayland_thread;
+	ERR_FAIL_NULL(wayland_thread);
+
+	for (KeyValue<int32_t, TouchPoint> &pair : ss->touch_points_buffer) {
+		int32_t id = pair.key;
+		TouchPoint &tp = pair.value;
+
+		WindowState *ws = wayland_thread->window_get_state(tp.touched_id);
+		double scale = window_state_get_scale_factor(ws);
+
+		Ref<InputEventScreenTouch> st;
+		st.instantiate();
+		st->set_index(id);
+		st->set_position(tp.position * scale);
+		st->set_window_id(tp.touched_id);
+		st->set_pressed(false);
+		st->set_canceled(true);
+
+		Ref<InputEventMessage> cancel_msg;
+		cancel_msg.instantiate();
+		cancel_msg->event = st;
+
+		wayland_thread->push_message(cancel_msg);
+
+		wayland_thread->_window_hover(DisplayServerEnums::INVALID_WINDOW_ID);
+	}
+
+	ss->touch_points_buffer.clear();
+	ss->touch_points.clear();
+}
+
+void WaylandThread::_wl_touch_on_shape(void *data, struct wl_touch *wl_touch, int32_t id, wl_fixed_t major, wl_fixed_t minor) {
+}
+
+void WaylandThread::_wl_touch_on_orientation(void *data, struct wl_touch *wl_touch, int32_t id, wl_fixed_t orientation) {
+}
+
 // NOTE: Don't forget to `memfree` the offer's state.
 void WaylandThread::_wl_data_device_on_data_offer(void *data, struct wl_data_device *wl_data_device, struct wl_data_offer *id) {
 	wl_proxy_tag_godot((struct wl_proxy *)id);
@@ -2447,7 +2761,7 @@ void WaylandThread::_wl_data_device_on_leave(void *data, struct wl_data_device *
 		memdelete(wl_data_offer_get_offer_state(ss->wl_data_offer_dnd));
 		wl_data_offer_destroy(ss->wl_data_offer_dnd);
 		ss->wl_data_offer_dnd = nullptr;
-		ss->dnd_id = DisplayServer::INVALID_WINDOW_ID;
+		ss->dnd_id = DisplayServerEnums::INVALID_WINDOW_ID;
 	}
 }
 
@@ -2484,7 +2798,7 @@ void WaylandThread::_wl_data_device_on_drop(void *data, struct wl_data_device *w
 	memdelete(wl_data_offer_get_offer_state(ss->wl_data_offer_dnd));
 	wl_data_offer_destroy(ss->wl_data_offer_dnd);
 	ss->wl_data_offer_dnd = nullptr;
-	ss->dnd_id = DisplayServer::INVALID_WINDOW_ID;
+	ss->dnd_id = DisplayServerEnums::INVALID_WINDOW_ID;
 }
 
 void WaylandThread::_wl_data_device_on_selection(void *data, struct wl_data_device *wl_data_device, struct wl_data_offer *id) {
@@ -2555,6 +2869,144 @@ void WaylandThread::_wl_data_source_on_dnd_finished(void *data, struct wl_data_s
 }
 
 void WaylandThread::_wl_data_source_on_action(void *data, struct wl_data_source *wl_data_source, uint32_t dnd_action) {
+}
+
+void WaylandThread::_wp_color_manager_on_supported_intent(void *data, struct wp_color_manager_v1 *wp_color_manager_v1, uint32_t render_intent) {
+	ColorManagementState *cms = (ColorManagementState *)data;
+	ERR_FAIL_NULL(cms);
+
+	cms->supported_render_intents |= 1 << render_intent;
+}
+
+void WaylandThread::_wp_color_manager_on_supported_feature(void *data, struct wp_color_manager_v1 *wp_color_manager_v1, uint32_t feature) {
+	ColorManagementState *cms = (ColorManagementState *)data;
+	ERR_FAIL_NULL(cms);
+
+	cms->supported_render_feature |= 1 << feature;
+}
+
+void WaylandThread::_wp_color_manager_on_supported_tf_named(void *data, struct wp_color_manager_v1 *wp_color_manager_v1, uint32_t tf) {
+	ColorManagementState *cms = (ColorManagementState *)data;
+	ERR_FAIL_NULL(cms);
+
+	cms->supported_transfer_function |= 1 << tf;
+}
+
+void WaylandThread::_wp_color_manager_on_supported_primaries_named(void *data, struct wp_color_manager_v1 *wp_color_manager_v1, uint32_t primaries) {
+	ColorManagementState *cms = (ColorManagementState *)data;
+	ERR_FAIL_NULL(cms);
+
+	cms->supported_primaries |= 1 << primaries;
+}
+
+void WaylandThread::_wp_color_manager_on_done(void *data, struct wp_color_manager_v1 *wp_color_manager_v1) {
+	ColorManagementState *cms = (ColorManagementState *)data;
+	ERR_FAIL_NULL(cms);
+
+	// We require parametric profiles until we can support reading ICC files.
+	if ((cms->supported_render_feature & (1 << WP_COLOR_MANAGER_V1_FEATURE_PARAMETRIC)) == 0) {
+		return;
+	}
+
+	// We require the compositor to support extended linear sRGB.
+	// sRGB primaries support is assumed.
+	cms->supports_hdr = cms->supported_transfer_function & (1 << WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_EXT_LINEAR);
+}
+
+void WaylandThread::_wp_color_management_surface_feedback_on_preferred_changed(void *data, struct wp_color_management_surface_feedback_v1 *wp_color_management_surface_feedback_v1, uint32_t identity) {
+	_wp_color_management_surface_feedback_on_preferred_changed2(data, wp_color_management_surface_feedback_v1, 0, identity);
+}
+
+void WaylandThread::_wp_color_management_surface_feedback_on_preferred_changed2(void *data, struct wp_color_management_surface_feedback_v1 *wp_color_management_surface_feedback_v1, uint32_t identity_high, uint32_t identity_low) {
+	struct wp_image_description_v1 *image_description = wp_color_management_surface_feedback_v1_get_preferred_parametric(wp_color_management_surface_feedback_v1);
+
+	wp_image_description_v1_add_listener(image_description, &wp_image_description_listener, data);
+}
+
+void WaylandThread::_wp_image_description_on_failed(void *data, struct wp_image_description_v1 *image_descrptor, uint32_t cause, const char *msg) {
+	WARN_PRINT(msg);
+}
+
+void WaylandThread::_wp_image_description_on_ready(void *data, struct wp_image_description_v1 *image_descriptor, uint32_t identity) {
+	_wp_image_description_on_ready2(data, image_descriptor, 0, identity);
+}
+
+void WaylandThread::_wp_image_description_on_ready2(void *data, struct wp_image_description_v1 *image_descriptor, uint32_t identity_high, uint32_t identity_low) {
+	WindowState *ws = (WindowState *)data;
+	ERR_FAIL_NULL(ws);
+
+	struct wp_image_description_info_v1 *image_info = wp_image_description_v1_get_information(image_descriptor);
+	if (image_info != nullptr) {
+		// The wp_image_description_info_v1 listener takes ownership of this msg.
+		// We need to add a virtual reference so this msg is not freed when we leave the scope.
+		Ref<ColorProfileMessage> msg = memnew(ColorProfileMessage);
+		msg->reference();
+		msg->id = ws->id;
+		msg->wayland_thread = ws->wayland_thread;
+
+		wp_image_description_info_v1_add_listener(image_info, &wp_image_description_info_listener, msg.ptr());
+		wp_image_description_v1_destroy(image_descriptor);
+	}
+}
+
+void WaylandThread::_wp_image_description_info_on_done(void *data, struct wp_image_description_info_v1 *wp_image_description_info_v1) {
+	wp_image_description_info_v1_destroy(wp_image_description_info_v1);
+
+	ERR_FAIL_NULL(data);
+	// Now that we have claimed ownership of the msg, remove the virtual reference.
+	Ref<ColorProfileMessage> msg = (ColorProfileMessage *)data;
+	msg->unreference();
+
+	msg->wayland_thread->push_message(msg);
+}
+
+void WaylandThread::_wp_image_description_info_on_icc_file(void *data, struct wp_image_description_info_v1 *wp_image_description_info_v1, int32_t icc, uint32_t icc_size) {
+	::close(icc);
+}
+
+void WaylandThread::_wp_image_description_info_on_primaries(void *data, struct wp_image_description_info_v1 *wp_image_description_info_v1, int32_t r_x, int32_t r_y, int32_t g_x, int32_t g_y, int32_t b_x, int32_t b_y, int32_t w_x, int32_t w_y) {
+}
+
+void WaylandThread::_wp_image_description_info_on_primaries_named(void *data, struct wp_image_description_info_v1 *wp_image_description_info_v1, uint32_t primaries) {
+	ColorProfileMessage *msg = (ColorProfileMessage *)data;
+	ERR_FAIL_NULL(msg);
+
+	msg->color_profile.named_primary = primaries;
+}
+
+void WaylandThread::_wp_image_description_info_on_tf_power(void *data, struct wp_image_description_info_v1 *wp_image_description_info_v1, uint32_t eexp) {
+}
+
+void WaylandThread::_wp_image_description_info_on_tf_named(void *data, struct wp_image_description_info_v1 *wp_image_description_info_v1, uint32_t tf) {
+	ColorProfileMessage *msg = (ColorProfileMessage *)data;
+	ERR_FAIL_NULL(msg);
+
+	msg->color_profile.named_transfer_function = tf;
+}
+
+void WaylandThread::_wp_image_description_info_on_luminances(void *data, struct wp_image_description_info_v1 *wp_image_description_info_v1, uint32_t min_lum, uint32_t max_lum, uint32_t reference_lum) {
+	ColorProfileMessage *msg = (ColorProfileMessage *)data;
+	ERR_FAIL_NULL(msg);
+
+	msg->color_profile.reference_luminance = reference_lum;
+}
+
+void WaylandThread::_wp_image_description_info_on_target_primaries(void *data, struct wp_image_description_info_v1 *wp_image_description_info_v1, int32_t r_x, int32_t r_y, int32_t g_x, int32_t g_y, int32_t b_x, int32_t b_y, int32_t w_x, int32_t w_y) {
+}
+
+void WaylandThread::_wp_image_description_info_on_target_luminance(void *data, struct wp_image_description_info_v1 *wp_image_description_info_v1, uint32_t min_lum, uint32_t max_lum) {
+	ColorProfileMessage *msg = (ColorProfileMessage *)data;
+	ERR_FAIL_NULL(msg);
+
+	// The uint32 is multiplied by 10000 for precision.
+	msg->color_profile.target_min_luminance = static_cast<float>(min_lum) / 10000;
+	msg->color_profile.target_max_luminance = max_lum;
+}
+
+void WaylandThread::_wp_image_description_info_on_target_max_cll(void *data, struct wp_image_description_info_v1 *wp_image_description_info_v1, uint32_t max_cll) {
+}
+
+void WaylandThread::_wp_image_description_info_on_target_max_fall(void *data, struct wp_image_description_info_v1 *wp_image_description_info_v1, uint32_t max_fall) {
 }
 
 void WaylandThread::_wp_fractional_scale_on_preferred_scale(void *data, struct wp_fractional_scale_v1 *wp_fractional_scale_v1, uint32_t scale) {
@@ -2809,14 +3261,14 @@ void WaylandThread::_wp_tablet_tool_on_proximity_out(void *data, struct zwp_tabl
 	TabletToolState *ts = wp_tablet_tool_get_state(wp_tablet_tool_v2);
 	ERR_FAIL_NULL(ts);
 
-	if (ts->data_pending.proximal_id == DisplayServer::INVALID_WINDOW_ID) {
+	if (ts->data_pending.proximal_id == DisplayServerEnums::INVALID_WINDOW_ID) {
 		// We're probably on a decoration or some other third-party thing.
 		return;
 	}
 
-	DisplayServer::WindowID id = ts->data_pending.proximal_id;
+	DisplayServerEnums::WindowID id = ts->data_pending.proximal_id;
 
-	ts->data_pending.proximal_id = DisplayServer::INVALID_WINDOW_ID;
+	ts->data_pending.proximal_id = DisplayServerEnums::INVALID_WINDOW_ID;
 	ts->data_pending.pressed_button_mask.clear();
 
 	DEBUG_LOG_WAYLAND_THREAD(vformat("Tablet tool left window %d.", id));
@@ -2951,137 +3403,133 @@ void WaylandThread::_wp_tablet_tool_on_frame(void *data, struct zwp_tablet_tool_
 	TabletToolData &old_td = ts->data;
 	TabletToolData &td = ts->data_pending;
 
+	bool hover_changed = false;
+
 	if (td.proximal_id != old_td.proximal_id) {
-		if (old_td.proximal_id != DisplayServer::INVALID_WINDOW_ID) {
-			Ref<WindowEventMessage> msg;
-			msg.instantiate();
-			msg->id = old_td.proximal_id;
-			msg->event = DisplayServer::WINDOW_EVENT_MOUSE_EXIT;
-
-			wayland_thread->push_message(msg);
+		if (old_td.proximal_id != DisplayServerEnums::INVALID_WINDOW_ID) {
+			// We left a window. Let's release all buttons to not confuse it.
+			td.pressed_button_mask.clear();
 		}
 
-		if (td.proximal_id != DisplayServer::INVALID_WINDOW_ID) {
-			Ref<WindowEventMessage> msg;
-			msg.instantiate();
-			msg->id = td.proximal_id;
-			msg->event = DisplayServer::WINDOW_EVENT_MOUSE_ENTER;
+		hover_changed = true;
+	}
 
-			wayland_thread->push_message(msg);
+	WindowState *ws = nullptr;
+	if (wayland_thread->window_exists(td.proximal_id)) {
+		ws = wayland_thread->window_get_state(td.proximal_id);
+		if (ws == nullptr) {
+			// Not ERR_FAIL_* as we still want to fall through.
+			ERR_PRINT("Invalid window userdata.");
 		}
 	}
 
-	if (td.proximal_id == DisplayServer::INVALID_WINDOW_ID) {
-		// We're probably on a decoration or some other third-party thing. Let's
-		// "commit" the data and call it a day.
-		old_td = td;
-		return;
-	}
+	if (ws != nullptr) {
+		double scale = window_state_get_scale_factor(ws);
+		if (old_td.position != td.position || old_td.tilt != td.tilt || old_td.pressure != td.pressure) {
+			td.motion_time = time;
 
-	WindowState *ws = wayland_thread->window_get_state(td.proximal_id);
-	ERR_FAIL_NULL(ws);
+			Ref<InputEventMouseMotion> mm;
+			mm.instantiate();
 
-	double scale = window_state_get_scale_factor(ws);
-	if (old_td.position != td.position || old_td.tilt != td.tilt || old_td.pressure != td.pressure) {
-		td.motion_time = time;
+			mm->set_window_id(td.proximal_id);
 
-		Ref<InputEventMouseMotion> mm;
-		mm.instantiate();
+			// Set all pressed modifiers.
+			mm->set_shift_pressed(ss->shift_pressed);
+			mm->set_ctrl_pressed(ss->ctrl_pressed);
+			mm->set_alt_pressed(ss->alt_pressed);
+			mm->set_meta_pressed(ss->meta_pressed);
 
-		mm->set_window_id(td.proximal_id);
+			mm->set_button_mask(td.pressed_button_mask);
 
-		// Set all pressed modifiers.
-		mm->set_shift_pressed(ss->shift_pressed);
-		mm->set_ctrl_pressed(ss->ctrl_pressed);
-		mm->set_alt_pressed(ss->alt_pressed);
-		mm->set_meta_pressed(ss->meta_pressed);
+			mm->set_global_position(td.position * scale);
+			mm->set_position(td.position * scale);
 
-		mm->set_button_mask(td.pressed_button_mask);
+			// NOTE: The Godot API expects normalized values and we store them raw,
+			// straight from the compositor, so we have to normalize them here.
 
-		mm->set_global_position(td.position * scale);
-		mm->set_position(td.position * scale);
+			// According to the tablet proto spec, tilt is expressed in degrees relative
+			// to the Z axis of the tablet, so it shouldn't go over 90 degrees either way,
+			// I think. We'll clamp it just in case.
+			td.tilt = td.tilt.clampf(-90, 90);
 
-		// NOTE: The Godot API expects normalized values and we store them raw,
-		// straight from the compositor, so we have to normalize them here.
+			mm->set_tilt(td.tilt / 90);
 
-		// According to the tablet proto spec, tilt is expressed in degrees relative
-		// to the Z axis of the tablet, so it shouldn't go over 90 degrees either way,
-		// I think. We'll clamp it just in case.
-		td.tilt = td.tilt.clampf(-90, 90);
+			// The tablet proto spec explicitly says that pressure is defined as a value
+			// between 0 to 65535.
+			mm->set_pressure(td.pressure / (float)65535);
 
-		mm->set_tilt(td.tilt / 90);
+			mm->set_pen_inverted(ts->is_eraser);
 
-		// The tablet proto spec explicitly says that pressure is defined as a value
-		// between 0 to 65535.
-		mm->set_pressure(td.pressure / (float)65535);
+			Vector2 pos_delta = (td.position - old_td.position) * scale;
 
-		mm->set_pen_inverted(ts->is_eraser);
+			mm->set_relative(pos_delta);
+			mm->set_relative_screen_position(pos_delta);
 
-		Vector2 pos_delta = (td.position - old_td.position) * scale;
+			uint32_t time_delta = td.motion_time - old_td.motion_time;
+			mm->set_velocity((Vector2)pos_delta / time_delta);
 
-		mm->set_relative(pos_delta);
-		mm->set_relative_screen_position(pos_delta);
+			Ref<InputEventMessage> inputev_msg;
+			inputev_msg.instantiate();
 
-		uint32_t time_delta = td.motion_time - old_td.motion_time;
-		mm->set_velocity((Vector2)pos_delta / time_delta);
+			inputev_msg->event = mm;
 
-		Ref<InputEventMessage> inputev_msg;
-		inputev_msg.instantiate();
+			wayland_thread->push_message(inputev_msg);
+		}
 
-		inputev_msg->event = mm;
+		if (old_td.pressed_button_mask != td.pressed_button_mask) {
+			td.button_time = time;
 
-		wayland_thread->push_message(inputev_msg);
-	}
+			BitField<MouseButtonMask> pressed_mask_delta = old_td.pressed_button_mask.get_different(td.pressed_button_mask);
 
-	if (old_td.pressed_button_mask != td.pressed_button_mask) {
-		td.button_time = time;
+			for (MouseButton test_button : { MouseButton::LEFT, MouseButton::RIGHT }) {
+				MouseButtonMask test_button_mask = mouse_button_to_mask(test_button);
 
-		BitField<MouseButtonMask> pressed_mask_delta = old_td.pressed_button_mask.get_different(td.pressed_button_mask);
+				if (pressed_mask_delta.has_flag(test_button_mask)) {
+					Ref<InputEventMouseButton> mb;
+					mb.instantiate();
 
-		for (MouseButton test_button : { MouseButton::LEFT, MouseButton::RIGHT }) {
-			MouseButtonMask test_button_mask = mouse_button_to_mask(test_button);
+					// Set all pressed modifiers.
+					mb->set_shift_pressed(ss->shift_pressed);
+					mb->set_ctrl_pressed(ss->ctrl_pressed);
+					mb->set_alt_pressed(ss->alt_pressed);
+					mb->set_meta_pressed(ss->meta_pressed);
 
-			if (pressed_mask_delta.has_flag(test_button_mask)) {
-				Ref<InputEventMouseButton> mb;
-				mb.instantiate();
+					mb->set_window_id(td.proximal_id);
+					mb->set_position(td.position * scale);
+					mb->set_global_position(td.position * scale);
 
-				// Set all pressed modifiers.
-				mb->set_shift_pressed(ss->shift_pressed);
-				mb->set_ctrl_pressed(ss->ctrl_pressed);
-				mb->set_alt_pressed(ss->alt_pressed);
-				mb->set_meta_pressed(ss->meta_pressed);
+					mb->set_button_mask(td.pressed_button_mask);
+					mb->set_button_index(test_button);
+					mb->set_pressed(td.pressed_button_mask.has_flag(test_button_mask));
 
-				mb->set_window_id(td.proximal_id);
-				mb->set_position(td.position * scale);
-				mb->set_global_position(td.position * scale);
+					// We have to set the last position pressed here as we can't take for
+					// granted what the individual events might have seen due to them not having
+					// a garaunteed order.
+					if (mb->is_pressed()) {
+						td.last_pressed_position = td.position;
+					}
 
-				mb->set_button_mask(td.pressed_button_mask);
-				mb->set_button_index(test_button);
-				mb->set_pressed(td.pressed_button_mask.has_flag(test_button_mask));
+					if (old_td.double_click_begun && mb->is_pressed() && td.last_button_pressed == old_td.last_button_pressed && (td.button_time - old_td.button_time) < 400 && Vector2(td.last_pressed_position * scale).distance_to(Vector2(old_td.last_pressed_position * scale)) < 5) {
+						td.double_click_begun = false;
+						mb->set_double_click(true);
+					}
 
-				// We have to set the last position pressed here as we can't take for
-				// granted what the individual events might have seen due to them not having
-				// a garaunteed order.
-				if (mb->is_pressed()) {
-					td.last_pressed_position = td.position;
+					Ref<InputEventMessage> msg;
+					msg.instantiate();
+
+					msg->event = mb;
+
+					wayland_thread->push_message(msg);
 				}
-
-				if (old_td.double_click_begun && mb->is_pressed() && td.last_button_pressed == old_td.last_button_pressed && (td.button_time - old_td.button_time) < 400 && Vector2(td.last_pressed_position * scale).distance_to(Vector2(old_td.last_pressed_position * scale)) < 5) {
-					td.double_click_begun = false;
-					mb->set_double_click(true);
-				}
-
-				Ref<InputEventMessage> msg;
-				msg.instantiate();
-
-				msg->event = mb;
-
-				wayland_thread->push_message(msg);
 			}
 		}
 	}
 
 	old_td = td;
+
+	if (hover_changed) {
+		wayland_thread->_window_hover();
+	}
 }
 
 void WaylandThread::_wp_text_input_on_enter(void *data, struct zwp_text_input_v3 *wp_text_input_v3, struct wl_surface *surface) {
@@ -3106,7 +3554,7 @@ void WaylandThread::_wp_text_input_on_leave(void *data, struct zwp_text_input_v3
 		return;
 	}
 
-	if (ss->ime_window_id == DisplayServer::INVALID_WINDOW_ID) {
+	if (ss->ime_window_id == DisplayServerEnums::INVALID_WINDOW_ID) {
 		return;
 	}
 
@@ -3117,7 +3565,7 @@ void WaylandThread::_wp_text_input_on_leave(void *data, struct zwp_text_input_v3
 	msg->selection = Vector2i();
 	ss->wayland_thread->push_message(msg);
 
-	ss->ime_window_id = DisplayServer::INVALID_WINDOW_ID;
+	ss->ime_window_id = DisplayServerEnums::INVALID_WINDOW_ID;
 	ss->ime_enabled = false;
 	ss->ime_active = false;
 	ss->ime_text = String();
@@ -3131,7 +3579,7 @@ void WaylandThread::_wp_text_input_on_preedit_string(void *data, struct zwp_text
 		return;
 	}
 
-	if (ss->ime_window_id == DisplayServer::INVALID_WINDOW_ID) {
+	if (ss->ime_window_id == DisplayServerEnums::INVALID_WINDOW_ID) {
 		return;
 	}
 
@@ -3183,7 +3631,7 @@ void WaylandThread::_wp_text_input_on_commit_string(void *data, struct zwp_text_
 		return;
 	}
 
-	if (ss->ime_window_id == DisplayServer::INVALID_WINDOW_ID) {
+	if (ss->ime_window_id == DisplayServerEnums::INVALID_WINDOW_ID) {
 		return;
 	}
 
@@ -3200,7 +3648,7 @@ void WaylandThread::_wp_text_input_on_done(void *data, struct zwp_text_input_v3 
 		return;
 	}
 
-	if (ss->ime_window_id == DisplayServer::INVALID_WINDOW_ID) {
+	if (ss->ime_window_id == DisplayServerEnums::INVALID_WINDOW_ID) {
 		return;
 	}
 
@@ -3470,6 +3918,14 @@ WaylandThread::OfferState *WaylandThread::wp_primary_selection_offer_get_offer_s
 	return nullptr;
 }
 
+WaylandThread::ColorManagementState *WaylandThread::wp_color_manager_get_state(wp_color_manager_v1 *p_color_manager) {
+	if (p_color_manager && wl_proxy_is_godot((wl_proxy *)p_color_manager)) {
+		return (ColorManagementState *)wp_color_manager_v1_get_user_data(p_color_manager);
+	}
+
+	return nullptr;
+}
+
 WaylandThread::EmbeddingCompositorState *WaylandThread::godot_embedding_compositor_get_state(struct godot_embedding_compositor *p_compositor) {
 	// NOTE: No need for tag check as it's a "fake" interface - nothing else exposes it.
 	if (p_compositor) {
@@ -3562,7 +4018,6 @@ void WaylandThread::window_state_update_size(WindowState *p_ws, int p_width, int
 	if (p_ws->buffer_scale != preferred_buffer_scale) {
 		// The buffer scale is always important, even if we use frac scaling.
 		p_ws->buffer_scale = preferred_buffer_scale;
-		p_ws->buffer_scale_changed = true;
 
 		if (!using_fractional) {
 			// We don't bother updating everything else if it's turned on though.
@@ -3607,6 +4062,7 @@ void WaylandThread::window_state_update_size(WindowState *p_ws, int p_width, int
 		rect_msg->id = p_ws->id;
 		rect_msg->rect.position = scale_vector2i(p_ws->rect.position, win_scale);
 		rect_msg->rect.size = scaled_size;
+		rect_msg->buffer_scale = preferred_buffer_scale;
 		p_ws->wayland_thread->push_message(rect_msg);
 	}
 
@@ -3614,8 +4070,20 @@ void WaylandThread::window_state_update_size(WindowState *p_ws, int p_width, int
 		Ref<WindowEventMessage> dpi_msg;
 		dpi_msg.instantiate();
 		dpi_msg->id = p_ws->id;
-		dpi_msg->event = DisplayServer::WINDOW_EVENT_DPI_CHANGE;
+		dpi_msg->event = DisplayServerEnums::WINDOW_EVENT_DPI_CHANGE;
 		p_ws->wayland_thread->push_message(dpi_msg);
+	}
+}
+
+void WaylandThread::window_state_set_buffer_scale(WindowState *p_ws, int p_buffer_scale) {
+	ERR_FAIL_NULL(p_ws);
+	ERR_FAIL_COND(p_buffer_scale <= 0);
+
+	ERR_FAIL_NULL(p_ws->wl_surface);
+
+	if (p_ws->buffer_scale != p_buffer_scale) {
+		p_ws->buffer_scale = p_buffer_scale;
+		wl_surface_set_buffer_scale(p_ws->wl_surface, p_buffer_scale);
 	}
 }
 
@@ -3663,7 +4131,7 @@ void WaylandThread::seat_state_lock_pointer(SeatState *p_ss) {
 	if (p_ss->wp_locked_pointer == nullptr) {
 		struct wl_surface *locked_surface = window_get_wl_surface(p_ss->pointer_data.last_pointed_id);
 		if (locked_surface == nullptr) {
-			locked_surface = window_get_wl_surface(DisplayServer::MAIN_WINDOW_ID);
+			locked_surface = window_get_wl_surface(DisplayServerEnums::MAIN_WINDOW_ID);
 		}
 		ERR_FAIL_NULL(locked_surface);
 
@@ -3677,6 +4145,21 @@ void WaylandThread::seat_state_set_hint(SeatState *p_ss, int p_x, int p_y) {
 	}
 
 	zwp_locked_pointer_v1_set_cursor_position_hint(p_ss->wp_locked_pointer, wl_fixed_from_int(p_x), wl_fixed_from_int(p_y));
+}
+
+void WaylandThread::seat_state_warp_pointer(SeatState *p_ss, int p_x, int p_y) {
+	if (registry.wp_pointer_warp == nullptr) {
+		return;
+	}
+
+	if (p_ss->pointer_data.pointed_id == DisplayServerEnums::INVALID_WINDOW_ID) {
+		return;
+	}
+
+	struct wl_surface *surface = window_get_wl_surface(p_ss->pointer_data.pointed_id);
+	ERR_FAIL_NULL(surface);
+
+	wp_pointer_warp_v1_warp_pointer(registry.wp_pointer_warp, surface, p_ss->wl_pointer, wl_fixed_from_int(p_x), wl_fixed_from_int(p_y), p_ss->pointer_enter_serial);
 }
 
 void WaylandThread::seat_state_confine_pointer(SeatState *p_ss) {
@@ -3716,7 +4199,7 @@ void WaylandThread::seat_state_update_cursor(SeatState *p_ss) {
 	int scale = 1;
 
 	if (thread->cursor_visible) {
-		DisplayServer::CursorShape shape = thread->cursor_shape;
+		DisplayServerEnums::CursorShape shape = thread->cursor_shape;
 
 		struct CustomCursor *custom_cursor = thread->custom_cursors.getptr(shape);
 
@@ -3829,7 +4312,7 @@ Ref<WaylandThread::Message> WaylandThread::pop_message() {
 	return Ref<Message>();
 }
 
-void WaylandThread::window_create(DisplayServer::WindowID p_window_id, const Size2i &p_size, DisplayServer::WindowID p_parent_id) {
+void WaylandThread::window_create(DisplayServerEnums::WindowID p_window_id, const Size2i &p_size, DisplayServerEnums::WindowID p_parent_id) {
 	ERR_FAIL_COND(windows.has(p_window_id));
 	WindowState &ws = windows[p_window_id];
 
@@ -3851,6 +4334,17 @@ void WaylandThread::window_create(DisplayServer::WindowID p_window_id, const Siz
 			ws.wp_fractional_scale = wp_fractional_scale_manager_v1_get_fractional_scale(registry.wp_fractional_scale_manager, ws.wl_surface);
 			wp_fractional_scale_v1_add_listener(ws.wp_fractional_scale, &wp_fractional_scale_listener, &ws);
 		}
+	}
+
+	if (supports_hdr()) {
+		ws.wp_color_management_surface_feedback = wp_color_manager_v1_get_surface_feedback(registry.wp_color_manager, ws.wl_surface);
+		wp_color_management_surface_feedback_v1_add_listener(ws.wp_color_management_surface_feedback, &wp_color_management_surface_feedback_listener, &ws);
+
+		struct wp_image_description_v1 *image_description = wp_color_management_surface_feedback_v1_get_preferred_parametric(ws.wp_color_management_surface_feedback);
+		wp_image_description_v1_add_listener(image_description, &wp_image_description_listener, &ws);
+
+		//NOTE: requires vulkan to use the VK_COLOR_SPACE_PASSTHROUGH_EXT colorspace to not raise protocol errors
+		ws.wp_color_management_surface = wp_color_manager_v1_get_surface(registry.wp_color_manager, ws.wl_surface);
 	}
 
 	bool decorated = false;
@@ -3893,7 +4387,7 @@ void WaylandThread::window_create(DisplayServer::WindowID p_window_id, const Siz
 		}
 	}
 
-	if (p_parent_id != DisplayServer::INVALID_WINDOW_ID) {
+	if (p_parent_id != DisplayServerEnums::INVALID_WINDOW_ID) {
 		// NOTE: It's important to set the parent ASAP to avoid misunderstandings with
 		// the compositor. For example, niri immediately resizes the window to full
 		// size as soon as it's configured if it's not parented to another toplevel.
@@ -3914,7 +4408,7 @@ void WaylandThread::window_create(DisplayServer::WindowID p_window_id, const Siz
 	wl_surface_commit(ws.wl_surface);
 }
 
-void WaylandThread::window_create_popup(DisplayServer::WindowID p_window_id, DisplayServer::WindowID p_parent_id, Rect2i p_rect) {
+void WaylandThread::window_create_popup(DisplayServerEnums::WindowID p_window_id, DisplayServerEnums::WindowID p_parent_id, Rect2i p_rect) {
 	ERR_FAIL_COND(windows.has(p_window_id));
 	ERR_FAIL_COND(!windows.has(p_parent_id));
 
@@ -3997,7 +4491,7 @@ void WaylandThread::window_create_popup(DisplayServer::WindowID p_window_id, Dis
 	wl_surface_commit(ws.wl_surface);
 }
 
-void WaylandThread::window_destroy(DisplayServer::WindowID p_window_id) {
+void WaylandThread::window_destroy(DisplayServerEnums::WindowID p_window_id) {
 	ERR_FAIL_COND(!windows.has(p_window_id));
 	WindowState &ws = windows[p_window_id];
 
@@ -4023,6 +4517,14 @@ void WaylandThread::window_destroy(DisplayServer::WindowID p_window_id) {
 		wp_fractional_scale_v1_destroy(ws.wp_fractional_scale);
 	}
 
+	if (ws.wp_color_management_surface) {
+		wp_color_management_surface_v1_destroy(ws.wp_color_management_surface);
+	}
+
+	if (ws.wp_color_management_surface_feedback) {
+		wp_color_management_surface_feedback_v1_destroy(ws.wp_color_management_surface_feedback);
+	}
+
 	if (ws.wp_viewport) {
 		wp_viewport_destroy(ws.wp_viewport);
 	}
@@ -4039,15 +4541,34 @@ void WaylandThread::window_destroy(DisplayServer::WindowID p_window_id) {
 		wl_surface_destroy(ws.wl_surface);
 	}
 
+	if (ws.xdg_icon) {
+		xdg_toplevel_icon_v1_destroy(ws.xdg_icon);
+	}
+
+	if (ws.icon_buffer) {
+		wl_buffer_destroy(ws.icon_buffer);
+	}
+
 	// Before continuing, let's handle any leftover event that might still refer to
 	// this window.
 	wl_display_roundtrip(wl_display);
 
 	// We can already clean up here, we're done.
 	windows.erase(p_window_id);
+
+	// Let's update the window hover.
+	_window_hover();
 }
 
-struct wl_surface *WaylandThread::window_get_wl_surface(DisplayServer::WindowID p_window_id) const {
+bool WaylandThread::window_exists(DisplayServerEnums::WindowID p_window_id) const {
+	if (p_window_id == DisplayServerEnums::INVALID_WINDOW_ID) {
+		return false;
+	}
+
+	return windows.has(p_window_id);
+}
+
+struct wl_surface *WaylandThread::window_get_wl_surface(DisplayServerEnums::WindowID p_window_id) const {
 	const WindowState *ws = windows.getptr(p_window_id);
 	if (ws) {
 		return ws->wl_surface;
@@ -4056,15 +4577,15 @@ struct wl_surface *WaylandThread::window_get_wl_surface(DisplayServer::WindowID 
 	return nullptr;
 }
 
-WaylandThread::WindowState *WaylandThread::window_get_state(DisplayServer::WindowID p_window_id) {
+WaylandThread::WindowState *WaylandThread::window_get_state(DisplayServerEnums::WindowID p_window_id) {
 	return windows.getptr(p_window_id);
 }
 
-const WaylandThread::WindowState *WaylandThread::window_get_state(DisplayServer::WindowID p_window_id) const {
+const WaylandThread::WindowState *WaylandThread::window_get_state(DisplayServerEnums::WindowID p_window_id) const {
 	return windows.getptr(p_window_id);
 }
 
-Size2i WaylandThread::window_set_size(DisplayServer::WindowID p_window_id, const Size2i &p_size) {
+Size2i WaylandThread::window_set_size(DisplayServerEnums::WindowID p_window_id, const Size2i &p_size) {
 	ERR_FAIL_COND_V(!windows.has(p_window_id), p_size);
 	WindowState &ws = windows[p_window_id];
 
@@ -4094,6 +4615,7 @@ Size2i WaylandThread::window_set_size(DisplayServer::WindowID p_window_id, const
 		new_size = new_size.min(ws.rect.size);
 	}
 
+#ifdef LIBDECOR_ENABLED
 	// NOTE: Older versions of libdecor (~2022) do not have a way to get the max
 	// content size. Let's also check for its pointer so that we can preserve
 	// compatibility with older distros.
@@ -4110,6 +4632,7 @@ Size2i WaylandThread::window_set_size(DisplayServer::WindowID p_window_id, const
 			new_size.height = MIN(new_size.height, max_height);
 		}
 	}
+#endif
 
 	window_state_update_size(&ws, new_size.width, new_size.height);
 
@@ -4122,7 +4645,7 @@ void WaylandThread::beep() const {
 	}
 }
 
-void WaylandThread::window_start_drag(DisplayServer::WindowID p_window_id) {
+void WaylandThread::window_start_drag(DisplayServerEnums::WindowID p_window_id) {
 	ERR_FAIL_COND(!windows.has(p_window_id));
 	WindowState &ws = windows[p_window_id];
 	SeatState *ss = wl_seat_get_seat_state(wl_seat_current);
@@ -4138,7 +4661,7 @@ void WaylandThread::window_start_drag(DisplayServer::WindowID p_window_id) {
 #endif
 }
 
-void WaylandThread::window_start_resize(DisplayServer::WindowResizeEdge p_edge, DisplayServer::WindowID p_window) {
+void WaylandThread::window_start_resize(DisplayServerEnums::WindowResizeEdge p_edge, DisplayServerEnums::WindowID p_window) {
 	ERR_FAIL_COND(!windows.has(p_window));
 	WindowState &ws = windows[p_window];
 	SeatState *ss = wl_seat_get_seat_state(wl_seat_current);
@@ -4146,28 +4669,28 @@ void WaylandThread::window_start_resize(DisplayServer::WindowResizeEdge p_edge, 
 	if (ss && ws.xdg_toplevel) {
 		xdg_toplevel_resize_edge edge = XDG_TOPLEVEL_RESIZE_EDGE_NONE;
 		switch (p_edge) {
-			case DisplayServer::WINDOW_EDGE_TOP_LEFT: {
+			case DisplayServerEnums::WINDOW_EDGE_TOP_LEFT: {
 				edge = XDG_TOPLEVEL_RESIZE_EDGE_TOP_LEFT;
 			} break;
-			case DisplayServer::WINDOW_EDGE_TOP: {
+			case DisplayServerEnums::WINDOW_EDGE_TOP: {
 				edge = XDG_TOPLEVEL_RESIZE_EDGE_TOP;
 			} break;
-			case DisplayServer::WINDOW_EDGE_TOP_RIGHT: {
+			case DisplayServerEnums::WINDOW_EDGE_TOP_RIGHT: {
 				edge = XDG_TOPLEVEL_RESIZE_EDGE_TOP_RIGHT;
 			} break;
-			case DisplayServer::WINDOW_EDGE_LEFT: {
+			case DisplayServerEnums::WINDOW_EDGE_LEFT: {
 				edge = XDG_TOPLEVEL_RESIZE_EDGE_LEFT;
 			} break;
-			case DisplayServer::WINDOW_EDGE_RIGHT: {
+			case DisplayServerEnums::WINDOW_EDGE_RIGHT: {
 				edge = XDG_TOPLEVEL_RESIZE_EDGE_RIGHT;
 			} break;
-			case DisplayServer::WINDOW_EDGE_BOTTOM_LEFT: {
+			case DisplayServerEnums::WINDOW_EDGE_BOTTOM_LEFT: {
 				edge = XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_LEFT;
 			} break;
-			case DisplayServer::WINDOW_EDGE_BOTTOM: {
+			case DisplayServerEnums::WINDOW_EDGE_BOTTOM: {
 				edge = XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM;
 			} break;
-			case DisplayServer::WINDOW_EDGE_BOTTOM_RIGHT: {
+			case DisplayServerEnums::WINDOW_EDGE_BOTTOM_RIGHT: {
 				edge = XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_RIGHT;
 			} break;
 			default:
@@ -4180,28 +4703,28 @@ void WaylandThread::window_start_resize(DisplayServer::WindowResizeEdge p_edge, 
 	if (ws.libdecor_frame) {
 		libdecor_resize_edge edge = LIBDECOR_RESIZE_EDGE_NONE;
 		switch (p_edge) {
-			case DisplayServer::WINDOW_EDGE_TOP_LEFT: {
+			case DisplayServerEnums::WINDOW_EDGE_TOP_LEFT: {
 				edge = LIBDECOR_RESIZE_EDGE_TOP_LEFT;
 			} break;
-			case DisplayServer::WINDOW_EDGE_TOP: {
+			case DisplayServerEnums::WINDOW_EDGE_TOP: {
 				edge = LIBDECOR_RESIZE_EDGE_TOP;
 			} break;
-			case DisplayServer::WINDOW_EDGE_TOP_RIGHT: {
+			case DisplayServerEnums::WINDOW_EDGE_TOP_RIGHT: {
 				edge = LIBDECOR_RESIZE_EDGE_TOP_RIGHT;
 			} break;
-			case DisplayServer::WINDOW_EDGE_LEFT: {
+			case DisplayServerEnums::WINDOW_EDGE_LEFT: {
 				edge = LIBDECOR_RESIZE_EDGE_LEFT;
 			} break;
-			case DisplayServer::WINDOW_EDGE_RIGHT: {
+			case DisplayServerEnums::WINDOW_EDGE_RIGHT: {
 				edge = LIBDECOR_RESIZE_EDGE_RIGHT;
 			} break;
-			case DisplayServer::WINDOW_EDGE_BOTTOM_LEFT: {
+			case DisplayServerEnums::WINDOW_EDGE_BOTTOM_LEFT: {
 				edge = LIBDECOR_RESIZE_EDGE_BOTTOM_LEFT;
 			} break;
-			case DisplayServer::WINDOW_EDGE_BOTTOM: {
+			case DisplayServerEnums::WINDOW_EDGE_BOTTOM: {
 				edge = LIBDECOR_RESIZE_EDGE_BOTTOM;
 			} break;
-			case DisplayServer::WINDOW_EDGE_BOTTOM_RIGHT: {
+			case DisplayServerEnums::WINDOW_EDGE_BOTTOM_RIGHT: {
 				edge = LIBDECOR_RESIZE_EDGE_BOTTOM_RIGHT;
 			} break;
 			default:
@@ -4212,7 +4735,7 @@ void WaylandThread::window_start_resize(DisplayServer::WindowResizeEdge p_edge, 
 #endif
 }
 
-void WaylandThread::window_set_parent(DisplayServer::WindowID p_window_id, DisplayServer::WindowID p_parent_id) {
+void WaylandThread::window_set_parent(DisplayServerEnums::WindowID p_window_id, DisplayServerEnums::WindowID p_parent_id) {
 	ERR_FAIL_COND(!windows.has(p_window_id));
 	ERR_FAIL_COND(!windows.has(p_parent_id));
 
@@ -4237,7 +4760,7 @@ void WaylandThread::window_set_parent(DisplayServer::WindowID p_window_id, Displ
 	}
 }
 
-void WaylandThread::window_set_max_size(DisplayServer::WindowID p_window_id, const Size2i &p_size) {
+void WaylandThread::window_set_max_size(DisplayServerEnums::WindowID p_window_id, const Size2i &p_size) {
 	ERR_FAIL_COND(!windows.has(p_window_id));
 	WindowState &ws = windows[p_window_id];
 
@@ -4256,7 +4779,7 @@ void WaylandThread::window_set_max_size(DisplayServer::WindowID p_window_id, con
 #endif
 }
 
-void WaylandThread::window_set_min_size(DisplayServer::WindowID p_window_id, const Size2i &p_size) {
+void WaylandThread::window_set_min_size(DisplayServerEnums::WindowID p_window_id, const Size2i &p_size) {
 	ERR_FAIL_COND(!windows.has(p_window_id));
 	WindowState &ws = windows[p_window_id];
 
@@ -4275,17 +4798,17 @@ void WaylandThread::window_set_min_size(DisplayServer::WindowID p_window_id, con
 #endif
 }
 
-bool WaylandThread::window_can_set_mode(DisplayServer::WindowID p_window_id, DisplayServer::WindowMode p_window_mode) const {
+bool WaylandThread::window_can_set_mode(DisplayServerEnums::WindowID p_window_id, DisplayServerEnums::WindowMode p_window_mode) const {
 	ERR_FAIL_COND_V(!windows.has(p_window_id), false);
 	const WindowState &ws = windows[p_window_id];
 
 	switch (p_window_mode) {
-		case DisplayServer::WINDOW_MODE_WINDOWED: {
+		case DisplayServerEnums::WINDOW_MODE_WINDOWED: {
 			// Looks like it's guaranteed.
 			return true;
 		};
 
-		case DisplayServer::WINDOW_MODE_MINIMIZED: {
+		case DisplayServerEnums::WINDOW_MODE_MINIMIZED: {
 #ifdef LIBDECOR_ENABLED
 			if (ws.libdecor_frame) {
 				return libdecor_frame_has_capability(ws.libdecor_frame, LIBDECOR_ACTION_MINIMIZE);
@@ -4295,18 +4818,20 @@ bool WaylandThread::window_can_set_mode(DisplayServer::WindowID p_window_id, Dis
 			return ws.can_minimize;
 		};
 
-		case DisplayServer::WINDOW_MODE_MAXIMIZED: {
+		case DisplayServerEnums::WINDOW_MODE_MAXIMIZED: {
+#ifdef LIBDECOR_ENABLED
 			if (ws.libdecor_frame) {
 				// NOTE: libdecor doesn't seem to have a maximize capability query?
 				// The fact that there's a fullscreen one makes me suspicious. Anyways,
 				// let's act as if we always can.
 				return true;
 			}
+#endif
 			return ws.can_maximize;
 		};
 
-		case DisplayServer::WINDOW_MODE_FULLSCREEN:
-		case DisplayServer::WINDOW_MODE_EXCLUSIVE_FULLSCREEN: {
+		case DisplayServerEnums::WINDOW_MODE_FULLSCREEN:
+		case DisplayServerEnums::WINDOW_MODE_EXCLUSIVE_FULLSCREEN: {
 #ifdef LIBDECOR_ENABLED
 			if (ws.libdecor_frame) {
 				return libdecor_frame_has_capability(ws.libdecor_frame, LIBDECOR_ACTION_FULLSCREEN);
@@ -4320,7 +4845,7 @@ bool WaylandThread::window_can_set_mode(DisplayServer::WindowID p_window_id, Dis
 	return false;
 }
 
-void WaylandThread::window_try_set_mode(DisplayServer::WindowID p_window_id, DisplayServer::WindowMode p_window_mode) {
+void WaylandThread::window_try_set_mode(DisplayServerEnums::WindowID p_window_id, DisplayServerEnums::WindowMode p_window_mode) {
 	ERR_FAIL_COND(!windows.has(p_window_id));
 	WindowState &ws = windows[p_window_id];
 
@@ -4340,18 +4865,18 @@ void WaylandThread::window_try_set_mode(DisplayServer::WindowID p_window_id, Dis
 
 	// Return back to a windowed state so that we can apply what the user asked.
 	switch (ws.mode) {
-		case DisplayServer::WINDOW_MODE_WINDOWED: {
+		case DisplayServerEnums::WINDOW_MODE_WINDOWED: {
 			// Do nothing.
 		} break;
 
-		case DisplayServer::WINDOW_MODE_MINIMIZED: {
+		case DisplayServerEnums::WINDOW_MODE_MINIMIZED: {
 			// We can't do much according to the xdg_shell protocol. I have no idea
 			// whether this implies that we should return or who knows what. For now
 			// we'll do nothing.
 			// TODO: Test this properly.
 		} break;
 
-		case DisplayServer::WINDOW_MODE_MAXIMIZED: {
+		case DisplayServerEnums::WINDOW_MODE_MAXIMIZED: {
 			// Try to unmaximize. This isn't garaunteed to work actually, so we'll have
 			// to check whether something changed.
 			if (ws.xdg_toplevel) {
@@ -4365,8 +4890,8 @@ void WaylandThread::window_try_set_mode(DisplayServer::WindowID p_window_id, Dis
 #endif // LIBDECOR_ENABLED
 		} break;
 
-		case DisplayServer::WINDOW_MODE_FULLSCREEN:
-		case DisplayServer::WINDOW_MODE_EXCLUSIVE_FULLSCREEN: {
+		case DisplayServerEnums::WINDOW_MODE_FULLSCREEN:
+		case DisplayServerEnums::WINDOW_MODE_EXCLUSIVE_FULLSCREEN: {
 			// Same thing as above, unset fullscreen and check later if it worked.
 			if (ws.xdg_toplevel) {
 				xdg_toplevel_unset_fullscreen(ws.xdg_toplevel);
@@ -4383,7 +4908,7 @@ void WaylandThread::window_try_set_mode(DisplayServer::WindowID p_window_id, Dis
 	// TODO: Async?
 	wl_display_roundtrip(wl_display);
 
-	if (ws.mode != DisplayServer::WINDOW_MODE_WINDOWED) {
+	if (ws.mode != DisplayServerEnums::WINDOW_MODE_WINDOWED) {
 		// The compositor refused our "normalization" request. It'd be useless or
 		// unpredictable to attempt setting a new state. We're done.
 		return;
@@ -4391,11 +4916,11 @@ void WaylandThread::window_try_set_mode(DisplayServer::WindowID p_window_id, Dis
 
 	// Ask the compositor to set the state indicated by the new mode.
 	switch (p_window_mode) {
-		case DisplayServer::WINDOW_MODE_WINDOWED: {
+		case DisplayServerEnums::WINDOW_MODE_WINDOWED: {
 			// Do nothing. We're already windowed.
 		} break;
 
-		case DisplayServer::WINDOW_MODE_MINIMIZED: {
+		case DisplayServerEnums::WINDOW_MODE_MINIMIZED: {
 			if (!window_can_set_mode(p_window_id, p_window_mode)) {
 				// Minimization is special (read below). Better not mess with it if the
 				// compositor explicitly announces that it doesn't support it.
@@ -4414,10 +4939,10 @@ void WaylandThread::window_try_set_mode(DisplayServer::WindowID p_window_id, Dis
 	   // We have no way to actually detect this state, so we'll have to report it
 	   // manually to the engine (hoping that it worked). In the worst case it'll
 	   // get reset by the next configure event.
-			ws.mode = DisplayServer::WINDOW_MODE_MINIMIZED;
+			ws.mode = DisplayServerEnums::WINDOW_MODE_MINIMIZED;
 		} break;
 
-		case DisplayServer::WINDOW_MODE_MAXIMIZED: {
+		case DisplayServerEnums::WINDOW_MODE_MAXIMIZED: {
 			if (ws.xdg_toplevel) {
 				xdg_toplevel_set_maximized(ws.xdg_toplevel);
 			}
@@ -4429,8 +4954,8 @@ void WaylandThread::window_try_set_mode(DisplayServer::WindowID p_window_id, Dis
 #endif // LIBDECOR_ENABLED
 		} break;
 
-		case DisplayServer::WINDOW_MODE_FULLSCREEN:
-		case DisplayServer::WINDOW_MODE_EXCLUSIVE_FULLSCREEN: {
+		case DisplayServerEnums::WINDOW_MODE_FULLSCREEN:
+		case DisplayServerEnums::WINDOW_MODE_EXCLUSIVE_FULLSCREEN: {
 			if (ws.xdg_toplevel) {
 				xdg_toplevel_set_fullscreen(ws.xdg_toplevel, nullptr);
 			}
@@ -4447,7 +4972,7 @@ void WaylandThread::window_try_set_mode(DisplayServer::WindowID p_window_id, Dis
 	}
 }
 
-void WaylandThread::window_set_borderless(DisplayServer::WindowID p_window_id, bool p_borderless) {
+void WaylandThread::window_set_borderless(DisplayServerEnums::WindowID p_window_id, bool p_borderless) {
 	ERR_FAIL_COND(!windows.has(p_window_id));
 	WindowState &ws = windows[p_window_id];
 
@@ -4477,7 +5002,7 @@ void WaylandThread::window_set_borderless(DisplayServer::WindowID p_window_id, b
 #endif // LIBDECOR_ENABLED
 }
 
-void WaylandThread::window_set_title(DisplayServer::WindowID p_window_id, const String &p_title) {
+void WaylandThread::window_set_title(DisplayServerEnums::WindowID p_window_id, const String &p_title) {
 	ERR_FAIL_COND(!windows.has(p_window_id));
 	WindowState &ws = windows[p_window_id];
 
@@ -4492,7 +5017,7 @@ void WaylandThread::window_set_title(DisplayServer::WindowID p_window_id, const 
 	}
 }
 
-void WaylandThread::window_set_app_id(DisplayServer::WindowID p_window_id, const String &p_app_id) {
+void WaylandThread::window_set_app_id(DisplayServerEnums::WindowID p_window_id, const String &p_app_id) {
 	ERR_FAIL_COND(!windows.has(p_window_id));
 	WindowState &ws = windows[p_window_id];
 
@@ -4509,7 +5034,85 @@ void WaylandThread::window_set_app_id(DisplayServer::WindowID p_window_id, const
 	}
 }
 
-void WaylandThread::set_icon(const Ref<Image> &p_icon) {
+void WaylandThread::set_icon(const Ref<Image> &p_icon, DisplayServerEnums::WindowID p_window_id) {
+	if (!registry.xdg_toplevel_icon_manager) {
+		return;
+	}
+
+	ERR_FAIL_COND(!windows.has(p_window_id));
+	WindowState &ws = windows[p_window_id];
+
+	if (ws.xdg_icon) {
+		xdg_toplevel_icon_v1_destroy(ws.xdg_icon);
+	}
+	if (ws.icon_buffer) {
+		wl_buffer_destroy(ws.icon_buffer);
+	}
+	ws.icon_set = true;
+
+	if (p_icon.is_valid()) {
+		Size2i icon_size = p_icon->get_size();
+		ERR_FAIL_COND(icon_size.width != icon_size.height);
+
+		// NOTE: The stride is the width of the icon in bytes.
+		uint32_t icon_stride = icon_size.width * 4;
+		uint32_t data_size = icon_stride * icon_size.height;
+
+		// We need a shared memory object file descriptor in order to create a
+		// wl_buffer through wl_shm.
+		int fd = WaylandThread::_allocate_shm_file(data_size);
+		ERR_FAIL_COND(fd == -1);
+
+		uint32_t *buffer_data = (uint32_t *)mmap(nullptr, data_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+
+		// Create the Wayland buffer.
+		struct wl_shm_pool *shm_pool = wl_shm_create_pool(registry.wl_shm, fd, data_size);
+		ws.icon_buffer = wl_shm_pool_create_buffer(shm_pool, 0, icon_size.width, icon_size.height, icon_stride, WL_SHM_FORMAT_ARGB8888);
+		wl_shm_pool_destroy(shm_pool);
+
+		// Fill the cursor buffer with the image data.
+		for (uint32_t index = 0; index < (uint32_t)(icon_size.width * icon_size.height); index++) {
+			int row_index = index / icon_size.width;
+			int column_index = (index % icon_size.width);
+
+			buffer_data[index] = p_icon->get_pixel(column_index, row_index).to_argb32();
+
+			// Wayland buffers, unless specified, require associated alpha, so we'll just
+			// associate the alpha in-place.
+			uint8_t *pixel_data = (uint8_t *)&buffer_data[index];
+			pixel_data[0] = pixel_data[0] * pixel_data[3] / 255;
+			pixel_data[1] = pixel_data[1] * pixel_data[3] / 255;
+			pixel_data[2] = pixel_data[2] * pixel_data[3] / 255;
+		}
+
+		ws.xdg_icon = xdg_toplevel_icon_manager_v1_create_icon(registry.xdg_toplevel_icon_manager);
+		xdg_toplevel_icon_v1_add_buffer(ws.xdg_icon, ws.icon_buffer, icon_size.width);
+
+#ifdef LIBDECOR_ENABLED
+		if (ws.libdecor_frame) {
+			xdg_toplevel *toplevel = libdecor_frame_get_xdg_toplevel(ws.libdecor_frame);
+			ERR_FAIL_NULL(toplevel);
+			xdg_toplevel_icon_manager_v1_set_icon(registry.xdg_toplevel_icon_manager, toplevel, ws.xdg_icon);
+		}
+#endif
+		if (ws.xdg_toplevel) {
+			xdg_toplevel_icon_manager_v1_set_icon(registry.xdg_toplevel_icon_manager, ws.xdg_toplevel, ws.xdg_icon);
+		}
+	} else {
+#ifdef LIBDECOR_ENABLED
+		if (ws.libdecor_frame) {
+			xdg_toplevel *toplevel = libdecor_frame_get_xdg_toplevel(ws.libdecor_frame);
+			ERR_FAIL_NULL(toplevel);
+			xdg_toplevel_icon_manager_v1_set_icon(registry.xdg_toplevel_icon_manager, toplevel, nullptr);
+		}
+#endif
+		if (ws.xdg_toplevel) {
+			xdg_toplevel_icon_manager_v1_set_icon(registry.xdg_toplevel_icon_manager, ws.xdg_toplevel, nullptr);
+		}
+	}
+}
+
+void WaylandThread::set_default_icon(const Ref<Image> &p_icon) {
 	ERR_FAIL_COND(p_icon.is_null());
 
 	Size2i icon_size = p_icon->get_size();
@@ -4569,8 +5172,12 @@ void WaylandThread::set_icon(const Ref<Image> &p_icon) {
 		xdg_toplevel_icon_v1_set_name(xdg_icon, "godot");
 	}
 
-	for (KeyValue<DisplayServer::WindowID, WindowState> &pair : windows) {
+	for (KeyValue<DisplayServerEnums::WindowID, WindowState> &pair : windows) {
 		WindowState &ws = pair.value;
+		if (ws.icon_set) {
+			continue;
+		}
+
 #ifdef LIBDECOR_ENABLED
 		if (ws.libdecor_frame) {
 			xdg_toplevel *toplevel = libdecor_frame_get_xdg_toplevel(ws.libdecor_frame);
@@ -4584,14 +5191,14 @@ void WaylandThread::set_icon(const Ref<Image> &p_icon) {
 	}
 }
 
-DisplayServer::WindowMode WaylandThread::window_get_mode(DisplayServer::WindowID p_window_id) const {
-	ERR_FAIL_COND_V(!windows.has(p_window_id), DisplayServer::WINDOW_MODE_WINDOWED);
+DisplayServerEnums::WindowMode WaylandThread::window_get_mode(DisplayServerEnums::WindowID p_window_id) const {
+	ERR_FAIL_COND_V(!windows.has(p_window_id), DisplayServerEnums::WINDOW_MODE_WINDOWED);
 	const WindowState &ws = windows[p_window_id];
 
 	return ws.mode;
 }
 
-void WaylandThread::window_request_attention(DisplayServer::WindowID p_window_id) {
+void WaylandThread::window_request_attention(DisplayServerEnums::WindowID p_window_id) {
 	ERR_FAIL_COND(!windows.has(p_window_id));
 	WindowState &ws = windows[p_window_id];
 
@@ -4603,7 +5210,7 @@ void WaylandThread::window_request_attention(DisplayServer::WindowID p_window_id
 	}
 }
 
-void WaylandThread::window_set_idle_inhibition(DisplayServer::WindowID p_window_id, bool p_enable) {
+void WaylandThread::window_set_idle_inhibition(DisplayServerEnums::WindowID p_window_id, bool p_enable) {
 	ERR_FAIL_COND(!windows.has(p_window_id));
 	WindowState &ws = windows[p_window_id];
 
@@ -4620,11 +5227,45 @@ void WaylandThread::window_set_idle_inhibition(DisplayServer::WindowID p_window_
 	}
 }
 
-bool WaylandThread::window_get_idle_inhibition(DisplayServer::WindowID p_window_id) const {
+bool WaylandThread::window_get_idle_inhibition(DisplayServerEnums::WindowID p_window_id) const {
 	ERR_FAIL_COND_V(!windows.has(p_window_id), false);
 	const WindowState &ws = windows[p_window_id];
 
 	return ws.wp_idle_inhibitor != nullptr;
+}
+
+void WaylandThread::window_set_color_profile(DisplayServerEnums::WindowID p_window_id, ColorProfile p_profile) {
+	ERR_FAIL_COND(!windows.has(p_window_id));
+	const WindowState &ws = windows[p_window_id];
+
+	if (!ws.wp_color_management_surface) {
+		return;
+	}
+
+	if (p_profile.named_transfer_function == WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_GAMMA22) {
+		// This is largely a problem with some HDR monitors applying "glare compensation" or not.
+		// For monitors which do not apply glare compensation, it is correct to report gamma22 like we would on SDR.
+		// But there also exist monitors which apply glare compensation, on these monitors it is correct to request compound_2_4.
+		// Since we have no way to know on which type of monitor we are in, we unset the image description in the hopes
+		// that future compositor features may include choosing a default transfer function.
+		wp_color_management_surface_v1_unset_image_description(ws.wp_color_management_surface);
+		return;
+	}
+
+	ColorManagementState *cms = wp_color_manager_get_state(registry.wp_color_manager);
+
+	struct wp_image_description_creator_params_v1 *builder = wp_color_manager_v1_create_parametric_creator(registry.wp_color_manager);
+	wp_image_description_creator_params_v1_set_primaries_named(builder, p_profile.named_primary);
+	wp_image_description_creator_params_v1_set_tf_named(builder, p_profile.named_transfer_function);
+
+	if ((cms->supported_render_feature & WP_COLOR_MANAGER_V1_FEATURE_SET_LUMINANCES) > 0) {
+		uint32_t min_luminance = static_cast<uint32_t>(p_profile.target_min_luminance * 10000);
+		wp_image_description_creator_params_v1_set_luminances(builder, min_luminance, p_profile.target_max_luminance, p_profile.reference_luminance);
+	}
+
+	struct wp_image_description_v1 *image_desc = wp_image_description_creator_params_v1_create(builder);
+	wp_color_management_surface_v1_set_image_description(ws.wp_color_management_surface, image_desc, WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL);
+	wp_image_description_v1_destroy(image_desc);
 }
 
 WaylandThread::ScreenData WaylandThread::screen_get_data(int p_screen) const {
@@ -4637,10 +5278,16 @@ int WaylandThread::get_screen_count() const {
 	return registry.wl_outputs.size();
 }
 
-DisplayServer::WindowID WaylandThread::pointer_get_pointed_window_id() const {
+bool WaylandThread::input_has_touch() const {
+	return has_touch;
+}
+
+DisplayServerEnums::WindowID WaylandThread::pointer_get_pointed_window_id() const {
 	SeatState *ss = wl_seat_get_seat_state(wl_seat_current);
 
 	if (ss) {
+		TouchPoint *tp = ss->touch_points.getptr(ss->last_touch_id);
+
 		// Let's determine the most recently used tablet tool.
 		TabletToolState *max_ts = nullptr;
 		for (struct zwp_tablet_tool_v2 *tool : ss->tablet_tools) {
@@ -4661,19 +5308,39 @@ DisplayServer::WindowID WaylandThread::pointer_get_pointed_window_id() const {
 
 		const PointerData &pd = ss->pointer_data;
 
+		Pair<uint32_t, DisplayServerEnums::WindowID> best;
+		best.first = MAX(pd.button_time, pd.motion_time);
+		best.second = pd.pointed_id;
+
 		if (max_ts) {
 			TabletToolData &td = max_ts->data;
-			if (MAX(td.button_time, td.motion_time) > MAX(pd.button_time, pd.motion_time)) {
-				return td.proximal_id;
+
+			Pair<uint32_t, DisplayServerEnums::WindowID> cur;
+			cur.first = MAX(td.button_time, td.motion_time);
+			cur.second = td.proximal_id;
+
+			if (cur.first > best.first && window_exists(cur.second)) {
+				best = cur;
 			}
 		}
 
-		return ss->pointer_data.pointed_id;
+		if (tp) {
+			Pair<uint32_t, DisplayServerEnums::WindowID> cur;
+			cur.first = MAX(tp->down_time, tp->motion_time);
+			cur.second = tp->touched_id;
+
+			if (cur.first > best.first && window_exists(cur.second)) {
+				best = cur;
+			}
+		}
+
+		return best.second;
 	}
 
-	return DisplayServer::INVALID_WINDOW_ID;
+	return DisplayServerEnums::INVALID_WINDOW_ID;
 }
-DisplayServer::WindowID WaylandThread::pointer_get_last_pointed_window_id() const {
+
+DisplayServerEnums::WindowID WaylandThread::pointer_get_last_pointed_window_id() const {
 	SeatState *ss = wl_seat_get_seat_state(wl_seat_current);
 
 	if (ss) {
@@ -4707,7 +5374,7 @@ DisplayServer::WindowID WaylandThread::pointer_get_last_pointed_window_id() cons
 		return ss->pointer_data.last_pointed_id;
 	}
 
-	return DisplayServer::INVALID_WINDOW_ID;
+	return DisplayServerEnums::INVALID_WINDOW_ID;
 }
 
 void WaylandThread::pointer_set_constraint(PointerConstraint p_constraint) {
@@ -4733,22 +5400,57 @@ void WaylandThread::pointer_set_hint(const Point2i &p_hint) {
 	}
 
 	WindowState *ws = window_get_state(ss->pointer_data.pointed_id);
-
-	int hint_x = 0;
-	int hint_y = 0;
-
-	if (ws) {
-		// NOTE: It looks like it's not really recommended to convert from
-		// "godot-space" to "wayland-space" and in general I received mixed feelings
-		// discussing about this. I'm not really sure about the maths behind this but,
-		// oh well, we're setting a cursor hint. ¯\_(ツ)_/¯
-		// See: https://oftc.irclog.whitequark.org/wayland/2023-08-23#1692756914-1692816818
-		hint_x = std::round(p_hint.x / window_state_get_scale_factor(ws));
-		hint_y = std::round(p_hint.y / window_state_get_scale_factor(ws));
+	if (!ws) {
+		return;
 	}
+
+	// NOTE: It looks like it's not really recommended to convert from
+	// "godot-space" to "wayland-space" and in general I received mixed feelings
+	// discussing about this. I'm not really sure about the maths behind this but,
+	// oh well, we're setting a cursor hint. ¯\_(ツ)_/¯
+	// See: https://oftc.irclog.whitequark.org/wayland/2023-08-23#1692756914-1692816818
+	int hint_x = Math::round(p_hint.x / window_state_get_scale_factor(ws));
+	int hint_y = Math::round(p_hint.y / window_state_get_scale_factor(ws));
 
 	if (ss) {
 		seat_state_set_hint(ss, hint_x, hint_y);
+	}
+}
+
+void WaylandThread::pointer_warp(const Point2i &p_to) {
+	// NOTE: This is for compositors that don't support the pointer-warp protocol.
+	// It's hacked together and not guaranteed to work.
+	if (registry.wp_pointer_warp == nullptr) {
+		PointerConstraint old_constraint = pointer_get_constraint();
+
+		pointer_set_constraint(PointerConstraint::LOCKED);
+		pointer_set_hint(p_to);
+
+		pointer_set_constraint(old_constraint);
+
+		return;
+	}
+
+	SeatState *ss = wl_seat_get_seat_state(wl_seat_current);
+	if (!ss) {
+		return;
+	}
+
+	WindowState *ws = window_get_state(ss->pointer_data.pointed_id);
+	if (!ws) {
+		return;
+	}
+
+	// NOTE: It looks like it's not really recommended to convert from
+	// "godot-space" to "wayland-space" and in general I received mixed feelings
+	// discussing about this. I'm not really sure about the maths behind this but,
+	// oh well. ¯\_(ツ)_/¯
+	// See: https://oftc.irclog.whitequark.org/wayland/2023-08-23#1692756914-1692816818
+	int wl_pos_x = Math::round(p_to.x / window_state_get_scale_factor(ws));
+	int wl_pos_y = Math::round(p_to.y / window_state_get_scale_factor(ws));
+
+	if (ss) {
+		seat_state_warp_pointer(ss, wl_pos_x, wl_pos_y);
 	}
 }
 
@@ -4924,7 +5626,7 @@ Error WaylandThread::init() {
 	}
 
 	// Update the cursor.
-	cursor_set_shape(DisplayServer::CURSOR_ARROW);
+	cursor_set_shape(DisplayServerEnums::CURSOR_ARROW);
 
 	events_thread.start(_poll_events_thread, &thread_data);
 
@@ -4943,7 +5645,7 @@ void WaylandThread::cursor_set_visible(bool p_visible) {
 	}
 }
 
-void WaylandThread::cursor_set_shape(DisplayServer::CursorShape p_cursor_shape) {
+void WaylandThread::cursor_set_shape(DisplayServerEnums::CursorShape p_cursor_shape) {
 	cursor_shape = p_cursor_shape;
 
 	for (struct wl_seat *wl_seat : registry.wl_seats) {
@@ -4954,7 +5656,7 @@ void WaylandThread::cursor_set_shape(DisplayServer::CursorShape p_cursor_shape) 
 	}
 }
 
-void WaylandThread::cursor_shape_set_custom_image(DisplayServer::CursorShape p_cursor_shape, Ref<Image> p_image, const Point2i &p_hotspot) {
+void WaylandThread::cursor_shape_set_custom_image(DisplayServerEnums::CursorShape p_cursor_shape, Ref<Image> p_image, const Point2i &p_hotspot) {
 	ERR_FAIL_COND(p_image.is_null());
 
 	Size2i image_size = p_image->get_size();
@@ -5008,7 +5710,7 @@ void WaylandThread::cursor_shape_set_custom_image(DisplayServer::CursorShape p_c
 	}
 }
 
-void WaylandThread::cursor_shape_clear_custom_image(DisplayServer::CursorShape p_cursor_shape) {
+void WaylandThread::cursor_shape_clear_custom_image(DisplayServerEnums::CursorShape p_cursor_shape) {
 	if (custom_cursors.has(p_cursor_shape)) {
 		CustomCursor cursor = custom_cursors[p_cursor_shape];
 		custom_cursors.erase(p_cursor_shape);
@@ -5023,7 +5725,7 @@ void WaylandThread::cursor_shape_clear_custom_image(DisplayServer::CursorShape p
 	}
 }
 
-void WaylandThread::window_set_ime_active(const bool p_active, DisplayServer::WindowID p_window_id) {
+void WaylandThread::window_set_ime_active(const bool p_active, DisplayServerEnums::WindowID p_window_id) {
 	SeatState *ss = wl_seat_get_seat_state(wl_seat_current);
 
 	if (ss && ss->wp_text_input && ss->ime_enabled) {
@@ -5042,7 +5744,7 @@ void WaylandThread::window_set_ime_active(const bool p_active, DisplayServer::Wi
 	}
 }
 
-void WaylandThread::window_set_ime_position(const Point2i &p_pos, DisplayServer::WindowID p_window_id) {
+void WaylandThread::window_set_ime_position(const Point2i &p_pos, DisplayServerEnums::WindowID p_window_id) {
 	SeatState *ss = wl_seat_get_seat_state(wl_seat_current);
 
 	if (ss && ss->wp_text_input && ss->ime_enabled) {
@@ -5295,8 +5997,17 @@ void WaylandThread::primary_set_text(const String &p_text) {
 	wl_display_roundtrip(wl_display);
 }
 
+bool WaylandThread::supports_hdr() const {
+	ColorManagementState *color_state = wp_color_manager_get_state(registry.wp_color_manager);
+	if (!color_state) {
+		return false;
+	}
+
+	return color_state->supports_hdr;
+}
+
 void WaylandThread::commit_surfaces() {
-	for (KeyValue<DisplayServer::WindowID, WindowState> &pair : windows) {
+	for (KeyValue<DisplayServerEnums::WindowID, WindowState> &pair : windows) {
 		wl_surface_commit(pair.value.wl_surface);
 	}
 }
@@ -5408,12 +6119,12 @@ bool WaylandThread::wait_frame_suspend_ms(int p_timeout) {
 	return false;
 }
 
-uint64_t WaylandThread::window_get_last_frame_time(DisplayServer::WindowID p_window_id) const {
+uint64_t WaylandThread::window_get_last_frame_time(DisplayServerEnums::WindowID p_window_id) const {
 	ERR_FAIL_COND_V(!windows.has(p_window_id), false);
 	return windows[p_window_id].last_frame_time;
 }
 
-bool WaylandThread::window_is_suspended(DisplayServer::WindowID p_window_id) const {
+bool WaylandThread::window_is_suspended(DisplayServerEnums::WindowID p_window_id) const {
 	ERR_FAIL_COND_V(!windows.has(p_window_id), false);
 	return windows[p_window_id].suspended;
 }
@@ -5423,7 +6134,7 @@ bool WaylandThread::is_fifo_available() const {
 }
 
 bool WaylandThread::is_suspended() const {
-	for (const KeyValue<DisplayServer::WindowID, WindowState> &E : windows) {
+	for (const KeyValue<DisplayServerEnums::WindowID, WindowState> &E : windows) {
 		if (!E.value.suspended) {
 			return false;
 		}
@@ -5432,7 +6143,7 @@ bool WaylandThread::is_suspended() const {
 	return true;
 }
 
-bool WaylandThread::window_wait_ready(DisplayServer::WindowID p_window_id, int p_timeout_ms) {
+bool WaylandThread::window_wait_ready(DisplayServerEnums::WindowID p_window_id, int p_timeout_ms) {
 	MutexLock mutex_lock(mutex);
 
 	WindowState *ws = windows.getptr(p_window_id);
@@ -5473,7 +6184,7 @@ struct godot_embedding_compositor *WaylandThread::get_embedding_compositor() {
 	return registry.godot_embedding_compositor;
 }
 
-OS::ProcessID WaylandThread::embedded_compositor_get_focused_pid() {
+ProcessID WaylandThread::embedded_compositor_get_focused_pid() {
 	EmbeddingCompositorState *ecomp_state = godot_embedding_compositor_get_state(registry.godot_embedding_compositor);
 	ERR_FAIL_NULL_V(ecomp_state, -1);
 
@@ -5495,221 +6206,37 @@ void WaylandThread::destroy() {
 		events_thread.wait_to_finish();
 	}
 
-	for (KeyValue<DisplayServer::WindowID, WindowState> &pair : windows) {
-		WindowState &ws = pair.value;
-		if (ws.wp_fractional_scale) {
-			wp_fractional_scale_v1_destroy(ws.wp_fractional_scale);
+	if (!windows.is_empty()) {
+		WARN_PRINT("Display server did not destroy all windows!");
+		// Destroy all remaining windows.
+		// FIXME: This code does not delete popups in order and might cause protocol
+		// errors, as all the popup tree tracking and signaling is done in the display
+		// server. We should figure whether the Wayland thread is the sole responsible
+		// for cleanup.
+		LocalVector<DisplayServerEnums::WindowID> window_ids;
+		for (KeyValue<DisplayServerEnums::WindowID, WindowState> &pair : windows) {
+			print_verbose(vformat("Window %d still allocated", pair.key));
+			window_ids.push_back(pair.key);
 		}
 
-		if (ws.wp_viewport) {
-			wp_viewport_destroy(ws.wp_viewport);
-		}
-
-		if (ws.frame_callback) {
-			wl_callback_destroy(ws.frame_callback);
-		}
-
-#ifdef LIBDECOR_ENABLED
-		if (ws.libdecor_frame) {
-			libdecor_frame_close(ws.libdecor_frame);
-		}
-#endif // LIBDECOR_ENABLED
-
-		if (ws.xdg_toplevel_decoration) {
-			zxdg_toplevel_decoration_v1_destroy(ws.xdg_toplevel_decoration);
-		}
-
-		if (ws.xdg_toplevel) {
-			xdg_toplevel_destroy(ws.xdg_toplevel);
-		}
-
-		if (ws.xdg_surface) {
-			xdg_surface_destroy(ws.xdg_surface);
-		}
-
-		if (ws.wl_surface) {
-			wl_surface_destroy(ws.wl_surface);
+		for (LocalVector<DisplayServerEnums::WindowID>::Iterator E = window_ids.end(); E != window_ids.begin(); --E) {
+			window_destroy(*E);
 		}
 	}
 
-	for (struct wl_seat *wl_seat : registry.wl_seats) {
-		SeatState *ss = wl_seat_get_seat_state(wl_seat);
-		ERR_FAIL_NULL(ss);
-
-		wl_seat_destroy(wl_seat);
-
-		xkb_context_unref(ss->xkb_context);
-		xkb_state_unref(ss->xkb_state);
-		xkb_keymap_unref(ss->xkb_keymap);
-		xkb_compose_table_unref(ss->xkb_compose_table);
-		xkb_compose_state_unref(ss->xkb_compose_state);
-
-		if (ss->wl_keyboard) {
-			wl_keyboard_destroy(ss->wl_keyboard);
-		}
-
-		if (ss->keymap_buffer) {
-			munmap((void *)ss->keymap_buffer, ss->keymap_buffer_size);
-		}
-
-		if (ss->wl_pointer) {
-			wl_pointer_destroy(ss->wl_pointer);
-		}
-
-		if (ss->cursor_frame_callback) {
-			// We don't need to set a null userdata for safety as the thread is done.
-			wl_callback_destroy(ss->cursor_frame_callback);
-		}
-
-		if (ss->cursor_surface) {
-			wl_surface_destroy(ss->cursor_surface);
-		}
-
-		if (ss->wl_data_device) {
-			wl_data_device_destroy(ss->wl_data_device);
-		}
-
-		if (ss->wp_cursor_shape_device) {
-			wp_cursor_shape_device_v1_destroy(ss->wp_cursor_shape_device);
-		}
-
-		if (ss->wp_relative_pointer) {
-			zwp_relative_pointer_v1_destroy(ss->wp_relative_pointer);
-		}
-
-		if (ss->wp_locked_pointer) {
-			zwp_locked_pointer_v1_destroy(ss->wp_locked_pointer);
-		}
-
-		if (ss->wp_confined_pointer) {
-			zwp_confined_pointer_v1_destroy(ss->wp_confined_pointer);
-		}
-
-		if (ss->wp_tablet_seat) {
-			zwp_tablet_seat_v2_destroy(ss->wp_tablet_seat);
-		}
-
-		for (struct zwp_tablet_tool_v2 *tool : ss->tablet_tools) {
-			TabletToolState *state = wp_tablet_tool_get_state(tool);
-			if (state) {
-				memdelete(state);
-			}
-
-			zwp_tablet_tool_v2_destroy(tool);
-		}
-
-		if (ss->wp_text_input) {
-			zwp_text_input_v3_destroy(ss->wp_text_input);
-		}
-
-		memdelete(ss);
+	// We can't iterate directly on `global_names` as it gets mutated by the global
+	// remove handler.
+	LocalVector<uint32_t> global_names_to_delete;
+	for (uint32_t name : registry.global_names) {
+		global_names_to_delete.push_back(name);
 	}
 
-	if (registry.wp_tablet_manager) {
-		zwp_tablet_manager_v2_destroy(registry.wp_tablet_manager);
-	}
-
-	if (registry.wp_text_input_manager) {
-		zwp_text_input_manager_v3_destroy(registry.wp_text_input_manager);
-	}
-
-	for (struct wl_output *wl_output : registry.wl_outputs) {
-		ERR_FAIL_NULL(wl_output);
-
-		memdelete(wl_output_get_screen_state(wl_output));
-		wl_output_destroy(wl_output);
-	}
-
-	if (registry.godot_embedding_compositor) {
-		EmbeddingCompositorState *es = godot_embedding_compositor_get_state(registry.godot_embedding_compositor);
-		ERR_FAIL_NULL(es);
-
-		es->mapped_clients.clear();
-
-		for (struct godot_embedded_client *client : es->clients) {
-			godot_embedded_client_destroy(client);
-		}
-		es->clients.clear();
-
-		memdelete(es);
-
-		godot_embedding_compositor_destroy(registry.godot_embedding_compositor);
+	for (uint32_t name : global_names_to_delete) {
+		_wl_registry_on_global_remove(wl_registry_get_user_data(wl_registry), wl_registry, name);
 	}
 
 	if (wl_cursor_theme) {
 		wl_cursor_theme_destroy(wl_cursor_theme);
-	}
-
-	if (registry.wp_idle_inhibit_manager) {
-		zwp_idle_inhibit_manager_v1_destroy(registry.wp_idle_inhibit_manager);
-	}
-
-	if (registry.wp_pointer_constraints) {
-		zwp_pointer_constraints_v1_destroy(registry.wp_pointer_constraints);
-	}
-
-	if (registry.wp_pointer_gestures) {
-		zwp_pointer_gestures_v1_destroy(registry.wp_pointer_gestures);
-	}
-
-	if (registry.wp_relative_pointer_manager) {
-		zwp_relative_pointer_manager_v1_destroy(registry.wp_relative_pointer_manager);
-	}
-
-	if (registry.xdg_activation) {
-		xdg_activation_v1_destroy(registry.xdg_activation);
-	}
-
-	if (registry.xdg_system_bell) {
-		xdg_system_bell_v1_destroy(registry.xdg_system_bell);
-	}
-
-	if (registry.xdg_toplevel_icon_manager) {
-		xdg_toplevel_icon_manager_v1_destroy(registry.xdg_toplevel_icon_manager);
-
-		if (xdg_icon) {
-			xdg_toplevel_icon_v1_destroy(xdg_icon);
-		}
-
-		if (icon_buffer) {
-			wl_buffer_destroy(icon_buffer);
-		}
-	}
-
-	if (registry.xdg_decoration_manager) {
-		zxdg_decoration_manager_v1_destroy(registry.xdg_decoration_manager);
-	}
-
-	if (registry.wp_cursor_shape_manager) {
-		wp_cursor_shape_manager_v1_destroy(registry.wp_cursor_shape_manager);
-	}
-
-	if (registry.wp_fractional_scale_manager) {
-		wp_fractional_scale_manager_v1_destroy(registry.wp_fractional_scale_manager);
-	}
-
-	if (registry.wp_viewporter) {
-		wp_viewporter_destroy(registry.wp_viewporter);
-	}
-
-	if (registry.xdg_wm_base) {
-		xdg_wm_base_destroy(registry.xdg_wm_base);
-	}
-
-	// NOTE: Deprecated.
-	if (registry.xdg_exporter_v1) {
-		zxdg_exporter_v1_destroy(registry.xdg_exporter_v1);
-	}
-
-	if (registry.xdg_exporter_v2) {
-		zxdg_exporter_v2_destroy(registry.xdg_exporter_v2);
-	}
-	if (registry.wl_shm) {
-		wl_shm_destroy(registry.wl_shm);
-	}
-
-	if (registry.wl_compositor) {
-		wl_compositor_destroy(registry.wl_compositor);
 	}
 
 	if (wl_registry) {

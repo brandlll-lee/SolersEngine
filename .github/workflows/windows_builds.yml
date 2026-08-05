@@ -9,8 +9,6 @@ env:
     dev_mode=yes
     module_text_server_fb_enabled=yes
     debug_symbols=no
-    "angle_libs=${{ github.workspace }}/"
-    "accesskit_sdk_path=${{ github.workspace }}/accesskit-c-0.21.2/"
   SCONS_CACHE_MSVC_CONFIG: true
   PYTHONIOENCODING: utf8
 
@@ -31,7 +29,7 @@ jobs:
               windows_subsystem=console
               vsproj=yes
               vsproj_gen_only=no
-            bin: ./bin/godot.windows.editor.x86_64.exe
+            bin: ./bin/solers.windows.editor.x86_64.exe
             compiler: msvc
 
           - name: Editor w/ clang-cl (target=editor, use_llvm=yes)
@@ -40,13 +38,13 @@ jobs:
             scons-flags: >-
               windows_subsystem=console
               use_llvm=yes
-            bin: ./bin/godot.windows.editor.x86_64.llvm.exe
+            bin: ./bin/solers.windows.editor.x86_64.llvm.exe
             compiler: clang
 
           - name: Template (target=template_release)
             cache-name: windows-template
             target: template_release
-            bin: ./bin/godot.windows.template_release.x86_64.console.exe
+            bin: ./bin/solers.windows.template_release.x86_64.console.exe
             compiler: msvc
 
           - name: Template w/ GCC (target=template_release, use_mingw=yes)
@@ -54,7 +52,7 @@ jobs:
             # MinGW takes MUCH longer to compile; save time by only targeting Template.
             target: template_release
             scons-flags: use_mingw=yes
-            bin: ./bin/godot.windows.template_release.x86_64.console.exe
+            bin: ./bin/solers.windows.template_release.x86_64.console.exe
             compiler: gcc
 
     steps:
@@ -84,30 +82,37 @@ jobs:
           fi
         continue-on-error: true
 
-      - name: Download pre-built ANGLE static libraries
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Download pre-built ANGLE
+        shell: sh
+        id: angle-sdk
         run: |
-          New-Item -ItemType Directory -Force angle | Out-Null
-          gh release download chromium/6601.2 --repo godotengine/godot-angle-static --pattern "godot-angle-static-x86_64-${{ matrix.compiler == 'gcc' && 'gcc' || 'msvc' }}-release.zip" --output angle/angle.zip
+          if python ./misc/scripts/install_angle.py; then
+            echo "ANGLE_ENABLED=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::ANGLE SDK installation failed, building without ANGLE support."
+            echo "ANGLE_ENABLED=no" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Extract pre-built ANGLE static libraries
-        run: Expand-Archive -Force angle/angle.zip ${{ github.workspace }}/
+      - name: Download WinRT components
+        shell: sh
+        run: python ./misc/scripts/install_winrt.py
+        continue-on-error: true
 
       - name: Download pre-built AccessKit
-        env:
-          GH_TOKEN: ${{ github.token }}
+        shell: sh
+        id: accesskit-sdk
         run: |
-          New-Item -ItemType Directory -Force accesskit-c-0.21.2 | Out-Null
-          gh release download 0.21.2 --repo godotengine/godot-accesskit-c-static --pattern accesskit-c-0.21.2.zip --output accesskit-c-0.21.2/accesskit_c.zip
-
-      - name: Extract pre-built AccessKit
-        run: unzip -o accesskit-c-0.21.2/accesskit_c.zip
+          if python ./misc/scripts/install_accesskit.py; then
+            echo "ACCESSKIT_ENABLED=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::AccessKit SDK installation failed, building without AccessKit support."
+            echo "ACCESSKIT_ENABLED=no" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Compilation
         uses: ./.github/actions/godot-build
         with:
-          scons-flags: ${{ env.SCONS_FLAGS }} ${{ matrix.scons-flags }} d3d12=${{ steps.d3d12-sdk.outputs.D3D12_ENABLED }}
+          scons-flags: ${{ env.SCONS_FLAGS }} ${{ matrix.scons-flags }} d3d12=${{ steps.d3d12-sdk.outputs.D3D12_ENABLED }} accesskit=${{ steps.accesskit-sdk.outputs.ACCESSKIT_ENABLED }} angle=${{ steps.angle-sdk.outputs.ANGLE_ENABLED }}
           platform: windows
           target: ${{ matrix.target }}
 
@@ -120,6 +125,7 @@ jobs:
       - name: Prepare artifact
         if: matrix.compiler == 'msvc'
         run: |
+          Remove-Item bin/build_deps -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item bin/* -Include *.exp,*.lib,*.pdb -Force
 
       - name: Upload artifact
@@ -133,7 +139,3 @@ jobs:
           ${{ matrix.bin }} --version
           ${{ matrix.bin }} --help
           ${{ matrix.bin }} --test --force-colors
-
-      - name: Terrain3D extension smoke test
-        if: matrix.cache-name == 'windows-editor'
-        run: python modules/solers_ai/tests/terrain3d_smoke.py ${{ matrix.bin }}

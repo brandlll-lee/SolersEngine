@@ -2,20 +2,36 @@
 /*  solers_dock.cpp                                                       */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                              SOLERS ENGINE                              */
-/*                        (a fork of Godot Engine)                        */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
 /**************************************************************************/
-/* Solers: AI-native game engine.                                        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
 /*                                                                        */
-/* Native Codex-grade chat dock. Layout and text input are stock Godot   */
-/* Controls (TextEdit gives OS-grade IME/CJK input and TextServer glyph  */
-/* caching); every piece of chat chrome is self-drawn via the widget kit  */
-/* in solers_chat_widgets.h. There is no embedded UI runtime: the dock    */
-/* renders through the editor canvas like any other dock and costs zero   */
-/* CPU at steady state.                                                   */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
 #include "solers_dock.h"
+
+#include "solers_pm_ai_view.h"
+#include "solers_pm_theme.h"
 
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
@@ -26,6 +42,7 @@
 #include "core/io/json.h"
 #include "core/io/resource_loader.h"
 #include "core/io/resource_uid.h"
+#include "core/object/callable_mp.h"
 #include "core/os/time.h"
 #include "core/templates/hash_set.h"
 #include "core/version.h"
@@ -34,25 +51,8 @@
 #include "editor/file_system/editor_file_system.h"
 #include "editor/gui/editor_file_dialog.h"
 #include "editor/inspector/editor_resource_preview.h"
-#include "editor/project_manager/solers_pm_ai_view.h"
-#include "editor/project_manager/solers_pm_theme.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
-#include "modules/solers_ai/core/solers_action_timeline.h"
-#include "modules/solers_ai/core/solers_agent_session.h"
-#include "modules/solers_ai/core/solers_mention.h"
-#include "modules/solers_ai/core/solers_observation_service.h"
-#include "modules/solers_ai/core/solers_permission_manager.h"
-#include "modules/solers_ai/core/solers_provider_registry.h"
-#include "modules/solers_ai/core/solers_settings_service.h"
-#include "modules/solers_ai/core/solers_tool_registry.h"
-#include "modules/solers_ai/core/solers_trace.h"
-#include "modules/solers_ai/editor/solers_chat_cells.h"
-#include "modules/solers_ai/editor/solers_chat_widgets.h"
-#include "modules/solers_ai/llm/solers_llm_message.h"
-#include "modules/solers_ai/llm/solers_models_dev.h"
-#include "modules/solers_ai/protocol/solers_mcp_adapter.h"
-#include "modules/solers_ai/protocol/solers_rpc_server.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
 #include "scene/gui/dialogs.h"
@@ -72,6 +72,22 @@
 #include "scene/resources/style_box_flat.h"
 #include "servers/display/display_server.h"
 #include "servers/rendering/rendering_server.h"
+
+#include "modules/solers_ai/core/solers_action_timeline.h"
+#include "modules/solers_ai/core/solers_agent_session.h"
+#include "modules/solers_ai/core/solers_mention.h"
+#include "modules/solers_ai/core/solers_observation_service.h"
+#include "modules/solers_ai/core/solers_permission_manager.h"
+#include "modules/solers_ai/core/solers_provider_registry.h"
+#include "modules/solers_ai/core/solers_settings_service.h"
+#include "modules/solers_ai/core/solers_tool_registry.h"
+#include "modules/solers_ai/core/solers_trace.h"
+#include "modules/solers_ai/editor/solers_chat_cells.h"
+#include "modules/solers_ai/editor/solers_chat_widgets.h"
+#include "modules/solers_ai/llm/solers_llm_message.h"
+#include "modules/solers_ai/llm/solers_models_dev.h"
+#include "modules/solers_ai/protocol/solers_mcp_adapter.h"
+#include "modules/solers_ai/protocol/solers_rpc_server.h"
 
 constexpr float SOLERS_COMPOSER_TEXT_MIN_HEIGHT = 48.0f;
 constexpr float SOLERS_COMPOSER_TEXT_MAX_HEIGHT = 220.0f;

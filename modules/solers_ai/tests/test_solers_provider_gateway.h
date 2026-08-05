@@ -39,35 +39,47 @@
 #include "core/io/json.h"
 #include "core/io/resource_loader.h"
 #include "core/io/tcp_server.h"
+#include "core/object/callable_mp.h"
 #include "core/object/message_queue.h"
 #include "core/os/os.h"
 #include "core/templates/pair.h"
-#include "editor/file_system/editor_file_system.h"
 #include "editor/asset_library/editor_asset_installer.h"
+#include "editor/file_system/editor_file_system.h"
 #include "editor/settings/editor_settings.h"
-#include "modules/zip/zip_packer.h"
+#include "scene/3d/mesh_instance_3d.h"
+#include "scene/3d/node_3d.h"
+#include "scene/3d/path_3d.h"
+#include "scene/gui/box_container.h"
+#include "scene/gui/button.h"
+#include "scene/gui/scroll_container.h"
+#include "scene/main/resource_preloader.h"
+#include "scene/main/scene_tree.h"
+#include "scene/resources/3d/primitive_meshes.h"
+#include "scene/resources/curve.h"
+#include "scene/resources/environment.h"
+#include "scene/resources/mesh.h"
+#include "scene/resources/resource_format_text.h"
 #include "tests/test_macros.h"
 
 #include "modules/solers_ai/core/solers_agent_session.h"
 #include "modules/solers_ai/core/solers_asset_service.h"
-#include "modules/solers_ai/core/solers_mention.h"
-#include "modules/solers_ai/plugins/solers_plugin.h"
-#include "modules/solers_ai/plugins/solers_plugin_meshy.h"
-#include "modules/solers_ai/plugins/solers_plugin_polyhaven.h"
+#include "modules/solers_ai/core/solers_builtin_skills.h"
 #include "modules/solers_ai/core/solers_context_manager.h"
 #include "modules/solers_ai/core/solers_file_checkpoint.h"
 #include "modules/solers_ai/core/solers_geometry_facts.h"
-#include "modules/solers_ai/core/solers_permission_manager.h"
+#include "modules/solers_ai/core/solers_mention.h"
 #include "modules/solers_ai/core/solers_observation_service.h"
+#include "modules/solers_ai/core/solers_permission_manager.h"
 #include "modules/solers_ai/core/solers_provider_registry.h"
 #include "modules/solers_ai/core/solers_reflection_service.h"
 #include "modules/solers_ai/core/solers_resource_service.h"
 #include "modules/solers_ai/core/solers_script_service.h"
 #include "modules/solers_ai/core/solers_secret_store.h"
 #include "modules/solers_ai/core/solers_settings_service.h"
-#include "modules/solers_ai/core/solers_builtin_skills.h"
 #include "modules/solers_ai/core/solers_tool_registry.h"
 #include "modules/solers_ai/core/solers_trace.h"
+#include "modules/solers_ai/editor/solers_chat_cells.h"
+#include "modules/solers_ai/editor/solers_chat_widgets.h"
 #include "modules/solers_ai/llm/solers_llm_client.h"
 #include "modules/solers_ai/llm/solers_llm_message.h"
 #include "modules/solers_ai/llm/solers_llm_protocol.h"
@@ -76,21 +88,11 @@
 #include "modules/solers_ai/llm/solers_protocol_anthropic_messages.h"
 #include "modules/solers_ai/llm/solers_protocol_openai_chat.h"
 #include "modules/solers_ai/llm/solers_protocol_openai_responses.h"
-#include "modules/solers_ai/editor/solers_chat_cells.h"
-#include "modules/solers_ai/editor/solers_chat_widgets.h"
-#include "scene/gui/box_container.h"
-#include "scene/gui/scroll_container.h"
+#include "modules/solers_ai/plugins/solers_plugin.h"
+#include "modules/solers_ai/plugins/solers_plugin_meshy.h"
+#include "modules/solers_ai/plugins/solers_plugin_polyhaven.h"
 #include "modules/solers_ai/protocol/solers_mcp_adapter.h"
-#include "scene/3d/path_3d.h"
-#include "scene/3d/mesh_instance_3d.h"
-#include "scene/3d/node_3d.h"
-#include "scene/main/resource_preloader.h"
-#include "scene/gui/button.h"
-#include "scene/resources/resource_format_text.h"
-#include "scene/resources/curve.h"
-#include "scene/resources/environment.h"
-#include "scene/resources/mesh.h"
-#include "scene/resources/3d/primitive_meshes.h"
+#include "modules/zip/zip_packer.h"
 
 namespace TestSolersProviderGateway {
 
@@ -3059,31 +3061,37 @@ TEST_CASE("[SolersChat][SceneTree] user scrolling pages variable rows to the fir
 	MarginContainer *inset = memnew(MarginContainer);
 	VBoxContainer *list = memnew(VBoxContainer);
 	scroll->set_size(Size2(480, 240));
-	inset->add_child(list); scroll->add_child(inset);
+	inset->add_child(list);
+	scroll->add_child(inset);
 	SceneTree::get_singleton()->get_root()->add_child(scroll);
 	for (int64_t id = 25; id <= 48; id++) {
 		Label *row = memnew(Label(vformat("message %d", id)));
 		row->set_custom_minimum_size(Size2(0, 18 + id % 5 * 17));
-		row->set_meta("timeline_event_id", id); list->add_child(row);
+		row->set_meta("timeline_event_id", id);
+		list->add_child(row);
 	}
 	MessageQueue::get_singleton()->flush();
 	VScrollBar *bar = scroll->get_v_scroll_bar();
-	scroll->set_v_scroll(20); list->set_process(false);
+	scroll->set_v_scroll(20);
+	list->set_process(false);
 	bar->connect(SNAME("scrolling"), callable_mp(static_cast<Node *>(list), &Node::set_process).bind(true));
 	scroll->set_v_scroll(0);
 	CHECK_FALSE(list->is_processing());
 	bar->scroll(1);
 	CHECK(list->is_processing());
 	for (int page = 0; page < 2; page++) {
-		scroll->set_v_scroll(0); MessageQueue::get_singleton()->flush();
-		const int64_t anchor_id = 25 - page * 12; Control *anchor = Object::cast_to<Control>(list->get_child(0));
+		scroll->set_v_scroll(0);
+		MessageQueue::get_singleton()->flush();
+		const int64_t anchor_id = 25 - page * 12;
+		Control *anchor = Object::cast_to<Control>(list->get_child(0));
 		REQUIRE((int64_t)anchor->get_meta("timeline_event_id", -1) == anchor_id);
 		const float anchor_y = anchor->get_global_position().y;
 		list->connect(SceneStringName(sort_children), callable_mp_static(solers_test_queue_scroll_commit).bind(scroll, anchor, anchor_y), Object::CONNECT_ONE_SHOT);
 		for (int64_t id = anchor_id - 1; id >= anchor_id - 12; id--) {
 			Label *row = memnew(Label(vformat("message %d", id)));
 			row->set_custom_minimum_size(Size2(0, 18 + id % 5 * 17));
-			row->set_meta("timeline_event_id", id); list->add_child(row);
+			row->set_meta("timeline_event_id", id);
+			list->add_child(row);
 			list->move_child(row, 0);
 			Node *last = list->get_child(list->get_child_count() - 1);
 			list->remove_child(last);
@@ -3094,7 +3102,8 @@ TEST_CASE("[SolersChat][SceneTree] user scrolling pages variable rows to the fir
 	}
 	CHECK(list->get_child_count() == 24);
 	CHECK((int64_t)list->get_child(0)->get_meta("timeline_event_id", -1) == 1);
-	scroll->get_parent()->remove_child(scroll); memdelete(scroll);
+	scroll->get_parent()->remove_child(scroll);
+	memdelete(scroll);
 }
 
 TEST_CASE("[SolersResourceService] nearest names rank containment above similarity") {
@@ -3481,7 +3490,7 @@ TEST_CASE("[SolersLLMClient] empty HTTP 200 stream fails without retry") {
 					"\r\n"
 					"0\r\n"
 					"\r\n")
-											 .utf8();
+											.utf8();
 			connection->put_data((const uint8_t *)resp.get_data(), resp.length());
 			responded = true;
 			server->stop();

@@ -44,7 +44,7 @@ class SolersScriptService : public Object {
 	Error project_settings_save_error = OK;
 
 	struct PendingCompute {
-		OS::ProcessID process_id = 0;
+		ProcessID process_id = 0;
 		String directory;
 		Array outputs;
 	};

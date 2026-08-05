@@ -37,28 +37,18 @@ class CheckBox;
 class EditorAbout;
 class EditorAssetLibrary;
 class EditorFileDialog;
-class EditorNode;
 class EditorTitleBar;
 class HFlowContainer;
-class HBoxContainer;
-class HSplitContainer;
-class InputEvent;
 class LineEdit;
 class MarginContainer;
-class MenuButton;
 class OptionButton;
 class PanelContainer;
 class PopupMenu;
 class ProjectDialog;
 class ProjectList;
+class QuickSettingsDialog;
 class RichTextLabel;
-class SolersAgentRuntime;
-class SolersDock;
-class Shortcut;
-class TabBar;
 class TabContainer;
-class Texture2D;
-class TextureRect;
 class VBoxContainer;
 
 class ProjectManager : public Control {
@@ -97,60 +87,32 @@ class ProjectManager : public Control {
 
 	EditorTitleBar *title_bar = nullptr;
 	Control *left_menu_spacer = nullptr;
+	Control *left_spacer = nullptr;
 	Control *right_menu_spacer = nullptr;
+	Control *right_spacer = nullptr;
 	Button *title_bar_logo = nullptr;
-	PanelContainer *shell_chat_panel = nullptr;
-	PanelContainer *shell_workspace_panel = nullptr;
-	HSplitContainer *shell_work_split = nullptr;
-	Control *shell_editor_host = nullptr;
-	Control *shell_editor_gui = nullptr;
-	EditorNode *shell_editor_node = nullptr;
-	Control *shell_workspace_home = nullptr;
-	VBoxContainer *shell_workspace_tool_list = nullptr;
-	String shell_project_path;
-	String shell_session_id;
-	String active_editor_project_path;
-	bool open_classic_editor = false;
-	bool shell_workspace_collapsed = false;
+	HBoxContainer *main_view_toggles = nullptr;
+	Button *quick_settings_button = nullptr;
 
-	TabBar *shell_workspace_tab_bar = nullptr;
-	TabContainer *main_view_container = nullptr;
+	enum MainViewTab {
+		MAIN_VIEW_PROJECTS,
+		MAIN_VIEW_ASSETLIB,
+		MAIN_VIEW_MAX
+	};
 
-	void _show_workspace_launcher(bool p_show_tabs);
-	void _set_workspace_canvas_mode(bool p_canvas_mode);
-	void _clear_workspace_tool_list();
-	void _show_workspace_home();
-	void _show_workspace_editor();
-	void _rebuild_workspace_launcher();
-	void _rebuild_workspace_scene_surface();
-	void _rebuild_workspace_script_surface();
-	void _rebuild_workspace_assets_surface();
-	void _rebuild_workspace_game_surface();
-	void _rebuild_workspace_studio_launcher();
-	HBoxContainer *_rebuild_workspace_canvas_surface(const String &p_mode, const Ref<Texture2D> &p_icon, const String &p_title, const String &p_hint, Control *p_content = nullptr);
-	void _add_workspace_section_label(const String &p_text);
-	void _add_workspace_canvas_action(HBoxContainer *p_bar, const String &p_tool_id, const String &p_title, const Ref<Texture2D> &p_icon);
-	void _add_workspace_tool_button(VBoxContainer *p_list, const String &p_tool_id, const String &p_title, const Ref<Texture2D> &p_icon, const Ref<Shortcut> &p_shortcut);
-	void _workspace_tool_pressed(const String &p_tool_id, const String &p_title, const Ref<Texture2D> &p_icon);
-	void _workspace_tool_tab_changed(int p_tab);
-	void _workspace_tool_tab_close_pressed(int p_tab);
-	void _activate_workspace_tool(const String &p_tool_id);
-	int _find_workspace_tool_tab(const String &p_tool_id) const;
-	void _toggle_shell_workspace();
-	void _show_shell_chat();
-	void _show_shell_global_view(Control *p_view);
-	void _shell_session_pressed(const String &p_session_id);
-	void _shell_new_session_pressed();
-	void _shell_asset_pressed();
-	void _set_shell_session(const String &p_project_path, const String &p_session_id);
-	void _load_shell_editor(const String &p_project_path);
+	MainViewTab current_main_view = MAIN_VIEW_PROJECTS;
+	HashMap<MainViewTab, Control *> main_view_map;
+	HashMap<MainViewTab, Button *> main_view_toggle_map;
+
+	PanelContainer *main_view_container = nullptr;
+	Ref<ButtonGroup> main_view_toggles_group;
+
+	Button *_add_main_view(MainViewTab p_id, const String &p_name, const Ref<Texture2D> &p_icon, Control *p_view_control);
+	void _set_main_view_icon(MainViewTab p_id, const Ref<Texture2D> &p_icon);
+	void _select_main_view(int p_id);
 
 	VBoxContainer *local_projects_vb = nullptr;
 	EditorAssetLibrary *asset_library = nullptr;
-	Control *shell_asset_view = nullptr;
-	Control *shell_global_overlay_view = nullptr;
-	SolersAgentRuntime *solers_agent_runtime = nullptr;
-	SolersDock *solers_home_dock = nullptr;
 
 	EditorAbout *about_dialog = nullptr;
 
@@ -163,19 +125,48 @@ class ProjectManager : public Control {
 	void _show_error(const String &p_message, const Size2 &p_min_size = Size2());
 	void _dim_window();
 
+	// Quick settings.
+
+	QuickSettingsDialog *quick_settings_dialog = nullptr;
+
 	void _show_quick_settings();
 	void _restart_confirmed();
 
-	// Project list (Cursor-style home: logo + tiles + All Projects).
+	// Project list.
 
-	Label *empty_list_message = nullptr;
+	VBoxContainer *empty_list_placeholder = nullptr;
+	RichTextLabel *empty_list_message = nullptr;
+	Button *empty_list_create_project = nullptr;
+	Button *empty_list_import_project = nullptr;
+	Button *empty_list_open_assetlib = nullptr;
+	Label *empty_list_online_warning = nullptr;
+
 	void _update_list_placeholder();
 
 	ProjectList *project_list = nullptr;
 	bool initialized = false;
 
+	LineEdit *search_box = nullptr;
 	Label *loading_label = nullptr;
-	TextureRect *home_logo = nullptr;
+	Label *sort_label = nullptr;
+	OptionButton *filter_option = nullptr;
+	PanelContainer *project_list_panel = nullptr;
+
+	Button *create_btn = nullptr;
+	Button *import_btn = nullptr;
+	Button *scan_btn = nullptr;
+	Button *open_btn = nullptr;
+	Button *open_options_btn = nullptr;
+	Button *run_btn = nullptr;
+	Button *rename_btn = nullptr;
+	Button *duplicate_btn = nullptr;
+	Button *manage_tags_btn = nullptr;
+	Button *erase_btn = nullptr;
+	Button *erase_missing_btn = nullptr;
+	Button *donate_btn = nullptr;
+
+	HBoxContainer *open_btn_container = nullptr;
+	PopupMenu *open_options_popup = nullptr;
 
 	EditorFileDialog *scan_dir = nullptr;
 
@@ -211,13 +202,20 @@ class ProjectManager : public Control {
 	void _erase_project_confirm();
 	void _erase_missing_projects_confirm();
 	void _update_project_buttons();
+	void _open_options_popup();
 	void _open_recovery_mode_ask(bool manual = false);
+	void _open_donate_page();
 
 	void _on_project_created(const String &dir, bool edit);
 	void _on_project_duplicated(const String &p_original_path, const String &p_duplicate_path, bool p_edit);
 	void _on_projects_updated();
+	void _on_open_options_selected(int p_option);
 	void _on_recovery_mode_popup_open_normal();
 	void _on_recovery_mode_popup_open_recovery();
+
+	void _on_order_option_changed(int p_idx);
+	void _on_search_term_changed(const String &p_term);
+	void _on_search_term_submitted(const String &p_text);
 
 	// Project tag management.
 
@@ -286,7 +284,9 @@ public:
 	// Project tag management.
 
 	void add_new_tag(const String &p_tag);
-	void mount_shell_editor(EditorNode *p_editor_node);
+
+	// Theme.
+	Ref<Theme> get_theme() const { return theme; }
 
 	ProjectManager();
 	~ProjectManager();
