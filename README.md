@@ -1,76 +1,107 @@
-# Godot Engine
+<div align="center">
+  <img src="branding/generated/solers02_icon_transparent_1024.png" width="128" alt="Solers V2 logo"/>
 
-<p align="center">
-  <a href="https://godotengine.org">
-    <img src="misc/logo/logo_outlined.svg" width="400" alt="Godot Engine logo">
-  </a>
-</p>
+# Solers
 
-## 2D and 3D cross-platform game engine
+**AI-native game engine (Godot fork) where AI acts as a first-class native
+operator for collaborative game development.**
 
-**[Godot Engine](https://godotengine.org) is a feature-packed, cross-platform
-game engine to create 2D and 3D games from a unified interface.** It provides a
-comprehensive set of [common tools](https://godotengine.org/features), so that
-users can focus on making games without having to reinvent the wheel. Games can
-be exported with one click to a number of platforms, including the major desktop
-platforms (Linux, macOS, Windows), mobile platforms (Android, iOS), as well as
-Web-based platforms and [consoles](https://godotengine.org/consoles).
+[Build from source](#build-from-source) · [Architecture](docs/SOLERS_ARCHITECTURE.md) · [Upstream](docs/UPSTREAM.md) · [License](LICENSE.txt)
 
-## Free, open source and community-driven
+Godot 4.7.1 · Standard Godot projects · Open model access
 
-Godot is completely free and open source under the very permissive [MIT license](https://godotengine.org/license).
-No strings attached, no royalties, nothing. The users' games are theirs, down
-to the last line of engine code. Godot's development is fully independent and
-community-driven, empowering users to help shape their engine to match their
-expectations. It is supported by the [Godot Foundation](https://godot.foundation/)
-not-for-profit.
+</div>
 
-Before being open sourced in [February 2014](https://github.com/godotengine/godot/commit/0b806ee0fc9097fa7bda7ac0109191c9c5e0a1ac),
-Godot had been developed by [Juan Linietsky](https://github.com/reduz) and
-[Ariel Manzur](https://github.com/punto-) for several years as an in-house
-engine, used to publish several work-for-hire titles.
+---
 
-![Screenshot of a 3D scene in the Godot Engine editor](https://raw.githubusercontent.com/godotengine/godot-design/master/screenshots/editor_tps_demo_1920x1080.jpg)
+## Features
 
-## Getting the engine
+### Engine-native agent
 
-### Binary downloads
+Solers runs inside the Godot editor. It works from live scenes, resources,
+scripts, editor state, errors, and the running game.
 
-Official binaries for the Godot editor and the export templates can be found
-[on the Godot website](https://godotengine.org/download).
+### Build, run, inspect
 
-### Compiling from source
+Create and edit 2D or 3D worlds, write gameplay code, manage assets, run the
+game, inspect failures, capture rendered output, and continue from evidence.
 
-[See the official docs](https://docs.godotengine.org/en/latest/engine_details/development/compiling)
-for compilation instructions for every supported platform.
+### Native, recoverable changes
 
-## Community and contributing
+Scene edits use Godot's native transactions and save validation. File and
+resource changes use state checks and recoverable checkpoints.
 
-Godot is not only an engine but an ever-growing community of users and engine
-developers. The main community channels are listed [on the homepage](https://godotengine.org/community).
+### Long-running work
 
-The best way to get in touch with the core engine developers is to join the
-[Godot Contributors Chat](https://chat.godotengine.org).
+The agent loop has no fixed request-count cutoff. Completed tool traffic is
+compacted, active work can be restored, and background jobs can resume.
 
-To get started contributing to the project, see the [contributing guide](CONTRIBUTING.md).
-This document also includes guidelines for reporting bugs.
+### Open model access
 
-## Documentation and demos
+Sign in to ChatGPT Codex, select a provider from the model catalog, or connect
+an OpenAI-compatible local, private, or hosted endpoint.
 
-The official documentation is hosted on [Read the Docs](https://docs.godotengine.org).
-It is maintained by the Godot community in its own [GitHub repository](https://github.com/godotengine/godot-docs).
+### Extensible tools
 
-The [class reference](https://docs.godotengine.org/en/latest/classes/)
-is also accessible from the Godot editor.
+Solers exposes focused engine tools for scenes, scripts, runtime observation,
+rendering, assets, addons, search, and reusable skills. External agents can use
+the same engine through a local MCP-compatible interface.
 
-We also maintain official demos in their own [GitHub repository](https://github.com/godotengine/godot-demo-projects)
-as well as a list of [awesome Godot community resources](https://github.com/godotengine/awesome-godot).
+## Why a Godot fork?
 
-There are also a number of other
-[learning resources](https://docs.godotengine.org/en/latest/community/tutorials.html)
-provided by the community, such as text and video tutorials, demos, etc.
-Consult the [community channels](https://godotengine.org/community)
-for more information.
+Solers integrates the agent runtime, permissions, context, and tools directly
+into the editor instead of operating as a sidecar. Projects remain standard
+Godot projects that can be opened, edited, and shipped with familiar tools.
 
-[![Code Triagers Badge](https://www.codetriage.com/godotengine/godot/badges/users.svg)](https://www.codetriage.com/godotengine/godot)
-[![Translate on Weblate](https://hosted.weblate.org/widgets/godot-engine/-/godot/svg-badge.svg)](https://hosted.weblate.org/engage/godot-engine/?utm_source=widget)
+## Build from source
+
+Solers is under active development. Clone the repository and use the standard
+[Godot 4.7 build toolchain](https://docs.godotengine.org/en/4.7/engine_details/development/compiling/index.html).
+
+```bash
+git clone https://github.com/brandlll-lee/SolersEngine.git
+cd SolersEngine
+```
+
+### Windows
+
+```powershell
+python -m SCons platform=windows target=editor dev_build=yes -j4
+.\bin\solers.windows.editor.dev.x86_64.exe
+```
+
+### Linux
+
+```bash
+scons platform=linuxbsd target=editor dev_build=yes -j4
+./bin/solers.linuxbsd.editor.dev.x86_64
+```
+
+See the [official Linux build guide](https://docs.godotengine.org/en/4.7/engine_details/development/compiling/compiling_for_linuxbsd.html)
+for distribution-specific dependencies. On macOS, use the same SCons flow with
+`platform=macos`.
+
+Then open or create a project, connect a model in **AI Setup**, and open the
+**Solers** panel.
+
+## Developing
+
+Read the [Solers architecture notes](docs/SOLERS_ARCHITECTURE.md) before changing
+the agent runtime or engine tools. Solers follows Godot's
+[contribution workflow](CONTRIBUTING.md) for engine development.
+
+To include the Solers behavior tests in a Windows development build:
+
+```powershell
+python -m SCons platform=windows target=editor dev_build=yes tests=yes -j4
+.\bin\solers.windows.editor.dev.x86_64.console.exe --test '--test-case=*[Solers*'
+```
+
+## License
+
+Solers is a fork of [Godot Engine](https://godotengine.org) and is available
+under the [MIT license](LICENSE.txt). See [COPYRIGHT.txt](COPYRIGHT.txt) for
+attribution.
+
+Solers is an independent distribution and is not affiliated with or endorsed by
+the Godot Foundation.

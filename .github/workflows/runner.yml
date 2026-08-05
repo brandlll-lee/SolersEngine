@@ -13,11 +13,31 @@ jobs:
     name: 📊 Static checks
     uses: ./.github/workflows/static_checks.yml
 
+  solers-build-check:
+    name: 🧠 Solers module build
+    needs: static-checks
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - name: Setup dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install libwayland-bin
+      - name: Setup Python and SCons
+        uses: ./.github/actions/godot-deps
+      - name: Compile Solers module
+        run: >-
+          scons platform=linuxbsd target=editor dev_build=yes accesskit=no
+          use_llvm=yes linker=lld modules/libmodule_solers_ai.linuxbsd.editor.dev.x86_64.llvm.a -j4
+
   # Second stage: Run all the builds and some of the tests.
 
   android-build:
     name: 🤖 Android
-    needs: static-checks
+    needs: [static-checks, solers-build-check]
     if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/android_builds.yml
     secrets:
@@ -25,13 +45,13 @@ jobs:
 
   ios-build:
     name: 🍏 iOS
-    needs: static-checks
+    needs: [static-checks, solers-build-check]
     if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/ios_builds.yml
 
   linux-build:
     name: 🐧 Linux
-    needs: static-checks
+    needs: [static-checks, solers-build-check]
     if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/linux_builds.yml
     with:
@@ -39,18 +59,18 @@ jobs:
 
   macos-build:
     name: 🍎 macOS
-    needs: static-checks
+    needs: [static-checks, solers-build-check]
     if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/macos_builds.yml
 
   windows-build:
     name: 🏁 Windows
-    needs: static-checks
+    needs: [static-checks, solers-build-check]
     if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/windows_builds.yml
 
   web-build:
     name: 🌐 Web
-    needs: static-checks
+    needs: [static-checks, solers-build-check]
     if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/web_builds.yml
