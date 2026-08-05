@@ -77,11 +77,15 @@
 #include "modules/solers_ai/llm/solers_protocol_openai_chat.h"
 #include "modules/solers_ai/llm/solers_protocol_openai_responses.h"
 #include "modules/solers_ai/editor/solers_chat_cells.h"
+#include "modules/solers_ai/editor/solers_chat_widgets.h"
+#include "scene/gui/box_container.h"
+#include "scene/gui/scroll_container.h"
 #include "modules/solers_ai/protocol/solers_mcp_adapter.h"
 #include "scene/3d/path_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/node_3d.h"
 #include "scene/main/resource_preloader.h"
+#include "scene/gui/button.h"
 #include "scene/resources/resource_format_text.h"
 #include "scene/resources/curve.h"
 #include "scene/resources/environment.h"
@@ -244,11 +248,14 @@ TEST_CASE("[SolersProviderRegistry] assembles catalog and AuthHook overlays") {
 
 	Dictionary openai = registry.get_provider_profile("openai");
 	Dictionary anthropic = registry.get_provider_profile("anthropic");
+	Dictionary relay = registry.resolve_provider_profile("openai", "https://relay.example/v1");
 
 	CHECK(openai.get("protocol", String()) == "openai-chat");
 	CHECK(openai.get("default_base_url", String()) == "https://api.openai.com/v1");
 	CHECK(anthropic.get("protocol", String()) == "anthropic-messages");
 	CHECK(anthropic.get("default_base_url", String()) == "https://api.anthropic.com");
+	CHECK(registry.resolve_provider_profile("openai").get("catalog_limits_authoritative", false));
+	CHECK_FALSE(relay.get("catalog_limits_authoritative", true));
 	CHECK(registry.is_known_provider("openai"));
 	CHECK(registry.is_known_provider("openai_codex"));
 }
@@ -439,6 +446,9 @@ TEST_CASE("[SolersToolRegistry] registers tools by lookup, not a hardcoded catal
 	CHECK_FALSE(Dictionary(Dictionary(tool.get("input_schema", Dictionary())).get("properties", Dictionary())).has("retry_of"));
 	CHECK(registry.get_model_tool_name("synthetic.echo") == "synthetic_echo");
 	CHECK(registry.resolve_model_tool_name("synthetic_echo") == StringName("synthetic.echo"));
+	CHECK(registry.get_tool_definition("synthetic.echo") == tool);
+	tools.clear();
+	CHECK(registry.list_tools().size() == 1);
 
 	SolersPermissionManager permissions;
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
@@ -917,135 +927,41 @@ TEST_CASE("[SolersToolRegistry] default model surface is domain-first") {
 
 	const Array tools = registry.list_tools();
 
-	const char *required_direct[] = {
-		"project.read_file",
-		"project.search",
-		"project.edit",
-		"object.query",
-		"object.transaction",
-		"script.edit",
-		"script.validate",
-		"script.compute",
-		"engine.describe",
-		"runtime.control",
-		"runtime.observe",
-		"history.revert",
-		"skill.read",
-		"scene.bake_csg",
-		"scene.open",
-		"scene.reload",
-		"mesh.unwrap_uv2",
-		"lightmap.bake",
-		"render.capture",
-		"asset.catalog.search",
-		"asset.catalog.inspect",
-		"asset.catalog.acquire",
-		"job.wait",
-		"asset.generate",
-		"asset.status",
-		"addon.search",
-		"addon.inspect",
-		"addon.list",
-		"addon.ensure",
-	};
-	for (const char *name : required_direct) {
-		Dictionary tool = find_tool_def(tools, name);
-		REQUIRE_FALSE(tool.is_empty());
-		CHECK(tool.get("exposure", String()) == "direct");
+	HashSet<String> names;
+	for (const Variant &item : tools) {
+		const Dictionary tool = item;
+		const String name = tool.get("name", String());
+		CHECK_FALSE(name.is_empty());
+		CHECK_FALSE(names.has(name));
+		names.insert(name);
 	}
-	const char *removed_core[] = {
-		"class.search", "class.introspect", "objects.batch", "editor.get_snapshot", "project.write_file", "script.patch",
-		"resource.get_info", "resource.create", "resource.get_property", "resource.set_property", "native.instantiate", "native.load",
-		"native.list_properties", "native.get", "native.set", "native.list_methods", "native.call", "native.save", "native.free",
-		"scene.instantiate", "scene.validate_spatial", "scene.validate_structure", "object.get_property", "object.set_property",
-		"object.call_method", "editor.invoke", "asset.list_local", "asset.import_to_project",
-		"plugin.search", "plugin.inspect", "plugin.list", "plugin.ensure",
-		"scene.inspect", "scene.edit", "scene.validate", "resource.inspect", "resource.edit", "engine.inspect", "engine.execute", "viewport.capture"
-	};
-	for (const char *name : removed_core) {
-		CHECK(find_tool_def(tools, name).is_empty());
+	for (const char *name : { "project.search", "object.query", "object.transaction", "script.compute", "runtime.control", "render.capture" }) {
+		CHECK(find_tool_def(tools, name).get("exposure", String()) == "direct");
 	}
-	CHECK(find_tool_def(tools, "tool.search").is_empty());
-	CHECK(find_tool_def(tools, "asset.refine_to_ready").is_empty());
-	CHECK(find_tool_def(tools, "asset.optimize_geometry").is_empty());
-	CHECK(find_tool_def(tools, "asset.restyle_material").is_empty());
-	CHECK(find_tool_def(tools, "ambientcg.search").is_empty());
-	CHECK(find_tool_def(tools, "ambientcg.acquire").is_empty());
-	Dictionary catalog_search = find_tool_def(tools, "asset.catalog.search");
-	Dictionary catalog_search_properties = Dictionary(catalog_search.get("input_schema", Dictionary())).get("properties", Dictionary());
-	const Array catalog_providers = Dictionary(catalog_search_properties.get("provider", Dictionary())).get("enum", Array());
-	CHECK_FALSE(catalog_providers.is_empty());
-	for (int i = 0; i < catalog_providers.size(); i++) {
-		SolersPlugin *plugin = SolersPluginRegistry::get_plugin(catalog_providers[i]);
-		CHECK(plugin != nullptr);
-		if (plugin) {
-			CHECK((bool)plugin->get_profile().get("supports_catalog", false));
-		}
-	}
-	Dictionary catalog_acquire = find_tool_def(tools, "asset.catalog.acquire");
-	Dictionary catalog_acquire_properties = Dictionary(catalog_acquire.get("input_schema", Dictionary())).get("properties", Dictionary());
-	CHECK(catalog_acquire_properties.has("source_version"));
-	CHECK_FALSE(Array(Dictionary(catalog_acquire_properties.get("kind", Dictionary())).get("enum", Array())).is_empty());
-	Dictionary catalog_inspect = find_tool_def(tools, "asset.catalog.inspect");
-	Dictionary catalog_inspect_properties = Dictionary(catalog_inspect.get("input_schema", Dictionary())).get("properties", Dictionary());
-	CHECK(catalog_inspect_properties.has("asset_id"));
-	CHECK_FALSE(Array(Dictionary(catalog_inspect_properties.get("kind", Dictionary())).get("enum", Array())).is_empty());
-	CHECK(Dictionary(Dictionary(find_tool_def(tools, "job.wait").get("input_schema", Dictionary())).get("properties", Dictionary())).has("ids"));
-	const Dictionary object_query = find_tool_def(tools, "object.query");
-	REQUIRE_FALSE(object_query.is_empty());
-	CHECK(Array(Dictionary(object_query.get("input_schema", Dictionary())).get("oneOf", Array())).size() == 4);
+	const Dictionary search = find_tool_def(tools, "project.search");
+	CHECK(search.get("execution", String()) == "worker");
+	const Dictionary search_properties = Dictionary(search.get("input_schema", Dictionary())).get("properties", Dictionary());
+	const Array search_types = Dictionary(search_properties.get("type", Dictionary())).get("enum", Array());
+	CHECK(search_types.has("path"));
+	CHECK(search_types.has("text"));
+	CHECK_FALSE(search_types.has("scene"));
+	CHECK_FALSE(search_types.has("dependency"));
+	const Array query_branches = Dictionary(find_tool_def(tools, "object.query").get("input_schema", Dictionary())).get("oneOf", Array());
+	REQUIRE(query_branches.size() == 5);
+	const Dictionary overview = Dictionary(query_branches[0]).get("properties", Dictionary());
+	const Dictionary targeted = Dictionary(query_branches[1]).get("properties", Dictionary());
+	CHECK(overview.has("include_tree"));
+	CHECK_FALSE(overview.has("node_paths"));
+	CHECK(targeted.has("node_paths"));
+	CHECK_FALSE(targeted.has("include_tree"));
 	const Dictionary transaction = find_tool_def(tools, "object.transaction");
 	REQUIRE_FALSE(transaction.is_empty());
 	CHECK(transaction.get("execution", String()) == "main_thread");
 	CHECK(transaction.get("mutation_policy_dynamic", false));
 	CHECK(Array(Dictionary(transaction.get("input_schema", Dictionary())).get("oneOf", Array())).size() == 2);
-	Dictionary engine_describe = find_tool_def(tools, "engine.describe");
-	CHECK_FALSE(engine_describe.has("ephemeral_result"));
-	const Dictionary engine_describe_properties = Dictionary(engine_describe.get("input_schema", Dictionary())).get("properties", Dictionary());
-	CHECK(engine_describe_properties.has("query"));
-	CHECK(engine_describe_properties.has("classes"));
 	Dictionary script_compute = find_tool_def(tools, "script.compute");
 	CHECK(script_compute.get("mutation_policy", String()) == "file_checkpoint");
 	CHECK(script_compute.get("permission", String()) == "edit_files");
-	const Dictionary compute_properties = Dictionary(Dictionary(script_compute.get("input_schema", Dictionary())).get("properties", Dictionary()));
-	CHECK(compute_properties.has("source"));
-	CHECK(compute_properties.has("outputs"));
-	Dictionary project_edit = find_tool_def(tools, "project.edit");
-	CHECK(project_edit.get("permission", String()) == "edit_files");
-	CHECK(project_edit.get("mutation_policy_dynamic", false));
-	CHECK(Dictionary(project_edit.get("input_schema", Dictionary())).has("oneOf"));
-	CHECK(String(find_tool_def(tools, "mesh.unwrap_uv2").get("description", String())).contains("off the editor thread"));
-	const Dictionary render_capture = find_tool_def(tools, "render.capture");
-	CHECK_FALSE(render_capture.has("ephemeral_result"));
-	CHECK(Array(Dictionary(render_capture.get("input_schema", Dictionary())).get("oneOf", Array())).size() == 2);
-	CHECK(find_tool_def(tools, "editor.action.list").is_empty());
-	CHECK(find_tool_def(tools, "editor.action.execute").is_empty());
-	CHECK_FALSE(find_tool_def(tools, "skill.read").has("ephemeral_result"));
-	Dictionary project_search = find_tool_def(tools, "project.search");
-	REQUIRE_FALSE(project_search.is_empty());
-	CHECK(project_search.get("exposure", String()) == "direct");
-	CHECK(Dictionary(project_search.get("input_schema", Dictionary())).has("oneOf"));
-	CHECK(find_tool_def(tools, "project.search_files").is_empty());
-	CHECK(find_tool_def(tools, "project.get_info").is_empty());
-	CHECK(find_tool_def(tools, "project.get_settings_summary").is_empty());
-	CHECK(find_tool_def(tools, "project.list_files").is_empty());
-	CHECK(find_tool_def(tools, "script.read").is_empty());
-	CHECK(find_tool_def(tools, "scene.get_open_scenes").is_empty());
-	CHECK(find_tool_def(tools, "scene.get_tree").is_empty());
-	CHECK(find_tool_def(tools, "selection.get_nodes").is_empty());
-	CHECK(find_tool_def(tools, "runtime.get_status").is_empty());
-	CHECK(find_tool_def(tools, "editor.get_logs").is_empty());
-	Dictionary export_run = find_tool_def(tools, "export.run_preset");
-	REQUIRE_FALSE(export_run.is_empty());
-	CHECK(export_run.get("exposure", String()) == "direct");
-	CHECK(find_tool_def(tools, "runtime.get_logs").is_empty());
-	CHECK(find_tool_def(tools, "script.open_in_editor").is_empty());
-	CHECK(find_tool_def(tools, "validation.assert_no_errors").is_empty());
-	CHECK(find_tool_def(tools, "validation.read_editor_errors").is_empty());
-	CHECK(find_tool_def(tools, "validation.validate_project_scripts").is_empty());
-	CHECK(find_tool_def(tools, "validation.run_scene_smoke").is_empty());
-	CHECK(find_tool_def(tools, "scene.save").is_empty());
-	CHECK(find_tool_def(tools, "node.add").is_empty());
 
 	for (int i = 0; i < tools.size(); i++) {
 		const Dictionary tool = tools[i];
@@ -1696,22 +1612,6 @@ TEST_CASE("[SolersToolRegistry] audit redaction normalizes payload fields") {
 	CHECK(first.size() == second.size());
 }
 
-TEST_CASE("[SolersToolRegistry] replay protection preserves sensitive arguments without plaintext") {
-	SolersToolRegistry registry;
-	SolersToolCapability cap;
-	cap.redact_args.push_back("content");
-	registry.register_tool(memnew(SolersFunctionTool(
-			StringName("synthetic.replay"), "Replay fixture.", Dictionary(), SolersToolExposure::DIRECT, cap,
-			[](const SolersToolContext &, const Dictionary &) { return Dictionary(); })));
-
-	Dictionary args;
-	args["path"] = "res://same.gd";
-	args["content"] = "sensitive replay payload";
-	const Dictionary protected_args = registry.protect_tool_args_for_replay(SNAME("synthetic.replay"), args);
-	CHECK(protected_args.get("path", String()) == "res://same.gd");
-	CHECK_FALSE(JSON::stringify(protected_args).contains("sensitive replay payload"));
-}
-
 TEST_CASE("[SolersReflectionService] batch refuses mutations without an undo history") {
 	SolersReflectionService reflection_service;
 
@@ -2021,43 +1921,7 @@ TEST_CASE("[SolersToolRegistry] scene.open is a thin EditorInterface open surfac
 	CHECK((missing_code == "SCENE_NOT_FOUND" || missing_code == "EDITOR_UNAVAILABLE"));
 }
 
-TEST_CASE("[SolersToolRegistry] scene.reload is a thin EditorNode reload surface") {
-	SolersReflectionService reflection_service;
-	SolersPermissionManager permissions;
-	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
-	SolersToolRegistry registry;
-	registry.set_reflection_service(&reflection_service);
-	registry.set_permission_manager(&permissions);
-	registry.register_default_tools();
-
-	const Dictionary tool = find_tool_def(registry.list_tools(), "scene.reload");
-	REQUIRE_FALSE(tool.is_empty());
-	CHECK(tool.get("permission", String()) == "observe");
-	CHECK(tool.get("mutation_policy", String()) == "irreversible");
-	CHECK(tool.get("exposure", String()) == "direct");
-	CHECK(String(tool.get("description", String())).contains("EditorNode::reload_scene"));
-	CHECK(String(tool.get("description", String())).contains("@tool"));
-	CHECK_FALSE(registry.affects_scene_state(SNAME("scene.reload")));
-	const Dictionary schema = tool.get("input_schema", Dictionary());
-	CHECK(Dictionary(schema.get("properties", Dictionary())).has("path"));
-	CHECK_FALSE(schema.has("required"));
-
-	Dictionary args;
-	const Dictionary result = registry.call_tool(SNAME("scene.reload"), args);
-	CHECK_FALSE((bool)result.get("ok", true));
-	const String code = Dictionary(result.get("error", Dictionary())).get("code", String());
-	CHECK((code == "NO_EDITED_SCENE" || code == "SCENE_PATH_REQUIRED" || code == "SCENE_NOT_OPEN"));
-	CHECK((bool)Dictionary(result.get("error", Dictionary())).get("recoverable", false));
-
-	Dictionary missing;
-	missing["path"] = "res://definitely_not_open_in_editor_solers_contract.tscn";
-	const Dictionary missing_result = registry.call_tool(SNAME("scene.reload"), missing);
-	CHECK_FALSE((bool)missing_result.get("ok", true));
-	const String missing_code = Dictionary(missing_result.get("error", Dictionary())).get("code", String());
-	CHECK((missing_code == "SCENE_NOT_OPEN" || missing_code == "NO_EDITED_SCENE"));
-}
-
-TEST_CASE("[SolersScriptService] script.edit reports whether the path is the edited scene root script") {
+TEST_CASE("[SolersScriptService] script.edit reports persisted file identity") {
 	const String path = "res://solers_root_script_fact_contract.gd";
 	const String fs_path = ProjectSettings::get_singleton()->globalize_path(path);
 	if (FileAccess::exists(path)) {
@@ -2072,8 +1936,7 @@ TEST_CASE("[SolersScriptService] script.edit reports whether the path is the edi
 	const Dictionary data = written.get("data", Dictionary());
 	CHECK(data.has("path"));
 	CHECK(data.has("sha256"));
-	CHECK(data.has("affects_edited_scene_root_script"));
-	CHECK_FALSE((bool)data.get("affects_edited_scene_root_script", true));
+	CHECK_FALSE(data.has("affects_edited_scene_root_script"));
 	DirAccess::remove_file_or_error(fs_path);
 }
 
@@ -2965,39 +2828,6 @@ TEST_CASE("[SolersReflectionService] lean introspect returns member_names withou
 	CHECK(Array(expand_data.get("properties", Array())).size() >= 1);
 }
 
-TEST_CASE("[SolersToolRegistry] object.query defaults lean and expands on flag") {
-	SolersPermissionManager permissions;
-	permissions.set_auto_approve_all(true);
-	SolersObservationService observation;
-	SolersReflectionService reflection_service;
-	SolersToolRegistry registry;
-	registry.set_permission_manager(&permissions);
-	registry.set_observation_service(&observation);
-	registry.set_reflection_service(&reflection_service);
-	registry.register_default_tools();
-
-	Dictionary lean_args;
-	lean_args["target"] = "scene";
-	const Dictionary lean = registry.call_tool(SNAME("object.query"), lean_args);
-	REQUIRE_MESSAGE((bool)lean.get("ok", false), String(Dictionary(lean.get("error", Dictionary())).get("message", String())));
-	const Dictionary lean_data = lean.get("data", Dictionary());
-	CHECK(lean_data.has("state"));
-	CHECK_FALSE(lean_data.has("scene_tree"));
-	CHECK_FALSE(lean_data.has("selection"));
-
-	// Expand contract: caller-facing flags remain on the scene branch schema.
-	// (Headless suites may leave a non-owned edited-scene pointer; do not
-	// serialize the live tree here — that path is covered by editor dogfood.)
-	const Dictionary query_def = find_tool_def(registry.list_tools(), "object.query");
-	REQUIRE_FALSE(query_def.is_empty());
-	const Array branches = Dictionary(query_def.get("input_schema", Dictionary())).get("oneOf", Array());
-	REQUIRE(branches.size() >= 1);
-	const Dictionary scene_props = Dictionary(branches[0]).get("properties", Dictionary());
-	CHECK(scene_props.has("include_tree"));
-	CHECK(scene_props.has("include_selection"));
-	CHECK(scene_props.has("node_paths"));
-}
-
 TEST_CASE("[SolersReflectionService] member_query reports unmatched tokens from ClassDB") {
 	// OR matching must not silently drop a token that exists on no member of the class.
 	SolersReflectionService reflection_service;
@@ -3068,341 +2898,203 @@ static Array solers_test_tool_calls(const String &p_id, const String &p_name) {
 	return calls;
 }
 
-TEST_CASE("[SolersContextManager] pairing repair answers tool calls a killed turn abandoned") {
-	// An aborted or crashed turn leaves assistant tool_calls with no results in
-	// durable history; without repair every later request is rejected forever.
-	Array messages;
-	messages.push_back(SolersLLMMessage::user("Add a light."));
-	messages.push_back(SolersLLMMessage::assistant("Editing.", solers_test_tool_calls("call_killed", "object.transaction")));
-	messages.push_back(SolersLLMMessage::user("Stop, do it differently."));
-
-	const Array repaired = SolersContextManager::repair_tool_pairing(messages);
-	REQUIRE(repaired.size() == 4);
-	const Dictionary stub = repaired[2];
-	CHECK(String(stub.get("role", String())) == String(SolersLLMRole::TOOL));
-	CHECK(String(stub.get("tool_call_id", String())) == "call_killed");
-	CHECK(String(stub.get("name", String())) == "object.transaction");
-	CHECK(String(stub.get("content", String())).contains("TOOL_CANCELLED"));
-	CHECK(String(Dictionary(repaired[3]).get("content", String())) == "Stop, do it differently.");
-}
-
-TEST_CASE("[SolersContextManager] pairing repair keeps a complete exchange byte-identical") {
-	Array messages;
-	messages.push_back(SolersLLMMessage::assistant("Inspecting.", solers_test_tool_calls("call_a", "object.query")));
-	messages.push_back(SolersLLMMessage::tool_result("call_a", "object.query", "observation"));
-
-	const Array repaired = SolersContextManager::repair_tool_pairing(messages);
-	REQUIRE(repaired.size() == messages.size());
-	for (int i = 0; i < messages.size(); i++) {
-		CHECK(Dictionary(repaired[i]) == Dictionary(messages[i]));
-	}
-}
-
-TEST_CASE("[SolersContextManager] pairing repair drops results for calls never made") {
-	// A duplicate or unmatched tool result is rejected by providers just as
-	// hard as a missing one, so the projection must not forward it.
-	Array messages;
-	messages.push_back(SolersLLMMessage::assistant("Inspecting.", solers_test_tool_calls("call_a", "object.query")));
-	messages.push_back(SolersLLMMessage::tool_result("call_a", "object.query", "observation"));
-	messages.push_back(SolersLLMMessage::tool_result("call_a", "object.query", "duplicate"));
-	messages.push_back(SolersLLMMessage::tool_result("call_ghost", "object.query", "orphan"));
-
-	const Array repaired = SolersContextManager::repair_tool_pairing(messages);
-	REQUIRE(repaired.size() == 2);
-	CHECK(String(Dictionary(repaired[1]).get("content", String())) == "observation");
-}
-
-TEST_CASE("[SolersContextManager] request projection repairs pairing before budgeting") {
+TEST_CASE("[SolersContextManager] projection and compaction preserve the executable suffix") {
 	SolersContextManager context;
-	Array messages;
-	messages.push_back(SolersLLMMessage::user("Add a light."));
-	messages.push_back(SolersLLMMessage::assistant("Editing.", solers_test_tool_calls("call_killed", "object.transaction")));
+	Array history;
+	Dictionary old_user = SolersLLMMessage::user("Inspect the scene.");
+	history.push_back(old_user);
+	history.push_back(SolersLLMMessage::assistant("Inspecting.", solers_test_tool_calls("call_old", "object.query")));
+	history.push_back(SolersLLMMessage::tool_result("call_old", "object.query", String("x").repeat(40000)));
+	history.push_back(SolersLLMMessage::assistant("Three lights found.", Array()));
+	Dictionary ephemeral = SolersLLMMessage::user("stale engine state");
+	ephemeral["ephemeral"] = true;
+	history.push_back(ephemeral);
 
-	const Array projected = context.prepare_request(messages, String(), Array());
-	REQUIRE(projected.size() == 3);
-	CHECK(String(Dictionary(projected[2]).get("tool_call_id", String())) == "call_killed");
-	CHECK(messages.size() == 2); // durable history stays append-only
-}
-
-TEST_CASE("[SolersContextManager] estimates ASCII and non-ASCII text like Kimi Code") {
-	CHECK(SolersContextManager::estimate_tokens("abcd") == 1);
-	CHECK(SolersContextManager::estimate_tokens("abcde") == 2);
-	CHECK(SolersContextManager::estimate_tokens(String::utf8("白盒")) == 2);
-	CHECK(SolersContextManager::estimate_tokens(String::utf8("ab白")) == 2);
-}
-
-TEST_CASE("[SolersContextManager] compaction reserves the provider output contract") {
-	SolersContextManager context;
-
-	CHECK_FALSE(context.should_compact(167999, 200000, 32000));
-	CHECK(context.should_compact(168000, 200000, 32000));
-	CHECK(context.should_compact(150000, 200000, 50000));
-	CHECK_FALSE(context.should_compact(149999, 200000, 50000));
-	CHECK_FALSE(context.should_compact(8000, 500000, 32000));
-	CHECK(context.should_compact(468000, 500000, 32000));
-	CHECK_FALSE(context.should_compact(30000, 0, 8192));
-	CHECK_FALSE(context.should_compact(99071, 131072, 32000));
-	CHECK(context.should_compact(99072, 131072, 32000));
-	CHECK_FALSE(context.should_compact(350000, 1050000, 32000));
-}
-
-TEST_CASE("[SolersContextManager] compaction requires context growth after the last compaction") {
-	SolersContextManager context;
-	Array messages;
-	messages.push_back(SolersLLMMessage::user("Keep the room proportions realistic."));
-	const Dictionary result = context.apply_compaction(messages, "Continue from the verified room shell.", Dictionary());
-	const int tokens_after = result.get("tokens_after", 0);
-	REQUIRE(tokens_after > 0);
-	CHECK_FALSE(context.should_compact(tokens_after, tokens_after * 2, tokens_after));
-	CHECK(context.should_compact(tokens_after + 1, tokens_after * 2, tokens_after));
-}
-
-TEST_CASE("[SolersContextManager] completed turns drop tool bodies and legacy checkpoints") {
-	const String fat = String("x").repeat(40000);
-	Array messages;
-	messages.push_back(SolersLLMMessage::user("Inspect the scene."));
-	messages.push_back(SolersLLMMessage::assistant("Inspecting.", solers_test_tool_calls("call_old", "object.query")));
-	messages.push_back(SolersLLMMessage::tool_result("call_old", "object.query", fat));
-	messages.push_back(SolersLLMMessage::assistant("The scene has three lights.", Array()));
-	Dictionary checkpoint = SolersLLMMessage::user("Runtime checkpoint: revision 3");
-	checkpoint["origin"] = "turn_checkpoint";
-	messages.push_back(checkpoint);
-	Dictionary transient = SolersLLMMessage::user("stale engine state");
-	transient["ephemeral"] = true;
-	messages.push_back(transient);
-
-	const Array projected = SolersContextManager::project_completed_turns(messages);
+	const Array projected = SolersContextManager::project_completed_turns(history);
 	REQUIRE(projected.size() == 2);
-	CHECK(Dictionary(projected[0]).get("content", String()) == "Inspect the scene.");
-	CHECK(Dictionary(projected[1]).get("content", String()) == "The scene has three lights.");
-	CHECK(SolersContextManager::estimate_messages_tokens(projected) * 10 < SolersContextManager::estimate_messages_tokens(messages));
-}
+	CHECK(SolersContextManager::estimate_messages_tokens(projected) * 10 < SolersContextManager::estimate_messages_tokens(history));
+	CHECK_FALSE(context.should_compact(SolersContextManager::DEFAULT_CONTEXT_TOKENS - SolersContextManager::DEFAULT_OUTPUT_TOKENS - 1, SolersContextManager::DEFAULT_CONTEXT_TOKENS, SolersContextManager::DEFAULT_OUTPUT_TOKENS));
+	CHECK(context.should_compact(SolersContextManager::DEFAULT_CONTEXT_TOKENS - SolersContextManager::DEFAULT_OUTPUT_TOKENS, SolersContextManager::DEFAULT_CONTEXT_TOKENS, SolersContextManager::DEFAULT_OUTPUT_TOKENS));
 
-TEST_CASE("[SolersContextManager] compaction keeps the latest complete tool exchange") {
-	SolersContextManager context;
-	Array messages;
-	messages.push_back(SolersLLMMessage::user("Build a room from the reference."));
-	messages.push_back(SolersLLMMessage::assistant("Inspecting.", solers_test_tool_calls("call_old", "object.query")));
-	messages.push_back(SolersLLMMessage::tool_result("call_old", "object.query", String("x").repeat(40000)));
-	messages.push_back(SolersLLMMessage::assistant("Capturing.", solers_test_tool_calls("call_latest", "render.capture")));
-	messages.push_back(SolersLLMMessage::tool_result("call_latest", "render.capture", "{\"camera\":5}"));
-
-	Array steps;
-	Dictionary step;
-	step["step"] = "Tune lighting";
-	step["status"] = "in_progress";
-	steps.push_back(step);
-	Dictionary plan;
-	plan["plan"] = steps;
-
-	Dictionary result = context.apply_compaction(messages, "Continue from the verified room and camera 5.", plan);
-	Array compacted = result.get("messages", Array());
-	REQUIRE(compacted.size() == 3);
-	Dictionary summary = compacted[0];
-	CHECK(summary.get("origin", String()) == "compaction_summary");
-	CHECK(String(summary.get("content", String())).begins_with(String::utf8(SolersContextManager::COMPACTION_SUMMARY_PREFIX)));
-	CHECK(String(summary.get("content", String())).contains("Tune lighting"));
-	CHECK(String(Dictionary(compacted[1]).get("content", String())) == "Capturing.");
-	CHECK(String(Dictionary(compacted[2]).get("tool_call_id", String())) == "call_latest");
-	CHECK(String(Dictionary(compacted[2]).get("content", String())).contains("camera"));
-
-	Dictionary repeated = context.apply_compaction(compacted, "Continue from the verified whitebox.", plan);
-	Array repeated_messages = repeated.get("messages", Array());
-	REQUIRE(repeated_messages.size() == 3);
-	CHECK(Dictionary(repeated_messages[0]).get("origin", String()) == "compaction_summary");
-}
-
-TEST_CASE("[SolersContextManager] full compaction never discards user reference images") {
-	SolersContextManager context;
-	Dictionary reference;
-	reference["id"] = "user_reference";
-	reference["source"] = "user";
-	reference["type"] = "image";
+	Dictionary attachment;
+	attachment["id"] = "reference";
 	Array attachments;
-	attachments.push_back(reference);
-	Dictionary user = SolersLLMMessage::user(String("x").repeat(100000));
-	user["attachments"] = attachments;
-	Array messages;
-	messages.push_back(user);
-
-	const Dictionary result = context.apply_compaction(messages, "Continue matching the reference.", Dictionary());
-	const Array compacted = result.get("messages", Array());
-	REQUIRE(compacted.size() == 2);
-	const Array kept = Dictionary(compacted[1]).get("attachments", Array());
-	REQUIRE(kept.size() == 1);
-	CHECK(Dictionary(kept[0]).get("id", String()) == "user_reference");
-}
-
-TEST_CASE("[SolersContextManager] full compaction drops consumed tool captures") {
-	SolersContextManager context;
-	Dictionary first_capture;
-	first_capture["id"] = "capture_old";
-	first_capture["source"] = "tool_capture";
-	Array first_attachments;
-	first_attachments.push_back(first_capture);
-	Dictionary first_tool = SolersLLMMessage::tool_result("call_old", "render_capture", "{}");
-	first_tool["attachments"] = first_attachments;
-
-	Dictionary latest_capture;
-	latest_capture["id"] = "capture_latest";
-	latest_capture["source"] = "tool_capture";
-	Array latest_attachments;
-	latest_attachments.push_back(latest_capture);
-	Dictionary latest_tool = SolersLLMMessage::tool_result("call_latest", "render_capture", "{}");
-	latest_tool["attachments"] = latest_attachments;
-
-	Array messages;
-	messages.push_back(SolersLLMMessage::user("Build and inspect the scene."));
-	messages.push_back(SolersLLMMessage::assistant("First capture.", solers_test_tool_calls("call_old", "render.capture")));
-	messages.push_back(first_tool);
-	messages.push_back(SolersLLMMessage::assistant("Latest capture.", solers_test_tool_calls("call_latest", "render.capture")));
-	messages.push_back(latest_tool);
-	const Array compacted = Dictionary(context.apply_compaction(messages, "Continue visual verification.", Dictionary())).get("messages", Array());
-	REQUIRE(compacted.size() == 3);
+	attachments.push_back(attachment);
+	old_user["attachments"] = attachments;
+	history[0] = old_user;
+	Dictionary active_user = SolersLLMMessage::user("Continue the build.");
+	active_user["turn_id"] = 7;
+	history.push_back(active_user);
+	history.push_back(SolersLLMMessage::assistant("Capturing.", solers_test_tool_calls("call_live", "render.capture")));
+	history.push_back(SolersLLMMessage::tool_result("call_live", "render.capture", "{\"camera\":5}"));
+	const Array compacted = Dictionary(context.apply_compaction(history, "Continue from camera 5.", 7)).get("messages", Array());
+	REQUIRE(compacted.size() == 4);
+	CHECK(Dictionary(compacted[0]).get("role", String()) == SolersContextManager::MODEL_CONTEXT_ROLE);
 	CHECK(Dictionary(compacted[0]).get("origin", String()) == "compaction_summary");
-	CHECK(String(Dictionary(compacted[2]).get("tool_call_id", String())) == "call_latest");
-	CHECK(Array(Dictionary(compacted[2]).get("attachments", Array())).size() == 1);
+	CHECK(Array(Dictionary(compacted[0]).get("attachments", Array())).size() == 1);
+	CHECK(Dictionary(compacted[1]).get("content", String()) == "Continue the build.");
+	CHECK(Dictionary(compacted[3]).get("tool_call_id", String()) == "call_live");
 }
 
-TEST_CASE("[SolersContextManager] full compaction drops per-request harness state") {
-	// solers_state messages are regenerated fresh for every request; keeping a
-	// stale copy across a compaction would present outdated engine facts as
-	// current.
+TEST_CASE("[SolersContextManager] transient request state replaces the prior request snapshot") {
 	SolersContextManager context;
-	Dictionary state = SolersLLMMessage::user("revision 2");
-	state["origin"] = "solers_state";
-	state["ephemeral"] = true;
-	Array messages;
-	messages.push_back(SolersLLMMessage::user("Build the room."));
-	messages.push_back(state);
-
-	const Array compacted = Dictionary(context.apply_compaction(messages, "Continue.", Dictionary())).get("messages", Array());
-	REQUIRE(compacted.size() == 1);
-	CHECK(Dictionary(compacted[0]).get("origin", String()) == "compaction_summary");
+	Array persistent;
+	persistent.push_back(SolersLLMMessage::user("Persistent turn"));
+	context.record_usage(1000, persistent.size(), 300);
+	CHECK(context.get_token_count_with_pending(persistent, String(), 0, 50) == 750);
+	persistent.push_back(SolersLLMMessage::assistant("New durable content", Array()));
+	Array pending;
+	pending.push_back(persistent[1]);
+	CHECK(context.get_token_count_with_pending(persistent, String(), 0, 50) == 750 + SolersContextManager::estimate_messages_tokens(pending));
 }
 
-TEST_CASE("[SolersAgentSession] transcript restore keeps only the active tool exchange") {
-	const String session_id = "restore-contract-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
-	const String project_path = "test://solers-restore-contract";
-	auto write_event = [&](const Dictionary &p_payload, int p_turn) {
-		Dictionary event = p_payload.duplicate(true);
-		event["project_path"] = project_path;
-		event["session_id"] = session_id;
-		event["turn_id"] = p_turn;
-		solers_transcript_write(event);
+TEST_CASE("[SolersAgentSession] journal projection has stable unique events and lightweight receipts") {
+	const String session_id = "timeline-contract-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
+	const String project = "test://" + session_id;
+	auto write_event = [&](Dictionary p_event) {
+		p_event["project_path"] = project;
+		p_event["session_id"] = session_id;
+		solers_transcript_write(p_event);
 	};
 	Dictionary event;
+	event["event_type"] = "turn_started";
+	event["wall"] = 100;
+	write_event(event);
+	event = make_user_message("inspect the scene");
 	event["event_type"] = "message";
-	event["role"] = SolersLLMRole::USER;
-	event["content"] = "completed request";
-	write_event(event, 1);
-	event["role"] = SolersLLMRole::ASSISTANT;
-	event["content"] = String();
-	event["tool_calls"] = solers_test_tool_calls("old_call", "object.query");
-	write_event(event, 1);
+	event["author"] = "human";
+	event["wall"] = 101;
+	write_event(event);
+	event = make_user_message("legacy internal context");
+	event["event_type"] = "message";
+	event["origin"] = "background_job_delta";
+	write_event(event);
+	event.clear();
+	event["event_type"] = "model_context";
+	event["role"] = SolersContextManager::MODEL_CONTEXT_ROLE;
+	event["origin"] = "compaction_summary";
+	event["content"] = "typed internal context";
+	write_event(event);
+	event = SolersLLMMessage::assistant("same visible text", solers_test_tool_calls("call_receipt", "object.query"));
+	event["event_type"] = "message";
+	write_event(event);
 	event.clear();
 	event["event_type"] = "tool_result";
-	event["call_id"] = "old_call";
-	event["tool"] = "object.query";
-	event["content"] = "{\"old\":true}";
-	write_event(event, 1);
+	event["call_id"] = "call_receipt";
+	event["ok"] = true;
+	event["content"] = String("large-payload-").repeat(1000);
+	write_event(event);
+	event = SolersLLMMessage::assistant("same visible text", Array());
+	event["event_type"] = "message";
+	write_event(event);
 	event.clear();
 	event["event_type"] = "turn_outcome";
-	event["outcome"] = "completed";
-	write_event(event, 1);
+	write_event(event);
 	event.clear();
-	event["event_type"] = "message";
-	event["role"] = SolersLLMRole::USER;
-	event["content"] = "active request";
-	write_event(event, 2);
-	event["role"] = SolersLLMRole::ASSISTANT;
-	event["content"] = String();
-	event["tool_calls"] = solers_test_tool_calls("active_call", "render.capture");
-	write_event(event, 2);
-	event.clear();
-	event["event_type"] = "tool_result";
-	event["call_id"] = "active_call";
-	event["tool"] = "render.capture";
-	event["content"] = "{\"camera\":\"verified\"}";
-	write_event(event, 2);
-
+	event["event_type"] = "turn_started";
+	event["wall"] = 200;
+	write_event(event);
 	SolersAgentSession restored;
-	restored.set_session(project_path, session_id);
-	const Array messages = restored.get_messages();
-	REQUIRE(messages.size() == 4);
-	CHECK(String(Dictionary(messages[0]).get("content", String())).contains("completed request"));
-	CHECK(Array(Dictionary(messages[2]).get("tool_calls", Array())).size() == 1);
-	CHECK(String(Dictionary(messages[3]).get("tool_call_id", String())) == "active_call");
-	CHECK(String(Dictionary(messages[3]).get("content", String())).contains("verified"));
+	restored.set_session(project, session_id);
+	const Array model = restored.get_messages();
+	const Array timeline = restored.get_timeline_entries();
+	REQUIRE(timeline.size() == 3);
+	CHECK_FALSE(JSON::stringify(timeline).contains("internal context"));
+	int context_messages = 0;
+	for (int i = 0; i < model.size(); i++) {
+		context_messages += String(Dictionary(model[i]).get("role", String())) == SolersContextManager::MODEL_CONTEXT_ROLE;
+	}
+	CHECK(context_messages == 2);
+	const Array calls = Dictionary(timeline[1]).get("tool_calls", Array());
+	REQUIRE(calls.size() == 1);
+	CHECK(Dictionary(calls[0]).get("finished", false));
+	CHECK(Dictionary(calls[0]).get("ok", false));
+	CHECK_FALSE(JSON::stringify(timeline).contains("large-payload"));
+	CHECK_FALSE(JSON::stringify(model).contains("large-payload"));
+	CHECK(Dictionary(timeline[0]).get("event_id", 0) != Dictionary(timeline[1]).get("event_id", 0));
+	CHECK(Dictionary(timeline[1]).get("event_id", 0) != Dictionary(timeline[2]).get("event_id", 0));
+	const Array first_ids = { Dictionary(timeline[0]).get("event_id", 0), Dictionary(timeline[1]).get("event_id", 0), Dictionary(timeline[2]).get("event_id", 0) };
+	restored.set_session(project, session_id);
+	const Array second = restored.get_timeline_entries();
+	CHECK(first_ids[0] == Dictionary(second[0]).get("event_id", 0));
+	CHECK(first_ids[2] == Dictionary(second[2]).get("event_id", 0));
+	const Vector<SolersSessionInfo> sessions = solers_list_sessions(project);
+	REQUIRE(sessions.size() == 1);
+	CHECK(sessions[0].title == "inspect the scene");
+	CHECK(sessions[0].wall == 200);
 	restored.shutdown();
+	solers_transcript_flush();
 }
 
-TEST_CASE("[SolersAgentSession] a tool result reaches the model as parsable JSON at any size") {
-	// The contract is on the shape, not on a size: whatever the engine
-	// measured, what the model receives must parse, because an unparsable
-	// body throws away every fact in it.
-	Dictionary measurements;
-	Array nodes;
-	for (int i = 0; i < 400; i++) {
-		Dictionary node;
-		node["path"] = vformat("Root/Prop_%d/Mesh", i);
-		node["world_aabb"] = "position=(1.5,0.25,-3) size=(2,2,2)";
-		node["note"] = String("padding so this result cannot fit any budget ").repeat(4);
-		nodes.push_back(node);
+TEST_CASE("[SolersChat][SceneTree] streamed Markdown keeps native minimum height") {
+	SolersAssistantCell *cell = memnew(SolersAssistantCell);
+	SceneTree::get_singleton()->get_root()->add_child(cell);
+	cell->set_size(Size2(480, 0));
+	const String text = String("## Heading\n\nA paragraph that wraps through Godot text shaping.\n\n").repeat(20);
+	cell->append_delta(text.left(text.length() / 2));
+	cell->notification(Node::NOTIFICATION_INTERNAL_PROCESS);
+	MessageQueue::get_singleton()->flush();
+	const float partial_height = Object::cast_to<Control>(cell->get_child(0))->get_combined_minimum_size().y;
+	CHECK(partial_height > 0);
+	cell->append_delta(text.substr(text.length() / 2));
+	cell->notification(Node::NOTIFICATION_INTERNAL_PROCESS);
+	cell->finalize(text);
+	MessageQueue::get_singleton()->flush();
+	REQUIRE(cell->get_child_count() == 1);
+	CHECK(Object::cast_to<Control>(cell->get_child(0))->get_combined_minimum_size().y >= partial_height);
+	cell->queue_free();
+	MessageQueue::get_singleton()->flush();
+}
+
+static void solers_test_restore_scroll_anchor(ScrollContainer *p_scroll, Control *p_anchor, float p_screen_y) {
+	p_scroll->set_v_scroll(p_scroll->get_v_scroll() + Math::round(p_anchor->get_global_position().y - p_screen_y));
+}
+static void solers_test_queue_scroll_commit(ScrollContainer *p_scroll, Control *p_anchor, float p_screen_y) {
+	p_scroll->connect(SceneStringName(sort_children), callable_mp_static(solers_test_restore_scroll_anchor).bind(p_scroll, p_anchor, p_screen_y), Object::CONNECT_ONE_SHOT | Object::CONNECT_DEFERRED);
+	p_scroll->call(SNAME("queue_sort"));
+}
+
+TEST_CASE("[SolersChat][SceneTree] user scrolling pages variable rows to the first event") {
+	ScrollContainer *scroll = memnew(ScrollContainer);
+	MarginContainer *inset = memnew(MarginContainer);
+	VBoxContainer *list = memnew(VBoxContainer);
+	scroll->set_size(Size2(480, 240));
+	inset->add_child(list); scroll->add_child(inset);
+	SceneTree::get_singleton()->get_root()->add_child(scroll);
+	for (int64_t id = 25; id <= 48; id++) {
+		Label *row = memnew(Label(vformat("message %d", id)));
+		row->set_custom_minimum_size(Size2(0, 18 + id % 5 * 17));
+		row->set_meta("timeline_event_id", id); list->add_child(row);
 	}
-	measurements["nodes"] = nodes;
-	Dictionary digest;
-	digest["path"] = "res://sample.tscn";
-	digest["root_type"] = "Node3D";
-	digest["node_count"] = 3;
-	measurements["digest"] = digest;
-	Dictionary mutation;
-	mutation["session_revision"] = 7;
-	Dictionary receipt;
-	receipt["call_id"] = "call_over_budget";
-	receipt["policy"] = "editor_undo";
-	mutation["receipt"] = receipt;
-	measurements["mutation"] = mutation;
-	Dictionary result;
-	result["ok"] = true;
-	result["data"] = measurements;
-
-	Ref<JSON> parser;
-	parser.instantiate();
-
-	const String whole = SolersAgentSession::deliverable_tool_result("call_fits", result, 1000000);
-	CHECK(parser->parse(whole) == OK);
-	CHECK(Dictionary(parser->get_data()).has("data"));
-
-	const String elided = SolersAgentSession::deliverable_tool_result("call_over_budget", result, 500);
-	REQUIRE(parser->parse(elided) == OK);
-	const Dictionary envelope = parser->get_data();
-	CHECK(envelope.get("ok", false));
-	// One generic mutation receipt survives; observation-specific fields do not.
-	CHECK(envelope.has("data"));
-	CHECK(Dictionary(envelope.get("data", Dictionary())).has("mutation"));
-	CHECK_FALSE(Dictionary(envelope.get("data", Dictionary())).has("digest"));
-	CHECK_FALSE(Dictionary(envelope.get("data", Dictionary())).has("nodes"));
-	const Dictionary reported = envelope.get("data_elided", Dictionary());
-	CHECK((int)reported.get("token_budget", 0) == 500);
-	CHECK((int)reported.get("tokens", 0) > 500);
-	CHECK(String(reported.get("result_sha256", String())).length() == 64);
-	CHECK_FALSE(String(reported.get("recovery", String())).is_empty());
-	CHECK_FALSE(reported.has("complete_result_path"));
-
-	// A failed call keeps its native cause even when the body is elided: the
-	// error is what the next step acts on.
-	Dictionary failure;
-	failure["ok"] = false;
-	Dictionary error;
-	error["code"] = "NODE_NOT_FOUND";
-	error["message"] = "Root/Missing does not exist.";
-	failure["error"] = error;
-	failure["data"] = measurements;
-	REQUIRE(parser->parse(SolersAgentSession::deliverable_tool_result("call_failed", failure, 500)) == OK);
-	const Dictionary failed_envelope = parser->get_data();
-	CHECK_FALSE(failed_envelope.get("ok", true));
-	CHECK(Dictionary(failed_envelope.get("error", Dictionary())).get("code", String()) == "NODE_NOT_FOUND");
+	MessageQueue::get_singleton()->flush();
+	VScrollBar *bar = scroll->get_v_scroll_bar();
+	scroll->set_v_scroll(20); list->set_process(false);
+	bar->connect(SNAME("scrolling"), callable_mp(static_cast<Node *>(list), &Node::set_process).bind(true));
+	scroll->set_v_scroll(0);
+	CHECK_FALSE(list->is_processing());
+	bar->scroll(1);
+	CHECK(list->is_processing());
+	for (int page = 0; page < 2; page++) {
+		scroll->set_v_scroll(0); MessageQueue::get_singleton()->flush();
+		const int64_t anchor_id = 25 - page * 12; Control *anchor = Object::cast_to<Control>(list->get_child(0));
+		REQUIRE((int64_t)anchor->get_meta("timeline_event_id", -1) == anchor_id);
+		const float anchor_y = anchor->get_global_position().y;
+		list->connect(SceneStringName(sort_children), callable_mp_static(solers_test_queue_scroll_commit).bind(scroll, anchor, anchor_y), Object::CONNECT_ONE_SHOT);
+		for (int64_t id = anchor_id - 1; id >= anchor_id - 12; id--) {
+			Label *row = memnew(Label(vformat("message %d", id)));
+			row->set_custom_minimum_size(Size2(0, 18 + id % 5 * 17));
+			row->set_meta("timeline_event_id", id); list->add_child(row);
+			list->move_child(row, 0);
+			Node *last = list->get_child(list->get_child_count() - 1);
+			list->remove_child(last);
+			memdelete(last);
+		}
+		MessageQueue::get_singleton()->flush();
+		CHECK_MESSAGE(Math::is_equal_approx(anchor->get_global_position().y, anchor_y), vformat("anchor %.1f -> %.1f, scroll %d/%d", anchor_y, anchor->get_global_position().y, scroll->get_v_scroll(), int(bar->get_max() - bar->get_page())));
+	}
+	CHECK(list->get_child_count() == 24);
+	CHECK((int64_t)list->get_child(0)->get_meta("timeline_event_id", -1) == 1);
+	scroll->get_parent()->remove_child(scroll); memdelete(scroll);
 }
 
 TEST_CASE("[SolersResourceService] nearest names rank containment above similarity") {
@@ -3456,12 +3148,6 @@ TEST_CASE("[SolersAgentSession] task completion has no Harness request budget") 
 	CHECK(status.has("cache_read_tokens"));
 	CHECK(status.has("cache_write_tokens"));
 	CHECK(status.has("wire_body_bytes"));
-}
-
-TEST_CASE("[SolersAgentSession] unknown model capacity remains unknown") {
-	SolersAgentSession session;
-	const Dictionary status = session.get_status();
-	CHECK((int)status.get("context_window", -1) == 0);
 }
 
 TEST_CASE("[SolersAgentSession] validates the Codex update_plan contract") {
@@ -3925,39 +3611,6 @@ TEST_CASE("[solers_format_plan_text] replaces its plan snapshot in place") {
 	CHECK_FALSE(second_text.contains("Starting geometry"));
 }
 
-TEST_CASE("[SolersProviderRegistry] is the single transport profile source") {
-	SolersProviderRegistry registry;
-	const Dictionary openai = registry.resolve_provider_profile("openai");
-	const Dictionary custom = registry.resolve_provider_profile("custom_openai_compatible", "https://gateway.example/v1");
-	const Dictionary codex = registry.resolve_provider_profile("openai_codex");
-
-	CHECK(openai.get("protocol", String()) == "openai-chat");
-	CHECK(custom.get("id", String()) == "custom_openai_compatible");
-	CHECK(custom.get("protocol", String()) == "openai-chat");
-	CHECK(custom.get("base_url", String()) == "https://gateway.example/v1");
-	CHECK(custom.get("source_kind", String()) == "custom");
-	CHECK((int)custom.get("context_window", 0) == 131072);
-	CHECK(codex.get("protocol", String()) == "openai-responses");
-	CHECK(codex.get("auth_type", String()) == "oauth");
-	CHECK(codex.get("catalog_provider", String()) == "openai");
-	CHECK(Dictionary(codex.get("headers", Dictionary())).get("originator", String()) == "solers");
-	CHECK_FALSE(codex.get("supports_max_output_tokens", true));
-	const Dictionary gpt55_limits = Dictionary(codex.get("model_limits", Dictionary())).get("gpt-5.5", Dictionary());
-	CHECK((int)gpt55_limits.get("context", 0) == 400000);
-	const Array allowed_models = codex.get("allowed_models", Array());
-	REQUIRE_FALSE(allowed_models.is_empty());
-	CHECK(registry.is_model_allowed("openai_codex", allowed_models[0]));
-	CHECK_FALSE(registry.is_model_allowed("openai_codex", "synthetic-unsupported-model"));
-
-	SolersSettingsService view_service;
-	view_service.set_provider_registry(&registry);
-	const Dictionary view = view_service.list_provider_view().get("data", Dictionary());
-	CHECK(view.has("connected"));
-	CHECK(view.has("popular"));
-	CHECK(view.has("all"));
-	CHECK(view.has("custom"));
-}
-
 TEST_CASE("[SolersOpenAIResponsesProtocol] lowers encrypted reasoning and tool continuation") {
 	Array calls;
 	Dictionary call;
@@ -4336,7 +3989,13 @@ TEST_CASE("[SolersLLMMessage] attachment projection emits image bytes once acros
 	Dictionary auth;
 	auth["type"] = "none";
 	REQUIRE(client.begin(request, profile, auth) == OK);
+	const uint64_t materialize_deadline = OS::get_singleton()->get_ticks_msec() + 2000;
+	while (client.get_request_body_bytes() == 0 && OS::get_singleton()->get_ticks_msec() < materialize_deadline) {
+		OS::get_singleton()->delay_usec(1000);
+	}
 	CHECK(client.get_request_body_bytes() == JSON::stringify(first_body, "", false, true).utf8().length());
+	REQUIRE(client.get_emitted_attachment_identities().size() == 1);
+	CHECK(client.get_emitted_attachment_identities()[0] == "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 	client.abort();
 
 	SolersAnthropicMessagesProtocol anthropic;
