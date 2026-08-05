@@ -363,6 +363,24 @@ void GameViewDebugger::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("hdr_state_received", PropertyInfo(Variant::ARRAY, "hdr_state")));
 }
 
+GameViewDebugger *GameViewDebugger::singleton = nullptr;
+
+bool GameViewDebugger::request_root_viewport_screenshot(const Callable &p_callback) {
+	return singleton && singleton->add_screenshot_callback(p_callback, Rect2i());
+}
+
+bool GameViewDebugger::has_active_capture_session() {
+	if (!singleton) {
+		return false;
+	}
+	for (const Ref<EditorDebuggerSession> &session : singleton->sessions) {
+		if (session.is_valid() && session->is_active()) {
+			return true;
+		}
+	}
+	return false;
+}
+
 bool GameViewDebugger::add_screenshot_callback(const Callable &p_callaback, const Rect2i &p_rect) {
 	bool found = false;
 	for (Ref<EditorDebuggerSession> &I : sessions) {
@@ -391,10 +409,11 @@ bool GameViewDebugger::_msg_get_screenshot(const Array &p_args) {
 	const String &path = p_args[3];
 
 	if (screenshot_callbacks.has(id)) {
-		if (screenshot_callbacks[id].cb.is_valid()) {
-			screenshot_callbacks[id].cb.call(w, h, path, screenshot_callbacks[id].rect);
-		}
+		const ScreenshotCB request = screenshot_callbacks[id];
 		screenshot_callbacks.erase(id);
+		if (request.cb.is_valid()) {
+			request.cb.call(w, h, path, request.rect);
+		}
 	}
 	return true;
 }
@@ -428,12 +447,19 @@ bool GameViewDebugger::has_capture(const String &p_capture) const {
 }
 
 GameViewDebugger::GameViewDebugger() {
+	singleton = this;
 	EditorFeatureProfileManager::get_singleton()->connect("current_feature_profile_changed", callable_mp(this, &GameViewDebugger::_feature_profile_changed));
 
 	ED_SHORTCUT("editor/suspend_resume_embedded_project", TTRC("Suspend/Resume Embedded Project"), Key::F9);
 	ED_SHORTCUT_OVERRIDE("editor/suspend_resume_embedded_project", "macos", KeyModifierMask::META | KeyModifierMask::SHIFT | Key::B);
 
 	ED_SHORTCUT("editor/next_frame_embedded_project", TTRC("Next Frame"), Key::F10);
+}
+
+GameViewDebugger::~GameViewDebugger() {
+	if (singleton == this) {
+		singleton = nullptr;
+	}
 }
 
 ///////

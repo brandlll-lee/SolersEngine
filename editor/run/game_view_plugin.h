@@ -46,6 +46,8 @@ class GameViewDebugger : public EditorDebuggerPlugin {
 	GDCLASS(GameViewDebugger, EditorDebuggerPlugin);
 
 private:
+	static GameViewDebugger *singleton;
+
 	Vector<Ref<EditorDebuggerSession>> sessions;
 
 	bool is_feature_enabled = true;
@@ -80,6 +82,8 @@ public:
 	virtual bool capture(const String &p_message, const Array &p_data, int p_session) override;
 	virtual bool has_capture(const String &p_capture) const override;
 
+	static bool request_root_viewport_screenshot(const Callable &p_callback);
+	static bool has_active_capture_session();
 	bool add_screenshot_callback(const Callable &p_callaback, const Rect2i &p_rect);
 
 	void window_request_size();
@@ -114,6 +118,7 @@ public:
 	virtual void setup_session(int p_session_id) override;
 
 	GameViewDebugger();
+	~GameViewDebugger();
 };
 
 class GameView : public VBoxContainer {

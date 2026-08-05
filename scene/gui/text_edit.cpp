@@ -318,10 +318,13 @@ void TextEdit::Text::invalidate_cache(int p_line, bool p_text_changed) {
 					Dictionary info = val;
 					int start = info["column"];
 					float width_ratio = info["width_ratio"];
+					// length 0 = decorative insert (script Color swatch). length N =
+					// replace N source characters with an embedded object (mention chips).
+					const int length = MAX(0, (int)info.get("length", 0));
 					String left_string = text_with_ime.substr(from, start - from);
 					text_line.data_buf->add_string(left_string, font, font_size, language);
-					text_line.data_buf->add_object(info, Vector2(font_height * width_ratio, font_height), INLINE_ALIGNMENT_CENTER, 0);
-					from = start;
+					text_line.data_buf->add_object(info, Vector2(font_height * width_ratio, font_height), INLINE_ALIGNMENT_CENTER, length);
+					from = start + length;
 				}
 			}
 		}

@@ -396,3 +396,14 @@ $RECYCLE.BIN/
 *.msp
 *.lnk
 *.generated.props
+
+# --- Solers ---
+# CodeGraph local index (large, machine-local; do not commit)
+.codegraph/
+# Python bytecode caches (e.g. modules/solers_ai/__pycache__)
+__pycache__/
+*.pyc
+# Solers build logs and local UI check artifacts
+/solers_build_*.log
+/solers_ui_check.png
+/vc140.pdb

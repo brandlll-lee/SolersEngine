@@ -4,7 +4,7 @@
 #define RT_MANIFEST 24
 #endif
 
-GODOT_ICON ICON platform/windows/godot.ico
+GODOT_ICON ICON platform/windows/solers.ico
 1 RT_MANIFEST "platform/windows/godot.manifest"
 
 1 VERSIONINFO
@@ -17,13 +17,13 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "CompanyName",            "Godot Engine"
+            VALUE "CompanyName",            "Solers"
             VALUE "FileDescription",        GODOT_VERSION_NAME
             VALUE "FileVersion",            GODOT_VERSION_NUMBER
             VALUE "ProductName",            GODOT_VERSION_NAME
             VALUE "Licence",                "MIT"
-            VALUE "LegalCopyright",         "(c) 2007-present Juan Linietsky, Ariel Manzur and Godot Engine contributors"
-            VALUE "Info",                   "https://godotengine.org"
+            VALUE "LegalCopyright",         "(c) 2007-present Juan Linietsky, Ariel Manzur and Godot Engine contributors; Solers modifications (c) Solers contributors"
+            VALUE "Info",                   GODOT_VERSION_WEBSITE
             VALUE "ProductVersion",         GODOT_VERSION_FULL_BUILD
         END
     END

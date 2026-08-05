@@ -265,7 +265,12 @@ def detect_modules(search_path, recursive=False):
         version_path = os.path.join(path, "version.py")
         if os.path.exists(version_path):
             with open(version_path, "r", encoding="utf-8") as f:
-                if 'short_name = "godot"' in f.read():
+                version_content = f.read()
+                if (
+                    'short_name = "godot"' in version_content
+                    or 'short_name = "solers"' in version_content
+                    or "solers_branding" in version_content
+                ):
                     return True
         return False
 
@@ -1233,7 +1238,12 @@ def generate_vs_project(env, original_args, project_name="godot"):
     others_active = []
 
     get_dependencies(
-        env.File(f"#bin/godot{env['PROGSUFFIX']}"), env, extensions, headers_active, sources_active, others_active
+        env.File(f"#bin/{env['program_name']}{env['PROGSUFFIX']}"),
+        env,
+        extensions,
+        headers_active,
+        sources_active,
+        others_active,
     )
 
     all_items = []
@@ -1294,7 +1304,7 @@ def generate_vs_project(env, original_args, project_name="godot"):
             properties.append(
                 "<ActiveProjectItemList_%s>;%s;</ActiveProjectItemList_%s>" % (x, ";".join(itemlist[x]), x)
             )
-        output = os.path.join("bin", f"godot{env['PROGSUFFIX']}")
+        output = os.path.join("bin", f"{env['program_name']}{env['PROGSUFFIX']}")
 
         # The modules_enabled.gen.h header containing the defines is only generated on build, and only for the most recently built
         # platform, which means VS can't properly render code that's inside module-specific ifdefs. This adds those defines to the

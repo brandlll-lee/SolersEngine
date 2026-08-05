@@ -385,6 +385,7 @@ public:
 	bool is_importing() const { return importing; }
 	bool doing_first_scan() const { return first_scan; }
 	float get_scanning_progress() const;
+	bool requires_import_format_support(const Vector<String> &p_files) const;
 	void scan();
 	void scan_changes();
 	void update_file(const String &p_file);

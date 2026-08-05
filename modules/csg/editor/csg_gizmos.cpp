@@ -36,6 +36,7 @@
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/scene/3d/gizmos/gizmo_3d_helper.h"
 #include "editor/scene/3d/node_3d_editor_plugin.h"
+#include "editor/settings/editor_command_palette.h"
 #include "editor/settings/editor_settings.h"
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
@@ -69,6 +70,7 @@ void CSGShapeEditor::_notification(int p_what) {
 }
 
 void CSGShapeEditor::_menu_option(int p_option) {
+	ERR_FAIL_NULL_MSG(node, "Select a CSGShape3D before running a CSG bake command.");
 	Array meshes = node->get_meshes();
 	if (meshes.is_empty()) {
 		err_dialog->set_text(TTR("CSG operation returned an empty array."));
@@ -165,6 +167,8 @@ CSGShapeEditor::CSGShapeEditor() {
 	options->get_popup()->add_item(TTR("Bake Collision Shape"), MENU_OPTION_BAKE_COLLISION_SHAPE);
 
 	options->get_popup()->connect(SceneStringName(id_pressed), callable_mp(this, &CSGShapeEditor::_menu_option));
+	EditorCommandPalette::get_singleton()->add_command(TTR("3D: Bake CSG Mesh Instance"), "3d/csg/bake_mesh_instance",
+			callable_mp(this, &CSGShapeEditor::_menu_option).bind(MENU_OPTION_BAKE_MESH_INSTANCE));
 
 	err_dialog = memnew(AcceptDialog);
 	add_child(err_dialog);

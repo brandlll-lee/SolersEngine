@@ -38,6 +38,15 @@ class EditorFileDialog;
 class Label;
 class LinkButton;
 
+// Shared, headless package path used by both the Asset Library UI and
+// approved editor automation. It validates the complete archive before any
+// project file is changed and rolls back a partial commit.
+class EditorAssetPackageInstaller {
+public:
+	static Dictionary inspect_package(const String &p_package_path, const String &p_target_dir = "res://", bool p_skip_toplevel = false);
+	static Dictionary install_package(const String &p_package_path, const String &p_target_dir, const Dictionary &p_mapped_files, const PackedStringArray &p_selected_files, const PackedStringArray &p_overwrite_files = PackedStringArray(), const PackedStringArray &p_remove_files = PackedStringArray(), const String &p_manifest_path = String(), const Dictionary &p_manifest = Dictionary());
+};
+
 class EditorAssetInstaller : public ConfirmationDialog {
 	GDCLASS(EditorAssetInstaller, ConfirmationDialog);
 

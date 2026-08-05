@@ -420,6 +420,8 @@ class DisplayServerWindows : public DisplayServer {
 
 	DisplayServerEnums::WindowID window_id_counter = DisplayServerEnums::MAIN_WINDOW_ID;
 	RBMap<DisplayServerEnums::WindowID, WindowData> windows;
+	bool window_bg_color_set = false;
+	Color window_bg_color;
 
 	DisplayServerEnums::WindowID last_focused_window = DisplayServerEnums::INVALID_WINDOW_ID;
 	DisplayServerEnums::WindowID last_mouse_button_down_window = DisplayServerEnums::INVALID_WINDOW_ID;
@@ -656,6 +658,7 @@ public:
 
 	virtual void window_set_title(const String &p_title, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override;
 	virtual Size2i window_get_title_size(const String &p_title, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override;
+	virtual void window_set_color(const Color &p_color) override;
 	virtual void window_set_mouse_passthrough(const Vector<Vector2> &p_region, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override;
 
 	virtual int window_get_current_screen(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override;

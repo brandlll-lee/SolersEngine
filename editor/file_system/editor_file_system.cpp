@@ -3786,6 +3786,23 @@ bool EditorFileSystem::_can_import_file(const String &p_file) {
 	return false;
 }
 
+bool EditorFileSystem::requires_import_format_support(const Vector<String> &p_files) const {
+	for (const Ref<EditorFileSystemImportFormatSupportQuery> &query : import_support_queries) {
+		if (!query->is_active()) {
+			continue;
+		}
+		const Vector<String> extensions = query->get_file_extensions();
+		for (const String &file : p_files) {
+			for (const String &extension : extensions) {
+				if (file.get_extension().nocasecmp_to(extension) == 0) {
+					return true;
+				}
+			}
+		}
+	}
+	return false;
+}
+
 void EditorFileSystem::add_import_format_support_query(Ref<EditorFileSystemImportFormatSupportQuery> p_query) {
 	ERR_FAIL_COND(import_support_queries.has(p_query));
 	import_support_queries.push_back(p_query);

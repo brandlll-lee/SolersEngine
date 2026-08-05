@@ -56,10 +56,16 @@ if env.editor_build:
     # ratio (20% for the editor UI, 10% for the class reference).
     # Generated with `make include-list` for each resource.
 
+    # Class-reference translations are tens of megabytes of compressed string
+    # tables; MSVC's front end cannot hold their brace-initializer AST on a
+    # typical dev machine (fatal C1060). Dev builds ship the English class
+    # reference only; release builds keep every locale.
+    doc_translation_sources = [] if env.dev_build else Glob("#doc/translations/*")
+
     translation_targets = {
         "#editor/translations/editor_translations.gen.cpp": Glob("#editor/translations/editor/*"),
         "#editor/translations/property_translations.gen.cpp": Glob("#editor/translations/properties/*"),
-        "#editor/translations/doc_translations.gen.cpp": Glob("#doc/translations/*"),
+        "#editor/translations/doc_translations.gen.cpp": doc_translation_sources,
         "#editor/translations/extractable_translations.gen.cpp": Glob("#editor/translations/extractable/*"),
     }
     for target_cpp, sources in translation_targets.items():
@@ -72,7 +78,14 @@ if env.editor_build:
 
     env.add_source_files(env.editor_sources, "*.cpp")
     env.add_source_files(env.editor_sources, gen_exporters)
-    env.add_source_files(env.editor_sources, translation_targets.keys())
+
+    # The translation TUs are tens of megabytes of compressed string tables.
+    # Emitting debug info for them has zero debugging value but multiplies the
+    # compiler's heap usage past MSVC's limit (fatal C1060) on dev builds, so
+    # strip the debug-symbol flags for these generated files only.
+    env_translations = env.Clone()
+    env_translations["CCFLAGS"] = [f for f in env_translations["CCFLAGS"] if f not in ("/Z7", "/Zi", "/ZI", "-g")]
+    env_translations.add_source_files(env.editor_sources, translation_targets.keys())
 
     SConscript("animation/SCsub")
     SConscript("asset_library/SCsub")

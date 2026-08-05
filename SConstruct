@@ -48,6 +48,7 @@ _helper_module("gles3_builders", "gles3_builders.py")
 _helper_module("glsl_builders", "glsl_builders.py")
 _helper_module("methods", "methods.py")
 _helper_module("platform_methods", "platform_methods.py")
+_helper_module("solers_branding", "solers_branding.py")
 _helper_module("version", "version.py")
 _helper_module("core.core_builders", "core/core_builders.py")
 _helper_module("main.main_builders", "main/main_builders.py")
@@ -58,6 +59,7 @@ import gles3_builders
 import glsl_builders
 import methods
 import scu_builders
+import version
 from misc.utility.color import is_stderr_color, print_error, print_info, print_warning
 from platform_methods import architecture_aliases, architectures, compatibility_platform_aliases
 
@@ -122,6 +124,7 @@ env.disabled_modules = set()
 env.module_version_string = ""
 env.msvc = False
 env.scons_version = env._get_major_minor_revision(scons_raw_version)
+env["program_name"] = version.short_name
 
 env.__class__.add_module_version_string = methods.add_module_version_string
 

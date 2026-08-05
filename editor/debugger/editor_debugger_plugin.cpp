@@ -78,33 +78,37 @@ void EditorDebuggerSession::remove_session_tab(Control *p_tab) {
 	tabs.erase(p_tab);
 }
 
+// Detached sessions are ordinary lifecycle; stay silent instead of ERR_FAIL.
 void EditorDebuggerSession::send_message(const String &p_message, const Array &p_args) {
-	ERR_FAIL_NULL_MSG(debugger, "Plugin is not attached to debugger.");
+	if (!debugger) {
+		return;
+	}
 	debugger->send_message(p_message, p_args);
 }
 
 void EditorDebuggerSession::toggle_profiler(const String &p_profiler, bool p_enable, const Array &p_data) {
-	ERR_FAIL_NULL_MSG(debugger, "Plugin is not attached to debugger.");
+	if (!debugger) {
+		return;
+	}
 	debugger->toggle_profiler(p_profiler, p_enable, p_data);
 }
 
 bool EditorDebuggerSession::is_breaked() {
-	ERR_FAIL_NULL_V_MSG(debugger, false, "Plugin is not attached to debugger.");
-	return debugger->is_breaked();
+	return debugger && debugger->is_breaked();
 }
 
 bool EditorDebuggerSession::is_debuggable() {
-	ERR_FAIL_NULL_V_MSG(debugger, false, "Plugin is not attached to debugger.");
-	return debugger->is_debuggable();
+	return debugger && debugger->is_debuggable();
 }
 
 bool EditorDebuggerSession::is_active() {
-	ERR_FAIL_NULL_V_MSG(debugger, false, "Plugin is not attached to debugger.");
-	return debugger->is_session_active();
+	return debugger && debugger->is_session_active();
 }
 
 void EditorDebuggerSession::set_breakpoint(const String &p_path, int p_line, bool p_enabled) {
-	ERR_FAIL_NULL_MSG(debugger, "Plugin is not attached to debugger.");
+	if (!debugger) {
+		return;
+	}
 	debugger->set_breakpoint(p_path, p_line, p_enabled);
 }
 
