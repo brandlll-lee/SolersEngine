@@ -1,0 +1,8 @@
+[application]
+config/name="Solers Editor Layout Test"
+
+[editor_plugins]
+enabled=PackedStringArray("res://addons/editor_layout_smoke/plugin.cfg")
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
