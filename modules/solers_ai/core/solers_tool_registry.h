@@ -41,6 +41,9 @@ class SolersToolRegistry : public Object {
 
 	HashMap<StringName, SolersTool *> tools; // owned; freed on clear/destroy
 	HashMap<StringName, StringName> model_name_index;
+	Array tool_catalog;
+	HashMap<StringName, Dictionary> tool_catalog_by_name;
+	uint64_t tool_catalog_revision = 0;
 	HashMap<String, Dictionary> reversals;
 	HashMap<String, String> latest_reversal_by_session;
 	HashSet<String> delivered_addon_contracts;
@@ -59,6 +62,7 @@ class SolersToolRegistry : public Object {
 
 	void _clear_tools();
 	void _register(SolersTool *p_tool);
+	void _rebuild_tool_catalog();
 	void _add(const char *p_name, const char *p_description, const char *p_schema_json,
 			SolersPermissionManager::Permission p_permission, SolersToolMutationPolicy p_mutation_policy,
 			const Vector<String> &p_redact,
@@ -78,7 +82,8 @@ class SolersToolRegistry : public Object {
 			bool p_cache_across_revisions = false,
 			SolersFunctionTool::PollHandler p_poll_handler = {},
 			SolersFunctionTool::ReadyHandler p_ready_handler = {},
-			SolersToolUiKind p_ui_kind = SolersToolUiKind::OBSERVE);
+			SolersToolUiKind p_ui_kind = SolersToolUiKind::OBSERVE,
+			SolersToolExecution p_execution = SolersToolExecution::MAIN_THREAD);
 	void _add_observe(const char *p_name, const char *p_description, const char *p_schema_json,
 			SolersFunctionTool::Handler p_handler, std::function<Array(const Dictionary &)> p_resource_access = {},
 			SolersFunctionTool::PollHandler p_poll_handler = {},
@@ -132,6 +137,8 @@ public:
 	void register_default_tools();
 	void register_tool(SolersTool *p_tool);
 	Array list_tools() const;
+	Dictionary get_tool_definition(const StringName &p_name) const;
+	uint64_t get_tool_catalog_revision() const { return tool_catalog_revision; }
 	String get_skill_catalog_prompt() const;
 	String get_model_tool_name(const StringName &p_name) const;
 	StringName resolve_model_tool_name(const String &p_model_name) const;
@@ -142,7 +149,6 @@ public:
 	static bool has_write_conflict(const Array &p_left, const Array &p_right);
 	Dictionary normalize_tool_args(const StringName &p_name, const Dictionary &p_args) const;
 	Dictionary redact_tool_args_for_audit(const StringName &p_name, const Dictionary &p_args) const;
-	Dictionary protect_tool_args_for_replay(const StringName &p_name, const Dictionary &p_args) const;
 	Dictionary summarize_tool_args_for_audit(const StringName &p_name, const Dictionary &p_args) const;
 	String summarize_tool_result_for_audit(const Dictionary &p_result) const;
 	Dictionary call_tool(const StringName &p_name, const Dictionary &p_args);

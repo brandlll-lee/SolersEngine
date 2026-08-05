@@ -30,12 +30,15 @@ private:
 	int last_compacted_token_count = -1;
 
 	static int _estimate_message_tokens(const Dictionary &p_message);
-	static String _build_summary_text(const String &p_summary, const Dictionary &p_plan);
+	static String _build_summary_text(const String &p_summary);
 
 public:
+	static constexpr int DEFAULT_CONTEXT_TOKENS = 131072;
+	static constexpr int DEFAULT_OUTPUT_TOKENS = 8192;
 	static const char *COMPACTION_SUMMARY_PREFIX;
 	static const char *COMPACTION_INSTRUCTION;
 	static const char *CANCELLED_TOOL_RESULT;
+	static const char *MODEL_CONTEXT_ROLE;
 
 	// Provider contract as a pure function over history: every assistant
 	// tool_call is answered by exactly one tool message with the same id, and
@@ -47,17 +50,12 @@ public:
 
 	static int estimate_tokens(const String &p_text);
 	static int estimate_messages_tokens(const Array &p_messages);
-	void record_usage(int p_input_tokens, int p_covered_message_count);
-	int get_token_count_with_pending(const Array &p_messages, const String &p_system_prompt, const Array &p_tools) const;
+	void record_usage(int p_input_tokens, int p_covered_message_count, int p_transient_tokens = 0);
+	int get_token_count_with_pending(const Array &p_messages, const String &p_system_prompt, int p_tool_tokens, int p_transient_tokens = 0);
 	// Reserve the provider's declared output capacity. Unknown windows never compact.
 	bool should_compact(int p_used_tokens, int p_context_window, int p_max_output_tokens) const;
-	bool should_compact(const Array &p_messages, const String &p_system_prompt, const Array &p_tools, int p_context_window, int p_max_output_tokens) const;
-	bool is_overflow(const Array &p_messages, const String &p_system_prompt, const Array &p_tools, int p_context_window) const;
-
-	// Model-facing projection for the active turn. Durable history remains in
-	// the transcript; malformed in-flight tool pairing is repaired here.
-	Array prepare_request(const Array &p_messages, const String &p_system_prompt, const Array &p_tools);
-	Dictionary apply_compaction(const Array &p_messages, const String &p_summary, const Dictionary &p_plan = Dictionary());
+	bool should_compact(const Array &p_messages, const String &p_system_prompt, int p_tool_tokens, int p_context_window, int p_max_output_tokens, int p_transient_tokens = 0);
+	Dictionary apply_compaction(const Array &p_messages, const String &p_summary, int p_turn_id);
 	void reset();
 
 	int get_last_estimated_tokens() const { return last_estimated_tokens; }

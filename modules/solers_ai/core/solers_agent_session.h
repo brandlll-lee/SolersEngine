@@ -80,6 +80,9 @@ class SolersAgentSession : public Object {
 	int context_window = 0; // Unknown until provider/model metadata says otherwise.
 	int max_output_tokens = 8192;
 	Array messages; // active model projection; transcript is the full audit history
+	mutable Array timeline_entries;
+	mutable HashMap<String, Dictionary> open_timeline_tools;
+	mutable int64_t transcript_event_sequence = 0;
 	String system_prompt;
 	String current_text; // assistant text accumulated this model turn
 	String current_reasoning; // reasoning/thinking text accumulated this model turn
@@ -97,6 +100,10 @@ class SolersAgentSession : public Object {
 	Array failed_resource_accesses;
 	HashMap<String, Dictionary> readonly_cache;
 	HashSet<StringName> task_deferred_tools;
+	Array cached_request_tools;
+	int cached_request_tool_tokens = 0;
+	int cached_request_deferred_count = -1;
+	uint64_t cached_tool_catalog_revision = 0;
 	Array turn_attachments;
 	HashSet<String> delivered_model_attachments;
 	HashSet<String> pending_model_attachments;
@@ -143,10 +150,13 @@ class SolersAgentSession : public Object {
 	int64_t turn_cache_write_tokens = 0;
 	int64_t turn_output_tokens = 0;
 	int64_t turn_wire_body_bytes = 0;
+	int request_transient_tokens = 0;
 	uint64_t retry_resume_msec = 0;
 	int text_delta_count = 0;
 	uint64_t last_text_delta_msec = 0;
 	Array compaction_source_messages;
+	Dictionary retry_request;
+	Dictionary retry_profile;
 	int overflow_compaction_attempts = 0;
 	bool turn_runtime_owned = false;
 	SolersToolRegistry *session_tools_registry = nullptr;
@@ -199,11 +209,12 @@ class SolersAgentSession : public Object {
 	Dictionary _consume_attributable_tool_error(const String &p_call_id);
 	Dictionary _take_godot_diagnostics();
 	String _readonly_cache_key(const StringName &p_name, const Dictionary &p_args) const;
-	Array _collect_tools() const;
+	Array _collect_tools();
 	bool _refresh_active_model_limits();
 	int _active_model_input_support(const String &p_modality) const;
-	Dictionary _build_request(const Array &p_messages, const String &p_request_system_prompt) const;
+	Dictionary _build_request(const Array &p_messages, const String &p_request_system_prompt, const Array &p_tools) const;
 	Dictionary _provider_dispatch_error() const;
+	Error _begin_provider_request(const Dictionary &p_request, const Dictionary &p_profile);
 	Error _dispatch_model_request(bool p_skip_compaction = false);
 	Error _dispatch_compaction_request();
 	void _commit_attachment_projection();
@@ -239,7 +250,7 @@ class SolersAgentSession : public Object {
 	bool _flush_pending_steering();
 	bool _append_background_asset_deltas(bool p_waited_only);
 	void _resume_next_background_asset();
-	void _write_transcript_message(const String &p_role, const String &p_content, const Array &p_mentions = Array(), const Array &p_tool_calls = Array(), const String &p_reasoning = String(), const Array &p_attachments = Array()) const;
+	int64_t _write_transcript_message(const String &p_role, const String &p_content, const Array &p_mentions = Array(), const Array &p_tool_calls = Array(), const String &p_reasoning = String(), const Array &p_attachments = Array(), int64_t p_event_id = 0) const;
 	void _write_transcript_tool(const String &p_call_id, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result, const String &p_delivered_content) const;
 	void _write_transcript_plan() const;
 	void _write_transcript_compaction(const Dictionary &p_result) const;
@@ -279,6 +290,7 @@ public:
 	void resume_background_assets();
 	bool is_waiting_for_background_assets() const { return running && phase == PHASE_WAITING && !waiting_background_asset_ids.is_empty(); }
 	Array get_messages() const;
+	Array get_timeline_entries() const { return timeline_entries; }
 	Dictionary get_plan() const { return current_plan.duplicate(true); }
 	Dictionary get_status() const;
 	bool is_running() const { return running; }

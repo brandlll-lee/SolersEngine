@@ -10,7 +10,6 @@
 
 #include "solers_context_manager.h"
 
-#include "core/io/json.h"
 #include "core/templates/hash_set.h"
 #include "modules/solers_ai/llm/solers_llm_message.h"
 
@@ -21,6 +20,7 @@ const char *SolersContextManager::COMPACTION_INSTRUCTION =
 		"Write the note as your own continuing train of thought, in present tense. Preserve the latest user request verbatim, active constraints, exact files and commands already used, verified results versus uncertainty, and the precise next action. Be concise and self-sufficient. Respond with text only and do not call tools.";
 const char *SolersContextManager::CANCELLED_TOOL_RESULT =
 		"{\"ok\":false,\"error\":{\"code\":\"TOOL_CANCELLED\",\"message\":\"This call never produced a result: the turn ended before it finished. Re-run it if its output is still needed.\",\"recoverable\":true}}";
+const char *SolersContextManager::MODEL_CONTEXT_ROLE = "model_context";
 
 int SolersContextManager::estimate_tokens(const String &p_text) {
 	int ascii_count = 0;
@@ -127,45 +127,36 @@ Array SolersContextManager::project_completed_turns(const Array &p_messages) {
 	return projected;
 }
 
-String SolersContextManager::_build_summary_text(const String &p_summary, const Dictionary &p_plan) {
+String SolersContextManager::_build_summary_text(const String &p_summary) {
 	String text = String::utf8(COMPACTION_SUMMARY_PREFIX) + "\n" + p_summary.strip_edges();
 	if (p_summary.strip_edges().is_empty()) {
 		text += "(no summary available)";
 	}
-
-	const Array steps = p_plan.get("plan", Array());
-	if (!steps.is_empty()) {
-		text += "\n\n## Current plan";
-		const String explanation = String(p_plan.get("explanation", String())).strip_edges();
-		if (!explanation.is_empty()) {
-			text += "\n" + explanation;
-		}
-		for (int i = 0; i < steps.size(); i++) {
-			const Dictionary step = steps[i];
-			text += vformat("\n- [%s] %s", String(step.get("status", "pending")), String(step.get("step", String())));
-		}
-	}
 	return text;
 }
 
-void SolersContextManager::record_usage(int p_input_tokens, int p_covered_message_count) {
-	if (p_input_tokens < 0 || p_covered_message_count < 0) {
+void SolersContextManager::record_usage(int p_input_tokens, int p_covered_message_count, int p_transient_tokens) {
+	if (p_input_tokens < 0 || p_covered_message_count < 0 || p_transient_tokens < 0) {
 		return;
 	}
-	authoritative_tokens = p_input_tokens;
+	authoritative_tokens = MAX(0, p_input_tokens - p_transient_tokens);
 	covered_message_count = p_covered_message_count;
 	last_estimated_tokens = p_input_tokens;
 }
 
-int SolersContextManager::get_token_count_with_pending(const Array &p_messages, const String &p_system_prompt, const Array &p_tools) const {
+int SolersContextManager::get_token_count_with_pending(const Array &p_messages, const String &p_system_prompt, int p_tool_tokens, int p_transient_tokens) {
+	int total = 0;
 	if (authoritative_tokens > 0 && covered_message_count <= p_messages.size()) {
 		Array pending;
 		for (int i = covered_message_count; i < p_messages.size(); i++) {
 			pending.push_back(p_messages[i]);
 		}
-		return authoritative_tokens + estimate_messages_tokens(pending);
+		total = authoritative_tokens + estimate_messages_tokens(pending) + p_transient_tokens;
+	} else {
+		total = estimate_tokens(p_system_prompt) + p_tool_tokens + estimate_messages_tokens(p_messages) + p_transient_tokens;
 	}
-	return estimate_tokens(p_system_prompt) + estimate_tokens(JSON::stringify(p_tools, "", false, true)) + estimate_messages_tokens(p_messages);
+	last_estimated_tokens = total;
+	return total;
 }
 
 bool SolersContextManager::should_compact(int p_used_tokens, int p_context_window, int p_max_output_tokens) const {
@@ -178,49 +169,30 @@ bool SolersContextManager::should_compact(int p_used_tokens, int p_context_windo
 	return p_used_tokens + p_max_output_tokens >= p_context_window;
 }
 
-bool SolersContextManager::should_compact(const Array &p_messages, const String &p_system_prompt, const Array &p_tools, int p_context_window, int p_max_output_tokens) const {
-	return should_compact(get_token_count_with_pending(p_messages, p_system_prompt, p_tools), p_context_window, p_max_output_tokens);
+bool SolersContextManager::should_compact(const Array &p_messages, const String &p_system_prompt, int p_tool_tokens, int p_context_window, int p_max_output_tokens, int p_transient_tokens) {
+	return should_compact(get_token_count_with_pending(p_messages, p_system_prompt, p_tool_tokens, p_transient_tokens), p_context_window, p_max_output_tokens);
 }
 
-bool SolersContextManager::is_overflow(const Array &p_messages, const String &p_system_prompt, const Array &p_tools, int p_context_window) const {
-	return p_context_window > 0 && get_token_count_with_pending(p_messages, p_system_prompt, p_tools) >= p_context_window;
-}
-
-Array SolersContextManager::prepare_request(const Array &p_messages, const String &p_system_prompt, const Array &p_tools) {
-	// Repairing pairing is the only rewrite a projection may perform, and it
-	// is a pure function of history: the same exchange always projects to the
-	// same bytes, so consecutive requests share a prefix the provider can
-	// keep serving from cache. Shrinking happens at compaction, never here.
-	const Array projected = repair_tool_pairing(p_messages);
-	last_estimated_tokens = estimate_tokens(p_system_prompt) + estimate_tokens(JSON::stringify(p_tools, "", false, true)) + estimate_messages_tokens(projected);
-	return projected;
-}
-
-Dictionary SolersContextManager::apply_compaction(const Array &p_messages, const String &p_summary, const Dictionary &p_plan) {
+Dictionary SolersContextManager::apply_compaction(const Array &p_messages, const String &p_summary, int p_turn_id) {
 	const Array repaired = repair_tool_pairing(p_messages);
 	const int tokens_before = estimate_messages_tokens(repaired);
 	int suffix_start = repaired.size();
-	for (int i = repaired.size() - 1; i >= 0; i--) {
-		const Dictionary message = repaired[i];
-		if (String(message.get("role", String())) == String(SolersLLMRole::ASSISTANT) && !Array(message.get("tool_calls", Array())).is_empty()) {
+	for (int i = 0; i < repaired.size(); i++) {
+		if ((int)Dictionary(repaired[i]).get("turn_id", 0) == p_turn_id) {
 			suffix_start = i;
 			break;
 		}
 	}
 
-	Array compacted;
-	const String context_summary = _build_summary_text(p_summary, p_plan);
-	Dictionary summary_message = SolersLLMMessage::user(context_summary);
+	const String context_summary = _build_summary_text(p_summary);
+	Dictionary summary_message;
+	summary_message["role"] = MODEL_CONTEXT_ROLE;
+	summary_message["content"] = context_summary;
 	summary_message["origin"] = "compaction_summary";
-	compacted.push_back(summary_message);
-
 	Array retained_attachments;
 	HashSet<String> attachment_ids;
 	for (int i = 0; i < suffix_start; i++) {
 		const Dictionary message = repaired[i];
-		if (String(message.get("role", String())) != String(SolersLLMRole::USER)) {
-			continue;
-		}
 		const Array attachments = message.get("attachments", Array());
 		for (int attachment_index = 0; attachment_index < attachments.size(); attachment_index++) {
 			const Dictionary attachment = attachments[attachment_index];
@@ -232,18 +204,15 @@ Dictionary SolersContextManager::apply_compaction(const Array &p_messages, const
 		}
 	}
 	if (!retained_attachments.is_empty()) {
-		Dictionary references = SolersLLMMessage::user("User reference attachments retained across context compaction.");
-		references["origin"] = "compaction_attachments";
-		references["attachments"] = retained_attachments;
-		compacted.push_back(references);
+		summary_message["attachments"] = retained_attachments;
 	}
+	Array compacted;
+	compacted.push_back(summary_message);
 	for (int i = suffix_start; i < repaired.size(); i++) {
 		if (!(bool)Dictionary(repaired[i]).get("ephemeral", false)) {
 			compacted.push_back(repaired[i]);
 		}
 	}
-	const int kept_message_count = compacted.size() - 1;
-
 	const int tokens_after = estimate_messages_tokens(compacted);
 	authoritative_tokens = tokens_after;
 	covered_message_count = compacted.size();
@@ -253,12 +222,8 @@ Dictionary SolersContextManager::apply_compaction(const Array &p_messages, const
 
 	Dictionary result;
 	result["messages"] = compacted;
-	result["summary"] = p_summary.strip_edges();
-	result["context_summary"] = context_summary;
-	result["compacted_count"] = repaired.size() - kept_message_count;
 	result["tokens_before"] = tokens_before;
 	result["tokens_after"] = tokens_after;
-	result["kept_message_count"] = kept_message_count;
 	return result;
 }
 

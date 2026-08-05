@@ -43,6 +43,7 @@
 #include "core/solers_script_service.h"
 #include "core/solers_settings_service.h"
 #include "core/solers_tool_registry.h"
+#include "core/solers_trace.h"
 #include "editor/solers_chat_cells.h"
 #include "editor/solers_chat_widgets.h"
 #include "editor/solers_dock.h"
@@ -100,6 +101,7 @@ void uninitialize_solers_ai_module(ModuleInitializationLevel p_level) {
 #ifdef TOOLS_ENABLED
 	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
 		SolersPluginRegistry::unregister_builtins();
+		solers_transcript_close();
 	}
 #endif // TOOLS_ENABLED
 }

@@ -55,6 +55,8 @@ private:
 	State shared_state = STATE_IDLE; // mutex-guarded snapshot for main-thread queries
 	Dictionary shared_error; // mutex-guarded
 	Dictionary shared_auth_update; // rotated OAuth credentials, consumed on main
+	Array shared_emitted_attachment_identities;
+	int64_t shared_request_body_bytes = 0;
 
 	// --- Worker-owned request inputs (set by begin() before the thread runs). -
 	String host;
@@ -67,6 +69,8 @@ private:
 	Dictionary initial_stream_state;
 	Dictionary worker_profile;
 	Dictionary worker_auth;
+	Dictionary worker_request;
+	StringName worker_protocol_id;
 
 	// --- Worker-owned transient state (touched only on the worker thread). ---
 	Ref<HTTPClient> http;
@@ -97,6 +101,7 @@ private:
 	void _trace(const String &p_event, const Dictionary &p_payload = Dictionary()) const;
 	void _drain_records(Array &r_events);
 	void _complete_stream(Array &r_batch);
+	void _fail_provider_response();
 	void _fail(const String &p_code, const String &p_message, bool p_retryable = false, const String &p_failure_kind = String());
 
 	static void _thread_func(void *p_userdata);
@@ -123,7 +128,8 @@ public:
 	bool is_failed() const;
 	Dictionary get_error() const;
 	Dictionary take_auth_update();
-	int64_t get_request_body_bytes() const { return request_body.utf8().length(); }
+	int64_t get_request_body_bytes() const;
+	Array get_emitted_attachment_identities() const;
 
 	void abort();
 

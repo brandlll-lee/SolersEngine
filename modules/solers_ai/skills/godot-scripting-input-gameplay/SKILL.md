@@ -18,7 +18,6 @@ Use for game rules, interaction, input, lifecycle, state ownership, Autoloads, o
 | Frame work | `_physics_process` for movement/physics; `_process` for visuals/UI; match the phase |
 | Mutable state | One owner node/script per fact; others read signals or call into the owner |
 | Scene ready | Children `_ready` before parent; `@onready` runs before `_ready` |
-| `@tool` rebuild | Soft script reload does **not** re-run `_ready`; editor tree keeps old dynamic children until `scene.reload` |
 | Pause | `Node.process_mode` (`PROCESS_MODE_INHERIT/PAUSABLE/WHEN_PAUSED/ALWAYS/DISABLED`) + `get_tree().paused` |
 | Persist | Prefer `user://` for saves; `res://` is read-only in exported games |
 
@@ -27,7 +26,7 @@ Use for game rules, interaction, input, lifecycle, state ownership, Autoloads, o
 - Prefer signals over polling; prefer InputMap over hard-coded keys.
 - Do not invent ClassDB methods — `engine.describe` first.
 - Do not put physics motion in `_process` unless intentionally frame-rate coupled.
-- Prefer `object.transaction` for visible world nodes. If a root `@tool` script builds children in `_ready` and `script.edit` sets `affects_edited_scene_root_script`, call `scene.reload` before editor `render.capture`.
+- Build visible editor state with `object.transaction`; keep scripts responsible for runtime behavior.
 
 ## Recipes
 **InputMap move vector (4.x):**
@@ -59,13 +58,11 @@ cfg.save("user://save.cfg")
 | `pause_mode` | `process_mode` |
 | Listening only in `_input` for gameplay that UI might consume | Use `_unhandled_input` so Controls can mark handled |
 | Editing Autoload scripts as if they were scene-unique | Autoloads are singletons — one instance, careful with scene-specific state |
-| Expecting 3D viewport to match `@tool` `_ready` edits after `script.edit` alone | `scene.reload`, then `render.capture target=editor\|camera` — Play/runtime is a different tree |
 | Registering InputMap only in the editor session, then Play | Persist with `project.edit` first; Play uses the project map |
 
 ## Verify
 1. `project.search` / `script.edit` / `script.validate`.
 2. Confirm InputMap actions exist in project settings before `runtime.control` play.
-3. If `affects_edited_scene_root_script` is true: `scene.reload`, then `render.capture target=editor|camera` + `source_state` before claiming the 3D view matches.
-4. `runtime.control` play → exercise InputMap paths through the gameplay API or a project test script.
-5. `runtime.observe` digest for errors; confirm pause/`process_mode` behavior if used.
-6. Reload scene / re-open project if Autoload or InputMap changed.
+3. `runtime.control` play → exercise InputMap paths through the gameplay API or a project test script.
+4. `runtime.observe` digest for errors; confirm pause/`process_mode` behavior if used.
+5. Re-open the project if Autoload or InputMap changed.

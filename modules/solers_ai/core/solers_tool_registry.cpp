@@ -31,7 +31,6 @@
 #include "modules/solers_ai/core/solers_observation_service.h"
 #include "modules/solers_ai/core/solers_reflection_service.h"
 #include "modules/solers_ai/core/solers_resource_service.h"
-#include "modules/solers_ai/core/solers_secret_store.h"
 #include "modules/solers_ai/core/solers_script_service.h"
 #include "modules/solers_ai/core/solers_trace.h"
 #include "modules/solers_ai/plugins/solers_plugin.h"
@@ -764,6 +763,8 @@ void SolersToolRegistry::_clear_tools() {
 	}
 	tools.clear();
 	model_name_index.clear();
+	tool_catalog.clear();
+	tool_catalog_by_name.clear();
 	delivered_addon_contracts.clear();
 }
 
@@ -817,10 +818,10 @@ void SolersToolRegistry::_add(const char *p_name, const char *p_description, con
 void SolersToolRegistry::_add_observe_exposed(const char *p_name, const char *p_description, const char *p_schema_json,
 		SolersToolExposure p_exposure, SolersFunctionTool::Handler p_handler,
 		std::function<Array(const Dictionary &)> p_resource_access, bool p_cache_across_revisions, SolersFunctionTool::PollHandler p_poll_handler, SolersFunctionTool::ReadyHandler p_ready_handler,
-		SolersToolUiKind p_ui_kind) {
+		SolersToolUiKind p_ui_kind, SolersToolExecution p_execution) {
 	_add(p_name, p_description, p_schema_json, SolersPermissionManager::PERMISSION_OBSERVE, SolersToolMutationPolicy::READ_ONLY,
 			Vector<String>(), p_exposure, std::move(p_handler),
-			SolersToolExecution::MAIN_THREAD, std::move(p_resource_access), p_cache_across_revisions, std::move(p_poll_handler), std::move(p_ready_handler), {}, {}, {}, p_ui_kind);
+			p_execution, std::move(p_resource_access), p_cache_across_revisions, std::move(p_poll_handler), std::move(p_ready_handler), {}, {}, {}, p_ui_kind);
 }
 
 void SolersToolRegistry::_add_observe(const char *p_name, const char *p_description, const char *p_schema_json,
@@ -1432,11 +1433,11 @@ void SolersToolRegistry::_register_observation_tools() {
 	}
 	SolersObservationService *obs = observation_service;
 
-	_add_observe_exposed("project.search", "Search project facts: paths, text, symbols, scene node names, forward dependencies, or reverse references (who imports/uses a res:// path) via the editor file index.",
-			R"({"oneOf":[{"type":"object","properties":{"type":{"type":"string","enum":["path","text","scene","symbol","dependency","references"],"description":"Fact domain. Use references with path to answer who uses a resource."},"query":{"type":"string","minLength":1,"description":"Case-insensitive search text (not used for references when path is set)."},"path":{"type":"string","minLength":1,"description":"For dependency/references: the res:// resource."},"max_results":{"type":"integer","minimum":1,"maximum":256,"description":"Maximum results. Default 64."}},"required":["type","query"],"additionalProperties":false},{"type":"object","properties":{"type":{"type":"string","enum":["dependency","references"]},"path":{"type":"string","minLength":1,"description":"dependency=direct deps of this resource; references=who references this resource."},"max_results":{"type":"integer","minimum":1,"maximum":256,"description":"Maximum results. Default 64."}},"required":["type","path"],"additionalProperties":false}]})",
+	_add_observe_exposed("project.search", "Search project paths or text files on the worker. Inspect the live scene with object.query and disk Resources with target=resource.",
+			R"({"type":"object","properties":{"type":{"type":"string","enum":["path","text","symbol"]},"query":{"type":"string","minLength":1,"description":"Case-insensitive path/text query."},"max_results":{"type":"integer","minimum":1,"maximum":256,"description":"Maximum results. Default 64."}},"required":["type","query"],"additionalProperties":false})",
 			SolersToolExposure::DIRECT,
 			[this, obs](const SolersToolContext &, const Dictionary &a) { return _ok(obs->search_project(a)); },
-			{}, false, {}, {}, SolersToolUiKind::SEARCH);
+			{}, false, {}, {}, SolersToolUiKind::SEARCH, SolersToolExecution::WORKER_THREAD);
 	_add_observe("project.read_file", "Read a project text file from res://. PackedScene defaults to SCENE_TEXT_DENIED with a digest — that digest is the observation answer; do not retry with raw=true. Use object.query target=scene for scene facts. raw=true only when editing .tscn/.scn source.",
 			R"({"type":"object","properties":{"path":{"type":"string","description":"res:// path of the file to read."},"max_bytes":{"type":"integer","description":"Maximum bytes to return. Default 262144."},"raw":{"type":"boolean","description":"Only for PackedScene source editing. Default false — observation uses digest."}},"required":["path"]})",
 			[this, obs](const SolersToolContext &, const Dictionary &a) {
@@ -2051,10 +2052,10 @@ void SolersToolRegistry::_register_reflection_tools() {
 	}
 	SolersReflectionService *ref = reflection_service;
 	const SolersPermissionManager::Permission edit_scene = SolersPermissionManager::PERMISSION_EDIT_SCENE;
-	_add_observe_exposed("object.query", "Query authoritative identity and state from one live scene, Resource path, or ObjectID. Scene defaults to state/digest only; set include_tree/include_selection or node_paths to expand. Resource results include UID and SHA-256.",
-			R"({"oneOf":[{"type":"object","properties":{"target":{"const":"scene"},"path":{"type":"string","pattern":"^res://"},"include_tree":{"type":"boolean","description":"Include scene_tree. Default false."},"include_selection":{"type":"boolean","description":"Include editor selection. Default false."},"max_depth":{"type":"integer","minimum":0,"maximum":16},"max_children":{"type":"integer","minimum":1,"maximum":256},"node_paths":{"type":"array","items":{"type":"string"},"uniqueItems":true,"maxItems":64},"include_properties":{"type":"boolean"},"include_connections":{"type":"boolean"},"max_properties":{"type":"integer","minimum":1,"maximum":512}},"required":["target"],"additionalProperties":false},{"type":"object","properties":{"target":{"const":"resource"},"path":{"type":"string","pattern":"^res://"},"type_hint":{"type":"string"},"include_dependencies":{"type":"boolean"},"max_dependencies":{"type":"integer","minimum":0,"maximum":2048},"properties":{"type":"array","items":{"type":"string"},"uniqueItems":true,"maxItems":128}},"required":["target","path"],"additionalProperties":false},{"type":"object","properties":{"target":{"const":"object"},"object_id":{},"properties":{"type":"array","items":{"type":"string"},"uniqueItems":true,"maxItems":128}},"required":["target","object_id"],"additionalProperties":false},{"type":"object","properties":{"target":{"const":"relations"},"relations":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"},"kind":{"type":"string","enum":["max_gap","contains","align","no_overlap"]},"tolerance":{"type":"number","minimum":0},"axes":{"type":"array","items":{"type":"string","enum":["x","y","z"]},"uniqueItems":true},"axis":{"type":"string","enum":["x","y","z"]},"a_anchor":{"type":"string","enum":["min","center","max"]},"b_anchor":{"type":"string","enum":["min","center","max"]}},"required":["a","b","kind","tolerance"],"additionalProperties":false}}},"required":["target","relations"],"additionalProperties":false}]})",
+	_add_observe_exposed("object.query", "Query the live edited scene, a Resource path, or an ObjectID. Use target=resource for a PackedScene on disk.",
+			R"({"oneOf":[{"type":"object","properties":{"target":{"const":"scene"},"include_tree":{"const":true},"include_selection":{"type":"boolean"},"max_depth":{"type":"integer","minimum":0,"maximum":16},"max_children":{"type":"integer","minimum":1,"maximum":256}},"required":["target","include_tree"],"additionalProperties":false},{"type":"object","properties":{"target":{"const":"scene"},"node_paths":{"type":"array","items":{"type":"string"},"uniqueItems":true,"minItems":1,"maxItems":64},"include_properties":{"type":"boolean"},"include_connections":{"type":"boolean"},"max_properties":{"type":"integer","minimum":1,"maximum":512}},"required":["target","node_paths"],"additionalProperties":false},{"type":"object","properties":{"target":{"const":"resource"},"path":{"type":"string","pattern":"^res://"},"type_hint":{"type":"string"},"include_dependencies":{"type":"boolean"},"max_dependencies":{"type":"integer","minimum":0,"maximum":2048},"properties":{"type":"array","items":{"type":"string"},"uniqueItems":true,"maxItems":128}},"required":["target","path"],"additionalProperties":false},{"type":"object","properties":{"target":{"const":"object"},"object_id":{},"properties":{"type":"array","items":{"type":"string"},"uniqueItems":true,"maxItems":128}},"required":["target","object_id"],"additionalProperties":false},{"type":"object","properties":{"target":{"const":"relations"},"relations":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"},"kind":{"type":"string","enum":["max_gap","contains","align","no_overlap"]},"tolerance":{"type":"number","minimum":0},"axes":{"type":"array","items":{"type":"string","enum":["x","y","z"]},"uniqueItems":true},"axis":{"type":"string","enum":["x","y","z"]},"a_anchor":{"type":"string","enum":["min","center","max"]},"b_anchor":{"type":"string","enum":["min","center","max"]}},"required":["a","b","kind","tolerance"],"additionalProperties":false}}},"required":["target","relations"],"additionalProperties":false}]})",
 			SolersToolExposure::DIRECT,
-			[this, ref](const SolersToolContext &, const Dictionary &a) {
+			[this, ref](const SolersToolContext &ctx, const Dictionary &a) {
 				const String target = a.get("target", String());
 				if (target == "relations") {
 					Dictionary args = a.duplicate(true);
@@ -2097,42 +2098,31 @@ void SolersToolRegistry::_register_reflection_tools() {
 				}
 
 				Dictionary data;
-				const String path = String(a.get("path", String())).strip_edges();
-				String edited_path;
 				EditorNode *editor = EditorNode::get_singleton();
 				Node *edited_root = editor && EditorNode::get_editor_data().get_edited_scene_count() > 0 ? editor->get_edited_scene() : nullptr;
-				if (edited_root) {
-					edited_path = edited_root->get_scene_file_path();
+				if (!edited_root) {
+					return _error("NO_EDITED_SCENE", "Open a scene before querying target=scene.", true);
 				}
-				const bool path_mode = !path.is_empty();
-				const bool path_is_edited = path_mode && !edited_path.is_empty() && path == edited_path;
-				if (observation_service) {
-					const String digest_path = path_mode ? path : edited_path;
-					if (!digest_path.is_empty()) {
-						const Dictionary observed = observation_service->observe_path(digest_path, path_mode);
-						if ((bool)observed.get("ok", false) && observed.has("digest")) {
-							data["digest"] = observed["digest"];
-						} else if (path_mode) {
-							return _error("PATH_OBSERVE_FAILED", String(observed.get("error", "Unable to observe path.")), true);
-						}
-					}
+				Dictionary digest;
+				digest["name"] = edited_root->get_name();
+				digest["type"] = edited_root->get_class();
+				digest["child_count"] = edited_root->get_child_count();
+				digest["scene_path"] = edited_root->get_scene_file_path();
+				data["digest"] = digest;
+				if (observation_service && (bool)a.get("include_tree", false)) {
+					data["scene_tree"] = observation_service->get_scene_tree((int)a.get("max_depth", 8), (int)a.get("max_children", 128), ctx.result_token_budget);
 				}
-				if (observation_service && (bool)a.get("include_tree", false) && (!path_mode || path_is_edited)) {
-					data["scene_tree"] = observation_service->get_scene_tree((int)a.get("max_depth", 8), (int)a.get("max_children", 128));
-				}
-				if (observation_service && (bool)a.get("include_selection", false) && (!path_mode || path_is_edited)) {
+				if (observation_service && (bool)a.get("include_selection", false)) {
 					data["selection"] = observation_service->get_selection(1, (int)a.get("max_children", 128));
 				}
-				if (a.has("node_paths") && (!path_mode || path_is_edited)) {
+				if (a.has("node_paths")) {
 					const Dictionary inspected = ref->inspect_nodes(a);
 					if (!(bool)inspected.get("ok", false)) {
 						return inspected;
 					}
 					data["details"] = inspected.get("data", Dictionary());
 				}
-				if (!path_mode || path_is_edited) {
-					data["state"] = _solers_scene_state_receipt();
-				}
+				data["state"] = _solers_scene_state_receipt();
 				return _ok(data);
 			},
 			[](const Dictionary &a) {
@@ -2142,7 +2132,7 @@ void SolersToolRegistry::_register_reflection_tools() {
 				const String target = a.get("target", String());
 				if (target == "object") {
 					access["key"] = "engine-object:" + String(a.get("object_id", Variant()));
-				} else if (target == "relations" || (target == "scene" && String(a.get("path", String())).is_empty())) {
+				} else if (target == "relations" || target == "scene") {
 					access["key"] = "scene:";
 				} else {
 					access["key"] = "project:" + String(a.get("path", String()));
@@ -2190,10 +2180,6 @@ void SolersToolRegistry::_register_reflection_tools() {
 			R"({"type":"object","properties":{"path":{"type":"string","pattern":"^res://","description":"Scene file to open."},"set_inherited":{"type":"boolean"}},"required":["path"],"additionalProperties":false})",
 			SolersPermissionManager::PERMISSION_OBSERVE, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DIRECT,
 			[ref](const SolersToolContext &, const Dictionary &a) { return ref->open_scene(a); });
-	_add("scene.reload", "Rebuild an open edited scene from disk via EditorNode::reload_scene. Re-runs @tool _ready so procedural children match the current scripts. Soft script reload alone does not. Refuses unsaved scene history. Returns path + history receipt for render.capture source_state.",
-			R"({"type":"object","properties":{"path":{"type":"string","pattern":"^res://","description":"Open scene path. Default: the current edited scene path."}},"additionalProperties":false})",
-			SolersPermissionManager::PERMISSION_OBSERVE, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DIRECT,
-			[ref](const SolersToolContext &, const Dictionary &a) { return ref->reload_scene(a); });
 	_add("mesh.unwrap_uv2", "Prepare UV2 for exact MeshInstance3D paths through Godot's native mesh API. ArrayMesh work runs one mesh at a time off the editor thread, reports progress, and commits one atomic UndoRedo action only after every surface verifies ARRAY_FORMAT_TEX_UV2. Imported static models should normally arrive with UV2 from Godot's Static Lightmaps importer mode.",
 			R"({"type":"object","properties":{"node_paths":{"type":"array","minItems":1,"items":{"type":"string"}}},"required":["node_paths"]})",
 			edit_scene, SolersToolMutationPolicy::EDITOR_UNDO, Vector<String>(), SolersToolExposure::DIRECT,
@@ -2291,6 +2277,7 @@ void SolersToolRegistry::register_tool(SolersTool *p_tool) {
 	if (deferred) {
 		_register_search_tools();
 	}
+	_rebuild_tool_catalog();
 }
 
 void SolersToolRegistry::register_default_tools() {
@@ -2303,6 +2290,7 @@ void SolersToolRegistry::register_default_tools() {
 	_register_asset_tools();
 	_register_addon_tools();
 	_register_search_tools();
+	_rebuild_tool_catalog();
 }
 
 Dictionary SolersToolRegistry::_tool_to_dictionary(const SolersTool *p_tool) const {
@@ -2326,8 +2314,10 @@ Dictionary SolersToolRegistry::_tool_to_dictionary(const SolersTool *p_tool) con
 	return tool;
 }
 
-Array SolersToolRegistry::list_tools() const {
-	Array result;
+void SolersToolRegistry::_rebuild_tool_catalog() {
+	tool_catalog.clear();
+	tool_catalog_by_name.clear();
+	tool_catalog_revision++;
 	Vector<String> names;
 	for (const KeyValue<StringName, SolersTool *> &E : tools) {
 		names.push_back(String(E.key));
@@ -2336,10 +2326,20 @@ Array SolersToolRegistry::list_tools() const {
 	for (int i = 0; i < names.size(); i++) {
 		SolersTool *const *tool = tools.getptr(StringName(names[i]));
 		if (tool && *tool) {
-			result.push_back(_tool_to_dictionary(*tool));
+			const Dictionary definition = _tool_to_dictionary(*tool);
+			tool_catalog.push_back(definition);
+			tool_catalog_by_name[StringName(names[i])] = definition;
 		}
 	}
-	return result;
+}
+
+Array SolersToolRegistry::list_tools() const {
+	return tool_catalog.duplicate();
+}
+
+Dictionary SolersToolRegistry::get_tool_definition(const StringName &p_name) const {
+	const Dictionary *definition = tool_catalog_by_name.getptr(p_name);
+	return definition ? *definition : Dictionary();
 }
 
 String SolersToolRegistry::get_skill_catalog_prompt() const {
@@ -2454,32 +2454,6 @@ Dictionary SolersToolRegistry::redact_tool_args_for_audit(const StringName &p_na
 		if (out.has(key)) {
 			out[key] = "<redacted>";
 		}
-	}
-	return out;
-}
-
-Dictionary SolersToolRegistry::protect_tool_args_for_replay(const StringName &p_name, const Dictionary &p_args) const {
-	Dictionary out = p_args.duplicate(true);
-	SolersTool *const *tool_ptr = tools.getptr(p_name);
-	if (!tool_ptr || !*tool_ptr) {
-		return out;
-	}
-	const SolersToolCapability &cap = (*tool_ptr)->capability();
-	for (int i = 0; i < cap.redact_args.size(); i++) {
-		const String &key = cap.redact_args[i];
-		if (!out.has(key)) {
-			continue;
-		}
-		const String payload = SolersSecretStore::protect(JSON::stringify(out[key], "", false, true));
-		if (!SolersSecretStore::is_protected(payload)) {
-			out[key] = "<redacted>";
-			continue;
-		}
-		Dictionary protected_value;
-		protected_value["protected"] = true;
-		protected_value["encoding"] = "json";
-		protected_value["payload"] = payload;
-		out[key] = protected_value;
 	}
 	return out;
 }

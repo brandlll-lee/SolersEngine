@@ -23,7 +23,7 @@ Use for 3D layout, imported models, PBR materials, lights, Environment/GI, shado
 
 ## Laws
 - One authoritative final GI path; seal leaks before blaming lights.
-- Treat the edited scene as the authority: inspect the actual environment, lights, and active camera. If `@tool` `_ready` builders changed on disk, `scene.reload` before `render.capture target=editor|camera`; runtime proves Play only.
+- Treat the live edited scene as the authority; construct visible editor state through `object.transaction`, not script-driven editor rebuilds.
 - Create or edit scene roots and Resources through `object.transaction` using ClassDB property metadata and the state/hash returned by the matching query.
 - With `use_physical_light_units`: Directional intensity is `light_intensity_lux` (`PARAM_INTENSITY`); `light_energy` is a dimensionless multiplier. Never put lux-scale numbers into `light_energy`.
 - After any appearance change, capture the intended viewport and require a render receipt sourced from the new scene state. An identical image hash is evidence of identical pixels, not evidence that a mutation rendered.

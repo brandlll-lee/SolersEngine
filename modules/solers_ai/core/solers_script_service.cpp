@@ -355,15 +355,6 @@ Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
 	if (is_script_text) {
 		data["valid"] = validation_data.get("valid", true);
 		data["validation"] = validation_data;
-		bool affects_root = false;
-		EditorNode *editor = EditorNode::get_singleton();
-		if (editor && EditorNode::get_editor_data().get_edited_scene_count() > 0) {
-			if (Node *root = editor->get_edited_scene()) {
-				const Ref<Script> root_script = root->get_script();
-				affects_root = root_script.is_valid() && root_script->get_path() == res_path;
-			}
-		}
-		data["affects_edited_scene_root_script"] = affects_root;
 	}
 
 	if (action_timeline) {

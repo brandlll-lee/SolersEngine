@@ -214,7 +214,6 @@ void SolersReflectionService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_property", "args"), &SolersReflectionService::set_property);
 	ClassDB::bind_method(D_METHOD("batch", "args"), &SolersReflectionService::batch);
 	ClassDB::bind_method(D_METHOD("open_scene", "args"), &SolersReflectionService::open_scene);
-	ClassDB::bind_method(D_METHOD("reload_scene", "args"), &SolersReflectionService::reload_scene);
 }
 
 Dictionary SolersReflectionService::_ok(const Variant &p_data) const {
@@ -2254,40 +2253,6 @@ Dictionary SolersReflectionService::open_scene(const Dictionary &p_args) {
 		return _error("SCENE_BUSY", "Editor is already changing scenes; retry shortly.", true);
 	}
 	editor_interface->open_scene_from_path(path, p_args.get("set_inherited", false));
-	return _ok(_solers_scene_state_receipt(path));
-}
-
-Dictionary SolersReflectionService::reload_scene(const Dictionary &p_args) {
-	EditorNode *editor = EditorNode::get_singleton();
-	EditorInterface *editor_interface = EditorInterface::get_singleton();
-	if (!editor || !editor_interface || EditorNode::get_editor_data().get_edited_scene_count() <= 0) {
-		return _error("NO_EDITED_SCENE", "Open a scene before scene.reload.", true);
-	}
-	String path = String(p_args.get("path", String())).strip_edges();
-	if (path.is_empty()) {
-		Node *root = editor_interface->get_edited_scene_root();
-		path = root ? root->get_scene_file_path() : String();
-	}
-	if (path.is_empty()) {
-		return _error("SCENE_PATH_REQUIRED", "Edited scene has no save path; save it before reload.", true);
-	}
-	path = ProjectSettings::get_singleton()->localize_path(path);
-	int scene_idx = -1;
-	for (int i = 0; i < EditorNode::get_editor_data().get_edited_scene_count(); i++) {
-		if (EditorNode::get_editor_data().get_scene_path(i) == path) {
-			scene_idx = i;
-			break;
-		}
-	}
-	if (scene_idx < 0) {
-		return _error("SCENE_NOT_OPEN", vformat("Scene is not open in the editor: %s", path), true);
-	}
-	const int history_id = EditorNode::get_editor_data().get_scene_history_id(scene_idx);
-	EditorUndoRedoManager *manager = EditorUndoRedoManager::get_singleton();
-	if (manager && history_id != EditorUndoRedoManager::INVALID_HISTORY && manager->is_history_unsaved(history_id)) {
-		return _error("SCENE_UNSAVED", "Persist unsaved scene edits before scene.reload; reload rebuilds the edited tree from disk.", true);
-	}
-	editor->reload_scene(path);
 	return _ok(_solers_scene_state_receipt(path));
 }
 

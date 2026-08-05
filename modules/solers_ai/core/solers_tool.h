@@ -23,6 +23,7 @@
 #include "core/templates/safe_refcount.h"
 #include "core/templates/vector.h"
 #include "core/variant/dictionary.h"
+#include "modules/solers_ai/core/solers_context_manager.h"
 #include "modules/solers_ai/core/solers_permission_manager.h"
 
 #include <functional>
@@ -110,6 +111,7 @@ struct SolersToolContext {
 	String project_path;
 	Array mentions;
 	uint64_t authored_revision = 0;
+	int result_token_budget = SolersContextManager::DEFAULT_CONTEXT_TOKENS - SolersContextManager::DEFAULT_OUTPUT_TOKENS;
 	int approval_id = 0;
 	const SafeFlag *cancel_requested = nullptr;
 };

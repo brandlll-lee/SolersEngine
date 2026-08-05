@@ -101,7 +101,6 @@ public:
 	static real_t get_aabb_max_gap(const AABB &p_a, const AABB &p_b);
 	Dictionary bake_csg(const Dictionary &p_args);
 	Dictionary open_scene(const Dictionary &p_args);
-	Dictionary reload_scene(const Dictionary &p_args);
 	Dictionary unwrap_uv2(const Dictionary &p_args, const String &p_operation_id = String());
 	Dictionary poll_uv2_unwrap(const Dictionary &p_args);
 	bool is_uv2_unwrap_ready(const Dictionary &p_args) const;

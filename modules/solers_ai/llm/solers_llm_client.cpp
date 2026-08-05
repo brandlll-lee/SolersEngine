@@ -16,7 +16,9 @@
 #include "core/io/json.h"
 #include "core/os/os.h"
 #include "core/os/time.h"
+#include "core/templates/hash_set.h"
 #include "modules/solers_ai/core/solers_codex_auth.h"
+#include "modules/solers_ai/core/solers_context_manager.h"
 #include "modules/solers_ai/core/solers_trace.h"
 #include "modules/solers_ai/llm/solers_llm_message.h"
 
@@ -136,6 +138,18 @@ void SolersLLMClient::_fail(const String &p_code, const String &p_message, bool 
 	}
 }
 
+void SolersLLMClient::_fail_provider_response() {
+	const Array events = active_protocol ? active_protocol->parse_event(stream_state, "error", error_buffer) : Array();
+	for (const Variant &item : events) {
+		const Dictionary event = item;
+		if (String(event.get("kind", String())) == SolersLLMEventKind::ERROR) {
+			_fail(event.get("code", "HTTP_ERROR"), event.get("message", "Provider returned an error."), false, event.get("failure_kind", String()));
+			return;
+		}
+	}
+	_fail("HTTP_ERROR", error_buffer.is_empty() ? "Provider returned an error." : error_buffer);
+}
+
 bool SolersLLMClient::_prepare_auth_headers(bool p_force_oauth_refresh) {
 	const String auth_type = worker_auth.get("type", String(worker_profile.get("auth_type", "api_key")));
 	if (auth_type == "none") {
@@ -202,6 +216,8 @@ Error SolersLLMClient::begin(const Dictionary &p_request, const Dictionary &p_pr
 		shared_events = Array();
 		shared_error = Dictionary();
 		shared_auth_update = Dictionary();
+		shared_emitted_attachment_identities = Array();
+		shared_request_body_bytes = 0;
 		shared_state = STATE_IDLE;
 	}
 	last_error.clear();
@@ -263,16 +279,10 @@ Error SolersLLMClient::begin(const Dictionary &p_request, const Dictionary &p_pr
 		return ERR_INVALID_DATA;
 	}
 
-	const Dictionary body = active_protocol->build_request_body(p_request);
-	request_body = JSON::stringify(body, "", false, true);
+	worker_request = p_request;
+	worker_protocol_id = protocol_id;
+	request_body = String();
 	trace_path = solers_session_dir().path_join("provider_trace.jsonl");
-	Dictionary trace_payload;
-	trace_payload["host"] = host;
-	trace_payload["path"] = request_path;
-	trace_payload["protocol"] = String(protocol_id);
-	trace_payload["body_bytes"] = request_body.utf8().length();
-	trace_payload["body"] = _redacted_request_body(request_body);
-	_trace("request_prepared", trace_payload);
 
 	request_headers.clear();
 	request_headers.push_back("Content-Type: application/json");
@@ -297,7 +307,7 @@ Error SolersLLMClient::begin(const Dictionary &p_request, const Dictionary &p_pr
 	oauth_401_retried = false;
 	sse_buffer = String();
 	error_buffer = String();
-	initial_stream_state = active_protocol->begin_stream(p_request);
+	initial_stream_state = Dictionary();
 	stream_state = Dictionary();
 	state = STATE_CONNECTING;
 
@@ -329,6 +339,33 @@ void SolersLLMClient::_publish(const Array &p_events, State p_state) {
 
 void SolersLLMClient::_run_worker() {
 	Array batch;
+	Array messages = SolersContextManager::repair_tool_pairing(worker_request.get("messages", Array()));
+	HashSet<String> delivered;
+	const Array delivered_identities = worker_request.get("_delivered_attachment_identities", Array());
+	for (int i = 0; i < delivered_identities.size(); i++) {
+		delivered.insert(delivered_identities[i]);
+	}
+	HashSet<String> emitted;
+	worker_request["messages"] = SolersLLMMessage::project_attachments(messages, delivered, emitted);
+	worker_request.erase("_delivered_attachment_identities");
+	Array emitted_identities;
+	for (const String &identity : emitted) {
+		emitted_identities.push_back(identity);
+	}
+	request_body = JSON::stringify(active_protocol->build_request_body(worker_request), "", false, true);
+	initial_stream_state = active_protocol->begin_stream(worker_request);
+	Dictionary trace_payload;
+	trace_payload["host"] = host;
+	trace_payload["path"] = request_path;
+	trace_payload["protocol"] = String(worker_protocol_id);
+	trace_payload["body_bytes"] = request_body.utf8().length();
+	trace_payload["body"] = _redacted_request_body(request_body);
+	_trace("request_prepared", trace_payload);
+	{
+		MutexLock lock(mutex);
+		shared_request_body_bytes = request_body.utf8().length();
+		shared_emitted_attachment_identities = emitted_identities;
+	}
 
 	if (!_prepare_auth_headers()) {
 		_publish(batch, state);
@@ -395,7 +432,7 @@ void SolersLLMClient::_run_worker() {
 					}
 				} else if (response_checked) {
 					if (capturing_error) {
-						_fail("HTTP_ERROR", error_buffer.is_empty() ? "Provider returned an error." : error_buffer);
+						_fail_provider_response();
 					} else {
 						_complete_stream(batch);
 					}
@@ -477,7 +514,7 @@ void SolersLLMClient::_run_worker() {
 			} break;
 			case HTTPClient::STATUS_DISCONNECTED: {
 				if (capturing_error) {
-					_fail("HTTP_ERROR", error_buffer.is_empty() ? "Provider returned an error." : error_buffer);
+					_fail_provider_response();
 				} else {
 					_complete_stream(batch);
 				}
@@ -506,6 +543,16 @@ void SolersLLMClient::_run_worker() {
 		http->close();
 	}
 	http = Ref<HTTPClient>();
+}
+
+int64_t SolersLLMClient::get_request_body_bytes() const {
+	MutexLock lock(mutex);
+	return shared_request_body_bytes;
+}
+
+Array SolersLLMClient::get_emitted_attachment_identities() const {
+	MutexLock lock(mutex);
+	return shared_emitted_attachment_identities;
 }
 
 void SolersLLMClient::_drain_records(Array &r_events) {
