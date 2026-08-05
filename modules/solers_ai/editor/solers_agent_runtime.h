@@ -54,7 +54,7 @@ public:
 	void set_project_path(const String &p_project_path);
 	void set_session(const String &p_project_path, const String &p_session_id);
 	Dictionary get_status() const;
-	Array get_messages() const;
+	Array get_timeline_entries() const;
 
 	SolersAgentRuntime();
 	~SolersAgentRuntime();

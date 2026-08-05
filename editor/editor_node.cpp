@@ -282,7 +282,6 @@ static void _solers_apply_editor_theme(const Ref<Theme> &p_theme) {
 	p_theme->set_stylebox(SNAME("BottomPanel"), EditorStringName(EditorStyles), bg_style);
 	p_theme->set_stylebox(SceneStringName(panel), "Panel", panel);
 	p_theme->set_stylebox(SceneStringName(panel), "PanelContainer", panel);
-	p_theme->set_stylebox(SceneStringName(panel), "ScrollContainer", panel);
 	p_theme->set_stylebox(SceneStringName(panel), "ScrollContainerSecondary", panel);
 
 	auto set_button_theme = [&](const StringName &p_type, const Ref<StyleBoxFlat> &p_normal, const Ref<StyleBoxFlat> &p_hover, const Ref<StyleBoxFlat> &p_pressed) {
@@ -8479,7 +8478,7 @@ void EditorNode::_set_solers_session(const String &p_project_path, const String 
 			solers_agent_runtime->set_session(solers_project_path, solers_session_id);
 		}
 		if (solers_home_dock) {
-			solers_home_dock->load_chat_history(solers_session_id.is_empty() ? Array() : solers_agent_runtime->get_messages());
+			solers_home_dock->load_chat_history(solers_session_id.is_empty() ? Array() : solers_agent_runtime->get_timeline_entries());
 		}
 	}
 	if (solers_home_dock) {

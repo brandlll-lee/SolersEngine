@@ -27,11 +27,13 @@
 #pragma once
 
 #include "core/variant/callable.h"
-#include "scene/resources/texture.h"
+#include "scene/gui/box_container.h"
 #include "scene/gui/control.h"
 #include "scene/resources/text_paragraph.h"
+#include "scene/resources/texture.h"
 
 class SolersMarkdownView;
+class TextParagraph;
 class VBoxContainer;
 
 String solers_summarize_tool_args(const String &p_arguments_json);
@@ -42,17 +44,11 @@ String solers_summarize_tool_args(const String &p_arguments_json);
 class SolersUserBubble : public Control {
 	GDCLASS(SolersUserBubble, Control);
 
-	struct Seg {
-		bool is_chip = false;
-		String text;
-		Dictionary mention;
-		float width = 0.0f;
-	};
-
 	String text;
 	Array attachments;
 	Vector<Ref<Texture2D>> attachment_textures;
-	Vector<Vector<Seg>> shaped_lines;
+	Ref<TextParagraph> paragraph;
+	Array mention_objects;
 	float shaped_for_width = -1.0f;
 	Size2 text_size;
 	float line_height = 0.0f;
@@ -76,22 +72,14 @@ public:
 	SolersUserBubble();
 };
 
-// Full-width assistant prose, rendered on delta arrival (opencode's model:
-// `text-delta` appends and the UI renders the committed text immediately —
-// no client-side typewriter timer). Each delta appends to `full_text` and
-// re-renders through SolersMarkdownView (md4c + block-level streaming); while
-// streaming, the open block carries a caret glyph. There is no per-frame
-// reveal loop, so display never depends on the editor's idle tick rate.
-class SolersAssistantCell : public Control {
-	GDCLASS(SolersAssistantCell, Control);
+class SolersAssistantCell : public VBoxContainer {
+	GDCLASS(SolersAssistantCell, VBoxContainer);
 
 	String full_text;
 	bool stream_done = false;
 	SolersMarkdownView *markdown_view = nullptr;
 	int rendered_chars = -1; // length of full_text at the last render
 	bool rendered_caret = false;
-	float rendered_width = -1.0f;
-	float cell_height = 0.0f;
 	String pending_delta;
 
 	Callable content_changed;
@@ -104,8 +92,6 @@ protected:
 	static void _bind_methods() {}
 
 public:
-	virtual Size2 get_minimum_size() const override;
-
 	void append_delta(const String &p_text);
 	// Authoritative full text at the end of the model step; renders it whole,
 	// drops the caret, and settles.

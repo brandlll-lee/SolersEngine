@@ -24,6 +24,7 @@
 #include "scene/gui/panel_container.h"
 
 class Button;
+class ButtonGroup;
 class Control;
 class AcceptDialog;
 class EditorFileDialog;
@@ -60,15 +61,16 @@ class SolersDock : public PanelContainer {
 
 	ScrollContainer *chat_scroll = nullptr;
 	VBoxContainer *message_list = nullptr;
+	VBoxContainer *history_mount = nullptr;
 	Control *empty_state = nullptr;
 	VBoxContainer *empty_home = nullptr;
 	VBoxContainer *root_box = nullptr;
 	HSplitContainer *body_split = nullptr;
 	PanelContainer *session_sidebar = nullptr;
 	VBoxContainer *chat_column = nullptr;
-	LineEdit *session_filter = nullptr;
 	ScrollContainer *session_scroll = nullptr;
 	VBoxContainer *session_list = nullptr;
+	Ref<ButtonGroup> session_button_group;
 	MarginContainer *composer_inset = nullptr;
 	SolersPlanCapsule *plan_capsule = nullptr;
 	TextEdit *chat_input = nullptr;
@@ -119,6 +121,8 @@ class SolersDock : public PanelContainer {
 	// Live turn state: cells updated in place as session events stream in.
 	SolersThinkingCell *active_thinking_cell = nullptr;
 	SolersAssistantCell *active_text_cell = nullptr;
+	VBoxContainer *active_assistant_row = nullptr;
+	int64_t pending_assistant_event_id = -1;
 	SolersStatusCell *status_cell = nullptr;
 	SolersToolGroupCell *active_tool_group = nullptr;
 	HashMap<String, SolersToolCell *> tool_cells_by_id;
@@ -129,17 +133,15 @@ class SolersDock : public PanelContainer {
 	int composer_margin_px = -1;
 	bool scroll_to_bottom_deferred = false;
 
-	String chat_log;
 	Array pending_attachments;
 	String session_project_path;
 	String session_current_id;
-	String session_filter_text;
-	Array pending_history_messages;
-	int pending_history_index = 0;
-	uint64_t history_load_token = 0;
-	bool history_loading = false;
-	VBoxContainer *history_staging = nullptr;
-	VBoxContainer *history_mount = nullptr; // non-null while first swap builds off-tree
+	Array timeline_messages;
+	int timeline_start = 0;
+	bool timeline_rendering = false;
+	bool timeline_rows_sorted = false;
+	int64_t timeline_anchor_event_id = -1;
+	float timeline_anchor_screen_y = 0.0f;
 
 	SolersObservationService *observation_service = nullptr;
 	SolersToolRegistry *tool_registry = nullptr;
@@ -162,16 +164,16 @@ class SolersDock : public PanelContainer {
 	void _toggle_session_sidebar();
 	void _refresh_session_list();
 	void _request_session_list_refresh();
-	void _highlight_session_selection();
-	void _apply_session_filter();
-	void _on_session_filter_changed(const String &p_text);
+	void _sync_session_selection();
 	void _on_session_row_pressed(const String &p_session_id);
+	Control *_create_history_entry(const Dictionary &p_message);
 	void _append_history_message(const Dictionary &p_message);
-	void _pump_history_load();
-	void _clear_history_staging();
-	void _swap_history_staging();
+	void _render_timeline(int p_start);
+	void _queue_timeline_layout_commit();
+	void _commit_timeline_layout();
+	void _on_timeline_scrolled();
 	VBoxContainer *_chat_mount() const;
-	void _on_new_agent_pressed();
+	void _on_new_chat_pressed();
 	void _on_model_chip_pressed();
 	void _position_model_menu();
 	void _open_model_submenu(int p_kind);
@@ -188,6 +190,7 @@ class SolersDock : public PanelContainer {
 	void _submit_chat_prompt(const String &p_prompt, const Array &p_attachments = Array());
 	void _submit_steering(const String &p_prompt, const Array &p_attachments);
 	void _on_agent_model_request_started();
+	void _on_agent_timeline_entry_committed(int64_t p_event_id, const String &p_role);
 	void _on_agent_assistant_delta(const String &p_text);
 	void _on_agent_reasoning_delta(const String &p_text);
 	void _on_agent_assistant_message(const String &p_text);
@@ -232,11 +235,12 @@ class SolersDock : public PanelContainer {
 	void _scroll_chat_to_bottom();
 	void _clear_empty_state();
 	void _show_empty_state();
-	void _append_user_message(const String &p_message, const Array &p_attachments = Array());
+	Control *_append_user_message(const String &p_message, const Array &p_attachments = Array());
 	void _append_error_row(const String &p_text);
 	void _ensure_status_cell(const String &p_status);
 	void _remove_status_cell();
 	void _settle_thinking_cell();
+	VBoxContainer *_ensure_assistant_row();
 	SolersAssistantCell *_ensure_text_cell();
 	void _settle_tool_group();
 	void _finish_turn_cells();

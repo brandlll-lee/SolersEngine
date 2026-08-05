@@ -156,8 +156,8 @@ Dictionary SolersAgentRuntime::get_status() const {
 	return agent_session ? agent_session->get_status() : Dictionary();
 }
 
-Array SolersAgentRuntime::get_messages() const {
-	return agent_session ? agent_session->get_messages() : Array();
+Array SolersAgentRuntime::get_timeline_entries() const {
+	return agent_session ? agent_session->get_timeline_entries() : Array();
 }
 
 void SolersAgentRuntime::shutdown() {

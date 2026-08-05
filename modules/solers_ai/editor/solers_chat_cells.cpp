@@ -21,6 +21,7 @@
 #include "scene/gui/box_container.h"
 #include "scene/resources/image_texture.h"
 #include "scene/resources/style_box_flat.h"
+#include "scene/resources/text_paragraph.h"
 #include "scene/theme/theme_db.h"
 
 /* ------------------------------------------------------------------ */
@@ -51,6 +52,11 @@ static Ref<Texture2D> solers_attachment_texture(const Dictionary &p_attachment) 
 	Ref<Image> image = Image::load_from_file(path);
 	if (image.is_null() || image->is_empty()) {
 		return Ref<Texture2D>();
+	}
+	const int max_dimension = MAX(image->get_width(), image->get_height());
+	if (max_dimension > 112) {
+		const float scale = 112.0f / max_dimension;
+		image->resize(MAX(1, int(image->get_width() * scale)), MAX(1, int(image->get_height() * scale)), Image::INTERPOLATE_LANCZOS);
 	}
 	return ImageTexture::create_from_image(image);
 }
@@ -215,17 +221,20 @@ void SolersUserBubble::_shape(float p_cell_width) {
 	const float max_text_width = MIN(max_content, 380.0f * ed);
 	const int icon_px = int(Math::round(13.0f * ed));
 
-	shaped_lines.clear();
+	if (paragraph.is_null()) {
+		paragraph.instantiate();
+	} else {
+		paragraph->clear();
+	}
+	mention_objects.clear();
 	text_size = Size2();
 
 	const String display = SolersMention::strip_prompt_block(text);
 	if (font.is_valid() && !display.is_empty()) {
 		const PackedStringArray paragraphs = display.split("\n", true);
 		for (int p = 0; p < paragraphs.size(); p++) {
-			const String paragraph = paragraphs[p];
-			Vector<Seg> pending;
-
-			const Array spans = SolersMention::scan_line_spans(paragraph);
+			const String paragraph_text = paragraphs[p];
+			const Array spans = SolersMention::scan_line_spans(paragraph_text);
 			int cursor = 0;
 			for (int i = 0; i < spans.size(); i++) {
 				const Dictionary span = spans[i];
@@ -235,102 +244,34 @@ void SolersUserBubble::_shape(float p_cell_width) {
 					continue;
 				}
 				if (start > cursor) {
-					Seg text_seg;
-					text_seg.text = paragraph.substr(cursor, start - cursor);
-					text_seg.width = font->get_string_size(text_seg.text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
-					pending.push_back(text_seg);
+					this->paragraph->add_string(paragraph_text.substr(cursor, start - cursor), font, font_size);
 				}
 				const Dictionary mention = span.get("mention", Dictionary());
 				const String label = solers_mention_chip_label(mention);
 				if (!label.is_empty()) {
-					Seg chip;
-					chip.is_chip = true;
-					chip.text = label;
-					chip.mention = mention;
 					const Ref<Texture2D> icon = solers_mention_chip_icon(mention, icon_px);
-					chip.width = MIN(solers_mention_chip_width(label, font, font_size, icon.is_valid()), max_text_width);
-					pending.push_back(chip);
+					Dictionary object;
+					object["key"] = mention_objects.size();
+					object["label"] = label;
+					object["mention"] = mention;
+					const float width = MIN(solers_mention_chip_width(label, font, font_size, icon.is_valid()), max_text_width);
+					this->paragraph->add_object(object["key"], Size2(width, line_height));
+					mention_objects.push_back(object);
 				}
 				cursor = start + len;
 			}
-			if (cursor < paragraph.length() || pending.is_empty()) {
-				Seg text_seg;
-				text_seg.text = paragraph.substr(cursor);
-				text_seg.width = text_seg.text.is_empty() ? 0.0f : font->get_string_size(text_seg.text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
-				pending.push_back(text_seg);
+			if (cursor < paragraph_text.length()) {
+				this->paragraph->add_string(paragraph_text.substr(cursor), font, font_size);
 			}
-
-			Vector<Seg> line;
-			float line_w = 0.0f;
-			auto flush_line = [&]() {
-				shaped_lines.push_back(line);
-				text_size.x = MAX(text_size.x, line_w);
-				text_size.y += line_height;
-				line.clear();
-				line_w = 0.0f;
-			};
-
-			for (int i = 0; i < pending.size(); i++) {
-				Seg seg = pending[i];
-				if (seg.is_chip) {
-					if (!line.is_empty() && line_w + seg.width > max_text_width) {
-						flush_line();
-					}
-					line.push_back(seg);
-					line_w += seg.width;
-					continue;
-				}
-				// Wrap plain text when the remaining segment does not fit.
-				String rest = seg.text;
-				while (!rest.is_empty()) {
-					const float room = max_text_width - line_w;
-					const float rest_w = font->get_string_size(rest, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
-					if (rest_w <= room) {
-						Seg piece;
-						piece.text = rest;
-						piece.width = rest_w;
-						line.push_back(piece);
-						line_w += rest_w;
-						rest = String();
-						break;
-					}
-					// Find a break that fits the remaining room on this line.
-					int fit = 0;
-					for (int c = 0; c < rest.length(); c++) {
-						const float next_w = font->get_string_size(rest.substr(0, c + 1), HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
-						if (!line.is_empty() && next_w > room) {
-							break;
-						}
-						if (line.is_empty() && next_w > max_text_width && c > 0) {
-							break;
-						}
-						fit = c + 1;
-					}
-					if (fit <= 0) {
-						flush_line();
-						continue;
-					}
-					// Prefer last whitespace in the fitted range.
-					int break_at = fit;
-					for (int c = fit - 1; c > 0; c--) {
-						if (rest[c] == ' ' || rest[c] == '\t') {
-							break_at = c + 1;
-							break;
-						}
-					}
-					Seg piece;
-					piece.text = rest.substr(0, break_at);
-					piece.width = font->get_string_size(piece.text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
-					line.push_back(piece);
-					line_w += piece.width;
-					rest = rest.substr(break_at);
-					flush_line();
-				}
-			}
-			if (!line.is_empty() || paragraph.is_empty()) {
-				flush_line();
+			if (p + 1 < paragraphs.size()) {
+				this->paragraph->add_string("\n", font, font_size);
 			}
 		}
+		this->paragraph->set_break_flags(TextServer::BREAK_MANDATORY | TextServer::BREAK_WORD_BOUND | TextServer::BREAK_GRAPHEME_BOUND);
+		this->paragraph->set_width(max_text_width);
+		this->paragraph->set_line_spacing(3.0f * ed);
+		text_size = this->paragraph->get_size();
+		text_size.x = MIN(this->paragraph->get_non_wrapped_size().x, max_text_width);
 	}
 
 	const float pad_v = 8.0f * ed;
@@ -410,26 +351,23 @@ void SolersUserBubble::_notification(int p_what) {
 					y += thumb + (drawn < attachment_count ? gap : (text_size.y > 0.0f ? gap : 0.0f));
 				}
 			}
-			if (!shaped_lines.is_empty() && font.is_valid()) {
+			if (paragraph.is_valid() && font.is_valid()) {
 				const RID ci = get_canvas_item();
-				for (int li = 0; li < shaped_lines.size(); li++) {
-					float x = bubble.position.x + pad_h;
-					const Vector<Seg> &line = shaped_lines[li];
-					for (int si = 0; si < line.size(); si++) {
-						const Seg &seg = line[si];
-						if (seg.is_chip) {
-							const float pill_h = font->get_height(font_size);
-							const Rect2 pill(Point2(x, y + (line_height - pill_h) * 0.5f), Size2(seg.width, pill_h));
-							const Ref<Texture2D> icon = solers_mention_chip_icon(seg.mention, icon_px);
-							solers_draw_mention_chip(ci, pill, seg.text, font, font_size, icon);
-							x += seg.width;
-						} else if (!seg.text.is_empty()) {
-							const float baseline = y + (line_height - font->get_height(font_size)) * 0.5f + font->get_ascent(font_size);
-							font->draw_string(ci, Point2(x, baseline), seg.text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, SOLERS_CELL_TEXT_PRIMARY);
-							x += seg.width;
+				const Point2 origin(bubble.position.x + pad_h, y);
+				paragraph->draw(ci, origin, SOLERS_CELL_TEXT_PRIMARY);
+				for (int line = 0; line < paragraph->get_line_count(); line++) {
+					const Array objects = paragraph->get_line_objects(line);
+					for (int i = 0; i < objects.size(); i++) {
+						const int key = objects[i];
+						if (key < 0 || key >= mention_objects.size()) {
+							continue;
 						}
+						const Dictionary object = mention_objects[key];
+						Rect2 pill = paragraph->get_line_object_rect(line, key);
+						pill.position += origin;
+						const Dictionary mention = object["mention"];
+						solers_draw_mention_chip(ci, pill, object["label"], font, font_size, solers_mention_chip_icon(mention, icon_px));
 					}
-					y += line_height;
 				}
 			}
 		} break;
@@ -491,84 +429,27 @@ void SolersAssistantCell::_update_markdown() {
 	}
 	const int len = full_text.length();
 	const bool caret = !stream_done; // caret only while the stream is open
-	float width = get_size().x;
-	if (width <= 60.0f * EDSCALE) {
-		if (Control *parent = get_parent_control()) {
-			width = parent->get_size().x;
-		}
-	}
-	if (width <= 60.0f * EDSCALE) {
-		set_process_internal(true);
-		return;
-	}
-	if (rendered_chars == len && Math::is_equal_approx(rendered_width, width)) {
-		if (rendered_caret == caret) {
-			return;
-		}
-		rendered_caret = caret;
-		markdown_view->set_position(Point2());
-		markdown_view->set_size(Size2(width, markdown_view->get_size().y));
-		markdown_view->append_markdown_delta(String(), caret);
-		const float old_height = cell_height;
-		cell_height = MAX(markdown_view->get_content_height(), 18.0f * EDSCALE);
-		markdown_view->set_size(Size2(width, cell_height));
-		if (!Math::is_equal_approx(old_height, cell_height)) {
-			update_minimum_size();
-			if (content_changed.is_valid()) {
-				content_changed.call();
-			}
-		}
+	if (rendered_chars == len && rendered_caret == caret) {
 		return;
 	}
 	const int previous_rendered_chars = rendered_chars;
-	const bool can_append = !stream_done && previous_rendered_chars >= 0 && len > previous_rendered_chars && rendered_caret && Math::is_equal_approx(rendered_width, width);
+	const bool can_append = !stream_done && previous_rendered_chars >= 0 && len > previous_rendered_chars && rendered_caret;
 	rendered_chars = len;
 	rendered_caret = caret;
-	rendered_width = width;
 
-	markdown_view->set_position(Point2());
-	// Width-only size sync before render — avoid height thrash that re-enters RESIZED.
-	if (!Math::is_equal_approx(markdown_view->get_size().x, width)) {
-		markdown_view->set_size(Size2(width, MAX(1.0f, markdown_view->get_size().y)));
-	}
 	if (can_append) {
 		markdown_view->append_markdown_delta(full_text.substr(previous_rendered_chars), caret);
 	} else {
 		markdown_view->set_markdown(full_text, caret);
 	}
-
-	const float old_height = cell_height;
-	cell_height = MAX(markdown_view->get_content_height(), 18.0f * EDSCALE);
-	markdown_view->set_size(Size2(width, cell_height));
-	if (!Math::is_equal_approx(old_height, cell_height)) {
-		update_minimum_size();
-		if (content_changed.is_valid()) {
-			content_changed.call();
-		}
+	if (content_changed.is_valid()) {
+		content_changed.call();
 	}
-}
-
-Size2 SolersAssistantCell::get_minimum_size() const {
-	return Size2(0, cell_height);
 }
 
 void SolersAssistantCell::_notification(int p_what) {
 	switch (p_what) {
-		case NOTIFICATION_RESIZED: {
-			const float width = get_size().x;
-			// Height-only growth from streaming must not invalidate the render cache.
-			if (rendered_width >= 0.0f && Math::is_equal_approx(rendered_width, width)) {
-				if (markdown_view) {
-					markdown_view->set_size(Size2(width, cell_height));
-				}
-				break;
-			}
-			rendered_chars = -1;
-			_update_markdown();
-		} break;
 		case NOTIFICATION_THEME_CHANGED: {
-			rendered_chars = -1;
-			_update_markdown();
 			queue_redraw();
 		} break;
 		case NOTIFICATION_INTERNAL_PROCESS: {

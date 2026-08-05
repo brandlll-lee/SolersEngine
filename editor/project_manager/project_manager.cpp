@@ -977,7 +977,7 @@ void ProjectManager::_set_shell_session(const String &p_project_path, const Stri
 			solers_agent_runtime->set_session(shell_project_path, shell_session_id);
 		}
 		if (solers_home_dock) {
-			solers_home_dock->load_chat_history(shell_session_id.is_empty() ? Array() : solers_agent_runtime->get_messages());
+			solers_home_dock->load_chat_history(shell_session_id.is_empty() ? Array() : solers_agent_runtime->get_timeline_entries());
 		}
 	}
 	if (solers_home_dock) {

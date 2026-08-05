@@ -731,6 +731,9 @@ void SolersCodeBlock::set_code(const String &p_language, const String &p_code, b
 	code = normalized;
 	caret = p_caret;
 	layout_width = -1.0f; // Force re-measure on next layout pass.
+	if (get_size().x > 0.0f) {
+		measure(get_size().x);
+	}
 	queue_redraw();
 }
 
@@ -813,6 +816,11 @@ void SolersCodeBlock::_notification(int p_what) {
 			layout_width = -1.0f;
 			queue_redraw();
 		} break;
+		case NOTIFICATION_RESIZED: {
+			if (!Math::is_equal_approx(layout_width, get_size().x)) {
+				measure(get_size().x);
+			}
+		} break;
 		case NOTIFICATION_DRAW: {
 			const float ed = EDSCALE;
 			const Rect2 r(Point2(), get_size());
@@ -854,6 +862,8 @@ void SolersCodeBlock::_notification(int p_what) {
 
 SolersMarkdownView::SolersMarkdownView() {
 	set_mouse_filter(MOUSE_FILTER_PASS);
+	set_h_size_flags(SIZE_EXPAND_FILL);
+	add_theme_constant_override("separation", int(8 * EDSCALE));
 }
 
 Vector<SolersMarkdownView::Segment> SolersMarkdownView::_split_segments(const String &p_markdown) {
@@ -982,6 +992,7 @@ RichTextLabel *SolersMarkdownView::_make_paragraph_label() {
 	rtl->set_context_menu_enabled(true);
 	rtl->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
 	rtl->set_mouse_filter(MOUSE_FILTER_PASS);
+	rtl->set_h_size_flags(SIZE_EXPAND_FILL);
 	// Flush on the chat canvas: drop the editor RichTextLabel's default panel
 	// background so assistant prose reads like Cursor's, not a boxed card.
 	rtl->add_theme_style_override("normal", memnew(StyleBoxEmpty));
@@ -1031,13 +1042,16 @@ void SolersMarkdownView::_render_segment(int p_index, const Segment &p_segment, 
 		if (!code_block) {
 			code_block = memnew(SolersCodeBlock);
 			add_child(code_block);
+			move_child(code_block, p_index);
 			block.control = code_block;
 		}
 		code_block->set_code(p_segment.lang, p_segment.text, p_open);
+		code_block->measure(MAX(get_size().x, 60.0f * EDSCALE));
 	} else {
 		RichTextLabel *rtl = Object::cast_to<RichTextLabel>(block.control);
 		if (!rtl) {
 			rtl = _make_paragraph_label();
+			move_child(rtl, p_index);
 			block.control = rtl;
 		}
 		_render_paragraph(rtl, p_segment.text, p_open);
@@ -1056,10 +1070,7 @@ void SolersMarkdownView::_render_paragraph(RichTextLabel *p_label, const String 
 }
 
 void SolersMarkdownView::set_markdown(const String &p_markdown, bool p_streaming) {
-	// S2 early-out: identical text + streaming flag + already laid out at the
-	// current width means there is nothing new to split or render.
-	if (rendered_md_valid && p_streaming == rendered_streaming && p_markdown == rendered_md &&
-			Math::is_equal_approx(get_size().x, layout_width)) {
+	if (rendered_md_valid && p_streaming == rendered_streaming && p_markdown == rendered_md) {
 		return;
 	}
 	rendered_md = p_markdown;
@@ -1079,8 +1090,6 @@ void SolersMarkdownView::set_markdown(const String &p_markdown, bool p_streaming
 		}
 		blocks.resize(blocks.size() - 1);
 	}
-
-	_relayout();
 }
 
 void SolersMarkdownView::append_markdown_delta(const String &p_delta, bool p_streaming) {
@@ -1101,7 +1110,6 @@ void SolersMarkdownView::append_markdown_delta(const String &p_delta, bool p_str
 			segment.lang = last.lang;
 			segment.text = last.source;
 			_render_segment(last_index, segment, p_streaming);
-			_relayout();
 		}
 		return;
 	}
@@ -1113,11 +1121,10 @@ void SolersMarkdownView::append_markdown_delta(const String &p_delta, bool p_str
 		return;
 	}
 	Block &last = blocks[blocks.size() - 1];
-	const bool width_ok = Math::is_equal_approx(get_size().x, layout_width);
 
 	// Open fenced code: append into the live SolersCodeBlock. Falling back to
 	// set_markdown here was the main stream flicker (full re-split + re-highlight).
-	if (rendered_md_valid && rendered_streaming && p_streaming && last.is_code && width_ok && !starts_new_block && !touches_fence) {
+	if (rendered_md_valid && rendered_streaming && p_streaming && last.is_code && !starts_new_block && !touches_fence) {
 		last.source += p_delta;
 		last.rendered_caret = true;
 		rendered_md = markdown;
@@ -1125,12 +1132,11 @@ void SolersMarkdownView::append_markdown_delta(const String &p_delta, bool p_str
 		rendered_md_valid = true;
 		if (SolersCodeBlock *code_block = Object::cast_to<SolersCodeBlock>(last.control)) {
 			code_block->set_code(last.lang, last.source, true);
-			_relayout();
 			return;
 		}
 	}
 
-	if (!rendered_md_valid || !rendered_streaming || !p_streaming || !width_ok || starts_new_block || touches_fence || last.is_code) {
+	if (!rendered_md_valid || !rendered_streaming || !p_streaming || starts_new_block || touches_fence || last.is_code) {
 		set_markdown(markdown, p_streaming);
 		return;
 	}
@@ -1143,47 +1149,6 @@ void SolersMarkdownView::append_markdown_delta(const String &p_delta, bool p_str
 	rendered_streaming = p_streaming;
 	rendered_md_valid = true;
 	_render_segment(int(blocks.size()) - 1, segment, p_streaming);
-	_relayout();
-}
-
-void SolersMarkdownView::_relayout() {
-	const float ed = EDSCALE;
-	const float width = MAX(get_size().x, 60.0f * ed);
-	const float gap = 8.0f * ed;
-
-	float y = 0.0f;
-	for (uint32_t i = 0; i < blocks.size(); i++) {
-		Control *control = blocks[i].control;
-		if (!control) {
-			continue;
-		}
-		if (y > 0.0f) {
-			y += gap;
-		}
-		control->set_position(Point2(0, y));
-
-		float height = 0.0f;
-		if (blocks[i].is_code) {
-			height = static_cast<SolersCodeBlock *>(control)->measure(width);
-		} else {
-			RichTextLabel *rtl = static_cast<RichTextLabel *>(control);
-			rtl->set_size(Size2(width, 0));
-			height = MAX(float(rtl->get_content_height()), 10.0f * ed);
-			rtl->set_size(Size2(width, height));
-		}
-		control->set_size(Size2(width, height));
-		y += height;
-	}
-
-	layout_width = width;
-	if (!Math::is_equal_approx(content_height, y)) {
-		content_height = y;
-		update_minimum_size();
-	}
-}
-
-Size2 SolersMarkdownView::get_minimum_size() const {
-	return Size2(0, content_height);
 }
 
 void SolersMarkdownView::_on_meta_clicked(const Variant &p_meta) {
@@ -1226,14 +1191,4 @@ void SolersMarkdownView::_on_meta_clicked(const Variant &p_meta) {
 		return;
 	}
 	EditorInterface::get_singleton()->edit_resource(resource);
-}
-
-void SolersMarkdownView::_notification(int p_what) {
-	switch (p_what) {
-		case NOTIFICATION_RESIZED: {
-			if (!Math::is_equal_approx(get_size().x, layout_width)) {
-				_relayout();
-			}
-		} break;
-	}
 }

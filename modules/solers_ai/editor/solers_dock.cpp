@@ -89,8 +89,9 @@ static const Color SOLERS_POPUP_BG = Color(0.118, 0.118, 0.122);
 static const Color SOLERS_TEXT_PRIMARY = Color(0.961, 0.969, 0.984);
 // Body text: comfortable reading with slightly reduced contrast for hierarchy.
 static const Color SOLERS_TEXT_BODY = Color(0.918, 0.929, 0.945);
-// Dim text: secondary info, status labels, timestamps.
+// Dim text: secondary info and status labels.
 static const Color SOLERS_TEXT_DIM = Color(0.667, 0.690, 0.733);
+static const Color SOLERS_TEXT_META = Color(0.735, 0.755, 0.790);
 // Placeholder text: subtle cue in the input field.
 static const Color SOLERS_TEXT_PLACEHOLDER = Color(0.345, 0.357, 0.388);
 
@@ -115,43 +116,12 @@ static Ref<StyleBoxFlat> solers_make_stylebox_margins(const Color &p_bg, int p_r
 	return style;
 }
 
-// Flat session-rail row — not the model-popup helper (toggle/heavy wash/right check).
-// Must keep set_flat(false): Button skips StyleBox draw when flat, so hover/selected
-// washes and New Agent borders would never paint (button.cpp NOTIFICATION_DRAW).
-static void solers_style_session_row(Button *p_row, bool p_selected) {
-	p_row->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
-	p_row->set_toggle_mode(false);
-	p_row->set_flat(false);
-	p_row->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	p_row->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
-	p_row->set_clip_text(true);
-	p_row->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
-	p_row->set_custom_minimum_size(Size2(0, 30 * EDSCALE));
-	p_row->add_theme_font_size_override("font_size", int(13 * EDSCALE));
-	// Quieter than PRIMARY: elevation carries selection, not near-white type.
-	p_row->add_theme_color_override(SceneStringName(font_color), p_selected ? SOLERS_TEXT_BODY : SOLERS_TEXT_DIM);
-	p_row->add_theme_color_override("font_hover_color", SOLERS_TEXT_BODY);
-	p_row->add_theme_color_override("font_pressed_color", SOLERS_TEXT_BODY);
-	p_row->add_theme_constant_override("h_separation", int(8 * EDSCALE));
-	const Color idle = p_selected ? Color(1, 1, 1, 0.10) : Color(0, 0, 0, 0);
-	const Color hover = p_selected ? Color(1, 1, 1, 0.12) : Color(1, 1, 1, 0.06);
-	p_row->add_theme_style_override("normal", solers_make_stylebox_margins(idle, 4, 8, 4, 8, 4));
-	p_row->add_theme_style_override("hover", solers_make_stylebox_margins(hover, 4, 8, 4, 8, 4));
-	p_row->add_theme_style_override("pressed", solers_make_stylebox_margins(Color(1, 1, 1, 0.08), 4, 8, 4, 8, 4));
-	p_row->add_theme_style_override("focus", solers_make_stylebox_margins(Color(0, 0, 0, 0), 4, 8, 4, 8, 4));
-	if (p_selected) {
-		p_row->set_button_icon(SolersChatGlyphs::get(SNAME("check"), int(Math::round(12.0f * EDSCALE)), 2.0f));
-		p_row->set_icon_alignment(HORIZONTAL_ALIGNMENT_LEFT);
-	} else {
-		p_row->set_button_icon(Ref<Texture2D>());
-	}
-}
-
 static Label *solers_make_session_group(const String &p_title) {
 	Label *label = memnew(Label);
 	label->set_text(p_title);
 	label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	label->set_custom_minimum_size(Size2(0, 22 * EDSCALE));
+	label->set_custom_minimum_size(Size2(0, 30 * EDSCALE));
+	label->set_vertical_alignment(VERTICAL_ALIGNMENT_BOTTOM);
 	label->add_theme_font_size_override(SceneStringName(font_size), int(11 * EDSCALE));
 	label->add_theme_color_override(SceneStringName(font_color), SOLERS_TEXT_DIM);
 	return label;
@@ -182,42 +152,6 @@ static String solers_session_display_title(const String &p_raw) {
 		return body.contains("/") ? body.get_file() : body;
 	}
 	return raw;
-}
-
-static void solers_style_session_line_edit(LineEdit *p_edit) {
-	Ref<StyleBoxFlat> normal = solers_make_stylebox(Color(1, 1, 1, 0.04), Color(1, 1, 1, 0.08), 6, 0);
-	normal->set_content_margin_individual(10 * EDSCALE, 7 * EDSCALE, 10 * EDSCALE, 7 * EDSCALE);
-	Ref<StyleBoxFlat> focus = solers_make_stylebox(Color(1, 1, 1, 0.05), Color(solers_accent().r, solers_accent().g, solers_accent().b, 0.35f), 6, 0);
-	focus->set_content_margin_individual(10 * EDSCALE, 7 * EDSCALE, 10 * EDSCALE, 7 * EDSCALE);
-	p_edit->add_theme_style_override("normal", normal);
-	p_edit->add_theme_style_override("focus", focus);
-	p_edit->add_theme_style_override("read_only", normal);
-	p_edit->add_theme_color_override(SceneStringName(font_color), SOLERS_TEXT_BODY);
-	p_edit->add_theme_color_override("font_placeholder_color", SOLERS_TEXT_PLACEHOLDER);
-	p_edit->add_theme_font_size_override(SceneStringName(font_size), int(12 * EDSCALE));
-	p_edit->set_custom_minimum_size(Size2(0, 30 * EDSCALE));
-}
-
-static void solers_style_session_new_agent(Button *p_btn) {
-	p_btn->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
-	p_btn->set_toggle_mode(false);
-	// flat=false required — otherwise StyleBox (and its hairline border) never draws.
-	p_btn->set_flat(false);
-	p_btn->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	p_btn->set_text_alignment(HORIZONTAL_ALIGNMENT_CENTER);
-	p_btn->set_custom_minimum_size(Size2(0, 30 * EDSCALE));
-	p_btn->add_theme_font_size_override("font_size", int(12 * EDSCALE));
-	p_btn->add_theme_color_override(SceneStringName(font_color), SOLERS_TEXT_BODY);
-	p_btn->add_theme_color_override("font_hover_color", SOLERS_TEXT_PRIMARY);
-	p_btn->add_theme_color_override("font_pressed_color", SOLERS_TEXT_PRIMARY);
-	Ref<StyleBoxFlat> normal = solers_make_stylebox(Color(0, 0, 0, 0), Color(1, 1, 1, 0.18), 6, 0);
-	normal->set_content_margin_individual(8 * EDSCALE, 6 * EDSCALE, 8 * EDSCALE, 6 * EDSCALE);
-	Ref<StyleBoxFlat> hover = solers_make_stylebox(Color(1, 1, 1, 0.04), Color(1, 1, 1, 0.28), 6, 0);
-	hover->set_content_margin_individual(8 * EDSCALE, 6 * EDSCALE, 8 * EDSCALE, 6 * EDSCALE);
-	p_btn->add_theme_style_override("normal", normal);
-	p_btn->add_theme_style_override("hover", hover);
-	p_btn->add_theme_style_override("pressed", hover);
-	p_btn->add_theme_style_override("focus", normal);
 }
 
 static void solers_style_model_popup_row(Button *p_row, bool p_selected = false) {
@@ -254,6 +188,19 @@ static void solers_style_model_popup_row(Button *p_row, bool p_selected = false)
 	p_row->add_theme_style_override("pressed", s_pressed);
 	p_row->add_theme_style_override("hover_pressed", s_hover_pressed);
 	p_row->add_theme_style_override("focus", s_focus);
+}
+
+static void solers_style_session_button(Button *p_button, bool p_session_row) {
+	solers_style_model_popup_row(p_button);
+	p_button->set_focus_mode(Control::FOCUS_ALL);
+	p_button->set_toggle_mode(p_session_row);
+	p_button->set_custom_minimum_size(Size2(0, (p_session_row ? 60 : 38) * EDSCALE));
+	p_button->add_theme_constant_override("h_separation", int(9 * EDSCALE));
+	static Ref<StyleBoxFlat> hover = solers_make_stylebox_margins(Color(1, 1, 1, 0.045), 7, 10, 5, 10, 5);
+	static Ref<StyleBoxFlat> selected = solers_make_stylebox_margins(Color(1, 1, 1, 0.085), 7, 10, 5, 10, 5);
+	p_button->add_theme_style_override("hover", hover);
+	p_button->add_theme_style_override("pressed", selected);
+	p_button->add_theme_style_override("hover_pressed", selected);
 }
 
 static Button *solers_make_model_popup_group(const String &p_title, const Ref<Texture2D> &p_icon = Ref<Texture2D>()) {
@@ -549,14 +496,8 @@ static StringName solers_tool_glyph_for_name(const SolersToolRegistry *p_registr
 	if (!p_registry) {
 		return SNAME("sparkle");
 	}
-	const Array tools = p_registry->list_tools();
-	for (int i = 0; i < tools.size(); i++) {
-		const Dictionary tool = tools[i];
-		if (String(tool.get("name", String())) == p_name) {
-			return solers_tool_glyph_for_metadata(tool);
-		}
-	}
-	return SNAME("sparkle");
+	const Dictionary tool = p_registry->get_tool_definition(StringName(p_name));
+	return tool.is_empty() ? SNAME("sparkle") : solers_tool_glyph_for_metadata(tool);
 }
 
 PanelContainer *SolersDock::_create_panel_card(const Color &p_color, const Color &p_border_color, int p_radius, int p_padding) const {
@@ -723,25 +664,27 @@ void SolersDock::_on_cell_content_changed() {
 	}
 }
 
-void SolersDock::_append_user_message(const String &p_message, const Array &p_attachments) {
-	chat_log += vformat("%sYou\n%s\n", chat_log.is_empty() ? "" : "\n", p_message);
+Control *SolersDock::_append_user_message(const String &p_message, const Array &p_attachments) {
 	VBoxContainer *mount = _chat_mount();
 	if (!mount) {
-		return;
+		return nullptr;
 	}
 	_clear_empty_state();
 
 	SolersUserBubble *bubble = memnew(SolersUserBubble);
+	bubble->set_meta("timeline_row", true);
 	bubble->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
 	mount->add_child(bubble);
 	bubble->set_attachments(p_attachments);
 	bubble->set_message(p_message);
 
-	callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
+	if (!timeline_rendering) {
+		callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
+	}
+	return bubble;
 }
 
 void SolersDock::_append_error_row(const String &p_text) {
-	chat_log += vformat("%s\n", p_text);
 	VBoxContainer *mount = _chat_mount();
 	if (!mount) {
 		return;
@@ -793,14 +736,30 @@ void SolersDock::_settle_tool_group() {
 	if (active_tool_group) {
 		active_tool_group->settle();
 		active_tool_group = nullptr;
+		active_assistant_row = nullptr;
 	}
+}
+
+VBoxContainer *SolersDock::_ensure_assistant_row() {
+	VBoxContainer *mount = _chat_mount();
+	if (!active_assistant_row && mount) {
+		active_assistant_row = memnew(VBoxContainer);
+		active_assistant_row->set_meta("timeline_row", true);
+		if (pending_assistant_event_id > 0) {
+			active_assistant_row->set_meta("timeline_event_id", pending_assistant_event_id);
+			pending_assistant_event_id = -1;
+		}
+		active_assistant_row->add_theme_constant_override("separation", 8 * EDSCALE);
+		mount->add_child(active_assistant_row);
+	}
+	return active_assistant_row;
 }
 
 SolersAssistantCell *SolersDock::_ensure_text_cell() {
 	if (active_text_cell) {
 		return active_text_cell;
 	}
-	VBoxContainer *mount = _chat_mount();
+	VBoxContainer *mount = _ensure_assistant_row();
 	if (!mount) {
 		return nullptr;
 	}
@@ -808,9 +767,6 @@ SolersAssistantCell *SolersDock::_ensure_text_cell() {
 	active_text_cell = memnew(SolersAssistantCell);
 	active_text_cell->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
 	mount->add_child(active_text_cell);
-	if (status_cell) {
-		mount->move_child(status_cell, mount->get_child_count() - 1);
-	}
 	return active_text_cell;
 }
 
@@ -822,20 +778,28 @@ void SolersDock::_finish_turn_cells() {
 	}
 	active_thinking_cell = nullptr;
 	active_text_cell = nullptr;
+	active_assistant_row = nullptr;
+	pending_assistant_event_id = -1;
 	tool_cells_by_id.clear();
 	last_started_tool_cell = nullptr;
 	_remove_status_cell();
 }
 
 void SolersDock::_clear_chat_view(bool p_show_empty) {
-	chat_log = String();
 	scroll_to_bottom_deferred = false;
 	active_thinking_cell = nullptr;
 	active_text_cell = nullptr;
+	active_assistant_row = nullptr;
+	pending_assistant_event_id = -1;
 	status_cell = nullptr;
 	active_tool_group = nullptr;
 	tool_cells_by_id.clear();
 	last_started_tool_cell = nullptr;
+	timeline_messages.clear();
+	timeline_start = 0;
+	timeline_rendering = false;
+	timeline_rows_sorted = false;
+	timeline_anchor_event_id = -1;
 	if (plan_capsule) {
 		plan_capsule->clear_plan();
 	}
@@ -938,7 +902,7 @@ void SolersDock::_request_session_list_refresh() {
 	callable_mp(this, &SolersDock::_refresh_session_list).call_deferred();
 }
 
-void SolersDock::_on_new_agent_pressed() {
+void SolersDock::_on_new_chat_pressed() {
 	if (new_session_callback.is_valid()) {
 		new_session_callback.call();
 	} else {
@@ -947,16 +911,14 @@ void SolersDock::_on_new_agent_pressed() {
 	_refresh_session_list();
 }
 
-void SolersDock::_highlight_session_selection() {
-	if (!session_list) {
+void SolersDock::_sync_session_selection() {
+	if (session_button_group.is_null()) {
 		return;
 	}
-	for (int i = 0; i < session_list->get_child_count(); i++) {
-		Button *row = Object::cast_to<Button>(session_list->get_child(i));
-		if (!row || String(row->get_meta("session_kind", String())) != "row") {
-			continue;
-		}
-		solers_style_session_row(row, String(row->get_meta("session_id", String())) == session_current_id);
+	List<BaseButton *> rows;
+	session_button_group->get_buttons(&rows);
+	for (BaseButton *row : rows) {
+		row->set_pressed_no_signal(String(row->get_meta("session_id", String())) == session_current_id);
 	}
 }
 
@@ -968,39 +930,10 @@ void SolersDock::_on_session_row_pressed(const String &p_session_id) {
 	if (session_select_callback.is_valid()) {
 		session_select_callback.call(p_session_id);
 	}
-	// Selection is a highlight change, not a list-data change. Rescanning
-	// transcript.jsonl here was freezing the editor for seconds on every click.
-	_highlight_session_selection();
 }
 
-void SolersDock::_on_session_filter_changed(const String &p_text) {
-	session_filter_text = p_text.strip_edges().to_lower();
-	_apply_session_filter();
-}
-
-void SolersDock::_apply_session_filter() {
-	if (!session_list) {
-		return;
-	}
-	for (int i = 0; i < session_list->get_child_count(); i++) {
-		Control *child = Object::cast_to<Control>(session_list->get_child(i));
-		if (!child) {
-			continue;
-		}
-		if (String(child->get_meta("session_kind", String())) == "group") {
-			child->set_visible(session_filter_text.is_empty());
-			continue;
-		}
-		if (String(child->get_meta("session_kind", String())) != "row") {
-			continue;
-		}
-		const String hay = String(child->get_meta("session_search", String())).to_lower();
-		child->set_visible(session_filter_text.is_empty() || hay.contains(session_filter_text));
-	}
-}
-
-static int64_t _solers_day_start(int64_t p_unix) {
-	const Dictionary dt = Time::get_singleton()->get_datetime_dict_from_unix_time(p_unix);
+static int64_t _solers_day_start(int64_t p_unix, int64_t p_time_zone_offset) {
+	const Dictionary dt = Time::get_singleton()->get_datetime_dict_from_unix_time(p_unix + p_time_zone_offset);
 	Dictionary day;
 	day["year"] = dt.get("year", 1970);
 	day["month"] = dt.get("month", 1);
@@ -1008,14 +941,14 @@ static int64_t _solers_day_start(int64_t p_unix) {
 	day["hour"] = 0;
 	day["minute"] = 0;
 	day["second"] = 0;
-	return (int64_t)Time::get_singleton()->get_unix_time_from_datetime_dict(day);
+	return (int64_t)Time::get_singleton()->get_unix_time_from_datetime_dict(day) - p_time_zone_offset;
 }
 
-static String _solers_session_group_label(int64_t p_wall, int64_t p_now) {
+static String _solers_session_group_label(int64_t p_wall, int64_t p_now, int64_t p_time_zone_offset) {
 	if (p_wall <= 0) {
 		return TTR("Older");
 	}
-	const int64_t today = _solers_day_start(p_now);
+	const int64_t today = _solers_day_start(p_now, p_time_zone_offset);
 	const int64_t yesterday = today - 86400;
 	if (p_wall >= today) {
 		return TTR("Today");
@@ -1032,6 +965,14 @@ static String _solers_session_group_label(int64_t p_wall, int64_t p_now) {
 	return TTR("Older");
 }
 
+static String _solers_session_time_label(int64_t p_wall, int64_t p_time_zone_offset) {
+	if (p_wall <= 0) {
+		return TTR("No completed turns");
+	}
+	const Dictionary dt = Time::get_singleton()->get_datetime_dict_from_unix_time(p_wall + p_time_zone_offset);
+	return vformat("%d.%d.%02d %02d:%02d", dt.get("year", 0), dt.get("month", 0), dt.get("day", 0), dt.get("hour", 0), dt.get("minute", 0));
+}
+
 void SolersDock::_refresh_session_list() {
 	if (!session_list) {
 		return;
@@ -1041,6 +982,7 @@ void SolersDock::_refresh_session_list() {
 		session_list->remove_child(child);
 		child->queue_free();
 	}
+	session_button_group.instantiate();
 
 	Vector<SolersSessionInfo> sessions = solers_list_sessions(session_project_path);
 	struct WallSort {
@@ -1051,35 +993,74 @@ void SolersDock::_refresh_session_list() {
 	sessions.sort_custom<WallSort>();
 
 	const int64_t now = (int64_t)Time::get_singleton()->get_unix_time_from_system();
+	const int64_t time_zone_offset = (int64_t)Time::get_singleton()->get_time_zone_from_system().get("bias", 0) * 60;
+	static Ref<StyleBoxEmpty> session_title_style = memnew(StyleBoxEmpty);
 	String last_group;
 	for (const SolersSessionInfo &session : sessions) {
-		const String group = _solers_session_group_label(session.wall, now);
+		const String group = _solers_session_group_label(session.wall, now, time_zone_offset);
 		if (group != last_group) {
 			last_group = group;
 			Label *header = solers_make_session_group(group);
-			header->set_meta("session_kind", "group");
 			session_list->add_child(header);
 		}
 		const String title = solers_session_display_title(session.title);
+		const String time = _solers_session_time_label(session.wall, time_zone_offset);
 		Button *row = memnew(Button);
-		solers_style_session_row(row, session.session_id == session_current_id);
-		row->set_text(title);
+		solers_style_session_button(row, true);
+		row->set_button_group(session_button_group);
+		row->set_pressed_no_signal(session.session_id == session_current_id);
 		row->set_tooltip_text(session.title);
-		row->set_meta("session_kind", "row");
+		row->set_accessibility_name(title + ", " + time);
 		row->set_meta("session_id", session.session_id);
-		row->set_meta("session_search", title + " " + session.title + " " + session.session_id);
 		row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_on_session_row_pressed).bind(session.session_id));
 		session_list->add_child(row);
+
+		MarginContainer *inset = memnew(MarginContainer);
+		inset->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
+		inset->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
+		inset->add_theme_constant_override("margin_left", 10 * EDSCALE);
+		inset->add_theme_constant_override("margin_right", 10 * EDSCALE);
+		inset->add_theme_constant_override("margin_top", 7 * EDSCALE);
+		inset->add_theme_constant_override("margin_bottom", 7 * EDSCALE);
+		row->add_child(inset);
+		VBoxContainer *content = memnew(VBoxContainer);
+		content->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
+		content->add_theme_constant_override("separation", 3 * EDSCALE);
+		inset->add_child(content);
+		Label *title_label = memnew(Label(title));
+		title_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		title_label->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+		title_label->add_theme_style_override("normal", session_title_style);
+		title_label->add_theme_font_size_override(SceneStringName(font_size), int(13 * EDSCALE));
+		title_label->add_theme_color_override(SceneStringName(font_color), SOLERS_TEXT_BODY);
+		content->add_child(title_label);
+		HBoxContainer *time_row = memnew(HBoxContainer);
+		time_row->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
+		time_row->add_theme_constant_override("separation", 5 * EDSCALE);
+		content->add_child(time_row);
+		TextureRect *calendar = memnew(TextureRect);
+		calendar->set_name("SessionCalendar");
+		calendar->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
+		calendar->set_texture(SolersChatGlyphs::get(SNAME("calendar"), int(Math::round(12.0f * EDSCALE)), 2.0f));
+		calendar->set_stretch_mode(TextureRect::STRETCH_KEEP_CENTERED);
+		calendar->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
+		calendar->set_self_modulate(SOLERS_TEXT_META);
+		time_row->add_child(calendar);
+		Label *time_label = memnew(Label(time));
+		time_label->set_name("SessionTime");
+		time_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		time_label->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+		time_label->add_theme_font_size_override(SceneStringName(font_size), int(11 * EDSCALE));
+		time_label->add_theme_color_override(SceneStringName(font_color), SOLERS_TEXT_META);
+		time_row->add_child(time_label);
 	}
 	if (sessions.is_empty()) {
 		Label *empty = memnew(Label);
 		empty->set_text(TTR("No sessions yet."));
 		empty->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
 		empty->add_theme_color_override(SceneStringName(font_color), SOLERS_TEXT_DIM);
-		empty->set_meta("session_kind", "empty");
 		session_list->add_child(empty);
 	}
-	_apply_session_filter();
 }
 
 void SolersDock::set_session_select_callback(const Callable &p_callback) {
@@ -1102,7 +1083,7 @@ void SolersDock::set_session_context(const String &p_project_path, const String 
 	if (project_changed || (session_list && session_list->get_child_count() == 0)) {
 		_request_session_list_refresh();
 	} else {
-		_highlight_session_selection();
+		_sync_session_selection();
 	}
 }
 
@@ -1523,177 +1504,186 @@ void SolersDock::start_new_chat() {
 	notify_sessions_changed();
 }
 
+static constexpr int SOLERS_TIMELINE_WINDOW = 24;
+
 void SolersDock::load_chat_history(const Array &p_messages) {
-	// Mount history across frames so a long transcript cannot freeze the
-	// editor inside the session-row click. A newer load cancels the older one.
-	_clear_history_staging();
-	history_load_token++;
-	pending_history_messages = p_messages;
-	pending_history_index = 0;
-	history_loading = true;
-	if (!history_staging) {
-		history_staging = memnew(VBoxContainer);
-		history_staging->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		history_staging->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-		history_staging->add_theme_constant_override("separation", 14 * EDSCALE);
-	}
-	history_mount = history_staging;
-	callable_mp(this, &SolersDock::_pump_history_load).call_deferred();
+	_clear_chat_view(false);
+	timeline_messages = p_messages.duplicate(true);
+	_render_timeline(MAX(0, timeline_messages.size() - SOLERS_TIMELINE_WINDOW));
+	callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
 }
 
 VBoxContainer *SolersDock::_chat_mount() const {
 	return history_mount ? history_mount : message_list;
 }
 
-void SolersDock::_clear_history_staging() {
-	history_mount = nullptr;
-	if (!history_staging) {
+static Control *_solers_timeline_row(VBoxContainer *p_list, int64_t p_id) {
+	for (int i = 0; p_list && i < p_list->get_child_count(); i++) {
+		Control *row = Object::cast_to<Control>(p_list->get_child(i));
+		if (row && (int64_t)row->get_meta("timeline_event_id", -1) == p_id) {
+			return row;
+		}
+	}
+	return nullptr;
+}
+
+void SolersDock::_render_timeline(int p_start) {
+	if (!message_list || timeline_rendering) {
 		return;
 	}
-	while (history_staging->get_child_count() > 0) {
-		Node *child = history_staging->get_child(0);
-		history_staging->remove_child(child);
-		child->queue_free();
+	timeline_rendering = true;
+	timeline_rows_sorted = false;
+	_clear_empty_state();
+	const int next_start = CLAMP(p_start, 0, MAX(0, timeline_messages.size() - SOLERS_TIMELINE_WINDOW));
+	const int next_end = MIN(timeline_messages.size(), next_start + SOLERS_TIMELINE_WINDOW);
+	if (timeline_messages.is_empty()) {
+		_show_empty_state();
+		timeline_rendering = false;
+		return;
+	}
+	HashSet<int64_t> desired;
+	HashMap<int64_t, Control *> mounted;
+	for (int index = next_start; index < next_end; index++) {
+		desired.insert(Dictionary(timeline_messages[index]).get("event_id", -1));
+	}
+	for (int i = 0; i < message_list->get_child_count(); i++) {
+		Control *row = Object::cast_to<Control>(message_list->get_child(i));
+		const int64_t id = row ? (int64_t)row->get_meta("timeline_event_id", -1) : -1;
+		if (id >= 0) {
+			mounted[id] = row;
+		}
+	}
+	Control *anchor = nullptr;
+	for (int index = next_start; index < next_end && !anchor; index++) {
+		Control **row = mounted.getptr(Dictionary(timeline_messages[index]).get("event_id", -1));
+		anchor = row ? *row : nullptr;
+	}
+	if (anchor) {
+		timeline_anchor_event_id = anchor->get_meta("timeline_event_id", -1);
+		timeline_anchor_screen_y = anchor->get_global_position().y;
+	}
+	bool layout_pending = false;
+	for (int i = message_list->get_child_count() - 1; i >= 0; i--) {
+		Control *row = Object::cast_to<Control>(message_list->get_child(i));
+		const int64_t id = row ? (int64_t)row->get_meta("timeline_event_id", -1) : -1;
+		const bool live = row && agent_session && agent_session->is_running() && (id < 0 || (bool)row->get_meta("timeline_pending", false));
+		const bool keep = desired.has(id) || live;
+		if (!keep && row && (bool)row->get_meta("timeline_row", false)) {
+			mounted.erase(id);
+			message_list->remove_child(row);
+			row->queue_free();
+			layout_pending = true;
+		}
+	}
+	for (int index = next_start; index < next_end; index++) {
+		const int64_t id = Dictionary(timeline_messages[index]).get("event_id", -1);
+		Control **found = mounted.getptr(id);
+		Control *row = found ? *found : nullptr;
+		if (!row && timeline_messages[index].get_type() == Variant::DICTIONARY) {
+			row = _create_history_entry(timeline_messages[index]);
+			if (row) {
+				row->set_meta("timeline_row", true);
+				row->set_meta("timeline_event_id", id);
+				layout_pending = true;
+			}
+		}
+		if (row && row->get_index() != index - next_start) {
+			layout_pending = true;
+			message_list->move_child(row, index - next_start);
+		}
+	}
+	timeline_start = next_start;
+	if (!anchor || !layout_pending) {
+		timeline_rendering = false;
 	}
 }
 
-void SolersDock::_swap_history_staging() {
-	if (!history_staging || !message_list) {
-		history_mount = nullptr;
+void SolersDock::_queue_timeline_layout_commit() {
+	if (!timeline_rendering || timeline_anchor_event_id < 0 || !chat_scroll) {
 		return;
 	}
-	while (message_list->get_child_count() > 0) {
-		Node *child = message_list->get_child(0);
-		message_list->remove_child(child);
-		child->queue_free();
+	timeline_rows_sorted = true;
+	chat_scroll->call(SNAME("queue_sort"));
+}
+
+void SolersDock::_commit_timeline_layout() {
+	if (!timeline_rendering || !timeline_rows_sorted || timeline_anchor_event_id < 0) {
+		return;
 	}
-	_clear_empty_state();
-	while (history_staging->get_child_count() > 0) {
-		Node *child = history_staging->get_child(0);
-		history_staging->remove_child(child);
-		message_list->add_child(child);
+	Control *anchor = _solers_timeline_row(message_list, timeline_anchor_event_id);
+	if (anchor) {
+		chat_scroll->set_v_scroll(chat_scroll->get_v_scroll() + Math::round(anchor->get_global_position().y - timeline_anchor_screen_y));
 	}
+	timeline_anchor_event_id = -1;
+	timeline_rendering = false;
+	timeline_rows_sorted = false;
+}
+
+Control *SolersDock::_create_history_entry(const Dictionary &p_message) {
+	VBoxContainer *entry = memnew(VBoxContainer);
+	message_list->add_child(entry);
+	history_mount = entry;
+	_append_history_message(p_message);
+	_finish_turn_cells();
 	history_mount = nullptr;
+	if (entry->get_child_count() == 0) {
+		memdelete(entry);
+		return nullptr;
+	}
+	entry->set_meta("timeline_event_id", p_message.get("event_id", -1));
+	return entry;
 }
 
 void SolersDock::_append_history_message(const Dictionary &p_message) {
 	const String role = p_message.get("role", String());
 	const String content = p_message.get("content", String());
-	if (String(p_message.get("origin", String())) == "compaction_summary") {
-		return;
-	}
 	if (role == SolersLLMRole::USER) {
-		if (content.is_empty()) {
+		if (content.is_empty() && Array(p_message.get("attachments", Array())).is_empty()) {
 			return;
 		}
 		_settle_tool_group();
-		_append_user_message(SolersMention::strip_prompt_block(content));
+		_append_user_message(SolersMention::strip_prompt_block(content), p_message.get("attachments", Array()));
 	} else if (role == SolersLLMRole::ASSISTANT) {
 		_settle_tool_group();
 		const String reasoning = String(p_message.get("reasoning", String())).strip_edges();
 		if (!reasoning.is_empty()) {
-			VBoxContainer *mount = _chat_mount();
-			if (mount) {
-				_clear_empty_state();
-				SolersThinkingCell *thinking = memnew(SolersThinkingCell);
-				thinking->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
-				mount->add_child(thinking);
-				thinking->set_settled_reasoning(reasoning);
-			}
+			SolersThinkingCell *thinking = memnew(SolersThinkingCell);
+			thinking->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
+			_ensure_assistant_row()->add_child(thinking);
+			thinking->set_settled_reasoning(reasoning);
 		}
 		if (!content.is_empty()) {
 			_on_agent_assistant_message(content);
 		}
-		const Array tool_calls = p_message.get("tool_calls", Array());
-		for (int t = 0; t < tool_calls.size(); t++) {
-			const Dictionary call = tool_calls[t];
-			_on_agent_tool_started(call.get("id", String()), call.get("name", String()), call.get("arguments", String()));
-		}
-	} else if (role == SolersLLMRole::TOOL) {
-		const String call_id = p_message.get("tool_call_id", String());
-		const String tool_name = p_message.get("name", String());
-		if (call_id.is_empty() || !tool_cells_by_id.has(call_id)) {
-			_on_agent_tool_started(call_id, tool_name, "{}");
-		}
-		Dictionary result;
-		result["ok"] = true;
-		const String raw = content.strip_edges();
-		if (!raw.is_empty()) {
-			Ref<JSON> json;
-			json.instantiate();
-			if (json->parse(raw) == OK && json->get_data().get_type() == Variant::DICTIONARY) {
-				result = json->get_data();
+		const Array calls = p_message.get("tool_calls", Array());
+		for (const Variant &item : calls) {
+			const Dictionary call = item;
+			const String id = call.get("id", String());
+			const String name = call.get("name", String());
+			_on_agent_tool_started(id, name, call.get("arguments", String("{}")));
+			if ((bool)call.get("finished", false)) {
+				Dictionary result;
+				result["ok"] = call.get("ok", false);
+				Dictionary error;
+				error["message"] = call.get("error_message", String());
+				result["error"] = error;
+				_on_agent_tool_finished(id, name, result, call.get("duration_msec", 0));
 			}
 		}
-		if (p_message.has("ok")) {
-			result["ok"] = p_message.get("ok", true);
-		}
-		_on_agent_tool_finished(call_id, tool_name, result, (int)p_message.get("duration_msec", 0));
 	}
 }
 
-void SolersDock::_pump_history_load() {
-	if (!history_loading) {
+void SolersDock::_on_timeline_scrolled() {
+	if (timeline_rendering || !chat_scroll) {
 		return;
 	}
-	const uint64_t token = history_load_token;
-	if (pending_history_index == 0 && history_mount) {
-		// Reset turn state without clearing the live tree yet (avoids white flash).
-		chat_log = String();
-		scroll_to_bottom_deferred = false;
-		active_thinking_cell = nullptr;
-		active_text_cell = nullptr;
-		status_cell = nullptr;
-		active_tool_group = nullptr;
-		tool_cells_by_id.clear();
-		last_started_tool_cell = nullptr;
-		if (plan_capsule) {
-			plan_capsule->clear_plan();
-		}
-		if (pending_history_messages.is_empty()) {
-			_clear_chat_view(true);
-			history_mount = nullptr;
-			history_loading = false;
-			pending_history_index = 0;
-			return;
-		}
+	VScrollBar *bar = chat_scroll->get_v_scroll_bar();
+	const double p_value = bar->get_value();
+	if (timeline_start > 0 && Math::is_equal_approx(p_value, bar->get_min())) {
+		_render_timeline(MAX(0, timeline_start - SOLERS_TIMELINE_WINDOW / 2));
+	} else if (timeline_start + SOLERS_TIMELINE_WINDOW < timeline_messages.size() && Math::is_equal_approx(p_value, bar->get_max() - bar->get_page())) {
+		_render_timeline(MIN(timeline_messages.size() - SOLERS_TIMELINE_WINDOW, timeline_start + SOLERS_TIMELINE_WINDOW / 2));
 	}
-	constexpr int HISTORY_BATCH = 8;
-	int mounted = 0;
-	while (pending_history_index < pending_history_messages.size() && mounted < HISTORY_BATCH) {
-		if (token != history_load_token) {
-			_clear_history_staging();
-			return;
-		}
-		const Variant item = pending_history_messages[pending_history_index++];
-		if (item.get_type() == Variant::DICTIONARY) {
-			_append_history_message(item);
-			mounted++;
-		}
-	}
-	if (token != history_load_token) {
-		_clear_history_staging();
-		return;
-	}
-	if (history_mount && (mounted > 0 || pending_history_index >= pending_history_messages.size())) {
-		_swap_history_staging();
-	}
-	if (pending_history_index < pending_history_messages.size()) {
-		callable_mp(this, &SolersDock::_pump_history_load).call_deferred();
-		return;
-	}
-	history_loading = false;
-	pending_history_messages = Array();
-	pending_history_index = 0;
-	if (agent_session) {
-		const Dictionary plan = agent_session->get_plan();
-		if (!plan.is_empty()) {
-			_on_agent_plan_updated(plan.get("explanation", String()), plan.get("plan", Array()));
-		}
-	}
-	_finish_turn_cells();
-	_refresh_status();
-	callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
 }
 
 void SolersDock::_submit_chat_prompt(const String &p_prompt, const Array &p_attachments) {
@@ -1702,7 +1692,7 @@ void SolersDock::_submit_chat_prompt(const String &p_prompt, const Array &p_atta
 		return;
 	}
 
-	_append_user_message(prompt, p_attachments);
+	Control *user_row = _append_user_message(prompt, p_attachments);
 
 	if (!agent_session) {
 		_append_error_row(TTR("Agent session is unavailable."));
@@ -1726,6 +1716,13 @@ void SolersDock::_submit_chat_prompt(const String &p_prompt, const Array &p_atta
 		_remove_status_cell();
 		const Dictionary error = result.get("error", Dictionary());
 		_append_error_row(String::utf8("\u26a0 ") + String(error.get("message", "Could not start the agent turn.")));
+	} else {
+		if (user_row) {
+			user_row->set_meta("timeline_event_id", Dictionary(result.get("data", Dictionary())).get("event_id", -1));
+		}
+		timeline_messages = agent_session->get_timeline_entries();
+		session_current_id = agent_session->get_status().get("session_id", session_current_id);
+		notify_sessions_changed();
 	}
 	_refresh_status();
 }
@@ -1742,7 +1739,11 @@ void SolersDock::_submit_steering(const String &p_prompt, const Array &p_attachm
 	}
 	const Dictionary result = agent_session ? agent_session->queue_user_message(args) : Dictionary();
 	if ((bool)result.get("ok", false)) {
-		_append_user_message(p_prompt, p_attachments);
+		Control *row = _append_user_message(p_prompt, p_attachments);
+		if (row) {
+			row->set_meta("timeline_event_id", Dictionary(result.get("data", Dictionary())).get("event_id", -1));
+			row->set_meta("timeline_pending", true);
+		}
 		callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
 		return;
 	}
@@ -2359,15 +2360,22 @@ bool SolersDock::_add_image_attachment_from_path(const String &p_path) {
 		return false;
 	}
 	file->store_buffer(bytes);
-	file->flush();
 	file->close();
+	const String sha256 = FileAccess::get_sha256(stored_path);
+	const String content_path = solers_attachment_dir().path_join(sha256 + "." + ext);
+	if (FileAccess::exists(content_path)) {
+		DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(stored_path));
+	} else if (DirAccess::rename_absolute(ProjectSettings::get_singleton()->globalize_path(stored_path), ProjectSettings::get_singleton()->globalize_path(content_path)) != OK) {
+		return false;
+	}
 
 	Dictionary attachment;
-	attachment["id"] = id;
+	attachment["id"] = sha256;
 	attachment["type"] = "image";
 	attachment["mime_type"] = ext == "png" ? "image/png" : "image/jpeg";
 	attachment["filename"] = p_path.get_file();
-	attachment["local_path"] = stored_path;
+	attachment["local_path"] = content_path;
+	attachment["content_sha256"] = sha256;
 	pending_attachments.push_back(attachment);
 	_refresh_attachment_bar();
 	_update_send_enabled();
@@ -2395,15 +2403,22 @@ bool SolersDock::_add_image_attachment_from_clipboard() {
 		return false;
 	}
 	file->store_buffer(bytes);
-	file->flush();
 	file->close();
+	const String sha256 = FileAccess::get_sha256(stored_path);
+	const String content_path = solers_attachment_dir().path_join(sha256 + ".png");
+	if (FileAccess::exists(content_path)) {
+		DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(stored_path));
+	} else if (DirAccess::rename_absolute(ProjectSettings::get_singleton()->globalize_path(stored_path), ProjectSettings::get_singleton()->globalize_path(content_path)) != OK) {
+		return false;
+	}
 
 	Dictionary attachment;
-	attachment["id"] = id;
+	attachment["id"] = sha256;
 	attachment["type"] = "image";
 	attachment["mime_type"] = "image/png";
-	attachment["filename"] = id + ".png";
-	attachment["local_path"] = stored_path;
+	attachment["filename"] = sha256 + ".png";
+	attachment["local_path"] = content_path;
+	attachment["content_sha256"] = sha256;
 	pending_attachments.push_back(attachment);
 	_refresh_attachment_bar();
 	_update_send_enabled();
@@ -2698,7 +2713,7 @@ SolersDock::SolersDock() {
 	root_box->add_child(body_split);
 
 	session_sidebar = memnew(PanelContainer);
-	session_sidebar->set_custom_minimum_size(Size2(240, 0) * EDSCALE);
+	session_sidebar->set_custom_minimum_size(Size2(272, 0) * EDSCALE);
 	session_sidebar->set_h_size_flags(Control::SIZE_FILL);
 	session_sidebar->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	session_sidebar->add_theme_style_override(SceneStringName(panel), solers_make_stylebox(SOLERS_BG, Color(0, 0, 0, 0), 0, 0));
@@ -2706,7 +2721,6 @@ SolersDock::SolersDock() {
 	body_split->add_child(session_sidebar);
 
 	VBoxContainer *sidebar_root = memnew(VBoxContainer);
-	sidebar_root->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	sidebar_root->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	sidebar_root->add_theme_constant_override("separation", 0);
 	session_sidebar->add_child(sidebar_root);
@@ -2723,32 +2737,30 @@ SolersDock::SolersDock() {
 	VBoxContainer *sidebar_box = memnew(VBoxContainer);
 	sidebar_box->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	sidebar_box->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	sidebar_box->add_theme_constant_override("separation", 10 * EDSCALE);
+	sidebar_box->add_theme_constant_override("separation", 8 * EDSCALE);
 	sidebar_pad->add_child(sidebar_box);
 
-	session_filter = memnew(LineEdit);
-	session_filter->set_placeholder(TTR("Search Agents..."));
-	session_filter->set_clear_button_enabled(true);
-	session_filter->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	solers_style_session_line_edit(session_filter);
-	session_filter->connect(SceneStringName(text_changed), callable_mp(this, &SolersDock::_on_session_filter_changed));
-	sidebar_box->add_child(session_filter);
-
-	Button *new_agent = memnew(Button);
-	new_agent->set_text(TTR("New Agent"));
-	solers_style_session_new_agent(new_agent);
-	new_agent->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_on_new_agent_pressed));
-	sidebar_box->add_child(new_agent);
+	Button *new_chat = memnew(Button);
+	new_chat->set_name("NewChat");
+	new_chat->set_text(TTR("New chat"));
+	new_chat->set_button_icon(SolersChatGlyphs::get(SNAME("new_chat"), int(Math::round(16.0f * EDSCALE)), 2.0f));
+	new_chat->set_icon_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+	solers_style_session_button(new_chat, false);
+	new_chat->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_on_new_chat_pressed));
+	sidebar_box->add_child(new_chat);
 
 	session_scroll = memnew(ScrollContainer);
 	session_scroll->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	session_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	session_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
+	session_scroll->set_follow_focus(true);
+	session_scroll->get_v_scroll_bar()->set_self_modulate(Color(1, 1, 1, 0.45));
 	sidebar_box->add_child(session_scroll);
 
 	session_list = memnew(VBoxContainer);
+	session_list->set_name("SessionList");
 	session_list->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	session_list->add_theme_constant_override("separation", 1 * EDSCALE);
+	session_list->add_theme_constant_override("separation", 4 * EDSCALE);
 	session_scroll->add_child(session_list);
 
 	chat_column = memnew(VBoxContainer);
@@ -2803,6 +2815,8 @@ SolersDock::SolersDock() {
 	chat_scroll->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	chat_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	chat_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
+	chat_scroll->get_v_scroll_bar()->connect(SNAME("scrolling"), callable_mp(this, &SolersDock::_on_timeline_scrolled));
+	chat_scroll->connect(SceneStringName(sort_children), callable_mp(this, &SolersDock::_commit_timeline_layout), CONNECT_DEFERRED);
 	chat_scroll->hide();
 	chat_column->add_child(chat_scroll);
 
@@ -2810,6 +2824,7 @@ SolersDock::SolersDock() {
 	message_list->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	message_list->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	message_list->add_theme_constant_override("separation", 14 * EDSCALE);
+	message_list->connect(SceneStringName(sort_children), callable_mp(this, &SolersDock::_queue_timeline_layout_commit));
 
 	MarginContainer *timeline_inset = memnew(MarginContainer);
 	timeline_inset->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -3114,11 +3129,6 @@ SolersDock::SolersDock() {
 }
 
 SolersDock::~SolersDock() {
-	_clear_history_staging();
-	if (history_staging) {
-		memdelete(history_staging);
-		history_staging = nullptr;
-	}
 	// The dock is the sole consumer of the glyph cache; release the textures
 	// with it so nothing lives past renderer teardown.
 	SolersChatGlyphs::clear_cache();
@@ -3130,6 +3140,7 @@ void SolersDock::set_agent_session(SolersAgentSession *p_agent_session) {
 		return;
 	}
 	agent_session->connect(SNAME("model_request_started"), callable_mp(this, &SolersDock::_on_agent_model_request_started));
+	agent_session->connect(SNAME("timeline_entry_committed"), callable_mp(this, &SolersDock::_on_agent_timeline_entry_committed));
 	agent_session->connect(SNAME("assistant_delta"), callable_mp(this, &SolersDock::_on_agent_assistant_delta));
 	agent_session->connect(SNAME("reasoning_delta"), callable_mp(this, &SolersDock::_on_agent_reasoning_delta));
 	agent_session->connect(SNAME("assistant_message"), callable_mp(this, &SolersDock::_on_agent_assistant_message));
@@ -3146,18 +3157,41 @@ void SolersDock::set_agent_session(SolersAgentSession *p_agent_session) {
 
 void SolersDock::_on_agent_model_request_started() {
 	// Covers both the first request and every follow-up after a tool batch.
+	_settle_tool_group();
 	_ensure_status_cell(TTR("Thinking"));
 	_update_send_enabled();
 }
 
+void SolersDock::_on_agent_timeline_entry_committed(int64_t p_event_id, const String &p_role) {
+	timeline_messages = agent_session->get_timeline_entries();
+	if (p_role == SolersLLMRole::ASSISTANT) {
+		if (active_assistant_row) {
+			active_assistant_row->set_meta("timeline_event_id", p_event_id);
+		} else {
+			pending_assistant_event_id = p_event_id;
+		}
+		return;
+	}
+	if (!message_list) {
+		return;
+	}
+	for (int i = 0; i < message_list->get_child_count(); i++) {
+		Control *row = Object::cast_to<Control>(message_list->get_child(i));
+		if (row && (int64_t)row->get_meta("timeline_event_id", -1) == p_event_id) {
+			row->remove_meta("timeline_pending");
+			return;
+		}
+	}
+}
+
 void SolersDock::_on_agent_reasoning_delta(const String &p_text) {
-	VBoxContainer *mount = _chat_mount();
-	if (p_text.is_empty() || !mount) {
+	if (p_text.is_empty() || !message_list) {
 		return;
 	}
 	_clear_empty_state();
 	_remove_status_cell();
 	_settle_tool_group();
+	VBoxContainer *mount = _ensure_assistant_row();
 	if (!active_thinking_cell || !active_thinking_cell->is_active()) {
 		active_thinking_cell = memnew(SolersThinkingCell);
 		active_thinking_cell->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
@@ -3180,7 +3214,6 @@ void SolersDock::_on_agent_assistant_delta(const String &p_text) {
 
 void SolersDock::_on_agent_assistant_message(const String &p_text) {
 	const String text = p_text.strip_edges();
-	chat_log += vformat("Solers\n%s\n", text);
 	_settle_tool_group();
 	if (active_text_cell) {
 		// Authoritative final text for this model step; unchanged streams only
@@ -3189,8 +3222,9 @@ void SolersDock::_on_agent_assistant_message(const String &p_text) {
 		active_text_cell = nullptr;
 		return;
 	}
-	VBoxContainer *mount = _chat_mount();
+	VBoxContainer *mount = _ensure_assistant_row();
 	if (text.is_empty() || !mount) {
+		active_assistant_row = nullptr;
 		return;
 	}
 	// Provider without streaming: materialize the step in one piece.
@@ -3205,10 +3239,6 @@ void SolersDock::_on_agent_assistant_message(const String &p_text) {
 }
 
 void SolersDock::_on_agent_tool_started(const String &p_id, const String &p_name, const String &p_arguments) {
-	VBoxContainer *mount = _chat_mount();
-	if (!mount) {
-		return;
-	}
 	if (!p_id.is_empty()) {
 		SolersToolCell **found = tool_cells_by_id.getptr(p_id);
 		if (found && *found) {
@@ -3221,7 +3251,10 @@ void SolersDock::_on_agent_tool_started(const String &p_id, const String &p_name
 	_settle_thinking_cell();
 	_remove_status_cell();
 	_clear_empty_state();
-
+	VBoxContainer *mount = _ensure_assistant_row();
+	if (!mount) {
+		return;
+	}
 	if (!active_tool_group) {
 		active_tool_group = memnew(SolersToolGroupCell);
 		active_tool_group->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
@@ -3277,7 +3310,6 @@ void SolersDock::_on_agent_tool_finished(const String &p_id, const String &p_nam
 		const Dictionary error = p_result.get("error", Dictionary());
 		error_message = error.get("message", String());
 	}
-	chat_log += vformat("%s %s%s\n", ok ? "[ok]" : "[error]", p_name, error_message.is_empty() ? String() : " - " + error_message);
 
 	if (cell) {
 		cell->finish(ok, error_message, p_duration_msec);
@@ -3285,6 +3317,9 @@ void SolersDock::_on_agent_tool_finished(const String &p_id, const String &p_nam
 	_remove_status_cell();
 	if (active_tool_group) {
 		active_tool_group->note_finished(ok);
+	}
+	if (agent_session) {
+		timeline_messages = agent_session->get_timeline_entries();
 	}
 	if (cell == last_started_tool_cell) {
 		last_started_tool_cell = nullptr;
@@ -3294,12 +3329,15 @@ void SolersDock::_on_agent_tool_finished(const String &p_id, const String &p_nam
 }
 
 void SolersDock::_on_agent_turn_completed(const Dictionary &p_result) {
+	const bool follow_tail = _is_scroll_pinned();
 	_finish_turn_cells();
 	if (String(p_result.get("outcome", String())) == "aborted") {
 		const String message = String(p_result.get("text", String())).strip_edges();
 		_append_error_row(message.is_empty() ? TTR("Turn aborted.") : message);
 	}
 	if (agent_session) {
+		timeline_messages = agent_session->get_timeline_entries();
+		_render_timeline(follow_tail ? MAX(0, timeline_messages.size() - SOLERS_TIMELINE_WINDOW) : timeline_start);
 		const Dictionary plan = agent_session->get_plan();
 		_on_agent_plan_updated(plan.get("explanation", String()), plan.get("plan", Array()));
 	}
@@ -3310,6 +3348,10 @@ void SolersDock::_on_agent_turn_completed(const Dictionary &p_result) {
 
 void SolersDock::_on_agent_turn_failed(const Dictionary &p_error) {
 	_finish_turn_cells();
+	if (agent_session) {
+		timeline_messages = agent_session->get_timeline_entries();
+		_render_timeline(timeline_start);
+	}
 	_append_error_row(String::utf8("\u26a0 ") + String(p_error.get("message", "Agent turn failed.")));
 	_refresh_status();
 	_update_send_enabled();
