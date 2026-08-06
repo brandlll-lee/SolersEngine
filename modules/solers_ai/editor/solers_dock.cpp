@@ -31,7 +31,7 @@
 #include "solers_dock.h"
 
 #include "solers_pm_ai_view.h"
-#include "solers_pm_theme.h"
+#include "solers_ui_theme.h"
 
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
@@ -246,7 +246,7 @@ static Button *solers_make_model_popup_row(const String &p_label, const String &
 	row->set_text(p_label.is_empty() ? p_model_id : p_label);
 	row->set_tooltip_text(p_label == p_model_id || p_model_id.is_empty() ? String() : p_model_id);
 	if (p_selected) {
-		row->set_button_icon(SolersChatGlyphs::get(SNAME("check"), int(Math::round(12.0f * EDSCALE)), 2.0f));
+		row->set_button_icon(SolersIcons::get(SNAME("check"), int(Math::round(12.0f * EDSCALE))));
 		row->set_icon_alignment(HORIZONTAL_ALIGNMENT_RIGHT);
 	}
 	return row;
@@ -292,7 +292,7 @@ static Button *solers_make_model_menu_parent_row(const Ref<Texture2D> &p_icon, c
 	box->add_child(value);
 
 	TextureRect *chevron = memnew(TextureRect);
-	chevron->set_texture(SolersChatGlyphs::get(SNAME("chevron_right"), int(Math::round(10.0f * EDSCALE)), 2.2f));
+	chevron->set_texture(SolersIcons::get(SNAME("chevron_right"), int(Math::round(10.0f * EDSCALE))));
 	chevron->set_stretch_mode(TextureRect::STRETCH_KEEP_CENTERED);
 	chevron->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
 	chevron->set_self_modulate(Color(0.50, 0.51, 0.55));
@@ -597,7 +597,7 @@ void SolersDock::_refresh_model_chip() {
 
 	const Dictionary chip_profile = provider_data.get("profile", Dictionary());
 	const String catalog_id = chip_profile.get("catalog_provider", provider);
-	model_chip->set_leading_texture(SolersChatGlyphs::provider_logo(catalog_id, int(Math::round(12.0f * EDSCALE))));
+	model_chip->set_leading_texture(SolersIcons::provider_logo(catalog_id, int(Math::round(12.0f * EDSCALE))));
 
 	if (!available) {
 		model_chip->set_texts(solers_compact_label(solers_resolve_model_display(settings_service, provider_data, model)), TTR("Local only"));
@@ -1051,7 +1051,7 @@ void SolersDock::_refresh_session_list() {
 		TextureRect *calendar = memnew(TextureRect);
 		calendar->set_name("SessionCalendar");
 		calendar->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
-		calendar->set_texture(SolersChatGlyphs::get(SNAME("calendar"), int(Math::round(12.0f * EDSCALE)), 2.0f));
+		calendar->set_texture(SolersIcons::get(SNAME("calendar"), int(Math::round(12.0f * EDSCALE))));
 		calendar->set_stretch_mode(TextureRect::STRETCH_KEEP_CENTERED);
 		calendar->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
 		calendar->set_self_modulate(SOLERS_TEXT_META);
@@ -1141,7 +1141,7 @@ void SolersDock::_on_model_chip_pressed() {
 	const String active_catalog_id = active_profile.get("catalog_provider", active_provider);
 
 	model_menu_model_row = solers_make_model_menu_parent_row(
-			active_provider.is_empty() ? Ref<Texture2D>() : SolersChatGlyphs::provider_logo(active_catalog_id, int(Math::round(14.0f * EDSCALE))),
+			active_provider.is_empty() ? Ref<Texture2D>() : SolersIcons::provider_logo(active_catalog_id, int(Math::round(14.0f * EDSCALE))),
 			TTR("Model"),
 			active_model.is_empty() ? TTR("None") : solers_compact_label(solers_resolve_model_display(settings_service, provider_data, active_model)));
 	model_menu_model_row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_open_model_submenu).bind(SOLERS_SUBMENU_MODEL));
@@ -1342,7 +1342,7 @@ void SolersDock::_rebuild_model_submenu_list(const String &p_filter) {
 				if (g.get("kind", String()) == "group" && String(g.get("provider", String())) == provider) {
 					model_submenu_list->add_child(solers_make_model_popup_group(
 							g.get("label", provider),
-							SolersChatGlyphs::provider_logo(g.get("catalog_id", provider), int(Math::round(13.0f * EDSCALE)))));
+							SolersIcons::provider_logo(g.get("catalog_id", provider), int(Math::round(13.0f * EDSCALE)))));
 					emitted_groups.insert(provider);
 					break;
 				}
@@ -1833,43 +1833,34 @@ void SolersDock::_on_chat_input_text_changed() {
 static Ref<Texture2D> solers_mention_section_icon(const String &p_section_id) {
 	const int size = int(Math::round(13.0f * EDSCALE));
 	if (p_section_id == "solers") {
-		return SolersChatGlyphs::get(SNAME("tool_export"), size, 2.0f);
+		return SolersIcons::get(SNAME("tool_export"), size);
 	}
 	if (p_section_id == "addons") {
-		if (EditorNode *editor = EditorNode::get_singleton()) {
-			return editor->get_editor_theme()->get_icon(SNAME("PluginScript"), EditorStringName(EditorIcons));
-		}
+		return SolersIcons::get(SNAME("plugin"), size);
 	}
 	if (p_section_id == "files") {
-		return SolersChatGlyphs::get(SNAME("tool_file"), size, 2.0f);
+		return SolersIcons::get(SNAME("file"), size);
 	}
 	if (p_section_id == "folders") {
-		if (EditorNode *editor = EditorNode::get_singleton()) {
-			return editor->get_editor_theme()->get_icon(SNAME("Folder"), EditorStringName(EditorIcons));
-		}
+		return SolersIcons::get(SNAME("folder"), size);
 	}
 	if (p_section_id == "scenes") {
-		return SolersChatGlyphs::get(SNAME("tool_scene"), size, 2.0f);
+		return SolersIcons::get(SNAME("tool_scene"), size);
 	}
 	if (p_section_id == "selection") {
-		return SolersChatGlyphs::get(SNAME("tool_observe"), size, 2.0f);
+		return SolersIcons::get(SNAME("tool_observe"), size);
 	}
-	return SolersChatGlyphs::get(SNAME("plus"), size, 2.0f);
+	return SolersIcons::get(SNAME("plus"), size);
 }
 
-// Same authority chain as FileSystem dock / Quick Open: preview cache, then
-// EditorFileSystem type + class icon. No extension-name tables.
-static Ref<Texture2D> solers_mention_path_icon(const String &p_path) {
-	EditorNode *editor = EditorNode::get_singleton();
-	if (!editor) {
-		return Ref<Texture2D>();
-	}
+// Real project previews remain authoritative content; Tabler owns UI fallbacks.
+static Ref<Texture2D> solers_mention_path_icon(const String &p_path, int p_px) {
 	String path = ResourceUID::ensure_path(p_path.strip_edges());
 	if (path.is_empty()) {
 		return Ref<Texture2D>();
 	}
 	if (path.ends_with("/")) {
-		return editor->get_editor_theme()->get_icon(SNAME("Folder"), EditorStringName(EditorIcons));
+		return SolersIcons::get(SNAME("folder"), p_px);
 	}
 
 	if (EditorResourcePreview *previewer = EditorResourcePreview::get_singleton()) {
@@ -1882,25 +1873,17 @@ static Ref<Texture2D> solers_mention_path_icon(const String &p_path) {
 		}
 	}
 
-	String type;
 	String icon_path;
 	bool import_ok = true;
 	if (EditorFileSystem *efs = EditorFileSystem::get_singleton()) {
 		int idx = -1;
 		if (EditorFileSystemDirectory *dir = efs->find_file(path, &idx)) {
-			type = dir->get_file_type(idx);
 			icon_path = dir->get_file_icon_path(idx);
 			import_ok = dir->get_file_import_is_valid(idx);
 		}
-		if (type.is_empty()) {
-			type = efs->get_file_type(path);
-		}
-	}
-	if (type.is_empty()) {
-		type = ResourceLoader::get_resource_type(path);
 	}
 	if (!import_ok) {
-		return editor->get_editor_theme()->get_icon(SNAME("ImportFail"), EditorStringName(EditorIcons));
+		return SolersIcons::get(SNAME("file_alert"), p_px);
 	}
 	if (!icon_path.is_empty()) {
 		const Ref<Texture2D> custom = ResourceLoader::load(icon_path);
@@ -1908,36 +1891,23 @@ static Ref<Texture2D> solers_mention_path_icon(const String &p_path) {
 			return custom;
 		}
 	}
-	if (!type.is_empty()) {
-		const Ref<Texture2D> icon = editor->get_class_icon(type, "File");
-		if (icon.is_valid()) {
-			return icon;
-		}
-	}
-	return editor->get_class_icon("File");
+	return SolersIcons::get(SNAME("file"), p_px);
 }
 
 static Ref<Texture2D> solers_mention_row_icon(const Dictionary &p_mention, int p_px) {
 	const String source = String(p_mention.get("source", "plugin")).strip_edges().to_lower();
 	if (source == "plugin") {
 		const String id = String(p_mention.get("id", String())).strip_edges().to_lower();
-		const Ref<Texture2D> color = SolersChatGlyphs::provider_logo_color(id, p_px);
-		return color.is_valid() ? color : SolersChatGlyphs::provider_logo(id, p_px);
+		const Ref<Texture2D> color = SolersIcons::provider_logo_color(id, p_px);
+		return color.is_valid() ? color : SolersIcons::provider_logo(id, p_px);
 	}
 	if (source == "addon") {
-		if (EditorNode *editor = EditorNode::get_singleton()) {
-			return editor->get_editor_theme()->get_icon(SNAME("PluginScript"), EditorStringName(EditorIcons));
-		}
-		return Ref<Texture2D>();
+		return SolersIcons::get(SNAME("plugin"), p_px);
 	}
 	if (source == "node") {
-		if (EditorNode *editor = EditorNode::get_singleton()) {
-			const String type = String(p_mention.get("type", "Node")).strip_edges();
-			return editor->get_class_icon(type.is_empty() ? String("Node") : type, "Node");
-		}
-		return Ref<Texture2D>();
+		return SolersIcons::get(SNAME("node"), p_px);
 	}
-	return solers_mention_path_icon(String(p_mention.get("path", p_mention.get("id", String()))));
+	return solers_mention_path_icon(String(p_mention.get("path", p_mention.get("id", String()))), p_px);
 }
 
 static void solers_set_mention_row_selected(Button *p_row, bool p_selected) {
@@ -2049,7 +2019,7 @@ Array SolersDock::_mention_inline_parse(const String &p_line_text) {
 	if (!chat_input) {
 		return objects;
 	}
-	const Ref<Font> font = chat_input->get_theme_font(SceneStringName(font), SNAME("TextEdit"));
+	const Ref<Font> font = chat_input->get_theme_default_font();
 	const int font_size = chat_input->get_theme_font_size(SceneStringName(font_size), SNAME("TextEdit"));
 	// width_ratio is relative to the TextEdit line font height (object box height).
 	const float line_font_h = font.is_valid() ? font->get_height(font_size) : float(MAX(1, font_size));
@@ -2087,7 +2057,7 @@ void SolersDock::_mention_inline_draw(const Dictionary &p_info, const Rect2 &p_r
 	const RID ci = chat_input->get_text_canvas_item();
 	const int icon_px = int(Math::round(13.0f * EDSCALE));
 	const Rect2 pill = p_rect.grow_individual(-1.0f * EDSCALE, -2.0f * EDSCALE, -1.0f * EDSCALE, -2.0f * EDSCALE);
-	const Ref<Font> font = chat_input->get_theme_font(SceneStringName(font), SNAME("TextEdit"));
+	const Ref<Font> font = chat_input->get_theme_default_font();
 	const int font_size = chat_input->get_theme_font_size(SceneStringName(font_size), SNAME("TextEdit"));
 	// Prefer richer path preview when available; fall back to shared chip icon.
 	Ref<Texture2D> icon = solers_mention_row_icon(mention, icon_px);
@@ -2690,6 +2660,7 @@ void SolersDock::make_visible() {
 }
 
 SolersDock::SolersDock() {
+	set_theme(SolersUITheme::create());
 	set_h_size_flags(Control::SIZE_FILL);
 	set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	// Cursor-flat shell: fill only — no inset card border. Pane edges come from
@@ -2707,7 +2678,7 @@ SolersDock::SolersDock() {
 	body_split = memnew(HSplitContainer);
 	body_split->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	body_split->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	// Hairline comes from SolersPMTheme::apply_chrome_edges on the ambient theme.
+	// Hairline comes from the native editor split theme.
 	body_split->set_dragger_visibility(SplitContainer::DRAGGER_HIDDEN);
 	root_box->add_child(body_split);
 
@@ -2742,7 +2713,7 @@ SolersDock::SolersDock() {
 	Button *new_chat = memnew(Button);
 	new_chat->set_name("NewChat");
 	new_chat->set_text(TTR("New chat"));
-	new_chat->set_button_icon(SolersChatGlyphs::get(SNAME("new_chat"), int(Math::round(16.0f * EDSCALE)), 2.0f));
+	new_chat->set_button_icon(SolersIcons::get(SNAME("new_chat"), int(Math::round(16.0f * EDSCALE))));
 	new_chat->set_icon_alignment(HORIZONTAL_ALIGNMENT_LEFT);
 	solers_style_session_button(new_chat, false);
 	new_chat->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_on_new_chat_pressed));
@@ -3049,7 +3020,7 @@ SolersDock::SolersDock() {
 	provider_settings_dialog = memnew(AcceptDialog);
 	provider_settings_dialog->set_title(TTR("Settings"));
 	provider_settings_dialog->set_min_size(Size2(980, 640) * EDSCALE);
-	SolersPMTheme::configure_settings_host(provider_settings_dialog);
+	SolersUITheme::configure_settings_host(provider_settings_dialog, get_theme());
 	add_child(provider_settings_dialog);
 
 	provider_settings_view = memnew(SolersPMAIView);
@@ -3120,7 +3091,7 @@ SolersDock::SolersDock() {
 SolersDock::~SolersDock() {
 	// The dock is the sole consumer of the glyph cache; release the textures
 	// with it so nothing lives past renderer teardown.
-	SolersChatGlyphs::clear_cache();
+	SolersIcons::clear_cache();
 }
 
 void SolersDock::set_agent_session(SolersAgentSession *p_agent_session) {

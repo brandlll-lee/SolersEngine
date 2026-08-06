@@ -31,7 +31,7 @@
 #include "solers_pm_ai_view.h"
 
 #include "solers_pm_cards.h"
-#include "solers_pm_theme.h"
+#include "solers_ui_theme.h"
 
 #include "core/object/callable_mp.h"
 #include "core/os/os.h"
@@ -62,13 +62,6 @@
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
 #include "modules/solers_ai/plugins/solers_plugin.h"
 #endif
-
-// Lucide glyph bodies (24x24 viewBox; ISC license, see solers_ai/UI_ICON_LICENSE.txt).
-static const char *SOLERS_AI_LUCIDE_CLOUD = "<path d=\"M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z\"/>";
-static const char *SOLERS_AI_LUCIDE_EYE = "<path d=\"M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0\"/><circle cx=\"12\" cy=\"12\" r=\"3\"/>";
-// Lucide "puzzle" — Plugins nav (distinct from LLM cloud).
-static const char *SOLERS_AI_LUCIDE_PUZZLE = "<path d=\"M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 2.833 3.674 1 1 0 0 0-.474 1.68l1.683 1.682a2.485 2.485 0 0 1 0 3.524l-1.683 1.682a1 1 0 0 0 .474 1.68 2.5 2.5 0 1 1-2.833 3.674 1 1 0 0 0-1.68-.474l-1.682 1.683a2.485 2.485 0 0 1-3.524 0l-1.682-1.683a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.674-2.833 1 1 0 0 0-.474-1.68l-1.683-1.682a2.485 2.485 0 0 1 0-3.524l1.683-1.682a1 1 0 0 0-.474-1.68 2.5 2.5 0 1 1 2.833-3.674 1 1 0 0 0 1.68.474l1.682-1.683a2.485 2.485 0 0 1 3.524 0z\"/>";
-static const char *SOLERS_AI_LUCIDE_SLIDERS = "<line x1=\"21\" x2=\"14\" y1=\"4\" y2=\"4\"/><line x1=\"10\" x2=\"3\" y1=\"4\" y2=\"4\"/><line x1=\"21\" x2=\"12\" y1=\"12\" y2=\"12\"/><line x1=\"8\" x2=\"3\" y1=\"12\" y2=\"12\"/><line x1=\"21\" x2=\"16\" y1=\"20\" y2=\"20\"/><line x1=\"12\" x2=\"3\" y1=\"20\" y2=\"20\"/><line x1=\"14\" x2=\"14\" y1=\"2\" y2=\"6\"/><line x1=\"8\" x2=\"8\" y1=\"10\" y2=\"14\"/><line x1=\"16\" x2=\"16\" y1=\"18\" y2=\"22\"/>";
 
 // Soft UE-toned status hues (muted, not toy-bright).
 static const Color SOLERS_AI_COL_BLOCKER = Color(0.83f, 0.32f, 0.34f);
@@ -203,19 +196,19 @@ Dictionary SolersPMAIView::_provider_status(const String &p_id, bool p_live_form
 void SolersPMAIView::_build_nav() {
 #ifdef MODULE_SOLERS_AI_ENABLED
 	SolersCategoryCard *plugins = memnew(SolersCategoryCard);
-	plugins->configure(TTR("Plugins"), SolersPMTheme::lucide_icon(SOLERS_AI_LUCIDE_PUZZLE, 16));
+	plugins->configure(TTR("Plugins"), SolersIcons::get(SNAME("plugin"), int(Math::round(16.0f * EDSCALE))));
 	plugins->set_meta("category_id", "plugins");
 	plugins->set_pressed_callback(callable_mp(this, &SolersPMAIView::_select_category).bind(String("plugins")));
 	nav_list->add_child(plugins);
 
 	SolersCategoryCard *llm = memnew(SolersCategoryCard);
-	llm->configure(TTR("LLM Provider"), SolersPMTheme::lucide_icon(SOLERS_AI_LUCIDE_CLOUD, 16));
+	llm->configure(TTR("LLM Provider"), SolersIcons::get(SNAME("cloud"), int(Math::round(16.0f * EDSCALE))));
 	llm->set_meta("category_id", "llm");
 	llm->set_pressed_callback(callable_mp(this, &SolersPMAIView::_select_category).bind(String("llm")));
 	nav_list->add_child(llm);
 
 	SolersCategoryCard *quick = memnew(SolersCategoryCard);
-	quick->configure(TTR("Quick Settings"), SolersPMTheme::lucide_icon(SOLERS_AI_LUCIDE_SLIDERS, 16));
+	quick->configure(TTR("Quick Settings"), SolersIcons::get(SNAME("adjustments"), int(Math::round(16.0f * EDSCALE))));
 	quick->set_meta("category_id", "quick");
 	quick->set_pressed_callback(callable_mp(this, &SolersPMAIView::_select_category).bind(String("quick")));
 	nav_list->add_child(quick);
@@ -292,7 +285,7 @@ void SolersPMAIView::_add_llm_row(const String &p_id, const String &p_title, con
 	if (p_connect_action && subtitle.is_empty()) {
 		subtitle = TTR("Connect");
 	}
-	_add_provider_row(p_id, p_title, SolersChatGlyphs::provider_logo(catalog_id, int(Math::round(16.0f * EDSCALE))), false, subtitle);
+	_add_provider_row(p_id, p_title, SolersIcons::provider_logo(catalog_id, int(Math::round(16.0f * EDSCALE))), false, subtitle);
 #else
 	(void)p_id;
 	(void)p_title;
@@ -324,9 +317,9 @@ void SolersPMAIView::_build_provider_list() {
 				continue;
 			}
 			const int logo_px = int(Math::round(16.0f * EDSCALE));
-			const Ref<Texture2D> color_logo = SolersChatGlyphs::provider_logo_color(id, logo_px);
+			const Ref<Texture2D> color_logo = SolersIcons::provider_logo_color(id, logo_px);
 			_add_provider_row(id, String(profile.get("label", id)),
-					color_logo.is_valid() ? color_logo : SolersChatGlyphs::provider_logo(id, logo_px),
+					color_logo.is_valid() ? color_logo : SolersIcons::provider_logo(id, logo_px),
 					color_logo.is_valid(),
 					_solers_plugin_kinds_subtitle(profile));
 		}
@@ -375,7 +368,7 @@ void SolersPMAIView::_build_provider_list() {
 	}
 
 	SolersCategoryCard *view_all = memnew(SolersCategoryCard);
-	view_all->configure(TTR("View all providers"), SolersChatGlyphs::provider_logo("synthetic", int(Math::round(16.0f * EDSCALE))), TTR("Browse catalog"));
+	view_all->configure(TTR("View all providers"), SolersIcons::provider_logo("synthetic", int(Math::round(16.0f * EDSCALE))), TTR("Browse catalog"));
 	view_all->set_meta("provider_id", String("__view_all__"));
 	view_all->set_pressed_callback(callable_mp(this, &SolersPMAIView::_open_view_all));
 	provider_list->add_child(view_all);
@@ -493,7 +486,7 @@ void SolersPMAIView::_rebuild_view_all_list(const String &p_filter) {
 		}
 		SolersCategoryCard *card = memnew(SolersCategoryCard);
 		const String catalog_id = profile.get("catalog_provider", id);
-		card->configure(TTRGET(label), SolersChatGlyphs::provider_logo(catalog_id, int(Math::round(16.0f * EDSCALE))), TTR("Connect"));
+		card->configure(TTRGET(label), SolersIcons::provider_logo(catalog_id, int(Math::round(16.0f * EDSCALE))), TTR("Connect"));
 		card->set_pressed_callback(callable_mp(this, &SolersPMAIView::_select_provider).bind(id, true));
 		view_all_list->add_child(card);
 	}
@@ -961,7 +954,7 @@ void SolersPMAIView::_request_restart() {
 void SolersPMAIView::_notification(int p_what) {
 	if (p_what == NOTIFICATION_THEME_CHANGED) {
 		if (api_key_reveal) {
-			api_key_reveal->set_button_icon(SolersPMTheme::lucide_icon(SOLERS_AI_LUCIDE_EYE, 15));
+			api_key_reveal->set_button_icon(SolersIcons::get(SNAME("tool_observe"), int(Math::round(15.0f * EDSCALE))));
 		}
 		if (restart_required_label) {
 			restart_required_label->add_theme_color_override(SceneStringName(font_color), get_theme_color(SNAME("warning_color"), EditorStringName(Editor)));
@@ -1039,7 +1032,7 @@ SolersPMAIView::SolersPMAIView() {
 	settings_service->set_provider_registry(registry);
 	owns_services = true;
 
-	const SolersPMTheme::Tokens tokens = SolersPMTheme::make_tokens(get_theme());
+	const SolersUITheme::Tokens tokens = SolersUITheme::make_tokens();
 
 	// Left rail — layout only (dialog host paints the single flat fill).
 	VBoxContainer *rail = memnew(VBoxContainer);
@@ -1073,7 +1066,7 @@ SolersPMAIView::SolersPMAIView() {
 
 	_build_nav();
 
-	// Pane edge: StyleBoxLine comes from SolersPMTheme::apply_chrome_edges — do not override.
+	// Pane edge is inherited from the native split theme.
 	VSeparator *sep = memnew(VSeparator);
 	sep->set_v_size_flags(SIZE_EXPAND_FILL);
 	add_child(sep);

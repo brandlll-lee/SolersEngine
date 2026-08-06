@@ -17,9 +17,8 @@
 /* bounded internal process for the highlight blend, then processing      */
 /* stops. Steady state costs zero CPU and zero redraws.                   */
 /*                                                                        */
-/* Icon glyphs are Lucide geometry (MIT, see UI_ICON_LICENSE.txt),        */
-/* rasterized once per (name, size) as white strokes and tinted at draw   */
-/* time via modulate — hover color blends never re-rasterize.             */
+/* Functional icons are pinned Tabler SVG assets (see UI_ICON_LICENSE),   */
+/* rasterized once per (name, size) and tinted at draw time.               */
 /**************************************************************************/
 
 #pragma once
@@ -35,12 +34,12 @@
 #include "scene/resources/font.h"
 #include "scene/resources/texture.h"
 
-// One-shot Lucide glyph rasterizer with a process-lifetime texture cache.
-class SolersChatGlyphs {
+// Module-owned SVG catalog with one process-lifetime texture cache.
+class SolersIcons {
 public:
-	// Returns a white-stroke glyph texture at p_size_px physical pixels.
+	// Returns a white glyph texture at p_size_px physical pixels.
 	// Tint it with CanvasItem draw modulate; never bake colors into the cache.
-	static Ref<Texture2D> get(const StringName &p_name, int p_size_px, float p_stroke_width = 1.7f);
+	static Ref<Texture2D> get(const StringName &p_name, int p_size_px);
 	// White provider mark for a models.dev catalog id (profile field
 	// `catalog_provider`), from the build-time vendored logo table. Unknown
 	// ids fall back to the generic "synthetic" mark, mirroring opencode.
@@ -245,6 +244,6 @@ void solers_style_bare_search_line_edit(LineEdit *p_edit);
 String solers_mention_chip_label(const Dictionary &p_mention);
 float solers_mention_chip_width(const String &p_label, const Ref<Font> &p_font, int p_font_size, bool p_has_icon);
 void solers_draw_mention_chip(RID p_ci, const Rect2 &p_pill, const String &p_label, const Ref<Font> &p_font, int p_font_size, const Ref<Texture2D> &p_icon);
-// Compact chip icon (plugin logos + class/file fallbacks). Composer popup may
+// Compact chip icon (provider logos + Solers UI fallbacks). Composer popup may
 // still use richer path previews locally.
 Ref<Texture2D> solers_mention_chip_icon(const Dictionary &p_mention, int p_px);

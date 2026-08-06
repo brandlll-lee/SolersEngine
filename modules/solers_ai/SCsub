@@ -4,7 +4,7 @@ from misc.utility.scons_hints import *
 Import("env")
 Import("env_modules")
 
-import solers_provider_logos_builder
+import solers_svg_assets_builder
 import solers_skills_builder
 import terrain3d_bundle_builder
 
@@ -20,12 +20,12 @@ env_solers_ai.CommandNoCache(
     env_solers_ai.Run(solers_skills_builder.make_builtin_skills_header),
 )
 
-logo_sources = Glob("#modules/solers_ai/assets/provider_logos/*.svg")
-generated_logos_header = "#modules/solers_ai/generated/solers_provider_logos.gen.h"
+svg_sources = Glob("#modules/solers_ai/assets/provider_logos/*.svg") + Glob("#modules/solers_ai/assets/ui_icons/*.svg")
+generated_svg_header = "#modules/solers_ai/generated/solers_svg_assets.gen.h"
 env_solers_ai.CommandNoCache(
-    generated_logos_header,
-    logo_sources,
-    env_solers_ai.Run(solers_provider_logos_builder.make_provider_logos_header),
+    generated_svg_header,
+    svg_sources,
+    env_solers_ai.Run(solers_svg_assets_builder.make_svg_assets_header),
 )
 
 env_solers_ai.add_source_files(module_obj, "*.cpp")
@@ -34,7 +34,7 @@ env_solers_ai.add_source_files(module_obj, "llm/*.cpp")
 env_solers_ai.add_source_files(module_obj, "plugins/*.cpp")
 env_solers_ai.add_source_files(module_obj, "protocol/*.cpp")
 env_solers_ai.Depends(module_obj, generated_skills_header)
-env_solers_ai.Depends(module_obj, generated_logos_header)
+env_solers_ai.Depends(module_obj, generated_svg_header)
 
 if env.editor_build:
     terrain3d_bundle = env_solers_ai.CommandNoCache(

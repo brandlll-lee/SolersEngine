@@ -727,6 +727,7 @@ SolersCodeBlock::SolersCodeBlock() {
 	body->set_context_menu_enabled(true);
 	body->set_autowrap_mode(TextServer::AUTOWRAP_OFF);
 	body->set_mouse_filter(MOUSE_FILTER_PASS);
+	body->set_theme_type_variation("SolersCodeText");
 	body->add_theme_style_override("normal", memnew(StyleBoxEmpty));
 	body->add_theme_style_override("focus", memnew(StyleBoxEmpty));
 	body->add_theme_color_override("default_color", SOLERS_SYN_DEFAULT);
@@ -766,10 +767,6 @@ void SolersCodeBlock::_render_body() {
 	rendered_caret = caret;
 
 	const float ed = EDSCALE;
-	Ref<Font> mono = get_theme_font(SNAME("source"), SNAME("EditorFonts"));
-	if (mono.is_valid()) {
-		body->add_theme_font_override("normal_font", mono);
-	}
 	body->add_theme_font_size_override("normal_font_size", int(12 * ed));
 
 	body->clear();
@@ -866,7 +863,7 @@ void SolersCodeBlock::_notification(int p_what) {
 			const float header_h = SOLERS_CODE_HEADER_H * ed;
 			draw_rect(Rect2(bw, header_h, get_size().x - bw * 2.0f, MAX(1.0f, ed)), edge);
 
-			const Ref<Font> mono = get_theme_font(SNAME("source"), SNAME("EditorFonts"));
+			const Ref<Font> mono = get_theme_font(SceneStringName(font), SNAME("SolersMono"));
 			if (mono.is_valid()) {
 				const int font_size = int(11 * ed);
 				const float baseline = (header_h - mono->get_height(font_size)) * 0.5f + mono->get_ascent(font_size);
@@ -1028,10 +1025,6 @@ RichTextLabel *SolersMarkdownView::_make_paragraph_label() {
 	rtl->add_theme_font_size_override("italics_font_size", int(14 * ed));
 	rtl->add_theme_font_size_override("bold_italics_font_size", int(14 * ed));
 	rtl->add_theme_font_size_override("mono_font_size", int(13 * ed));
-	const Ref<Font> mono = get_theme_font(SNAME("source"), SNAME("EditorFonts"));
-	if (mono.is_valid()) {
-		rtl->add_theme_font_override("mono_font", mono);
-	}
 	rtl->connect(SNAME("meta_clicked"), callable_mp(this, &SolersMarkdownView::_on_meta_clicked));
 	add_child(rtl);
 	return rtl;

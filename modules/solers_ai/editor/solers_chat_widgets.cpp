@@ -35,8 +35,6 @@
 #include "core/os/keyboard.h"
 #include "core/string/ustring.h"
 #include "core/variant/dictionary.h"
-#include "editor/editor_node.h"
-#include "editor/editor_string_names.h"
 #include "editor/themes/editor_scale.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/label.h"
@@ -48,7 +46,7 @@
 #include "scene/theme/theme_db.h"
 
 #include "modules/modules_enabled.gen.h"
-#include "modules/solers_ai/generated/solers_provider_logos.gen.h"
+#include "modules/solers_ai/generated/solers_svg_assets.gen.h"
 
 #ifdef MODULE_SVG_ENABLED
 #include "modules/svg/image_loader_svg.h"
@@ -61,144 +59,9 @@ static constexpr float SOLERS_WIDGET_ANIM_SPEED = 11.0f;
 /* Glyph rasterizer                                                    */
 /* ------------------------------------------------------------------ */
 
-static HashMap<String, Ref<Texture2D>> g_solers_glyph_cache;
+static HashMap<String, Ref<Texture2D>> g_solers_icon_cache;
 
-// Lucide (ISC/MIT, https://lucide.dev) + Tabler Icons (MIT, https://tabler.io/icons).
-// All bodies are stroke paths in a 24x24 viewBox; size/stroke unified at rasterize.
-static String solers_glyph_body(const StringName &p_name) {
-	if (p_name == SNAME("panel")) {
-		// lucide: panel-left
-		return "<rect width=\"18\" height=\"18\" x=\"3\" y=\"3\" rx=\"2\"/><path d=\"M9 3v18\"/>";
-	}
-	if (p_name == SNAME("new_chat")) {
-		// lucide: square-pen
-		return "<path d=\"M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7\"/><path d=\"M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z\"/>";
-	}
-	if (p_name == SNAME("history")) {
-		// lucide: history
-		return "<path d=\"M3 12a9 9 0 1 0 3-6.7L3 8\"/><path d=\"M3 3v5h5\"/><path d=\"M12 7v5l4 2\"/>";
-	}
-	if (p_name == SNAME("calendar")) {
-		return "<path d=\"M8 2v4\"/><path d=\"M16 2v4\"/><rect width=\"18\" height=\"18\" x=\"3\" y=\"4\" rx=\"2\"/><path d=\"M3 10h18\"/>";
-	}
-	if (p_name == SNAME("more")) {
-		// lucide: ellipsis-vertical
-		return "<circle cx=\"12\" cy=\"12\" r=\"1\"/><circle cx=\"12\" cy=\"5\" r=\"1\"/><circle cx=\"12\" cy=\"19\" r=\"1\"/>";
-	}
-	if (p_name == SNAME("plus")) {
-		return "<path d=\"M5 12h14\"/><path d=\"M12 5v14\"/>";
-	}
-	if (p_name == SNAME("shield")) {
-		// lucide: shield-check
-		return "<path d=\"M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z\"/><path d=\"m9 12 2 2 4-4\"/>";
-	}
-	if (p_name == SNAME("chevron_down")) {
-		return "<path d=\"m6 9 6 6 6-6\"/>";
-	}
-	if (p_name == SNAME("chevron_up")) {
-		return "<path d=\"m18 15-6-6-6 6\"/>";
-	}
-	if (p_name == SNAME("chevron_right")) {
-		return "<path d=\"m9 18 6-6-6-6\"/>";
-	}
-	if (p_name == SNAME("check")) {
-		return "<path d=\"M20 6 9 17l-5-5\"/>";
-	}
-	if (p_name == SNAME("cross")) {
-		// lucide: x
-		return "<path d=\"M18 6 6 18\"/><path d=\"m6 6 12 12\"/>";
-	}
-	if (p_name == SNAME("alert")) {
-		// lucide: circle-alert
-		return "<circle cx=\"12\" cy=\"12\" r=\"10\"/><line x1=\"12\" x2=\"12\" y1=\"8\" y2=\"12\"/><line x1=\"12\" x2=\"12.01\" y1=\"16\" y2=\"16\"/>";
-	}
-	if (p_name == SNAME("sparkle")) {
-		// lucide: sparkle (single 4-point star)
-		return "<path d=\"M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z\"/>";
-	}
-	if (p_name == SNAME("send_up")) {
-		// lucide: arrow-up
-		return "<path d=\"m5 12 7-7 7 7\"/><path d=\"M12 19V5\"/>";
-	}
-	if (p_name == SNAME("stop")) {
-		return "<rect width=\"10\" height=\"10\" x=\"7\" y=\"7\" rx=\"1.5\" fill=\"#FFFFFF\" stroke=\"none\"/>";
-	}
-	if (p_name == SNAME("tool_observe")) {
-		// lucide: eye
-		return "<path d=\"M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0\"/><circle cx=\"12\" cy=\"12\" r=\"3\"/>";
-	}
-	if (p_name == SNAME("tool_search")) {
-		// tabler: search
-		return "<path d=\"M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0\"/><path d=\"M21 21l-6 -6\"/>";
-	}
-	if (p_name == SNAME("tool_read")) {
-		// lucide: file-text
-		return "<path d=\"M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z\"/><path d=\"M14 2v4a2 2 0 0 0 2 2h4\"/><path d=\"M10 9H8\"/><path d=\"M16 13H8\"/><path d=\"M16 17H8\"/>";
-	}
-	if (p_name == SNAME("tool_capture")) {
-		// tabler: photo
-		return "<path d=\"M15 8h.01\"/><path d=\"M3 6a3 3 0 0 1 3 -3h12a3 3 0 0 1 3 3v12a3 3 0 0 1 -3 3h-12a3 3 0 0 1 -3 -3v-12z\"/><path d=\"M3 16l5 -5c.928 -.893 2.072 -.893 3 0l5 5\"/><path d=\"M14 14l1 -1c.928 -.893 2.072 -.893 3 0l3 3\"/>";
-	}
-	if (p_name == SNAME("tool_scene")) {
-		// tabler: box
-		return "<path d=\"M12 3l8 4.5l0 9l-8 4.5l-8 -4.5l0 -9l8 -4.5\"/><path d=\"M12 12l8 -4.5\"/><path d=\"M12 12l0 9\"/><path d=\"M12 12l-8 -4.5\"/>";
-	}
-	if (p_name == SNAME("tool_file")) {
-		// tabler: pencil (write)
-		return "<path d=\"M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4\"/><path d=\"M13.5 6.5l4 4\"/>";
-	}
-	if (p_name == SNAME("tool_run")) {
-		// lucide: play
-		return "<polygon points=\"6 3 20 12 6 21 6 3\"/>";
-	}
-	if (p_name == SNAME("tool_asset")) {
-		// lucide: upload
-		return "<path d=\"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4\"/><polyline points=\"17 8 12 3 7 8\"/><line x1=\"12\" x2=\"12\" y1=\"3\" y2=\"15\"/>";
-	}
-	if (p_name == SNAME("tool_export")) {
-		// lucide: package
-		return "<path d=\"m7.5 4.27 9 5.15\"/><path d=\"M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z\"/><path d=\"m3.3 7 8.7 5 8.7-5\"/><path d=\"M12 22V12\"/>";
-	}
-	if (p_name == SNAME("tool_network")) {
-		// tabler: world
-		return "<path d=\"M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0\"/><path d=\"M3.6 9h16.8\"/><path d=\"M3.6 15h16.8\"/><path d=\"M11.5 3a17 17 0 0 0 0 18\"/><path d=\"M12.5 3a17 17 0 0 1 0 18\"/>";
-	}
-	if (p_name == SNAME("tool_shell")) {
-		// lucide: terminal
-		return "<polyline points=\"4 17 10 11 4 5\"/><line x1=\"12\" x2=\"20\" y1=\"19\" y2=\"19\"/>";
-	}
-	return String();
-}
-
-Ref<Texture2D> SolersChatGlyphs::get(const StringName &p_name, int p_size_px, float p_stroke_width) {
-	const int size_px = MAX(2, p_size_px);
-	const String key = String(p_name) + "@" + itos(size_px) + "@" + String::num(p_stroke_width, 2);
-	if (const Ref<Texture2D> *found = g_solers_glyph_cache.getptr(key)) {
-		return *found;
-	}
-
-	Ref<Texture2D> texture;
-#ifdef MODULE_SVG_ENABLED
-	const String body = solers_glyph_body(p_name);
-	if (!body.is_empty()) {
-		// White strokes; callers tint via draw modulate so one texture serves
-		// every color state (idle/hover/accent) with zero re-rasterization.
-		const String svg = vformat(
-				"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#FFFFFF\" stroke-width=\"%s\" stroke-linecap=\"round\" stroke-linejoin=\"round\">%s</svg>",
-				String::num(p_stroke_width, 2), body);
-		Ref<Image> image;
-		image.instantiate();
-		const float scale = float(size_px) / 24.0f;
-		if (ImageLoaderSVG::create_image_from_string(image, svg, scale, false, HashMap<Color, Color>()) == OK && image.is_valid() && !image->is_empty()) {
-			texture = ImageTexture::create_from_image(image);
-		}
-	}
-#endif
-	g_solers_glyph_cache.insert(key, texture);
-	return texture;
-}
-
-static const char *_solers_find_provider_logo_svg(const SolersProviderLogoRecord *p_table, int p_count, const String &p_id) {
+static const char *_solers_find_svg(const SolersSvgAssetRecord *p_table, int p_count, const String &p_id) {
 	for (int i = 0; i < p_count; i++) {
 		if (p_id == p_table[i].id) {
 			return p_table[i].svg;
@@ -207,60 +70,70 @@ static const char *_solers_find_provider_logo_svg(const SolersProviderLogoRecord
 	return nullptr;
 }
 
-static Ref<Texture2D> _solers_raster_provider_logo(const char *p_svg, const String &p_cache_key, int p_size_px) {
+static Ref<Texture2D> _solers_raster_svg(const char *p_svg, const String &p_cache_key, int p_size_px, int p_source_px = 0) {
 	if (!p_svg) {
 		return Ref<Texture2D>();
 	}
-	if (const Ref<Texture2D> *found = g_solers_glyph_cache.getptr(p_cache_key)) {
+	if (const Ref<Texture2D> *found = g_solers_icon_cache.getptr(p_cache_key)) {
 		return *found;
 	}
 
 	Ref<Texture2D> texture;
 #ifdef MODULE_SVG_ENABLED
-	// Intrinsic document size varies per mark; probe at 1x, then rasterize.
 	const String svg_string = String::utf8(p_svg);
-	Ref<Image> probe;
-	probe.instantiate();
-	if (ImageLoaderSVG::create_image_from_string(probe, svg_string, 1.0f, false, HashMap<Color, Color>()) == OK && probe.is_valid() && probe->get_width() > 0) {
-		const float scale = float(p_size_px) / float(MAX(probe->get_width(), probe->get_height()));
+	int source_px = p_source_px;
+	if (source_px == 0) {
+		Ref<Image> probe;
+		probe.instantiate();
+		if (ImageLoaderSVG::create_image_from_string(probe, svg_string, 1.0f, false, HashMap<Color, Color>()) == OK && probe.is_valid()) {
+			source_px = MAX(probe->get_width(), probe->get_height());
+		}
+	}
+	if (source_px > 0) {
 		Ref<Image> image;
 		image.instantiate();
-		if (ImageLoaderSVG::create_image_from_string(image, svg_string, scale, false, HashMap<Color, Color>()) == OK && image.is_valid() && !image->is_empty()) {
+		if (ImageLoaderSVG::create_image_from_string(image, svg_string, float(p_size_px) / source_px, false, HashMap<Color, Color>()) == OK && image.is_valid() && !image->is_empty()) {
 			texture = ImageTexture::create_from_image(image);
 		}
 	}
 #endif
-	g_solers_glyph_cache.insert(p_cache_key, texture);
+	g_solers_icon_cache.insert(p_cache_key, texture);
 	return texture;
 }
 
-Ref<Texture2D> SolersChatGlyphs::provider_logo(const String &p_catalog_id, int p_size_px) {
+Ref<Texture2D> SolersIcons::get(const StringName &p_name, int p_size_px) {
+	const int size_px = MAX(2, p_size_px);
+	const String id = String(p_name);
+	return _solers_raster_svg(_solers_find_svg(SOLERS_UI_ICONS, SOLERS_UI_ICON_COUNT, id), "icon:" + id + "@" + itos(size_px), size_px, 24);
+}
+
+Ref<Texture2D> SolersIcons::provider_logo(const String &p_catalog_id, int p_size_px) {
 	const int size_px = MAX(2, p_size_px);
 	const String id = p_catalog_id.strip_edges().to_lower();
 
 	// Mono track is baked white at build time; callers tint via modulate.
-	const char *svg = _solers_find_provider_logo_svg(SOLERS_PROVIDER_LOGOS, SOLERS_PROVIDER_LOGO_COUNT, id);
+	const char *svg = _solers_find_svg(SOLERS_PROVIDER_LOGOS, SOLERS_PROVIDER_LOGO_COUNT, id);
 	String cache_id = id;
 	if (!svg) {
 		cache_id = "synthetic";
-		svg = _solers_find_provider_logo_svg(SOLERS_PROVIDER_LOGOS, SOLERS_PROVIDER_LOGO_COUNT, cache_id);
+		svg = _solers_find_svg(SOLERS_PROVIDER_LOGOS, SOLERS_PROVIDER_LOGO_COUNT, cache_id);
 	}
-	return _solers_raster_provider_logo(svg, "logo:" + cache_id + "@" + itos(size_px), size_px);
+	return _solers_raster_svg(svg, "logo:" + cache_id + "@" + itos(size_px), size_px);
 }
 
-Ref<Texture2D> SolersChatGlyphs::provider_logo_color(const String &p_catalog_id, int p_size_px) {
+Ref<Texture2D> SolersIcons::provider_logo_color(const String &p_catalog_id, int p_size_px) {
 	const int size_px = MAX(2, p_size_px);
 	const String id = p_catalog_id.strip_edges().to_lower();
-	const char *svg = _solers_find_provider_logo_svg(SOLERS_PROVIDER_COLOR_LOGOS, SOLERS_PROVIDER_COLOR_LOGO_COUNT, id);
+	const char *svg = _solers_find_svg(SOLERS_PROVIDER_COLOR_LOGOS, SOLERS_PROVIDER_COLOR_LOGO_COUNT, id);
 	if (!svg) {
 		return Ref<Texture2D>();
 	}
 	// Color track preserves official fills — do not theme-tint at draw time.
-	return _solers_raster_provider_logo(svg, "logo-color:" + id + "@" + itos(size_px), size_px);
+	return _solers_raster_svg(svg, "logo-color:" + id + "@" + itos(size_px), size_px);
 }
 
-void SolersChatGlyphs::clear_cache() {
-	g_solers_glyph_cache.clear();
+void SolersIcons::clear_cache() {
+	g_solers_icon_cache.clear();
 }
 
 /* ------------------------------------------------------------------ */
@@ -426,7 +299,7 @@ void SolersGlyphButton::_notification(int p_what) {
 				glyph_color = enabled_state ? base.lerp(lit, anim) : Color(1, 1, 1, 0.25f);
 			}
 
-			Ref<Texture2D> tex = SolersChatGlyphs::get(glyph, int(Math::round(glyph_px * ed)));
+			Ref<Texture2D> tex = SolersIcons::get(glyph, int(Math::round(glyph_px * ed)));
 			if (tex.is_valid()) {
 				const Point2 pos = (r.size - Size2(tex->get_size())) * 0.5f;
 				draw_texture(tex, pos.floor(), glyph_color);
@@ -494,7 +367,7 @@ void SolersSelectChip::set_filled(bool p_filled) {
 
 Size2 SolersSelectChip::get_minimum_size() const {
 	const float ed = EDSCALE;
-	const Ref<Font> font = get_theme_font(SceneStringName(font), SNAME("Label"));
+	const Ref<Font> font = get_theme_default_font();
 	const int font_size = int(12 * ed);
 	const float icon_slot = 12.0f * ed;
 	const float gap_icon_txt = 4.0f * ed;
@@ -597,7 +470,7 @@ void SolersSelectChip::_notification(int p_what) {
 			const Color muted_color = (accented ? accent.darkened(0.08f) : SOLERS_TEXT_MUTED).lerp(strong_lit, 0.42f * anim);
 			const Color chevron_color = (accented ? accent : Color(0.50f, 0.51f, 0.55f)).lerp(strong_lit, 0.45f * anim);
 
-			const Ref<Font> font = get_theme_font(SceneStringName(font), SNAME("Label"));
+			const Ref<Font> font = get_theme_default_font();
 			const int font_size = int(12 * ed);
 			const float icon_slot = 12.0f * ed;
 			const float gap_icon_txt = 4.0f * ed;
@@ -611,7 +484,7 @@ void SolersSelectChip::_notification(int p_what) {
 				draw_texture(leading_texture, pos.round(), Color(1, 1, 1, 0.80f + 0.20f * anim));
 				x += icon_slot + gap_icon_txt;
 			} else if (glyph != StringName()) {
-				Ref<Texture2D> icon = SolersChatGlyphs::get(glyph, int(Math::round(icon_slot)), 1.9f);
+				Ref<Texture2D> icon = SolersIcons::get(glyph, int(Math::round(icon_slot)));
 				if (icon.is_valid()) {
 					const float tw = icon->get_width();
 					const float th = icon->get_height();
@@ -638,7 +511,7 @@ void SolersSelectChip::_notification(int p_what) {
 
 			x += gap_txt_chev;
 			if (show_chevron) {
-				Ref<Texture2D> chevron = SolersChatGlyphs::get(SNAME("chevron_down"), int(Math::round(9.0f * ed)), 2.2f);
+				Ref<Texture2D> chevron = SolersIcons::get(SNAME("chevron_down"), int(Math::round(9.0f * ed)));
 				if (chevron.is_valid()) {
 					const Point2 pos(x, (r.size.y - chevron->get_height()) * 0.5f);
 					draw_texture(chevron, pos.round(), chevron_color);
@@ -808,24 +681,19 @@ Ref<Texture2D> solers_mention_chip_icon(const Dictionary &p_mention, int p_px) {
 	const String source = String(p_mention.get("source", "plugin")).strip_edges().to_lower();
 	if (source == "plugin") {
 		const String id = String(p_mention.get("id", String())).strip_edges().to_lower();
-		const Ref<Texture2D> color = SolersChatGlyphs::provider_logo_color(id, p_px);
-		return color.is_valid() ? color : SolersChatGlyphs::provider_logo(id, p_px);
-	}
-	EditorNode *editor = EditorNode::get_singleton();
-	if (!editor) {
-		return Ref<Texture2D>();
+		const Ref<Texture2D> color = SolersIcons::provider_logo_color(id, p_px);
+		return color.is_valid() ? color : SolersIcons::provider_logo(id, p_px);
 	}
 	if (source == "addon") {
-		return editor->get_editor_theme()->get_icon(SNAME("PluginScript"), EditorStringName(EditorIcons));
+		return SolersIcons::get(SNAME("plugin"), p_px);
 	}
 	if (source == "folder") {
-		return editor->get_editor_theme()->get_icon(SNAME("Folder"), EditorStringName(EditorIcons));
+		return SolersIcons::get(SNAME("folder"), p_px);
 	}
 	if (source == "node") {
-		const String type = String(p_mention.get("type", "Node")).strip_edges();
-		return editor->get_class_icon(type.is_empty() ? String("Node") : type, "Node");
+		return SolersIcons::get(SNAME("node"), p_px);
 	}
-	return editor->get_class_icon("File");
+	return SolersIcons::get(SNAME("file"), p_px);
 }
 
 /* ------------------------------------------------------------------ */
@@ -893,7 +761,7 @@ Size2 SolersPlanCapsule::_chip_size() const {
 	if (!_has_open_work()) {
 		return Size2();
 	}
-	const Ref<Font> font = get_theme_font(SceneStringName(font), SNAME("Label"));
+	const Ref<Font> font = get_theme_default_font();
 	const int font_size = int(12 * ed);
 	const String label = vformat("Step %d / %d", _current_step_index(), plan.size());
 	float width = 28.0f * ed;
@@ -1007,7 +875,7 @@ void SolersPlanCapsule::_notification(int p_what) {
 			const Rect2 r(Point2(), get_size());
 			solers_draw_wash(this, r, 0.09f, 14.0f * ed);
 
-			const Ref<Font> font = get_theme_font(SceneStringName(font), SNAME("Label"));
+			const Ref<Font> font = get_theme_default_font();
 			if (font.is_null()) {
 				break;
 			}

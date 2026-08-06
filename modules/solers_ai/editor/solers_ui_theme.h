@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  solers_pm_theme.h                                                     */
+/*  solers_ui_theme.h                                                     */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                              SOLERS ENGINE                              */
@@ -7,29 +7,17 @@
 /**************************************************************************/
 /* Solers: AI-native game engine.                                        */
 /*                                                                        */
-/* This file introduces a dedicated, self-contained design-token theme    */
-/* layer for the Project Manager. It is applied as an *overlay* on top of  */
-/* the theme produced by EditorThemeManager::generate_theme(), so the      */
-/* shared editor theme generator is never modified. The overlay restyles   */
-/* only Project-Manager-scoped theme entries (its own backdrop, panels,    */
-/* list rows and top view toggles) to achieve an Unreal-Engine-grade       */
-/* dark, minimal and textured look while preserving all behavior.          */
+/* Solers-owned typography and visual tokens. Godot remains responsible   */
+/* for shaping, BiDi, rasterization and native Control behavior.           */
 /**************************************************************************/
 
 #pragma once
 
-#include "scene/resources/texture.h"
 #include "scene/resources/theme.h"
 
 class AcceptDialog;
 
-// Design-token + StyleBox set for the Solers Project Manager.
-//
-// All values are derived from the *already generated* editor theme (so the
-// user's accent color and light/dark preference are respected), then biased
-// toward a deep, neutral, UE-style graphite palette with subtle borders and
-// rounded surfaces. Nothing here touches application logic.
-class SolersPMTheme {
+class SolersUITheme {
 public:
 	// Resolved palette + geometry for one theme generation.
 	struct Tokens {
@@ -55,12 +43,10 @@ public:
 		int radius_list_thumb = 6;
 	};
 
-	// Compute the token set from a generated theme (pure, no side effects).
-	static Tokens make_tokens(const Ref<Theme> &p_theme);
+	static Tokens make_tokens();
 
-	// Apply the Solers Project Manager theme overlay in-place.
-	// Safe to call repeatedly (idempotent) after every theme (re)generation.
-	static void apply(const Ref<Theme> &p_theme);
+	// Sparse subtree theme: explicit Solers fonts, ambient Godot styles.
+	static Ref<Theme> create();
 
 	// Cursor-flat pane edges for ANY Solers-themed tree (Editor + PM + Dock):
 	// SplitContainer / HSeparator / VSeparator + Editor/hairline color.
@@ -74,15 +60,6 @@ public:
 
 	// Settings host: variation + hide OK bar. Uses apply_window_chrome /
 	// apply_chrome_edges — same tokens as every other AcceptDialog.
-	static void configure_settings_host(AcceptDialog *p_dialog);
+	static void configure_settings_host(AcceptDialog *p_dialog, const Ref<Theme> &p_theme);
 
-	// Convert a (possibly colored) editor icon into a neutral monochrome glyph.
-	// Unreal's chrome is strictly grayscale; stock editor SVGs like the red
-	// Heart or the gold Favorites star would inject cartoon color into it.
-	static Ref<Texture2D> mono_icon(const Ref<Texture2D> &p_icon);
-
-	// Rasterize a Lucide glyph (24x24 viewBox inner SVG body) as a white stroke
-	// icon at p_size_px logical pixels. Drawn white so callers tint it freely
-	// via modulate (idle gray / selected white). Returns null without MODULE_SVG.
-	static Ref<Texture2D> lucide_icon(const char *p_svg_body, int p_size_px = 18, float p_stroke_width = 1.8f);
 };

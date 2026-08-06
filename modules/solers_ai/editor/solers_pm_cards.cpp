@@ -139,7 +139,7 @@ void SolersCategoryCard::_notification(int p_what) {
 			const float text_x = icon.is_valid() ? (icon_x + isz.x + 10 * ed) : pad_l;
 			const float text_w = r.size.x - text_x - pad_r - dot_gap;
 
-			const Ref<Font> font = get_theme_font(SNAME("font"), SNAME("Label"));
+			const Ref<Font> font = get_theme_default_font();
 			const int fs = MAX(10, (int)(13 * ed));
 			const int sub_fs = MAX(9, (int)(11 * ed));
 			const bool dual = !subtitle.is_empty() && font.is_valid();

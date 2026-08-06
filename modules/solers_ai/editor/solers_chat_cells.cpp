@@ -96,40 +96,11 @@ static void solers_cell_fill(Control *p_control, const Rect2 &p_rect, const Colo
 }
 
 static Ref<Font> solers_cell_font(const Control *p_control) {
-	return p_control->get_theme_font(SceneStringName(font), SNAME("Label"));
+	return p_control->get_theme_default_font();
 }
 
 static Ref<Font> solers_cell_mono_font(const Control *p_control) {
-	Ref<Font> mono = p_control->get_theme_font(SNAME("source"), SNAME("EditorFonts"));
-	if (mono.is_valid()) {
-		return mono;
-	}
-	return solers_cell_font(p_control);
-}
-
-// Draws a left-to-right shimmer sweep across `p_text` (the Codex "thinking"
-// header treatment): every glyph sits at the dim base color, and a soft
-// highlight band sweeps across the word. Returns the drawn width.
-static float solers_draw_shimmer_text(Control *p_control, const Point2 &p_baseline_pos, const String &p_text, const Ref<Font> &p_font, int p_font_size, float p_phase, const Color &p_base, const Color &p_lit) {
-	if (p_font.is_null() || p_text.is_empty()) {
-		return 0.0f;
-	}
-	const float total_width = p_font->get_string_size(p_text, HORIZONTAL_ALIGNMENT_LEFT, -1, p_font_size).x;
-	// Sweep center runs past both edges so the band fully enters and exits.
-	const float sweep_x = (p_phase * 1.5f - 0.25f) * total_width;
-	const float band = MAX(10.0f * EDSCALE, total_width * 0.30f);
-
-	const RID ci = p_control->get_canvas_item();
-	Point2 pos = p_baseline_pos;
-	for (int i = 0; i < p_text.length(); i++) {
-		const char32_t c = p_text[i];
-		const float glyph_center = pos.x - p_baseline_pos.x + p_font->get_char_size(c, p_font_size).x * 0.5f;
-		const float d = Math::abs(glyph_center - sweep_x) / band;
-		const float w = CLAMP(1.0f - d, 0.0f, 1.0f);
-		const Color color = p_base.lerp(p_lit, w * w);
-		pos.x += p_font->draw_char(ci, pos, c, p_font_size, color);
-	}
-	return pos.x - p_baseline_pos.x;
+	return p_control->get_theme_font(SceneStringName(font), SNAME("SolersMono"));
 }
 
 static String _clip_tool_fact(const String &p_value, int p_max = 48) {
@@ -640,13 +611,14 @@ void SolersThinkingCell::_notification(int p_what) {
 
 			float header_w = 0.0f;
 			if (active) {
-				header_w = solers_draw_shimmer_text(this, Point2(0, baseline), _header_text(), font, header_size, shimmer_phase, SOLERS_CELL_TEXT_FAINT, Color(0.95f, 0.96f, 0.98f));
+				draw_string(font, Point2(0, baseline).floor(), _header_text(), HORIZONTAL_ALIGNMENT_LEFT, -1, header_size, SOLERS_CELL_TEXT_FAINT.lerp(Color(0.95f, 0.96f, 0.98f), 0.35f + 0.25f * Math::sin(shimmer_phase * Math::TAU)));
+				header_w = font->get_string_size(_header_text(), HORIZONTAL_ALIGNMENT_LEFT, -1, header_size).x;
 			} else {
 				const Color header_color = hovering ? SOLERS_CELL_TEXT_DIM.lerp(Color(1, 1, 1), 0.25f) : SOLERS_CELL_TEXT_DIM;
 				draw_string(font, Point2(0, baseline).floor(), _header_text(), HORIZONTAL_ALIGNMENT_LEFT, -1, header_size, header_color);
 				header_w = font->get_string_size(_header_text(), HORIZONTAL_ALIGNMENT_LEFT, -1, header_size).x;
 				if (!reasoning.strip_edges().is_empty()) {
-					Ref<Texture2D> chevron = SolersChatGlyphs::get(expanded ? SNAME("chevron_down") : SNAME("chevron_right"), int(Math::round(9.0f * ed)), 2.2f);
+					Ref<Texture2D> chevron = SolersIcons::get(expanded ? SNAME("chevron_down") : SNAME("chevron_right"), int(Math::round(9.0f * ed)));
 					if (chevron.is_valid()) {
 						draw_texture(chevron, Point2(header_w + 5.0f * ed, (header_h - chevron->get_height()) * 0.5f).floor(), header_color);
 					}
@@ -808,7 +780,7 @@ void SolersToolCell::_notification(int p_what) {
 			const float icon_cy = header_h * 0.5f;
 			const String verb = solers_tool_verb_for_glyph(tool_glyph);
 
-			Ref<Texture2D> type_icon = SolersChatGlyphs::get(tool_glyph, int(Math::round(13.0f * ed)), 2.0f);
+			Ref<Texture2D> type_icon = SolersIcons::get(tool_glyph, int(Math::round(13.0f * ed)));
 			if (type_icon.is_valid()) {
 				const Color icon_color = status == STATUS_ERROR ? SOLERS_CELL_ERROR : SOLERS_CELL_TEXT_DIM;
 				draw_texture(type_icon, Point2(type_cx - type_icon->get_width() * 0.5f, icon_cy - type_icon->get_height() * 0.5f).floor(), icon_color);
@@ -821,7 +793,7 @@ void SolersToolCell::_notification(int p_what) {
 			const float verb_baseline = (header_h - font->get_height(verb_size)) * 0.5f + font->get_ascent(verb_size);
 			const Color verb_color = status == STATUS_ERROR ? SOLERS_CELL_ERROR : Color(0.90f, 0.91f, 0.94f);
 			if (status == STATUS_RUNNING) {
-				solers_draw_shimmer_text(this, Point2(x, verb_baseline).floor(), verb, font, verb_size, Math::fmod(float(OS::get_singleton()->get_ticks_msec()) / (SOLERS_SHIMMER_PERIOD * 1000.0f), 1.0f), SOLERS_CELL_TEXT_FAINT, Color(0.95f, 0.96f, 0.98f));
+				draw_string(font, Point2(x, verb_baseline).floor(), verb, HORIZONTAL_ALIGNMENT_LEFT, -1, verb_size, SOLERS_CELL_TEXT_FAINT.lerp(Color(0.95f, 0.96f, 0.98f), 0.35f + 0.25f * Math::sin(float(OS::get_singleton()->get_ticks_msec()) * Math::TAU / (SOLERS_SHIMMER_PERIOD * 1000.0f))));
 			} else {
 				draw_string(font, Point2(x, verb_baseline).floor(), verb, HORIZONTAL_ALIGNMENT_LEFT, -1, verb_size, verb_color);
 			}
@@ -1004,7 +976,7 @@ void SolersToolGroupCell::_notification(int p_what) {
 					continue;
 				}
 				const Color tint = tool_cell->get_status() == SolersToolCell::STATUS_ERROR ? SOLERS_CELL_ERROR : SOLERS_CELL_TEXT_DIM;
-				Ref<Texture2D> icon = SolersChatGlyphs::get(tool_cell->get_tool_glyph(), int(Math::round(12.0f * ed)), 2.1f);
+				Ref<Texture2D> icon = SolersIcons::get(tool_cell->get_tool_glyph(), int(Math::round(12.0f * ed)));
 				if (icon.is_valid()) {
 					draw_texture(icon, Point2(x, (header_h - icon->get_height()) * 0.5f).floor(), tint);
 					x += icon_step;
@@ -1013,12 +985,10 @@ void SolersToolGroupCell::_notification(int p_what) {
 			const String label = vformat(String::utf8("已运行 %d 个工具"), total);
 			x += 4.0f * ed;
 			const float phase = Math::fmod(float(OS::get_singleton()->get_ticks_msec()) / (SOLERS_SHIMMER_PERIOD * 1000.0f), 1.0f);
-			const float label_w = running > 0 ? solers_draw_shimmer_text(this, Point2(x, baseline).floor(), label, font, font_size, phase, SOLERS_CELL_TEXT_FAINT, Color(0.95f, 0.96f, 0.98f)) : font->get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
-			if (running == 0) {
-				draw_string(font, Point2(x, baseline).floor(), label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, SOLERS_CELL_TEXT_DIM);
-			}
+			const float label_w = font->get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
+			draw_string(font, Point2(x, baseline).floor(), label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, running > 0 ? SOLERS_CELL_TEXT_FAINT.lerp(Color(0.95f, 0.96f, 0.98f), 0.35f + 0.25f * Math::sin(phase * Math::TAU)) : SOLERS_CELL_TEXT_DIM);
 			x += label_w + 6.0f * ed;
-			Ref<Texture2D> chevron = SolersChatGlyphs::get(expanded ? SNAME("chevron_down") : SNAME("chevron_right"), int(Math::round(9.0f * ed)), 2.2f);
+			Ref<Texture2D> chevron = SolersIcons::get(expanded ? SNAME("chevron_down") : SNAME("chevron_right"), int(Math::round(9.0f * ed)));
 			if (chevron.is_valid()) {
 				draw_texture(chevron, Point2(x, (header_h - chevron->get_height()) * 0.5f).floor(), SOLERS_CELL_TEXT_DIM);
 			}
@@ -1064,7 +1034,7 @@ void SolersStatusCell::_notification(int p_what) {
 			const float h = get_size().y;
 			const int font_size = int(12 * ed);
 			const float baseline = (h - font->get_height(font_size)) * 0.5f + font->get_ascent(font_size);
-			solers_draw_shimmer_text(this, Point2(0, baseline), status_text, font, font_size, shimmer_phase, SOLERS_CELL_TEXT_FAINT, Color(0.95f, 0.96f, 0.98f));
+			draw_string(font, Point2(0, baseline).floor(), status_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, SOLERS_CELL_TEXT_FAINT.lerp(Color(0.95f, 0.96f, 0.98f), 0.35f + 0.25f * Math::sin(shimmer_phase * Math::TAU)));
 		} break;
 	}
 }
