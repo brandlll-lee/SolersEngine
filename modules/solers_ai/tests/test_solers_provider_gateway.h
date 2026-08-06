@@ -51,6 +51,8 @@
 #include "scene/3d/path_3d.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
+#include "scene/gui/label.h"
+#include "scene/gui/rich_text_label.h"
 #include "scene/gui/scroll_container.h"
 #include "scene/main/resource_preloader.h"
 #include "scene/main/scene_tree.h"
@@ -80,6 +82,8 @@
 #include "modules/solers_ai/core/solers_trace.h"
 #include "modules/solers_ai/editor/solers_chat_cells.h"
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
+#include "modules/solers_ai/editor/solers_ui_theme.h"
+#include "modules/solers_ai/generated/solers_svg_assets.gen.h"
 #include "modules/solers_ai/llm/solers_llm_client.h"
 #include "modules/solers_ai/llm/solers_llm_message.h"
 #include "modules/solers_ai/llm/solers_llm_protocol.h"
@@ -3028,11 +3032,84 @@ TEST_CASE("[SolersAgentSession] journal projection has stable unique events and 
 	solers_transcript_flush();
 }
 
-TEST_CASE("[SolersChat][SceneTree] streamed Markdown keeps native minimum height") {
+TEST_CASE("[SolersUITheme] body and code fonts own the multilingual fallback stack") {
+	const Ref<Theme> theme = SolersUITheme::create();
+	REQUIRE(theme.is_valid());
+	const Ref<Font> body = theme->get_default_font();
+	const Ref<Font> mono = theme->get_font(SceneStringName(font), SNAME("SolersMono"));
+	REQUIRE(body.is_valid());
+	REQUIRE(mono.is_valid());
+	CHECK(body != mono);
+	for (const char32_t character : { char32_t(0x4E16), char32_t(0x0636), char32_t(0x0939), char32_t(0x05E9), char32_t(0x0E17) }) {
+		CHECK(body->has_char(character));
+		CHECK(mono->has_char(character));
+	}
+	CHECK(body->get_string_size(String::utf8("Solers \xE4\xB8\x96\xE7\x95\x8C \xD8\xA7\xD9\x84\xD8\xB9\xD8\xA7\xD9\x84\xD9\x85"), HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x > 0);
+}
+
+TEST_CASE("[SolersUITheme][SceneTree] typography is isolated to the Solers subtree") {
+	Control *host = memnew(Control);
+	Label *ambient = memnew(Label("Godot"));
+	VBoxContainer *solers_root = memnew(VBoxContainer);
+	Label *body = memnew(Label(String::utf8("Solers \xE4\xB8\xAD\xE6\x96\x87")));
+	RichTextLabel *code = memnew(RichTextLabel);
+	solers_root->set_theme(SolersUITheme::create());
+	code->set_theme_type_variation("SolersCodeText");
+	host->add_child(ambient);
+	host->add_child(solers_root);
+	solers_root->add_child(body);
+	solers_root->add_child(code);
+	SceneTree::get_singleton()->get_root()->add_child(host);
+	MessageQueue::get_singleton()->flush();
+	CHECK(body->get_theme_default_font() == solers_root->get_theme()->get_default_font());
+	CHECK(code->get_theme_font(SNAME("normal_font")) == solers_root->get_theme_font(SceneStringName(font), SNAME("SolersMono")));
+	CHECK(ambient->get_theme_default_font() != body->get_theme_default_font());
+	host->queue_free();
+	MessageQueue::get_singleton()->flush();
+}
+
+TEST_CASE("[SolersIcons] pinned SVG assets share one DPI-aware cache") {
+#ifdef MODULE_SVG_ENABLED
+	for (int i = 0; i < SOLERS_UI_ICON_COUNT; i++) {
+		const StringName id = String::utf8(SOLERS_UI_ICONS[i].id);
+		const Ref<Texture2D> icon = SolersIcons::get(id, 16);
+		REQUIRE_MESSAGE(icon.is_valid(), vformat("Tabler asset '%s' failed to parse", id));
+		CHECK(icon->get_width() == 16);
+		CHECK(icon->get_height() == 16);
+	}
+	const Ref<Texture2D> panel_16 = SolersIcons::get(SNAME("panel"), 16);
+	const Ref<Texture2D> panel_32 = SolersIcons::get(SNAME("panel"), 32);
+	REQUIRE(panel_16.is_valid());
+	REQUIRE(panel_32.is_valid());
+	CHECK(panel_16->get_width() == 16);
+	CHECK(panel_16->get_height() == 16);
+	CHECK(panel_32->get_width() == 32);
+	CHECK(panel_32->get_height() == 32);
+	CHECK(panel_16->get_rid() == SolersIcons::get(SNAME("panel"), 16)->get_rid());
+	CHECK(SolersIcons::get(SNAME("missing_icon"), 16).is_null());
+
+	const Ref<Texture2D> mono_logo = SolersIcons::provider_logo("synthetic", 16);
+	const Ref<Texture2D> color_logo = SolersIcons::provider_logo_color("polyhaven", 16);
+	REQUIRE(mono_logo.is_valid());
+	REQUIRE(color_logo.is_valid());
+	CHECK(mono_logo->get_width() <= 16);
+	CHECK(mono_logo->get_height() <= 16);
+	CHECK(color_logo->get_width() <= 16);
+	CHECK(color_logo->get_height() <= 16);
+	SolersIcons::clear_cache();
+#else
+	CHECK(SolersIcons::get(SNAME("panel"), 16).is_null());
+#endif
+}
+
+TEST_CASE("[SolersChat][SceneTree] streamed multilingual Markdown keeps native minimum height") {
+	VBoxContainer *host = memnew(VBoxContainer);
+	host->set_theme(SolersUITheme::create());
 	SolersAssistantCell *cell = memnew(SolersAssistantCell);
-	SceneTree::get_singleton()->get_root()->add_child(cell);
+	host->add_child(cell);
+	SceneTree::get_singleton()->get_root()->add_child(host);
 	cell->set_size(Size2(480, 0));
-	const String text = String("## Heading\n\nA paragraph that wraps through Godot text shaping.\n\n").repeat(20);
+	const String text = String::utf8("## Heading\n\nGodot shapes Solers \xE4\xB8\xAD\xE6\x96\x87, \xD8\xA7\xD9\x84\xD8\xB9\xD8\xB1\xD8\xA8\xD9\x8A\xD8\xA9 and \xE0\xA4\xB9\xE0\xA4\xBF\xE0\xA4\xA8\xE0\xA5\x8D\xE0\xA4\xA6\xE0\xA5\x80 as complete strings.\n\n").repeat(20);
 	cell->append_delta(text.left(text.length() / 2));
 	cell->notification(Node::NOTIFICATION_INTERNAL_PROCESS);
 	MessageQueue::get_singleton()->flush();
@@ -3044,7 +3121,7 @@ TEST_CASE("[SolersChat][SceneTree] streamed Markdown keeps native minimum height
 	MessageQueue::get_singleton()->flush();
 	REQUIRE(cell->get_child_count() == 1);
 	CHECK(Object::cast_to<Control>(cell->get_child(0))->get_combined_minimum_size().y >= partial_height);
-	cell->queue_free();
+	host->queue_free();
 	MessageQueue::get_singleton()->flush();
 }
 
