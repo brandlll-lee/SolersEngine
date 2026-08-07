@@ -35,6 +35,8 @@
 class SolersAgentRuntime;
 class SolersDock;
 
+void solers_load_editor_translation();
+
 class SolersEditorPlugin : public EditorPlugin {
 	GDCLASS(SolersEditorPlugin, EditorPlugin);
 
@@ -44,6 +46,7 @@ class SolersEditorPlugin : public EditorPlugin {
 
 	void _select_session(const String &p_session_id);
 	void _new_session();
+	void _translation_changed();
 
 protected:
 	void _notification(int p_what);

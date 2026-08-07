@@ -879,7 +879,7 @@ void SolersPMAIView::_add_quick_setting_control(const String &p_text, Control *p
 
 #ifndef ANDROID_ENABLED
 void SolersPMAIView::_language_selected(int p_id) {
-	_set_quick_setting_value("interface/editor/editor_language", language_option_button->get_item_metadata(p_id));
+	_set_quick_setting_value("interface/editor/localization/editor_language", language_option_button->get_item_metadata(p_id));
 }
 #endif
 
