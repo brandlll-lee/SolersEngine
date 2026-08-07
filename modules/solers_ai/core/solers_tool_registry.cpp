@@ -25,6 +25,7 @@
 #include "editor/debugger/editor_debugger_node.h"
 #include "editor/debugger/script_editor_debugger.h"
 #include "editor/run/editor_run_bar.h"
+#include "editor/run/game_view_plugin.h"
 #include "modules/solers_ai/core/solers_action_timeline.h"
 #include "modules/solers_ai/core/solers_asset_service.h"
 #include "modules/solers_ai/core/solers_file_checkpoint.h"
@@ -1345,14 +1346,64 @@ Dictionary SolersToolRegistry::_transact_objects(const Dictionary &p_args) {
 }
 
 
+static GameViewDebugger *_solers_game_view_debugger() {
+	EditorData &editor_data = EditorNode::get_editor_data();
+	for (int i = 0; i < editor_data.get_editor_plugin_count(); i++) {
+		if (GameViewPluginBase *plugin = Object::cast_to<GameViewPluginBase>(editor_data.get_editor_plugin(i))) {
+			return plugin->get_debugger().ptr();
+		}
+	}
+	return nullptr;
+}
+
 Dictionary SolersToolRegistry::_run_control(const Dictionary &p_args) const {
 	EditorInterface *editor_interface = EditorInterface::get_singleton();
 	ERR_FAIL_NULL_V(editor_interface, _error("EDITOR_INTERFACE_UNAVAILABLE", "EditorInterface is not available.", false));
 	EditorRunBar *run_bar = EditorRunBar::get_singleton();
 	ERR_FAIL_NULL_V(run_bar, _error("EDITOR_RUN_BAR_UNAVAILABLE", "The editor runtime controller is not available.", false));
-
+	EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
+	ScriptEditorDebugger *debugger = debugger_node ? debugger_node->get_current_debugger() : nullptr;
 	const String action = p_args.get("action", String());
 	const bool was_playing = run_bar->is_playing();
+	bool command_accepted = false;
+	if (action == "set_property") {
+		ERR_FAIL_NULL_V(observation_service, _error("RUNTIME_OBSERVATION_UNAVAILABLE", "Runtime observation is not available.", false));
+		if (!debugger || !debugger->is_session_active()) {
+			return _error("RUNTIME_NOT_CONNECTED", "Start the project before editing runtime state.");
+		}
+		if (observation_service->has_runtime_query()) {
+			return _error("RUNTIME_QUERY_BUSY", "Wait for the active native runtime observation before changing runtime state.");
+		}
+		const uint64_t epoch = (int64_t)p_args.get("runtime_epoch", 0);
+		const ObjectID object_id = ObjectID((uint64_t)(int64_t)p_args.get("object_id", 0));
+		const StringName property = p_args.get("property", String());
+		Variant before;
+		if (!observation_service->get_runtime_property(epoch, object_id, property, before)) {
+			return _error("STALE_RUNTIME_OBSERVATION", "Observe this object property in the current runtime epoch before changing it.");
+		}
+		if (before != p_args.get("expected_value", Variant())) {
+			return _error("RUNTIME_PRECONDITION_FAILED", "The runtime property no longer matches expected_value.");
+		}
+		debugger->update_remote_object(object_id, property, p_args.get("value", Variant()));
+		Dictionary query_args;
+		query_args["target"] = "objects";
+		Array object_ids;
+		object_ids.push_back((int64_t)(uint64_t)object_id);
+		query_args["object_ids"] = object_ids;
+		Array properties;
+		properties.push_back(property);
+		query_args["properties"] = properties;
+		Dictionary pending = observation_service->observe_runtime(query_args);
+		if (pending.get("status", String()) != "pending") {
+			return _error("RUNTIME_VERIFY_UNAVAILABLE", "The native debugger could not start post-write verification.");
+		}
+		Dictionary poll_args = pending.get("poll_args", Dictionary());
+		poll_args["action"] = action;
+		poll_args["before"] = before;
+		poll_args["value"] = p_args.get("value", Variant());
+		pending["poll_args"] = poll_args;
+		return _ok(pending);
+	}
 	if (action == "play_current_scene") {
 		if (!was_playing && !editor_interface->get_edited_scene_root()) {
 			return _error("CURRENT_SCENE_UNAVAILABLE", "Open a scene before starting the project.");
@@ -1360,71 +1411,98 @@ Dictionary SolersToolRegistry::_run_control(const Dictionary &p_args) const {
 		if (!was_playing) {
 			run_bar->play_current_scene();
 		}
+		command_accepted = true;
 	} else if (action == "stop") {
 		if (was_playing) {
 			run_bar->stop_playing();
 		}
+		command_accepted = true;
+	} else if (action == "suspend" || action == "resume" || action == "next_frame") {
+		GameViewDebugger *game_debugger = _solers_game_view_debugger();
+		if (!debugger || !debugger->is_session_active() || !game_debugger) {
+			return _error("RUNTIME_NOT_CONNECTED", "The native Game View debugger is not connected.");
+		}
+		if (action == "next_frame") {
+			game_debugger->next_frame();
+		} else {
+			game_debugger->set_suspend(action == "suspend");
+		}
+		command_accepted = true;
+	} else if (action == "debug_break") {
+		if (!debugger || !debugger->is_session_active()) {
+			return _error("RUNTIME_NOT_CONNECTED", "The native script debugger is not connected.");
+		}
+		if (!debugger->is_breaked()) {
+			debugger->debug_break();
+		}
+		command_accepted = true;
+	} else if (action == "debug_continue" || action == "debug_step" || action == "debug_next" || action == "debug_out") {
+		if (!debugger || !debugger->is_debuggable()) {
+			return _error("RUNTIME_NOT_BREAKED", "Break at a debuggable stack frame before stepping or continuing.");
+		}
+		if (action == "debug_continue") {
+			debugger->debug_continue();
+		} else if (action == "debug_step") {
+			debugger->debug_step();
+		} else if (action == "debug_next") {
+			debugger->debug_next();
+		} else {
+			debugger->debug_out();
+		}
+		command_accepted = true;
 	} else {
-		return _error("INVALID_ARGUMENT", "action must be play_current_scene or stop.");
+		return _error("INVALID_ARGUMENT", "Unknown runtime action.");
+	}
+	if (command_accepted) {
+		Dictionary data;
+		data["action"] = action;
+		data["command_accepted"] = true;
+		data["runtime_epoch"] = observation_service ? (int64_t)observation_service->get_runtime_status().get("runtime_epoch", 0) : 0;
+		return _ok(data);
 	}
 
-	Dictionary poll_args;
-	poll_args["action"] = action;
-	poll_args["started_by_call"] = action == "play_current_scene" && !was_playing;
-	poll_args["stopped_by_call"] = action == "stop" && was_playing;
-	poll_args["already_playing"] = action == "play_current_scene" && was_playing;
-	poll_args["deadline_msec"] = (int64_t)(OS::get_singleton()->get_ticks_msec() + 10000);
-	if (_is_runtime_control_ready(poll_args)) {
-		return _poll_runtime_control(poll_args);
-	}
-	Dictionary data = poll_args.duplicate(true);
-	data["status"] = "pending";
-	data["poll_args"] = poll_args;
-	return _ok(data);
+	return _error("RUNTIME_CONTROL_FAILED", "The native runtime command was not accepted.", false);
 }
 
 bool SolersToolRegistry::_is_runtime_control_ready(const Dictionary &p_args) const {
-	EditorRunBar *run_bar = EditorRunBar::get_singleton();
-	if (!run_bar) {
-		return true;
-	}
-	EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
-	ScriptEditorDebugger *debugger = debugger_node ? debugger_node->get_current_debugger() : nullptr;
-	const bool debugger_connected = debugger && debugger->is_session_active();
-	const bool playing = run_bar->is_playing();
 	const String action = p_args.get("action", String());
-	const bool confirmed = action == "play_current_scene" ? playing && debugger_connected : !playing && !debugger_connected;
-	return confirmed || OS::get_singleton()->get_ticks_msec() >= (uint64_t)(int64_t)p_args.get("deadline_msec", 0);
+	if (action == "set_property") {
+		return !observation_service || observation_service->is_runtime_observation_ready(p_args);
+	}
+	return true;
 }
 
 Dictionary SolersToolRegistry::_poll_runtime_control(const Dictionary &p_args) const {
-	EditorRunBar *run_bar = EditorRunBar::get_singleton();
-	ERR_FAIL_NULL_V(run_bar, _error("EDITOR_RUN_BAR_UNAVAILABLE", "The editor runtime controller is not available.", false));
-	EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
-	ScriptEditorDebugger *debugger = debugger_node ? debugger_node->get_current_debugger() : nullptr;
-	const bool debugger_connected = debugger && debugger->is_session_active();
-	const bool playing = run_bar->is_playing();
 	const String action = p_args.get("action", String());
-	const bool confirmed = action == "play_current_scene" ? playing && debugger_connected : !playing && !debugger_connected;
-	if (!confirmed) {
-		if (OS::get_singleton()->get_ticks_msec() >= (uint64_t)(int64_t)p_args.get("deadline_msec", 0)) {
-			return _error("RUNTIME_STATE_TIMEOUT", vformat("EngineDebugger did not confirm runtime action '%s' within 10 seconds.", action));
+	if (action == "set_property") {
+		ERR_FAIL_NULL_V(observation_service, _error("RUNTIME_OBSERVATION_UNAVAILABLE", "Runtime observation is not available.", false));
+		Dictionary observed = observation_service->observe_runtime(p_args);
+		if (observed.get("status", String()) == "pending") {
+			return _ok(observed);
 		}
-		Dictionary data = p_args.duplicate(true);
-		data["status"] = "pending";
-		data["poll_args"] = p_args;
+		const Array objects = observed.get("objects", Array());
+		if (objects.is_empty()) {
+			return _error("RUNTIME_OBJECT_DISAPPEARED", "The runtime object disappeared before verification.");
+		}
+		const Dictionary object = objects[0];
+		const StringName property = p_args.get("property", String());
+		const Dictionary properties = object.get("properties", Dictionary());
+		const Variant after = properties.get(property, Variant());
+		if (!properties.has(property) || after != p_args.get("value", Variant())) {
+			return _error("RUNTIME_WRITE_NOT_CONFIRMED", "The native debugger did not confirm the requested runtime value.");
+		}
+		Dictionary data;
+		data["action"] = action;
+		data["runtime_only"] = true;
+		data["runtime_epoch"] = observed.get("runtime_epoch", 0);
+		data["object_id"] = object.get("object_id", 0);
+		data["property"] = property;
+		data["before"] = p_args.get("before", Variant());
+		data["after"] = after;
+		data["target_state_confirmed"] = true;
 		return _ok(data);
 	}
-	Dictionary data;
-	data["action"] = action;
-	data["is_playing"] = playing;
-	data["debugger_connected"] = debugger_connected;
-	data["playing_scene"] = run_bar->get_playing_scene();
-	data["started_by_call"] = p_args.get("started_by_call", false);
-	data["stopped_by_call"] = p_args.get("stopped_by_call", false);
-	data["already_playing"] = p_args.get("already_playing", false);
-	data["target_state_confirmed"] = true;
-	return _ok(data);
+	return _error("RUNTIME_CONTINUATION_INVALID", "Only runtime property verification has a continuation.", false);
 }
 
 void SolersToolRegistry::_register_observation_tools() {
@@ -1461,8 +1539,8 @@ void SolersToolRegistry::_register_observation_tools() {
 				return _ok(file);
 			},
 			_access_by_arg("read", "project:", "path"), {}, {}, SolersToolUiKind::READ);
-	_add_observe("runtime.observe", "Read the current runtime epoch as a digest: lifecycle status, aggregated errors, and optional raw events. Defaults to the active runtime_epoch only.",
-			R"({"type":"object","properties":{"since_cursor":{"type":"integer","minimum":0,"description":"Return observations after this cursor. Default 0."},"since_epoch":{"type":"integer","minimum":0,"description":"Minimum runtime_epoch to include. Default is the current epoch."},"include_prior_epochs":{"type":"boolean","description":"If true, include prior epochs (unless since_epoch is set). Default false."},"include_events":{"type":"boolean","description":"If true, also return raw event samples. Default false; use error_digest first."},"types":{"type":"array","items":{"type":"string","enum":["started","stopped","output","error","break","debug_data","performance","remote_scene"]},"uniqueItems":true,"description":"Optional event type filter."},"max_events":{"type":"integer","minimum":0,"maximum":256,"description":"Maximum raw events when include_events=true. Default 32."}}})",
+	_add_observe("runtime.observe", "Observe the running game through Godot's native debugger. Query lifecycle events, the remote SceneTree, selected object properties, paused stack frames, or one performance sample.",
+			R"({"type":"object","properties":{"target":{"type":"string","enum":["events","tree","objects","stack","performance"]},"since_cursor":{"type":"integer","minimum":0},"include_events":{"type":"boolean"},"max_events":{"type":"integer","minimum":0,"maximum":256},"object_ids":{"type":"array","items":{"type":"integer","minimum":1},"minItems":1,"maxItems":16,"uniqueItems":true},"properties":{"type":"array","items":{"type":"string","minLength":1},"maxItems":64,"uniqueItems":true},"max_results":{"type":"integer","minimum":1,"maximum":512}},"additionalProperties":false})",
 			[this, obs](const SolersToolContext &, const Dictionary &a) { return _ok(obs->observe_runtime(a)); }, {},
 			[this, obs](const SolersToolContext &, const Dictionary &a) { return _ok(obs->observe_runtime(a)); },
 			[obs](const SolersToolContext &, const Dictionary &a) { return obs->is_runtime_observation_ready(a); });
@@ -1601,8 +1679,8 @@ void SolersToolRegistry::_register_script_tools() {
 
 void SolersToolRegistry::_register_runtime_tools() {
 	const SolersPermissionManager::Permission run_project = SolersPermissionManager::PERMISSION_RUN_PROJECT;
-	_add("runtime.control", "Start or stop editor playback; completes after EngineDebugger confirms runtime state. Idempotent. Not required for static material/lighting screenshots — use render.capture target=camera on an edited-scene Camera3D instead.",
-			R"({"type":"object","properties":{"action":{"type":"string","enum":["play_current_scene","stop"]}},"required":["action"]})",
+	_add("runtime.control", "Control Godot's active debugger or make one preconditioned, runtime-only property change. Persist verified changes separately through object.transaction.",
+			R"({"oneOf":[{"type":"object","properties":{"action":{"type":"string","enum":["play_current_scene","stop","suspend","resume","next_frame","debug_break","debug_continue","debug_step","debug_next","debug_out"]}},"required":["action"],"additionalProperties":false},{"type":"object","properties":{"action":{"const":"set_property"},"runtime_epoch":{"type":"integer","minimum":0},"object_id":{"type":"integer","minimum":1},"property":{"type":"string","minLength":1},"expected_value":{},"value":{}},"required":["action","runtime_epoch","object_id","property","expected_value","value"],"additionalProperties":false}]})",
 			run_project, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DIRECT,
 			[this](const SolersToolContext &, const Dictionary &a) { return _run_control(a); },
 			SolersToolExecution::MAIN_THREAD, [](const Dictionary &) {
@@ -2084,15 +2162,20 @@ void SolersToolRegistry::_register_reflection_tools() {
 					const Array requested = a.get("properties", Array());
 					if (!requested.is_empty()) {
 						Dictionary values;
+						Dictionary errors;
 						for (int i = 0; i < requested.size(); i++) {
 							args["property"] = requested[i];
 							const Dictionary value = resource_service->native_get(args);
 							if (!(bool)value.get("ok", false)) {
-								return value;
+								errors[requested[i]] = value.get("error", Dictionary());
+								continue;
 							}
 							values[requested[i]] = Dictionary(value.get("data", Dictionary())).get("value", Variant());
 						}
 						data["values"] = values;
+						if (!errors.is_empty()) {
+							data["property_errors"] = errors;
+						}
 					}
 					return _ok(data);
 				}

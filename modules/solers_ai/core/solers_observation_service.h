@@ -51,7 +51,12 @@ class SolersObservationService : public Object {
 	uint64_t runtime_cursor = 0;
 	uint64_t runtime_epoch = 0;
 	Vector<Dictionary> runtime_events;
+	uint64_t runtime_query_sequence = 0;
+	Dictionary runtime_query;
+	Dictionary runtime_object_cache;
+	Array runtime_stack_frames;
 	bool performance_capture_active = false;
+	uint64_t performance_sample_cursor = 0;
 	Array performance_monitor_names;
 	Array performance_monitor_types;
 
@@ -83,7 +88,8 @@ class SolersObservationService : public Object {
 	void _runtime_breaked(bool p_breaked, bool p_can_debug, const String &p_reason, bool p_has_stackdump);
 	void _runtime_debug_data(const String &p_message, const Array &p_data);
 	void _runtime_tree_updated();
-	bool _has_runtime_event_after(const StringName &p_type, uint64_t p_cursor) const;
+	void _runtime_stack_dump(const Array &p_frames);
+	void _finish_runtime_query(Dictionary p_result);
 	bool _is_runtime_visual_ready() const;
 	bool _request_runtime_screenshot(const String &p_capture_id);
 
@@ -110,6 +116,8 @@ public:
 	Dictionary get_runtime_status() const;
 	Dictionary observe_runtime(const Dictionary &p_args);
 	bool is_runtime_observation_ready(const Dictionary &p_args) const;
+	bool has_runtime_query() const { return !runtime_query.is_empty(); }
+	bool get_runtime_property(uint64_t p_epoch, ObjectID p_object_id, const StringName &p_property, Variant &r_value) const;
 	Dictionary get_editor_logs(int p_max_messages = 200) const;
 	Dictionary capture_viewport(const Dictionary &p_args);
 	Dictionary poll_viewport_capture(const Dictionary &p_args);

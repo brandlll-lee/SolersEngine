@@ -688,6 +688,7 @@ Dictionary SolersResourceService::inspect_resource(const Dictionary &p_args) con
 	const Array requested = p_args.get("properties", Array());
 	if (!requested.is_empty()) {
 		Dictionary values;
+		Dictionary errors;
 		for (const Variant &value : requested) {
 			Dictionary property_args;
 			property_args["path"] = p_args.get("path", String());
@@ -695,7 +696,8 @@ Dictionary SolersResourceService::inspect_resource(const Dictionary &p_args) con
 			property_args["type_hint"] = p_args.get("type_hint", String());
 			const Dictionary property_result = get_resource_property(property_args);
 			if (!(bool)property_result.get("ok", false)) {
-				return property_result;
+				errors[String(value)] = property_result.get("error", Dictionary());
+				continue;
 			}
 			const Dictionary property_data = property_result.get("data", Dictionary());
 			Dictionary item;
@@ -704,6 +706,9 @@ Dictionary SolersResourceService::inspect_resource(const Dictionary &p_args) con
 			values[String(value)] = item;
 		}
 		data["properties"] = values;
+		if (!errors.is_empty()) {
+			data["property_errors"] = errors;
+		}
 	}
 	return _ok(data);
 }
