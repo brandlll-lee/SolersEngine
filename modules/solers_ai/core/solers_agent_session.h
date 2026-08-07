@@ -155,6 +155,7 @@ class SolersAgentSession : public Object {
 	int text_delta_count = 0;
 	uint64_t last_text_delta_msec = 0;
 	Array compaction_source_messages;
+	int64_t compaction_event_id = 0;
 	Dictionary retry_request;
 	Dictionary retry_profile;
 	int overflow_compaction_attempts = 0;
@@ -177,7 +178,6 @@ class SolersAgentSession : public Object {
 	Dictionary deferred_window_audit; // the single parked tool whose continuation owns the main thread between polls
 	Dictionary attributable_tool_errors; // call_id -> scoped Godot error evidence
 	uint64_t authored_revision = 0; // Session-local ordering only; native receipts carry authority.
-	uint64_t runtime_epoch = 0;
 	uint64_t observed_revision = 0;
 	uint64_t runtime_observation_cursor = 0;
 	Dictionary render_artifacts; // artifact kind -> versioned native-tool result
@@ -243,7 +243,7 @@ class SolersAgentSession : public Object {
 	void _execute_deferred_tool(uint64_t p_token);
 	static void _tool_thread_func(void *p_userdata);
 	bool _collect_tool_thread_result(bool p_wait);
-	void _deliver_tool_result(const String &p_id, const String &p_model_name, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result);
+	void _deliver_tool_result(const String &p_id, const String &p_model_name, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result, int p_budget = INT32_MAX);
 	bool _is_awaiting_approval_result(const Dictionary &p_result) const;
 	void _register_session_tools();
 	Dictionary _handle_update_plan(const Dictionary &p_args);
@@ -253,7 +253,7 @@ class SolersAgentSession : public Object {
 	int64_t _write_transcript_message(const String &p_role, const String &p_content, const Array &p_mentions = Array(), const Array &p_tool_calls = Array(), const String &p_reasoning = String(), const Array &p_attachments = Array(), int64_t p_event_id = 0) const;
 	void _write_transcript_tool(const String &p_call_id, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result, const String &p_delivered_content) const;
 	void _write_transcript_plan() const;
-	void _write_transcript_compaction(const Dictionary &p_result) const;
+	void _write_transcript_compaction(const String &p_phase, const Dictionary &p_payload) const;
 	Dictionary _tool_denied_result(const String &p_code, const String &p_message) const;
 	void _record(const String &p_event, const Dictionary &p_payload) const;
 	Dictionary _ok(const Variant &p_data) const;

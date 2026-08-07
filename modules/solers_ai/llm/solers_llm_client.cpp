@@ -606,7 +606,7 @@ void SolersLLMClient::_drain_records(Array &r_events) {
 				} else if (kind == SolersLLMEventKind::ERROR) {
 					// Protocol already named the failure — don't wait for a missing
 					// finish_reason and relabel it as STREAM_ENDED_WITHOUT_FINISH.
-					_fail(String(event.get("code", "PROVIDER_STREAM_ERROR")), String(event.get("message", "Provider stream reported an error.")), false, event.get("failure_kind", String()));
+					_fail(String(event.get("code", "PROVIDER_STREAM_ERROR")), String(event.get("message", "Provider stream reported an error.")), stream_has_content && !stream_saw_finish, event.get("failure_kind", String()));
 					last_error["response_bytes"] = response_bytes;
 					if (!response_prefix.is_empty()) {
 						last_error["body_prefix"] = response_prefix.substr(0, MIN(512, response_prefix.length()));

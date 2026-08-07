@@ -7,9 +7,6 @@
 /**************************************************************************/
 /* Solers: AI-native game engine.                                        */
 /*                                                                        */
-/* The transcript is the complete audit record. The model receives a      */
-/* bounded projection: completed tool exchanges are represented by turn   */
-/* checkpoints instead of being replayed on every later request.          */
 /**************************************************************************/
 
 #pragma once
@@ -40,11 +37,6 @@ public:
 	static const char *CANCELLED_TOOL_RESULT;
 	static const char *MODEL_CONTEXT_ROLE;
 
-	// Provider contract as a pure function over history: every assistant
-	// tool_call is answered by exactly one tool message with the same id, and
-	// no tool message answers a call that was never made. Turns killed
-	// mid-queue break that invariant in durable history permanently, so the
-	// projection repairs it rather than inferring why the turn ended.
 	static Array repair_tool_pairing(const Array &p_messages);
 	static Array project_completed_turns(const Array &p_messages);
 
@@ -55,7 +47,7 @@ public:
 	// Reserve the provider's declared output capacity. Unknown windows never compact.
 	bool should_compact(int p_used_tokens, int p_context_window, int p_max_output_tokens) const;
 	bool should_compact(const Array &p_messages, const String &p_system_prompt, int p_tool_tokens, int p_context_window, int p_max_output_tokens, int p_transient_tokens = 0);
-	Dictionary apply_compaction(const Array &p_messages, const String &p_summary, int p_turn_id);
+	Dictionary apply_compaction(const Array &p_messages, const String &p_summary, int p_token_budget);
 	void reset();
 
 	int get_last_estimated_tokens() const { return last_estimated_tokens; }
