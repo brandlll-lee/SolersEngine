@@ -270,15 +270,6 @@ Error SolersLLMClient::begin(const Dictionary &p_request, const Dictionary &p_pr
 	}
 	request_path = path_prefix + active_protocol->get_default_path();
 
-	String validation_code;
-	String validation_message;
-	if (!active_protocol->validate_request(p_request, validation_code, validation_message)) {
-		last_error["code"] = validation_code.is_empty() ? "PROTOCOL_REQUEST_INVALID" : validation_code;
-		last_error["message"] = validation_message.is_empty() ? "The LLM request violates the provider protocol contract." : validation_message;
-		_publish(Array(), STATE_FAILED);
-		return ERR_INVALID_DATA;
-	}
-
 	worker_request = p_request;
 	worker_protocol_id = protocol_id;
 	request_body = String();

@@ -1148,12 +1148,7 @@ Array SolersAgentSession::_collect_tools() {
 		tool["name"] = def.get("model_name", def.get("name", String()));
 		tool["canonical_name"] = def.get("name", String());
 		tool["description"] = def.get("description", String());
-		Dictionary schema = def.get("input_schema", Dictionary());
-		if (schema.is_empty()) {
-			schema["type"] = "object";
-			schema["properties"] = Dictionary();
-		}
-		tool["parameters"] = schema;
+		tool["parameters"] = def.get("input_schema", Dictionary());
 		out.push_back(tool);
 	}
 	cached_request_tools = out;

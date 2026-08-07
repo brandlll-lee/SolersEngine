@@ -27,7 +27,7 @@
 #include "core/variant/dictionary.h"
 
 class SolersModelsDev {
-	// providerID -> { id, name, npm, api, env(Array), local(bool),
+	// providerID -> { id, name, api, env(Array), local(bool), protocol,
 	//                 models: { modelID -> { id, name, context, output,
 	//                 reasoning, reasoning_options, tool_call, attachment } } }
 	HashMap<StringName, Dictionary> providers;
@@ -68,13 +68,8 @@ public:
 	Dictionary get_model(const StringName &p_provider, const String &p_model) const;
 	// Returns 1 when declared, 0 when explicitly absent, and -1 when unknown.
 	static int input_modality_support(const Dictionary &p_model, const String &p_modality);
-	// Effort values declared by models.dev. Unknown/custom reasoning models keep
-	// the generic High/Extra High controls instead of losing the capability.
+	// Effort values explicitly declared by models.dev.
 	static Array reasoning_efforts(const Dictionary &p_model);
-	// Catalog entry by id, falling back to matching the endpoint URL (custom
-	// gateway profiles). Empty dictionary when the catalog has no answer.
-	Dictionary find_provider(const String &p_id, const String &p_api_url = String()) const;
-
 	SolersModelsDev();
 	~SolersModelsDev();
 };

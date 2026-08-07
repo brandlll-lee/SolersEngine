@@ -14,9 +14,9 @@
 
 class SolersModelsDev;
 
-// Assembles transport profiles from models.dev catalog + a small AuthHook
-// overlay table (Codex OAuth, custom OpenAI-compatible template). New catalog
-// providers need zero Solers code changes.
+// Assembles transport profiles from catalog entries with declared connection
+// facts plus the small AuthHook/custom overlay table. Metadata-only catalog
+// entries are not presented as usable connections.
 class SolersProviderRegistry : public Object {
 	GDCLASS(SolersProviderRegistry, Object);
 
@@ -31,8 +31,6 @@ class SolersProviderRegistry : public Object {
 	Dictionary _profile_from_catalog(const Dictionary &p_catalog) const;
 	Dictionary _default_custom_profile(const String &p_id) const;
 	String _default_model_for_catalog(const Dictionary &p_catalog) const;
-	static String _protocol_for_npm(const String &p_npm);
-	static bool _looks_local_api(const String &p_api);
 
 protected:
 	static void _bind_methods();
@@ -43,14 +41,12 @@ public:
 
 	Dictionary get_provider_profile(const String &p_provider) const;
 	Dictionary resolve_provider_profile(const String &p_provider, const String &p_base_url_override = String()) const;
-	// Catalog + AuthHook overlays (OpenCode-style "all"). Custom user ids resolve
-	// via get_provider_profile when configured.
+	// Only profiles with an explicit wire protocol and authentication contract.
 	Array list_provider_profiles() const;
 	Array list_popular_provider_ids() const;
 	Array list_overlay_provider_ids() const;
 	Dictionary validate_config(const Dictionary &p_config) const;
 	bool is_model_allowed(const String &p_provider, const String &p_model) const;
-	bool is_known_provider(const String &p_provider) const;
 
 	SolersProviderRegistry();
 	~SolersProviderRegistry();

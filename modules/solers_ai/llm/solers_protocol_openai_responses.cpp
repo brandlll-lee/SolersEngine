@@ -115,7 +115,7 @@ Array SolersOpenAIResponsesProtocol::_lower_tools(const Array &p_tools) const {
 		native_tool["name"] = tool.get("name", String());
 		native_tool["description"] = tool.get("description", String());
 		native_tool["parameters"] = tool.get("parameters", Dictionary());
-		native_tool["strict"] = true;
+		native_tool["strict"] = false;
 		out.push_back(native_tool);
 	}
 	return out;

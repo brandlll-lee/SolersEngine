@@ -57,27 +57,31 @@ void SolersModelsDev::_load_seed() {
 	struct SeedProvider {
 		const char *id;
 		const char *name;
-		const char *npm;
 		const char *api;
 		const char *env;
+		const char *protocol;
+		const char *auth_header;
+		const char *auth_prefix;
 		bool local;
 	};
 	static const SeedProvider seeds[] = {
-		{ "openai", "OpenAI", "@ai-sdk/openai", "https://api.openai.com/v1", "OPENAI_API_KEY", false },
-		{ "anthropic", "Anthropic", "@ai-sdk/anthropic", "https://api.anthropic.com", "ANTHROPIC_API_KEY", false },
-		{ "google", "Google", "@ai-sdk/openai-compatible", "https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY", false },
-		{ "deepseek", "DeepSeek", "@ai-sdk/openai-compatible", "https://api.deepseek.com", "DEEPSEEK_API_KEY", false },
-		{ "openrouter", "OpenRouter", "@ai-sdk/openai-compatible", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", false },
-		{ "qwen", "Qwen / DashScope", "@ai-sdk/openai-compatible", "https://dashscope.aliyuncs.com/compatible-mode/v1", "DASHSCOPE_API_KEY", false },
-		{ "ollama", "Ollama", "@ai-sdk/openai-compatible", "http://127.0.0.1:11434/v1", "", true },
-		{ "lmstudio", "LM Studio", "@ai-sdk/openai-compatible", "http://127.0.0.1:1234/v1", "", true },
+		{ "openai", "OpenAI", "https://api.openai.com/v1", "OPENAI_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
+		{ "anthropic", "Anthropic", "https://api.anthropic.com", "ANTHROPIC_API_KEY", "anthropic-messages", "x-api-key", "", false },
+		{ "google", "Google", "https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
+		{ "deepseek", "DeepSeek", "https://api.deepseek.com", "DEEPSEEK_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
+		{ "openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
+		{ "qwen", "Qwen / DashScope", "https://dashscope.aliyuncs.com/compatible-mode/v1", "DASHSCOPE_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
+		{ "ollama", "Ollama", "http://127.0.0.1:11434/v1", "", "openai-chat", "", "", true },
+		{ "lmstudio", "LM Studio", "http://127.0.0.1:1234/v1", "", "openai-chat", "", "", true },
 	};
 	for (const SeedProvider &seed : seeds) {
 		Dictionary provider;
 		provider["id"] = String(seed.id);
 		provider["name"] = String(seed.name);
-		provider["npm"] = String(seed.npm);
 		provider["api"] = String(seed.api);
+		provider["protocol"] = String(seed.protocol);
+		provider["auth_header"] = String(seed.auth_header);
+		provider["auth_prefix"] = String(seed.auth_prefix);
 		Array env;
 		if (seed.env[0] != '\0') {
 			env.push_back(String(seed.env));
@@ -125,9 +129,11 @@ void SolersModelsDev::_ingest(const Dictionary &p_root) {
 		const Dictionary po = provider_value;
 
 		Dictionary out_provider;
+		if (const Dictionary *seed = next.getptr(StringName(provider_id))) {
+			out_provider = *seed;
+		}
 		out_provider["id"] = po.get("id", provider_id);
 		out_provider["name"] = po.get("name", provider_id);
-		out_provider["npm"] = po.get("npm", "@ai-sdk/openai-compatible");
 		out_provider["api"] = po.get("api", "");
 		out_provider["env"] = po.get("env", Array());
 		out_provider["local"] = po.get("local", false);
@@ -297,10 +303,12 @@ static Dictionary _solers_provider_meta(const Dictionary &p_provider) {
 	Dictionary out;
 	out["id"] = p_provider.get("id", String());
 	out["name"] = p_provider.get("name", String());
-	out["npm"] = p_provider.get("npm", String());
 	out["api"] = p_provider.get("api", String());
 	out["env"] = Array(p_provider.get("env", Array())).duplicate();
 	out["local"] = p_provider.get("local", false);
+	out["protocol"] = p_provider.get("protocol", String());
+	out["auth_header"] = p_provider.get("auth_header", String());
+	out["auth_prefix"] = p_provider.get("auth_prefix", String());
 	const Variant models_v = p_provider.get("models", Dictionary());
 	if (models_v.get_type() == Variant::DICTIONARY) {
 		const Array ids = Dictionary(models_v).keys();
@@ -353,13 +361,6 @@ Array SolersModelsDev::reasoning_efforts(const Dictionary &p_model) {
 			}
 		}
 	}
-	if (!efforts.is_empty() || (!p_model.is_empty() && p_model.has("reasoning") && !(bool)p_model["reasoning"])) {
-		return efforts;
-	}
-	// A custom or older catalog entry may support effort without declaring its
-	// levels. Keep the useful generic controls; the remote API remains the judge.
-	efforts.push_back("high");
-	efforts.push_back("xhigh");
 	return efforts;
 }
 
@@ -438,31 +439,6 @@ String SolersModelsDev::canonical_provider_id(const String &p_id) const {
 		}
 	}
 	return p_id;
-}
-
-Dictionary SolersModelsDev::find_provider(const String &p_id, const String &p_api_url) const {
-	MutexLock lock(providers_mutex);
-	const String canonical = canonical_provider_id(p_id);
-	const Dictionary *found = providers.getptr(StringName(canonical));
-	if (found) {
-		return _solers_provider_meta(*found);
-	}
-	const Dictionary *direct = providers.getptr(StringName(p_id));
-	if (direct) {
-		return _solers_provider_meta(*direct);
-	}
-	// Custom/gateway profiles carry no catalog id; the endpoint URL is the
-	// remaining authoritative link to a catalog entry.
-	const String api_url = p_api_url.strip_edges().trim_suffix("/");
-	if (api_url.is_empty()) {
-		return Dictionary();
-	}
-	for (const KeyValue<StringName, Dictionary> &kv : providers) {
-		if (String(kv.value.get("api", String())).strip_edges().trim_suffix("/") == api_url) {
-			return _solers_provider_meta(kv.value);
-		}
-	}
-	return Dictionary();
 }
 
 SolersModelsDev::SolersModelsDev() {}
