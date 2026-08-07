@@ -213,6 +213,15 @@ Ref<Theme> SolersUITheme::create() {
 	theme->set_font(SceneStringName(font), "SolersMono", mono);
 	theme->set_type_variation("SolersCodeText", "RichTextLabel");
 	theme->set_font("normal_font", "SolersCodeText", mono);
+	theme->set_type_variation("SolersSessionTitle", "Label");
+	theme->set_font(SceneStringName(font), "SolersSessionTitle", strong);
+	theme->set_font_size(SceneStringName(font_size), "SolersSessionTitle", int(14 * EDSCALE));
+	theme->set_type_variation("SolersSessionMeta", "Label");
+	theme->set_font_size(SceneStringName(font_size), "SolersSessionMeta", int(11 * EDSCALE));
+	const Tokens tokens = make_tokens();
+	theme->set_color(SceneStringName(font_color), "SolersSessionTitle", tokens.text);
+	theme->set_color(SceneStringName(font_color), "SolersSessionMeta", tokens.text_dim);
+	apply_chrome_edges(theme, tokens.hairline);
 	return theme;
 }
 
@@ -228,10 +237,6 @@ SolersUITheme::Tokens SolersUITheme::make_tokens() {
 	t.surface = Color(0.082f, 0.082f, 0.090f); // ~#151517 — content panel / grid backdrop.
 	t.card = Color(0.118f, 0.118f, 0.128f); // ~#1E1E21 — tile / card surface.
 	t.card_hover = Color(0.165f, 0.165f, 0.180f); // ~#2A2A2E — hover.
-	// UE's action blue is *deep and slightly desaturated* — sampled off the
-	// Create button it lands near #1265BE. Pure saturated blues (#057FFF,
-	// #0070E0) read cartoonish against the graphite chrome.
-	t.accent = Color(0.071f, 0.396f, 0.745f); // #1265BE — UE action blue (engine-grade).
 	t.card_selected = Color(0.028f, 0.165f, 0.318f); // ~#072A51 — muted selection navy.
 	// UE separates surfaces with *dark recess* lines, not bright outlines. Dark,
 	// low-alpha edges read as depth and — crucially — never produce visible white

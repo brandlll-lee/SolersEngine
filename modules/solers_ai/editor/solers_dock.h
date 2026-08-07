@@ -60,6 +60,7 @@ class SolersDock : public PanelContainer {
 	GDCLASS(SolersDock, PanelContainer);
 
 	ScrollContainer *chat_scroll = nullptr;
+	MarginContainer *timeline_inset = nullptr;
 	VBoxContainer *message_list = nullptr;
 	VBoxContainer *history_mount = nullptr;
 	Control *empty_state = nullptr;
@@ -137,10 +138,10 @@ class SolersDock : public PanelContainer {
 	String session_current_id;
 	Array timeline_messages;
 	int timeline_start = 0;
-	bool timeline_rendering = false;
 	bool timeline_rows_sorted = false;
 	int64_t timeline_anchor_event_id = -1;
 	float timeline_anchor_screen_y = 0.0f;
+	int layout_drag_depth = 0;
 
 	SolersObservationService *observation_service = nullptr;
 	SolersToolRegistry *tool_registry = nullptr;
@@ -156,6 +157,7 @@ class SolersDock : public PanelContainer {
 	void _refresh_status();
 	void _refresh_model_chip();
 	void _sync_layout_widths();
+	void _sync_session_button();
 	void _on_send_chat_pressed();
 	void _on_stop_chat_pressed();
 	void _toggle_session_sidebar();
@@ -169,6 +171,8 @@ class SolersDock : public PanelContainer {
 	void _queue_timeline_layout_commit();
 	void _commit_timeline_layout();
 	void _on_timeline_scrolled();
+	void _bind_layout_splits();
+	void _set_layout_dragging(bool p_active);
 	VBoxContainer *_chat_mount() const;
 	void _on_new_chat_pressed();
 	void _on_model_chip_pressed();

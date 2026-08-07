@@ -98,8 +98,6 @@ public:
 };
 
 // Self-drawn select chip: [glyph] strong-text muted-text chevron.
-// Used for the access selector ("Full access", accent-tinted) and the
-// model/effort selector ("5.5  Extra High"). Hugs its content width.
 class SolersSelectChip : public Control {
 	GDCLASS(SolersSelectChip, Control);
 
@@ -107,9 +105,7 @@ class SolersSelectChip : public Control {
 	Ref<Texture2D> leading_texture; // Optional leading mark (e.g. provider logo); wins over glyph.
 	String strong_text;
 	String muted_text;
-	Color accent = Color(0, 0, 0, 0); // Transparent means neutral gray ramp.
 	bool show_chevron = true; // Trailing dropdown chevron (false for static pills).
-	bool filled = false; // Idle capsule wash (Cursor Agent chip); model chip stays ghost.
 
 	bool hovering = false;
 	bool pressing = false;
@@ -130,11 +126,9 @@ public:
 	virtual Size2 get_minimum_size() const override;
 
 	void configure(const StringName &p_glyph, const String &p_strong, const String &p_muted, const String &p_tooltip);
-	void set_accent(const Color &p_accent);
 	void set_texts(const String &p_strong, const String &p_muted);
 	void set_leading_texture(const Ref<Texture2D> &p_texture);
 	void set_show_chevron(bool p_show);
-	void set_filled(bool p_filled);
 	void set_pressed_callback(const Callable &p_cb) { pressed_callback = p_cb; }
 
 	SolersSelectChip();
@@ -219,15 +213,6 @@ inline Color solers_composer_bg() {
 inline Color solers_cell_bubble_bg() {
 	return solers_composer_bg().lightened(0.04f);
 }
-inline Color solers_accent() {
-	return Color(0.94f, 0.78f, 0.46f);
-}
-inline Color solers_chip_bg() {
-	return Color(solers_accent().r, solers_accent().g, solers_accent().b, 0.88f);
-}
-inline Color solers_chip_text() {
-	return Color(0.12f, 0.10f, 0.06f);
-}
 // Same RGB as Tokens.hairline; slightly stronger alpha for the composer card edge.
 inline Color solers_composer_border() {
 	return Color(0.95f, 0.95f, 0.97f, 0.16f);
@@ -243,7 +228,7 @@ void solers_style_bare_search_line_edit(LineEdit *p_edit);
 
 String solers_mention_chip_label(const Dictionary &p_mention);
 float solers_mention_chip_width(const String &p_label, const Ref<Font> &p_font, int p_font_size, bool p_has_icon);
-void solers_draw_mention_chip(RID p_ci, const Rect2 &p_pill, const String &p_label, const Ref<Font> &p_font, int p_font_size, const Ref<Texture2D> &p_icon);
+void solers_draw_mention_chip(RID p_ci, const Rect2 &p_pill, const String &p_label, const Ref<Font> &p_font, int p_font_size, const Ref<Texture2D> &p_icon, const Color &p_text_color);
 // Compact chip icon (provider logos + Solers UI fallbacks). Composer popup may
 // still use richer path previews locally.
 Ref<Texture2D> solers_mention_chip_icon(const Dictionary &p_mention, int p_px);

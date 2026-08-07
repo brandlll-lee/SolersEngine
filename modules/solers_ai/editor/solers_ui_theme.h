@@ -29,7 +29,6 @@ public:
 		Color border;
 		Color border_strong;
 		Color hairline; // Cursor-flat pane/title edges (light on deep bg).
-		Color accent;
 		Color text;
 		Color text_dim;
 

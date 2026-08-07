@@ -359,7 +359,7 @@ void SolersUserBubble::_notification(int p_what) {
 						Rect2 pill = paragraph->get_line_object_rect(line, key);
 						pill.position += origin;
 						const Dictionary mention = object["mention"];
-						solers_draw_mention_chip(ci, pill, object["label"], font, font_size, solers_mention_chip_icon(mention, icon_px));
+						solers_draw_mention_chip(ci, pill, object["label"], font, font_size, solers_mention_chip_icon(mention, icon_px), get_theme_color(SNAME("accent_color"), SNAME("Editor")));
 					}
 				}
 			}
@@ -1014,6 +1014,11 @@ void SolersStatusCell::set_status(const String &p_text) {
 	queue_redraw();
 }
 
+void SolersStatusCell::set_active(bool p_active) {
+	set_process_internal(p_active);
+	queue_redraw();
+}
+
 Size2 SolersStatusCell::get_minimum_size() const {
 	return Size2(0, 22.0f * EDSCALE);
 }
@@ -1034,7 +1039,8 @@ void SolersStatusCell::_notification(int p_what) {
 			const float h = get_size().y;
 			const int font_size = int(12 * ed);
 			const float baseline = (h - font->get_height(font_size)) * 0.5f + font->get_ascent(font_size);
-			draw_string(font, Point2(0, baseline).floor(), status_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, SOLERS_CELL_TEXT_FAINT.lerp(Color(0.95f, 0.96f, 0.98f), 0.35f + 0.25f * Math::sin(shimmer_phase * Math::TAU)));
+			const Color color = is_processing_internal() ? SOLERS_CELL_TEXT_FAINT.lerp(Color(0.95f, 0.96f, 0.98f), 0.35f + 0.25f * Math::sin(shimmer_phase * Math::TAU)) : SOLERS_CELL_TEXT_DIM;
+			draw_string(font, Point2(0, baseline).floor(), status_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, color);
 		} break;
 	}
 }

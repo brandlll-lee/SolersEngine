@@ -256,6 +256,7 @@ public:
 	virtual Size2 get_minimum_size() const override;
 
 	void set_status(const String &p_text);
+	void set_active(bool p_active);
 
 	SolersStatusCell();
 };

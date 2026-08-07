@@ -327,11 +327,6 @@ void SolersSelectChip::configure(const StringName &p_glyph, const String &p_stro
 	queue_redraw();
 }
 
-void SolersSelectChip::set_accent(const Color &p_accent) {
-	accent = p_accent;
-	queue_redraw();
-}
-
 void SolersSelectChip::set_texts(const String &p_strong, const String &p_muted) {
 	strong_text = p_strong;
 	muted_text = p_muted;
@@ -354,14 +349,6 @@ void SolersSelectChip::set_show_chevron(bool p_show) {
 	}
 	show_chevron = p_show;
 	update_minimum_size();
-	queue_redraw();
-}
-
-void SolersSelectChip::set_filled(bool p_filled) {
-	if (filled == p_filled) {
-		return;
-	}
-	filled = p_filled;
 	queue_redraw();
 }
 
@@ -460,15 +447,9 @@ void SolersSelectChip::_notification(int p_what) {
 			const Rect2 r(Point2(), get_size());
 			const float ed = EDSCALE;
 
-			const float wash = filled ? (0.085f + 0.04f * anim + (pressing ? 0.03f : 0.0f)) : (0.055f * anim + (pressing ? 0.04f : 0.0f));
-			solers_draw_wash(this, r, wash, 12.0f * ed);
-
-			const bool accented = solers_has_accent(accent);
-			const Color strong_idle = accented ? accent : SOLERS_TEXT_STRONG;
-			const Color strong_lit = accented ? accent.lerp(Color(1, 1, 1, accent.a), 0.22f) : Color(1.0f, 1.0f, 1.0f);
-			const Color strong_color = strong_idle.lerp(strong_lit, anim);
-			const Color muted_color = (accented ? accent.darkened(0.08f) : SOLERS_TEXT_MUTED).lerp(strong_lit, 0.42f * anim);
-			const Color chevron_color = (accented ? accent : Color(0.50f, 0.51f, 0.55f)).lerp(strong_lit, 0.45f * anim);
+			const Color strong_color = SOLERS_TEXT_STRONG.lerp(Color(1, 1, 1), anim);
+			const Color muted_color = SOLERS_TEXT_MUTED.lerp(Color(1, 1, 1), 0.42f * anim);
+			const Color chevron_color = Color(0.50f, 0.51f, 0.55f).lerp(Color(1, 1, 1), 0.45f * anim);
 
 			const Ref<Font> font = get_theme_default_font();
 			const int font_size = int(12 * ed);
@@ -650,19 +631,13 @@ float solers_mention_chip_width(const String &p_label, const Ref<Font> &p_font, 
 	return pad_x + (p_has_icon ? icon_px + gap : 0.0f) + text_w + pad_x;
 }
 
-void solers_draw_mention_chip(RID p_ci, const Rect2 &p_pill, const String &p_label, const Ref<Font> &p_font, int p_font_size, const Ref<Texture2D> &p_icon) {
+void solers_draw_mention_chip(RID p_ci, const Rect2 &p_pill, const String &p_label, const Ref<Font> &p_font, int p_font_size, const Ref<Texture2D> &p_icon, const Color &p_text_color) {
 	if (p_label.is_empty()) {
 		return;
 	}
 	const float pad_x = 5.0f * EDSCALE;
 	const float gap = 4.0f * EDSCALE;
 	const int icon_px = int(Math::round(13.0f * EDSCALE));
-
-	Ref<StyleBoxFlat> style;
-	style.instantiate();
-	style->set_bg_color(solers_chip_bg());
-	style->set_corner_radius_all(int(Math::round(6.0f * EDSCALE)));
-	style->draw(p_ci, p_pill);
 
 	float x = p_pill.position.x + pad_x;
 	const float mid_y = p_pill.position.y + p_pill.size.y * 0.5f;
@@ -673,7 +648,7 @@ void solers_draw_mention_chip(RID p_ci, const Rect2 &p_pill, const String &p_lab
 	}
 	if (p_font.is_valid()) {
 		const float text_y = p_pill.position.y + (p_pill.size.y - p_font->get_height(p_font_size)) * 0.5f + p_font->get_ascent(p_font_size);
-		p_font->draw_string(p_ci, Point2(x, text_y), p_label, HORIZONTAL_ALIGNMENT_LEFT, -1, p_font_size, solers_chip_text());
+		p_font->draw_string(p_ci, Point2(x, text_y), p_label, HORIZONTAL_ALIGNMENT_LEFT, -1, p_font_size, p_text_color);
 	}
 }
 
