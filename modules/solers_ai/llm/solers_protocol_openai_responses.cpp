@@ -152,13 +152,6 @@ Dictionary SolersOpenAIResponsesProtocol::build_request_body(const Dictionary &p
 	return body;
 }
 
-void SolersOpenAIResponsesProtocol::augment_headers(Dictionary &r_headers, const Dictionary &p_request) const {
-	const String session_id = p_request.get("session_id", String());
-	if (!session_id.is_empty()) {
-		r_headers["session-id"] = session_id;
-	}
-}
-
 Array SolersOpenAIResponsesProtocol::parse_event(Dictionary &r_state, const String &p_event_name, const String &p_data) const {
 	Array events;
 	const Variant parsed = JSON::parse_string(p_data.strip_edges());

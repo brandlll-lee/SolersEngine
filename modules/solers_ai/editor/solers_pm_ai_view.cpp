@@ -515,8 +515,10 @@ void SolersPMAIView::_refresh_form(bool p_load_stored) {
 	api_key_label->show();
 	api_key_edit->set_editable(true);
 	api_key_reveal->show();
+	session_id_header_row->show();
 
 	if (_is_asset_provider(selected_provider)) {
+		session_id_header_row->hide();
 		const Dictionary profile = _asset_plugin_profile(selected_provider);
 		const String label = profile.get("label", selected_provider);
 		const String default_base_url = profile.get("base_url", String());
@@ -547,6 +549,7 @@ void SolersPMAIView::_refresh_form(bool p_load_stored) {
 
 	const Dictionary profile = registry->get_provider_profile(selected_provider);
 	const Dictionary config = settings_service->get_provider_config_for(selected_provider).get("data", Dictionary());
+	session_id_header_check->set_pressed_no_signal(config.get("send_session_id_header", true));
 	provider_title->set_text(TTRGET(String(profile.get("label", selected_provider))));
 	provider_notes->set_text(TTRGET(String(profile.get("notes", String()))));
 	if (_uses_codex_auth(selected_provider)) {
@@ -648,6 +651,19 @@ void SolersPMAIView::_on_field_changed(const String &p_ignored) {
 	}
 }
 
+void SolersPMAIView::_on_session_id_header_toggled(bool p_pressed) {
+	_on_field_changed();
+	if (settings_service && _uses_codex_auth(selected_provider)) {
+		Dictionary config;
+		config["provider"] = selected_provider;
+		config["send_session_id_header"] = p_pressed;
+		settings_service->set_provider_config(config);
+		if (saved_feedback) {
+			saved_feedback->set_text(TTR("Saved"));
+		}
+	}
+}
+
 void SolersPMAIView::_on_local_models_only_toggled(bool p_pressed) {
 	if (settings_service) {
 		settings_service->set_local_models_only(p_pressed);
@@ -736,6 +752,7 @@ void SolersPMAIView::_save() {
 	const String model = model_edit->get_text().strip_edges();
 	config["model"] = model.is_empty() ? String(profile.get("default_model", String())) : model;
 	config["base_url"] = base_url_edit->get_text().strip_edges();
+	config["send_session_id_header"] = session_id_header_check->is_pressed();
 	const String new_key = api_key_edit->get_text().strip_edges();
 	if (!new_key.is_empty()) {
 		config["api_key"] = new_key;
@@ -1222,6 +1239,20 @@ SolersPMAIView::SolersPMAIView() {
 		api_key_reveal->connect(SceneStringName(toggled), callable_mp(this, &SolersPMAIView::_on_reveal_toggled));
 		key_row->add_child(api_key_reveal);
 	}
+
+	session_id_header_row = memnew(HBoxContainer);
+	session_id_header_row->add_theme_constant_override("separation", 8 * EDSCALE);
+	form->add_child(session_id_header_row);
+	Label *session_id_header_label = memnew(Label(TTR("Session tracking")));
+	session_id_header_label->add_theme_color_override(SceneStringName(font_color), Color(tokens.text.r, tokens.text.g, tokens.text.b, 0.72f));
+	session_id_header_row->add_child(session_id_header_label);
+	session_id_header_check = memnew(CheckBox(TTR("Send session-id header")));
+	session_id_header_check->set_h_size_flags(SIZE_EXPAND_FILL);
+	session_id_header_check->set_pressed(true);
+	session_id_header_check->set_tooltip_text(TTR("Attach the Solers session id to every LLM request for server-side tracing and routing."));
+	session_id_header_check->set_accessibility_name(TTR("Send session-id header"));
+	session_id_header_check->connect(SceneStringName(toggled), callable_mp(this, &SolersPMAIView::_on_session_id_header_toggled));
+	session_id_header_row->add_child(session_id_header_check);
 
 	oauth_box = memnew(VBoxContainer);
 	oauth_box->add_theme_constant_override("separation", 10 * EDSCALE);

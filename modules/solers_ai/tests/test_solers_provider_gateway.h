@@ -300,7 +300,7 @@ TEST_CASE("[Editor][SolersSettingsService] local model policy migrates without c
 	paths.push_back(prefix + "local_models_only");
 	paths.push_back(prefix + "provider");
 	for (const String &provider : { String("ollama"), String("custom_openai_compatible") }) {
-		for (const String &key : { String("configured"), String("model"), String("base_url"), String("api_key") }) {
+		for (const String &key : { String("configured"), String("model"), String("base_url"), String("api_key"), String("send_session_id_header") }) {
 			paths.push_back(prefix + "providers/" + provider + "/" + key);
 		}
 	}
@@ -325,7 +325,7 @@ TEST_CASE("[Editor][SolersSettingsService] local model policy migrates without c
 		migration_service.set_provider_registry(&registry);
 		CHECK(migration_service.get_local_models_only() == enabled);
 		CHECK_FALSE(settings->has_setting(prefix + "privacy_mode"));
-		CHECK((int)settings->get_setting(prefix + "settings_version") == 5);
+		CHECK((int)settings->get_setting(prefix + "settings_version") == 6);
 	}
 
 	settings->set_manually(prefix + "settings_version", 4);
@@ -343,6 +343,7 @@ TEST_CASE("[Editor][SolersSettingsService] local model policy migrates without c
 	Dictionary local_config = service.get_provider_config_for("ollama").get("data", Dictionary());
 	CHECK(local_config.get("connected", false));
 	CHECK(local_config.get("available", false));
+	CHECK(local_config.get("send_session_id_header", false));
 	CHECK(service.get_local_models_only());
 
 	Dictionary remote;
@@ -350,6 +351,7 @@ TEST_CASE("[Editor][SolersSettingsService] local model policy migrates without c
 	remote["model"] = "synthetic-model";
 	remote["base_url"] = "https://gateway.example/v1";
 	remote["api_key"] = "synthetic-key";
+	remote["send_session_id_header"] = false;
 	service.set_local_models_only(false);
 	service.set_provider_config(remote);
 	service.set_local_models_only(true);
@@ -358,6 +360,7 @@ TEST_CASE("[Editor][SolersSettingsService] local model policy migrates without c
 	CHECK_FALSE(remote_config.get("available", true));
 	CHECK(remote_config.get("model", String()) == "synthetic-model");
 	CHECK(remote_config.get("base_url", String()) == "https://gateway.example/v1");
+	CHECK_FALSE(remote_config.get("send_session_id_header", true));
 	CHECK(Dictionary(service.get_provider_config().get("data", Dictionary())).get("provider", String()) == "custom_openai_compatible");
 
 	// Contract: never-special-cased catalog-style id connects via assembler.
@@ -3656,6 +3659,11 @@ TEST_CASE("[SolersOpenAIResponsesProtocol] lowers encrypted reasoning and tool c
 	Dictionary headers;
 	protocol.augment_headers(headers, request);
 	CHECK(headers.get("session-id", String()) == "synthetic-session");
+	request["send_session_id_header"] = false;
+	headers.clear();
+	protocol.augment_headers(headers, request);
+	CHECK_FALSE(headers.has("session-id"));
+	request["send_session_id_header"] = true;
 	const Dictionary body = protocol.build_request_body(request);
 	const Array input = body.get("input", Array());
 	REQUIRE(input.size() == 4);
@@ -3698,8 +3706,16 @@ TEST_CASE("[SolersOpenAIChatProtocol] starts chat completions with store disable
 	request["model"] = "gpt-5.5";
 	request["messages"] = messages;
 	request["reasoning_effort"] = "high";
+	request["session_id"] = "chat-session";
 
 	SolersOpenAIChatProtocol protocol;
+	Dictionary headers;
+	protocol.augment_headers(headers, request);
+	CHECK(headers.get("session-id", String()) == "chat-session");
+	request["send_session_id_header"] = false;
+	headers.clear();
+	protocol.augment_headers(headers, request);
+	CHECK_FALSE(headers.has("session-id"));
 	Dictionary body = protocol.build_request_body(request);
 	Array lowered = body.get("messages", Array());
 
@@ -3719,8 +3735,18 @@ TEST_CASE("[SolersAnthropicMessagesProtocol] lowers model effort into output con
 	request["model"] = "claude-sonnet-4.6";
 	request["messages"] = Array();
 	request["reasoning_effort"] = "high";
+	request["session_id"] = "anthropic-session";
 
 	SolersAnthropicMessagesProtocol protocol;
+	Dictionary headers;
+	protocol.augment_headers(headers, request);
+	CHECK(headers.get("session-id", String()) == "anthropic-session");
+	CHECK(headers.get("anthropic-version", String()) == "2023-06-01");
+	request["send_session_id_header"] = false;
+	headers.clear();
+	protocol.augment_headers(headers, request);
+	CHECK_FALSE(headers.has("session-id"));
+	CHECK(headers.get("anthropic-version", String()) == "2023-06-01");
 	const Dictionary body = protocol.build_request_body(request);
 	CHECK(Dictionary(body.get("output_config", Dictionary())).get("effort", String()) == "high");
 }

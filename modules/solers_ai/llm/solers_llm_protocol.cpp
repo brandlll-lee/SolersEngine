@@ -30,9 +30,20 @@
 
 #include "solers_llm_protocol.h"
 
+#include "core/variant/variant.h"
 #include "solers_protocol_anthropic_messages.h"
 #include "solers_protocol_openai_chat.h"
 #include "solers_protocol_openai_responses.h"
+
+void SolersLLMProtocol::augment_headers(Dictionary &r_headers, const Dictionary &p_request) const {
+	if ((bool)p_request.get("send_session_id_header", true)) {
+		const String session_id = p_request.get("session_id", String());
+		if (!session_id.is_empty()) {
+			r_headers["session-id"] = session_id;
+		}
+	}
+	augment_protocol_headers(r_headers, p_request);
+}
 
 void SolersLLMProtocolRegistry::register_protocol(SolersLLMProtocol *p_protocol) {
 	ERR_FAIL_NULL(p_protocol);

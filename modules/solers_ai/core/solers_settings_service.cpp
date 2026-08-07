@@ -41,7 +41,7 @@
 #include "modules/solers_ai/core/solers_secret_store.h"
 #include "modules/solers_ai/llm/solers_models_dev.h"
 
-static constexpr int SOLERS_PROVIDER_SETTINGS_VERSION = 5;
+static constexpr int SOLERS_PROVIDER_SETTINGS_VERSION = 6;
 
 void SolersSettingsService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_provider_registry", "provider_registry"), &SolersSettingsService::set_provider_registry);
@@ -107,7 +107,7 @@ void SolersSettingsService::_migrate_provider_settings() {
 		provider = "custom_openai_compatible";
 	}
 	if (version >= 2 && !previous_provider.is_empty() && previous_provider != provider) {
-		static const char *PROVIDER_KEYS[] = { "configured", "model", "base_url", "api_key", "oauth" };
+		static const char *PROVIDER_KEYS[] = { "configured", "model", "base_url", "api_key", "oauth", "send_session_id_header" };
 		for (const char *key : PROVIDER_KEYS) {
 			const String old_path = _provider_setting_path(previous_provider, key);
 			if (settings->has_setting(old_path)) {
@@ -151,7 +151,7 @@ void SolersSettingsService::_migrate_provider_settings() {
 		// Single alias authority: SolersModelsDev::canonical_provider_id.
 		SolersModelsDev *md = provider_registry ? provider_registry->get_models_dev() : nullptr;
 		if (md) {
-			static const char *PROVIDER_KEYS[] = { "configured", "model", "base_url", "api_key", "oauth", "reasoning_effort" };
+			static const char *PROVIDER_KEYS[] = { "configured", "model", "base_url", "api_key", "oauth", "reasoning_effort", "send_session_id_header" };
 			for (const Variant &from_v : md->list_legacy_provider_ids()) {
 				const String from = from_v;
 				const String to = md->canonical_provider_id(from);
@@ -247,6 +247,7 @@ Dictionary SolersSettingsService::_get_provider_config(const String &p_provider,
 	data["configured"] = settings->has_setting(_provider_setting_path(p_provider, "configured")) && (bool)settings->get_setting(_provider_setting_path(p_provider, "configured"));
 	data["model"] = settings->has_setting(_provider_setting_path(p_provider, "model")) ? String(settings->get_setting(_provider_setting_path(p_provider, "model"))) : String(profile.get("default_model", String()));
 	data["reasoning_effort"] = settings->has_setting(_provider_setting_path(p_provider, "reasoning_effort")) ? String(settings->get_setting(_provider_setting_path(p_provider, "reasoning_effort"))) : String();
+	data["send_session_id_header"] = !settings->has_setting(_provider_setting_path(p_provider, "send_session_id_header")) || (bool)settings->get_setting(_provider_setting_path(p_provider, "send_session_id_header"));
 	data["base_url"] = settings->has_setting(_provider_setting_path(p_provider, "base_url")) ? String(settings->get_setting(_provider_setting_path(p_provider, "base_url"))) : String(profile.get("default_base_url", String()));
 
 	// Credential PRESENCE only: a stored blob / env var existing is the
@@ -387,6 +388,9 @@ Dictionary SolersSettingsService::set_provider_config(const Dictionary &p_args) 
 	if (p_args.has("base_url")) {
 		settings->set_manually(_provider_setting_path(provider, "base_url"), String(p_args["base_url"]));
 	}
+	if (p_args.has("send_session_id_header")) {
+		settings->set_manually(_provider_setting_path(provider, "send_session_id_header"), (bool)p_args["send_session_id_header"]);
+	}
 	if (p_args.has("api_key") && !String(p_args["api_key"]).is_empty()) {
 		settings->set_manually(_provider_setting_path(provider, "api_key"), SolersSecretStore::protect(String(p_args["api_key"])));
 	}
@@ -415,7 +419,7 @@ Dictionary SolersSettingsService::set_provider_config(const Dictionary &p_args) 
 Dictionary SolersSettingsService::disconnect_provider(const String &p_provider) {
 	EditorSettings *settings = EditorSettings::get_singleton();
 	ERR_FAIL_NULL_V(settings, _error("EDITOR_SETTINGS_UNAVAILABLE", "EditorSettings is not available.", false));
-	static const char *KEYS[] = { "configured", "model", "reasoning_effort", "base_url", "api_key", "oauth" };
+	static const char *KEYS[] = { "configured", "model", "reasoning_effort", "base_url", "api_key", "oauth", "send_session_id_header" };
 	for (const char *key : KEYS) {
 		const String path = _provider_setting_path(p_provider, key);
 		if (settings->has_setting(path)) {

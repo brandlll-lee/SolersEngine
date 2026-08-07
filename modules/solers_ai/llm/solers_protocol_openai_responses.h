@@ -21,6 +21,5 @@ public:
 	virtual StringName get_id() const override { return StringName("openai-responses"); }
 	virtual String get_default_path() const override { return "/responses"; }
 	virtual Dictionary build_request_body(const Dictionary &p_request) const override;
-	virtual void augment_headers(Dictionary &r_headers, const Dictionary &p_request) const override;
 	virtual Array parse_event(Dictionary &r_state, const String &p_event_name, const String &p_data) const override;
 };

@@ -1251,6 +1251,7 @@ Dictionary SolersAgentSession::_build_request(const Array &p_messages, const Str
 		request["max_tokens"] = max_output_tokens;
 	}
 	request["session_id"] = session_id;
+	request["send_session_id_header"] = active_provider.get("send_session_id_header", true);
 	return request;
 }
 

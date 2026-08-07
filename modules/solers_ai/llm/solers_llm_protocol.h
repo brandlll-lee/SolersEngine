@@ -79,7 +79,11 @@ public:
 
 	// Protocol-mandated headers independent of auth (e.g. anthropic-version).
 	// Default: nothing to add.
-	virtual void augment_headers(Dictionary &r_headers, const Dictionary &p_request) const {}
+	// Common request metadata is applied here so every wire protocol observes
+	// the same provider policy. Protocol implementations only add their native
+	// headers through augment_protocol_headers().
+	void augment_headers(Dictionary &r_headers, const Dictionary &p_request) const;
+	virtual void augment_protocol_headers(Dictionary &r_headers, const Dictionary &p_request) const {}
 
 	// Seed the per-response streaming parser state for a fresh request.
 	virtual Dictionary begin_stream(const Dictionary &p_request) const { return Dictionary(); }
