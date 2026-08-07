@@ -30,14 +30,11 @@
 
 #include "solers_chat_cells.h"
 
-#include "core/io/file_access.h"
-#include "core/io/image.h"
 #include "core/io/json.h"
 #include "core/object/callable_mp.h"
 #include "core/os/os.h"
 #include "editor/themes/editor_scale.h"
 #include "scene/gui/box_container.h"
-#include "scene/resources/image_texture.h"
 #include "scene/resources/style_box_flat.h"
 #include "scene/resources/text_paragraph.h"
 #include "scene/theme/theme_db.h"
@@ -62,26 +59,6 @@ static constexpr float SOLERS_SHIMMER_PERIOD = 1.6f;
 
 // Reasoning tail: wrapped lines kept visible while the model is thinking.
 static constexpr int SOLERS_THINKING_TAIL_LINES = 4;
-
-static Ref<Texture2D> solers_attachment_texture(const Dictionary &p_attachment) {
-	const String path = String(p_attachment.get("local_path", String())).strip_edges();
-	if (path.is_empty()) {
-		return Ref<Texture2D>();
-	}
-	if (!FileAccess::exists(path)) {
-		return Ref<Texture2D>();
-	}
-	Ref<Image> image = Image::load_from_file(path);
-	if (image.is_null() || image->is_empty()) {
-		return Ref<Texture2D>();
-	}
-	const int max_dimension = MAX(image->get_width(), image->get_height());
-	if (max_dimension > 112) {
-		const float scale = 112.0f / max_dimension;
-		image->resize(MAX(1, int(image->get_width() * scale)), MAX(1, int(image->get_height() * scale)), Image::INTERPOLATE_LANCZOS);
-	}
-	return ImageTexture::create_from_image(image);
-}
 
 static void solers_cell_fill(Control *p_control, const Rect2 &p_rect, const Color &p_color, float p_radius, const Color &p_border = Color(0, 0, 0, 0)) {
 	Ref<StyleBoxFlat> sb;
@@ -181,15 +158,16 @@ void SolersUserBubble::set_message(const String &p_text) {
 }
 
 void SolersUserBubble::set_attachments(const Array &p_attachments) {
-	attachments = p_attachments.duplicate(true);
 	attachment_textures.clear();
-	for (int i = 0; i < attachments.size(); i++) {
-		const Variant item = attachments[i];
+	for (int i = 0; i < p_attachments.size(); i++) {
+		const Variant item = p_attachments[i];
 		if (item.get_type() != Variant::DICTIONARY) {
-			attachment_textures.push_back(Ref<Texture2D>());
 			continue;
 		}
-		attachment_textures.push_back(solers_attachment_texture(item));
+		const Ref<Texture2D> texture = solers_attachment_texture(item);
+		if (texture.is_valid()) {
+			attachment_textures.push_back(texture);
+		}
 	}
 	shaped_for_width = -1.0f;
 	_shape(get_size().x);
@@ -672,14 +650,14 @@ String solers_format_plan_text(const String &p_explanation, const Array &p_plan)
 SolersToolCell::SolersToolCell() {
 	set_mouse_filter(MOUSE_FILTER_IGNORE);
 	set_h_size_flags(SIZE_EXPAND_FILL);
-	tool_glyph = SNAME("sparkle");
 	error_paragraph.instantiate();
 	error_paragraph->set_break_flags(TextServer::BREAK_MANDATORY | TextServer::BREAK_WORD_BOUND | TextServer::BREAK_ADAPTIVE);
 }
 
-void SolersToolCell::start(const String &p_tool_name, const String &p_arguments_json, const StringName &p_tool_glyph) {
+void SolersToolCell::start(const String &p_tool_name, const String &p_arguments_json, const String &p_ui_kind) {
 	tool_name = p_tool_name.is_empty() ? String("tool") : p_tool_name;
-	tool_glyph = p_tool_glyph == StringName() ? SNAME("sparkle") : p_tool_glyph;
+	tool_icon = solers_tool_icon_for_ui_kind(p_ui_kind);
+	tool_verb = solers_tool_verb_for_ui_kind(p_ui_kind);
 	args_summary = solers_summarize_tool_args(p_arguments_json);
 	set_tooltip_text(tool_name);
 	status = STATUS_RUNNING;
@@ -689,21 +667,19 @@ void SolersToolCell::start(const String &p_tool_name, const String &p_arguments_
 	queue_redraw();
 }
 
-void SolersToolCell::update(const String &p_tool_name, const String &p_arguments_json, const StringName &p_tool_glyph) {
+void SolersToolCell::update(const String &p_tool_name, const String &p_arguments_json, const String &p_ui_kind) {
 	const String next_name = p_tool_name.is_empty() ? tool_name : p_tool_name;
 	const String next_summary = solers_summarize_tool_args(p_arguments_json);
-	const StringName next_glyph = p_tool_glyph == StringName() ? tool_glyph : p_tool_glyph;
-	if (tool_name == next_name && args_summary == next_summary && tool_glyph == next_glyph) {
+	const StringName next_icon = solers_tool_icon_for_ui_kind(p_ui_kind);
+	const String next_verb = solers_tool_verb_for_ui_kind(p_ui_kind);
+	if (tool_name == next_name && args_summary == next_summary && tool_icon == next_icon && tool_verb == next_verb) {
 		return;
 	}
-	const bool glyph_changed = tool_glyph != next_glyph;
 	tool_name = next_name.is_empty() ? String("tool") : next_name;
-	tool_glyph = next_glyph;
+	tool_icon = next_icon;
+	tool_verb = next_verb;
 	args_summary = next_summary;
 	set_tooltip_text(tool_name);
-	if (glyph_changed && content_changed.is_valid()) {
-		content_changed.call();
-	}
 	queue_redraw();
 }
 
@@ -778,9 +754,7 @@ void SolersToolCell::_notification(int p_what) {
 			const float header_h = 28.0f * ed;
 			const float type_cx = 14.0f * ed;
 			const float icon_cy = header_h * 0.5f;
-			const String verb = solers_tool_verb_for_glyph(tool_glyph);
-
-			Ref<Texture2D> type_icon = SolersIcons::get(tool_glyph, int(Math::round(13.0f * ed)));
+			Ref<Texture2D> type_icon = SolersIcons::get(tool_icon, int(Math::round(13.0f * ed)));
 			if (type_icon.is_valid()) {
 				const Color icon_color = status == STATUS_ERROR ? SOLERS_CELL_ERROR : SOLERS_CELL_TEXT_DIM;
 				draw_texture(type_icon, Point2(type_cx - type_icon->get_width() * 0.5f, icon_cy - type_icon->get_height() * 0.5f).floor(), icon_color);
@@ -793,11 +767,11 @@ void SolersToolCell::_notification(int p_what) {
 			const float verb_baseline = (header_h - font->get_height(verb_size)) * 0.5f + font->get_ascent(verb_size);
 			const Color verb_color = status == STATUS_ERROR ? SOLERS_CELL_ERROR : Color(0.90f, 0.91f, 0.94f);
 			if (status == STATUS_RUNNING) {
-				draw_string(font, Point2(x, verb_baseline).floor(), verb, HORIZONTAL_ALIGNMENT_LEFT, -1, verb_size, SOLERS_CELL_TEXT_FAINT.lerp(Color(0.95f, 0.96f, 0.98f), 0.35f + 0.25f * Math::sin(float(OS::get_singleton()->get_ticks_msec()) * Math::TAU / (SOLERS_SHIMMER_PERIOD * 1000.0f))));
+				draw_string(font, Point2(x, verb_baseline).floor(), tool_verb, HORIZONTAL_ALIGNMENT_LEFT, -1, verb_size, SOLERS_CELL_TEXT_FAINT.lerp(Color(0.95f, 0.96f, 0.98f), 0.35f + 0.25f * Math::sin(float(OS::get_singleton()->get_ticks_msec()) * Math::TAU / (SOLERS_SHIMMER_PERIOD * 1000.0f))));
 			} else {
-				draw_string(font, Point2(x, verb_baseline).floor(), verb, HORIZONTAL_ALIGNMENT_LEFT, -1, verb_size, verb_color);
+				draw_string(font, Point2(x, verb_baseline).floor(), tool_verb, HORIZONTAL_ALIGNMENT_LEFT, -1, verb_size, verb_color);
 			}
-			x += font->get_string_size(verb, HORIZONTAL_ALIGNMENT_LEFT, -1, verb_size).x + 8.0f * ed;
+			x += font->get_string_size(tool_verb, HORIZONTAL_ALIGNMENT_LEFT, -1, verb_size).x + 8.0f * ed;
 
 			String trail;
 			if (status != STATUS_RUNNING && duration_msec >= 0) {
@@ -969,20 +943,19 @@ void SolersToolGroupCell::_notification(int p_what) {
 			const int font_size = int(12 * ed);
 			const float baseline = (header_h - font->get_height(font_size)) * 0.5f + font->get_ascent(font_size);
 			float x = 8.0f * ed;
-			const float icon_step = 17.0f * ed;
 			for (int i = 0; i < body->get_child_count() && i < 3; i++) {
 				SolersToolCell *tool_cell = Object::cast_to<SolersToolCell>(body->get_child(i));
 				if (!tool_cell) {
 					continue;
 				}
-				const Color tint = tool_cell->get_status() == SolersToolCell::STATUS_ERROR ? SOLERS_CELL_ERROR : SOLERS_CELL_TEXT_DIM;
-				Ref<Texture2D> icon = SolersIcons::get(tool_cell->get_tool_glyph(), int(Math::round(12.0f * ed)));
+				Ref<Texture2D> icon = SolersIcons::get(tool_cell->get_tool_icon(), int(Math::round(12.0f * ed)));
 				if (icon.is_valid()) {
+					const Color tint = tool_cell->get_status() == SolersToolCell::STATUS_ERROR ? SOLERS_CELL_ERROR : SOLERS_CELL_TEXT_DIM;
 					draw_texture(icon, Point2(x, (header_h - icon->get_height()) * 0.5f).floor(), tint);
-					x += icon_step;
+					x += 17.0f * ed;
 				}
 			}
-			const String label = vformat(String::utf8("已运行 %d 个工具"), total);
+			const String label = vformat("Ran %d tools", total);
 			x += 4.0f * ed;
 			const float phase = Math::fmod(float(OS::get_singleton()->get_ticks_msec()) / (SOLERS_SHIMMER_PERIOD * 1000.0f), 1.0f);
 			const float label_w = font->get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;

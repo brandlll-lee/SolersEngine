@@ -31,6 +31,8 @@
 #include "solers_chat_widgets.h"
 
 #include "core/input/input_event.h"
+#include "core/io/file_access.h"
+#include "core/io/image.h"
 #include "core/object/callable_mp.h"
 #include "core/os/keyboard.h"
 #include "core/string/ustring.h"
@@ -46,6 +48,7 @@
 #include "scene/theme/theme_db.h"
 
 #include "modules/modules_enabled.gen.h"
+#include "modules/solers_ai/core/solers_trace.h"
 #include "modules/solers_ai/generated/solers_svg_assets.gen.h"
 
 #ifdef MODULE_SVG_ENABLED
@@ -671,6 +674,27 @@ Ref<Texture2D> solers_mention_chip_icon(const Dictionary &p_mention, int p_px) {
 	return SolersIcons::get(SNAME("file"), p_px);
 }
 
+Ref<Texture2D> solers_attachment_texture(const Dictionary &p_attachment) {
+	const String sha256 = String(p_attachment.get("content_sha256", String())).strip_edges();
+	if (sha256.length() != 64 || !sha256.is_valid_hex_number(false)) {
+		return Ref<Texture2D>();
+	}
+	const String path = solers_session_dir().path_join("attachments").path_join(sha256 + ".png");
+	if (!FileAccess::exists(path)) {
+		return Ref<Texture2D>();
+	}
+	Ref<Image> image = Image::load_from_file(path);
+	if (image.is_null() || image->is_empty()) {
+		return Ref<Texture2D>();
+	}
+	const int max_dimension = MAX(image->get_width(), image->get_height());
+	if (max_dimension > 112) {
+		const float scale = 112.0f / max_dimension;
+		image->resize(MAX(1, int(image->get_width() * scale)), MAX(1, int(image->get_height() * scale)), Image::INTERPOLATE_LANCZOS);
+	}
+	return ImageTexture::create_from_image(image);
+}
+
 /* ------------------------------------------------------------------ */
 /* SolersPlanCapsule                                                   */
 /* ------------------------------------------------------------------ */
@@ -868,14 +892,14 @@ void SolersPlanCapsule::_notification(int p_what) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Tool ui_kind → glyph + verb (single table)                          */
+/* Tool ui_kind -> Tabler icon + fixed English verb                   */
 /* ------------------------------------------------------------------ */
 
 namespace {
 struct SolersToolUiChromeRow {
 	const char *kind;
-	const char *glyph; // StringName literal
-	const char *verb; // English source for TTR
+	const char *icon;
+	const char *verb;
 };
 
 static const SolersToolUiChromeRow SOLERS_TOOL_UI_CHROME[] = {
@@ -903,26 +927,14 @@ static const SolersToolUiChromeRow *_solers_tool_ui_row_for_kind(const String &p
 }
 } // namespace
 
-StringName solers_tool_glyph_for_ui_kind(const String &p_ui_kind) {
+StringName solers_tool_icon_for_ui_kind(const String &p_ui_kind) {
 	const SolersToolUiChromeRow *row = _solers_tool_ui_row_for_kind(p_ui_kind.strip_edges());
-	return row ? StringName(row->glyph) : StringName();
+	return row ? StringName(row->icon) : SNAME("sparkle");
 }
 
 String solers_tool_verb_for_ui_kind(const String &p_ui_kind) {
 	const SolersToolUiChromeRow *row = _solers_tool_ui_row_for_kind(p_ui_kind.strip_edges());
-	return row ? TTR(row->verb) : TTR("Tool");
-}
-
-String solers_tool_verb_for_glyph(const StringName &p_glyph) {
-	if (p_glyph == SNAME("tool_export")) {
-		return TTR("Asset");
-	}
-	for (const SolersToolUiChromeRow &row : SOLERS_TOOL_UI_CHROME) {
-		if (p_glyph == StringName(row.glyph)) {
-			return TTR(row.verb);
-		}
-	}
-	return TTR("Tool");
+	return row ? String(row->verb) : String("Tool");
 }
 
 void solers_style_bare_search_line_edit(LineEdit *p_edit) {

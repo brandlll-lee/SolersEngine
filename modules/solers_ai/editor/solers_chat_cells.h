@@ -45,7 +45,6 @@ class SolersUserBubble : public Control {
 	GDCLASS(SolersUserBubble, Control);
 
 	String text;
-	Array attachments;
 	Vector<Ref<Texture2D>> attachment_textures;
 	Ref<TextParagraph> paragraph;
 	Array mention_objects;
@@ -169,7 +168,8 @@ public:
 
 private:
 	String tool_name;
-	StringName tool_glyph;
+	StringName tool_icon;
+	String tool_verb;
 	String args_summary;
 	String error_text;
 	Status status = STATUS_RUNNING;
@@ -190,10 +190,11 @@ protected:
 public:
 	virtual Size2 get_minimum_size() const override;
 
-	void start(const String &p_tool_name, const String &p_arguments_json, const StringName &p_tool_glyph);
-	void update(const String &p_tool_name, const String &p_arguments_json, const StringName &p_tool_glyph);
+	void start(const String &p_tool_name, const String &p_arguments_json, const String &p_ui_kind);
+	void update(const String &p_tool_name, const String &p_arguments_json, const String &p_ui_kind);
 	void finish(bool p_ok, const String &p_error_message, int p_duration_msec);
-	StringName get_tool_glyph() const { return tool_glyph; }
+	StringName get_tool_icon() const { return tool_icon; }
+	String get_tool_verb() const { return tool_verb; }
 	Status get_status() const { return status; }
 
 	void set_content_changed_callback(const Callable &p_cb) { content_changed = p_cb; }

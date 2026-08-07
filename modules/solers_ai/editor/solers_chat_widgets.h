@@ -218,10 +218,9 @@ inline Color solers_composer_border() {
 	return Color(0.95f, 0.95f, 0.97f, 0.16f);
 }
 
-// One UI table: ui_kind wire string → glyph + localized verb (TTR).
-StringName solers_tool_glyph_for_ui_kind(const String &p_ui_kind);
+// Technical tool chrome stays English while ui_kind remains the authority.
+StringName solers_tool_icon_for_ui_kind(const String &p_ui_kind);
 String solers_tool_verb_for_ui_kind(const String &p_ui_kind);
-String solers_tool_verb_for_glyph(const StringName &p_glyph);
 
 // Bare search field (mention / model / provider pickers) — Cursor-flat, no chrome.
 void solers_style_bare_search_line_edit(LineEdit *p_edit);
@@ -232,3 +231,4 @@ void solers_draw_mention_chip(RID p_ci, const Rect2 &p_pill, const String &p_lab
 // Compact chip icon (provider logos + Solers UI fallbacks). Composer popup may
 // still use richer path previews locally.
 Ref<Texture2D> solers_mention_chip_icon(const Dictionary &p_mention, int p_px);
+Ref<Texture2D> solers_attachment_texture(const Dictionary &p_attachment);
