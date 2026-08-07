@@ -116,6 +116,10 @@ jobs:
           platform: windows
           target: ${{ matrix.target }}
 
+      - name: Solers module tests
+        if: matrix.compiler == 'msvc' && matrix.target == 'editor'
+        shell: pwsh
+        run: '& "${{ matrix.bin }}" --headless --test --test-case="*Solers*" --no-colors --minimal'
       - name: Save Godot build cache
         uses: ./.github/actions/godot-cache-save
         with:

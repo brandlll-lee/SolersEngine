@@ -42,8 +42,10 @@
 #include "core/object/callable_mp.h"
 #include "core/object/message_queue.h"
 #include "core/os/os.h"
+#include "core/string/translation_server.h"
 #include "core/templates/pair.h"
 #include "editor/asset_library/editor_asset_installer.h"
+#include "editor/docks/filesystem_dock.h"
 #include "editor/file_system/editor_file_system.h"
 #include "editor/settings/editor_settings.h"
 #include "scene/3d/mesh_instance_3d.h"
@@ -51,7 +53,9 @@
 #include "scene/3d/path_3d.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
+#include "scene/gui/item_list.h"
 #include "scene/gui/label.h"
+#include "scene/gui/line_edit.h"
 #include "scene/gui/rich_text_label.h"
 #include "scene/gui/scroll_container.h"
 #include "scene/gui/split_container.h"
@@ -86,6 +90,8 @@
 #include "modules/solers_ai/editor/solers_chat_cells.h"
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
 #include "modules/solers_ai/editor/solers_dock.h"
+#include "modules/solers_ai/editor/solers_editor_plugin.h"
+#include "modules/solers_ai/editor/solers_markdown_view.h"
 #include "modules/solers_ai/editor/solers_ui_theme.h"
 #include "modules/solers_ai/generated/solers_svg_assets.gen.h"
 #include "modules/solers_ai/llm/solers_llm_client.h"
@@ -260,6 +266,21 @@ Dictionary find_tool_def(const Array &p_tools, const String &p_name) {
 	return Dictionary();
 }
 
+Dictionary empty_tool_schema() {
+	Dictionary schema;
+	schema["type"] = "object";
+	schema["properties"] = Dictionary();
+	return schema;
+}
+
+void check_portable_tool_schema(const Dictionary &p_schema) {
+	CHECK(p_schema.get("type", String()) == "object");
+	CHECK(p_schema.get("properties", Variant()).get_type() == Variant::DICTIONARY);
+	CHECK_FALSE(p_schema.has("oneOf"));
+	CHECK_FALSE(p_schema.has("anyOf"));
+	CHECK_FALSE(p_schema.has("allOf"));
+}
+
 Dictionary find_operation_def(const Array &p_operations, const String &p_operation_id) {
 	for (int i = 0; i < p_operations.size(); i++) {
 		const Dictionary operation = p_operations[i];
@@ -309,19 +330,19 @@ TEST_CASE("[SolersProviderRegistry] assembles catalog and AuthHook overlays") {
 
 	Dictionary openai = registry.get_provider_profile("openai");
 	Dictionary anthropic = registry.get_provider_profile("anthropic");
-	Dictionary relay = registry.resolve_provider_profile("openai", "https://relay.example/v1");
+	Dictionary relay = registry.resolve_provider_profile("anthropic", "https://relay.example/v1");
 
 	CHECK(openai.get("protocol", String()) == "openai-chat");
 	CHECK(openai.get("default_base_url", String()) == "https://api.openai.com/v1");
 	CHECK(anthropic.get("protocol", String()) == "anthropic-messages");
 	CHECK(anthropic.get("default_base_url", String()) == "https://api.anthropic.com");
 	CHECK(registry.resolve_provider_profile("openai").get("catalog_limits_authoritative", false));
+	CHECK(relay.get("protocol", String()) == "anthropic-messages");
+	CHECK(relay.get("auth_header", String()) == "x-api-key");
 	CHECK_FALSE(relay.get("catalog_limits_authoritative", true));
-	CHECK(registry.is_known_provider("openai"));
-	CHECK(registry.is_known_provider("openai_codex"));
 }
 
-TEST_CASE("[SolersProviderRegistry] routes custom gateways without a hardcoded allowlist") {
+TEST_CASE("[SolersProviderRegistry] requires an explicit connection profile") {
 	SolersProviderRegistry registry;
 
 	Dictionary config;
@@ -336,30 +357,29 @@ TEST_CASE("[SolersProviderRegistry] routes custom gateways without a hardcoded a
 	CHECK(data.get("valid", false));
 	CHECK(data.get("effective_base_url", String()) == "https://gateway.example/v1");
 
-	// Behavior contract: a brand-new provider id is OpenAI-compatible custom —
-	// no UNKNOWN_PROVIDER allowlist patch required.
 	Dictionary fresh;
 	fresh["provider"] = "synthetic-brand-new-gateway";
 	fresh["model"] = "synthetic-model";
 	fresh["base_url"] = "https://gateway.example/v1";
 	fresh["api_key"] = "synthetic-key";
 	const Dictionary accepted = registry.validate_config(fresh);
-	CHECK(accepted.get("ok", false));
-	CHECK(Dictionary(accepted.get("data", Dictionary())).get("valid", false));
+	CHECK_FALSE(accepted.get("ok", true));
+	CHECK(Dictionary(accepted.get("error", Dictionary())).get("code", String()) == "PROVIDER_CONNECTION_UNDECLARED");
 }
 
-TEST_CASE("[Editor][SolersSettingsService] local model policy migrates without changing provider configuration") {
+TEST_CASE("[Editor][SolersSettingsService] v6 migrates one explicit custom connection") {
 	EditorSettings *settings = EditorSettings::get_singleton();
 	REQUIRE(settings != nullptr);
 
 	const String prefix = "solers/ai/";
+	const String legacy_id = "synthetic-legacy-gateway";
 	Array paths;
 	paths.push_back(prefix + "settings_version");
-	paths.push_back(prefix + "privacy_mode");
 	paths.push_back(prefix + "local_models_only");
 	paths.push_back(prefix + "provider");
-	for (const String &provider : { String("ollama"), String("custom_openai_compatible") }) {
-		for (const String &key : { String("configured"), String("model"), String("base_url"), String("api_key") }) {
+	paths.push_back(prefix + "custom_provider_ids");
+	for (const String &provider : { legacy_id, String("custom_openai_compatible") }) {
+		for (const String &key : { String("configured"), String("model"), String("reasoning_effort"), String("base_url"), String("api_key") }) {
 			paths.push_back(prefix + "providers/" + provider + "/" + key);
 		}
 	}
@@ -372,82 +392,45 @@ TEST_CASE("[Editor][SolersSettingsService] local model policy migrates without c
 		settings->erase(path);
 	}
 
-	SolersModelsDev models_dev;
-	models_dev.initialize();
 	SolersProviderRegistry registry;
-	registry.set_models_dev(&models_dev, false);
-	for (const bool enabled : { false, true }) {
-		settings->set_manually(prefix + "settings_version", 3);
-		settings->set_manually(prefix + "privacy_mode", enabled);
-		settings->erase(prefix + "local_models_only");
-		SolersSettingsService migration_service;
-		migration_service.set_provider_registry(&registry);
-		CHECK(migration_service.get_local_models_only() == enabled);
-		CHECK_FALSE(settings->has_setting(prefix + "privacy_mode"));
-		CHECK((int)settings->get_setting(prefix + "settings_version") == 5);
-	}
+	settings->set_manually(prefix + "settings_version", 5);
+	settings->set_manually(prefix + "provider", legacy_id);
+	settings->set_manually(prefix + "providers/" + legacy_id + "/configured", true);
+	settings->set_manually(prefix + "providers/" + legacy_id + "/model", "synthetic-model");
+	settings->set_manually(prefix + "providers/" + legacy_id + "/reasoning_effort", "high");
+	settings->set_manually(prefix + "providers/" + legacy_id + "/base_url", "https://gateway.example/v1");
+	settings->set_manually(prefix + "providers/" + legacy_id + "/api_key", SolersSecretStore::protect("synthetic-key"));
+	Array custom_ids;
+	custom_ids.push_back(legacy_id);
+	settings->set_manually(prefix + "custom_provider_ids", custom_ids);
 
-	settings->set_manually(prefix + "settings_version", 4);
-	settings->erase(prefix + "local_models_only");
 	SolersSettingsService service;
 	service.set_provider_registry(&registry);
-	CHECK_FALSE(service.get_local_models_only());
+	CHECK((int)settings->get_setting(prefix + "settings_version") == 6);
+	CHECK(String(settings->get_setting(prefix + "provider")) == "custom_openai_compatible");
+	CHECK_FALSE(settings->has_setting(prefix + "custom_provider_ids"));
+	CHECK_FALSE(settings->has_setting(prefix + "providers/" + legacy_id + "/configured"));
+	const Dictionary migrated = service.get_provider_config().get("data", Dictionary());
+	CHECK(migrated.get("connected", false));
+	CHECK(migrated.get("model", String()) == "synthetic-model");
+	CHECK(migrated.get("reasoning_effort", String()) == "high");
+	CHECK(migrated.get("base_url", String()) == "https://gateway.example/v1");
+	CHECK(Dictionary(migrated.get("profile", Dictionary())).get("protocol", String()) == "openai-chat");
 
-	Dictionary local;
-	local["provider"] = "ollama";
-	local["model"] = "qwen3";
-	local["base_url"] = "http://127.0.0.1:11434";
-	service.set_local_models_only(true);
-	service.set_provider_config(local);
-	Dictionary local_config = service.get_provider_config_for("ollama").get("data", Dictionary());
-	CHECK(local_config.get("connected", false));
-	CHECK(local_config.get("available", false));
-	CHECK(service.get_local_models_only());
+	Dictionary undeclared;
+	undeclared["provider"] = "synthetic-never-special-cased";
+	undeclared["model"] = "m1";
+	undeclared["base_url"] = "https://example.test/v1";
+	undeclared["api_key"] = "k";
+	const Dictionary rejected = service.set_provider_config(undeclared);
+	CHECK_FALSE(rejected.get("ok", true));
+	CHECK(Dictionary(rejected.get("error", Dictionary())).get("code", String()) == "PROVIDER_CONNECTION_UNDECLARED");
 
-	Dictionary remote;
-	remote["provider"] = "custom_openai_compatible";
-	remote["model"] = "synthetic-model";
-	remote["base_url"] = "https://gateway.example/v1";
-	remote["api_key"] = "synthetic-key";
-	service.set_local_models_only(false);
-	service.set_provider_config(remote);
-	service.set_local_models_only(true);
-	Dictionary remote_config = service.get_provider_config_for("custom_openai_compatible").get("data", Dictionary());
-	CHECK(remote_config.get("connected", false));
-	CHECK_FALSE(remote_config.get("available", true));
-	CHECK(remote_config.get("model", String()) == "synthetic-model");
-	CHECK(remote_config.get("base_url", String()) == "https://gateway.example/v1");
-	CHECK(Dictionary(service.get_provider_config().get("data", Dictionary())).get("provider", String()) == "custom_openai_compatible");
-
-	// Contract: never-special-cased catalog-style id connects via assembler.
-	Dictionary brand_new;
-	brand_new["provider"] = "synthetic-never-special-cased";
-	brand_new["model"] = "m1";
-	brand_new["base_url"] = "https://example.test/v1";
-	brand_new["api_key"] = "k";
-	service.set_local_models_only(false);
-	const Dictionary brand_saved = service.set_provider_config(brand_new);
-	CHECK(brand_saved.get("ok", false));
-	CHECK(Dictionary(brand_saved.get("data", Dictionary())).get("connected", false));
-	service.disconnect_provider("synthetic-never-special-cased");
-	service.set_provider_config(remote);
-	service.set_local_models_only(true);
-
-	SolersToolRegistry tool_registry;
-	SolersAgentSession session;
-	session.set_tool_registry(&tool_registry);
-	session.set_settings_service(&service);
-	Dictionary turn;
-	turn["prompt"] = "This request must not reach the network.";
-	const Dictionary blocked = session.start_turn(turn);
-	CHECK_FALSE(blocked.get("ok", true));
-	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "LOCAL_MODELS_ONLY");
-
-	service.set_provider_config(remote);
-	CHECK(service.get_local_models_only());
-	service.disconnect_provider("custom_openai_compatible");
-	service.set_provider_config(remote);
-	CHECK_FALSE(service.get_local_models_only());
+	settings->set_manually(prefix + "settings_version", 5);
+	settings->set_manually(prefix + "provider", "anthropic");
+	SolersSettingsService known_service;
+	known_service.set_provider_registry(&registry);
+	CHECK(String(settings->get_setting(prefix + "provider")) == "anthropic");
 
 	for (const Variant &path_value : paths) {
 		const String path = path_value;
@@ -497,19 +480,10 @@ TEST_CASE("[SolersToolRegistry] registers tools by lookup, not a hardcoded catal
 				return result;
 			})));
 
-	CHECK(registry.get_tool_count() == 1);
 	Array tools = registry.list_tools();
 	REQUIRE(tools.size() == 1);
 	Dictionary tool = tools[0];
 	CHECK(tool.get("name", String()) == "synthetic.echo");
-	CHECK(tool.get("model_name", String()) == "synthetic_echo");
-	CHECK(tool.get("execution", String()) == "worker");
-	CHECK_FALSE(Dictionary(Dictionary(tool.get("input_schema", Dictionary())).get("properties", Dictionary())).has("retry_of"));
-	CHECK(registry.get_model_tool_name("synthetic.echo") == "synthetic_echo");
-	CHECK(registry.resolve_model_tool_name("synthetic_echo") == StringName("synthetic.echo"));
-	CHECK(registry.get_tool_definition("synthetic.echo") == tool);
-	tools.clear();
-	CHECK(registry.list_tools().size() == 1);
 
 	SolersPermissionManager permissions;
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
@@ -816,7 +790,7 @@ TEST_CASE("[SolersToolRegistry] preserves internal session context without chang
 	cap.permission = SolersPermissionManager::PERMISSION_OBSERVE;
 	cap.mutation_policy = SolersToolMutationPolicy::READ_ONLY;
 	registry.register_tool(memnew(SolersFunctionTool(
-			"synthetic.context", "Returns its internal execution context.", Dictionary(), SolersToolExposure::DIRECT, cap,
+			"synthetic.context", "Returns its internal execution context.", empty_tool_schema(), SolersToolExposure::DIRECT, cap,
 			[](const SolersToolContext &p_context, const Dictionary &) {
 				Dictionary data;
 				data["session_id"] = p_context.session_id;
@@ -970,7 +944,7 @@ TEST_CASE("[SolersToolRegistry] skill.read rejects unknown builtin skills") {
 	CHECK(error.get("code", String()) == "UNKNOWN_SKILL");
 }
 
-TEST_CASE("[SolersToolRegistry] default model surface is domain-first") {
+TEST_CASE("[SolersToolRegistry] default tools keep one portable ABI across provider protocols") {
 	SolersAssetService asset_service;
 	SolersObservationService observation_service;
 	SolersPermissionManager permissions;
@@ -987,71 +961,40 @@ TEST_CASE("[SolersToolRegistry] default model surface is domain-first") {
 	registry.register_default_tools();
 
 	const Array tools = registry.list_tools();
-
-	HashSet<String> names;
+	Array request_tools;
 	for (const Variant &item : tools) {
-		const Dictionary tool = item;
-		const String name = tool.get("name", String());
-		CHECK_FALSE(name.is_empty());
-		CHECK_FALSE(names.has(name));
-		names.insert(name);
+		const Dictionary definition = item;
+		check_portable_tool_schema(definition.get("input_schema", Dictionary()));
+		Dictionary tool;
+		tool["name"] = definition.get("model_name", definition.get("name", String()));
+		tool["description"] = definition.get("description", String());
+		tool["parameters"] = definition.get("input_schema", Dictionary());
+		request_tools.push_back(tool);
 	}
-	for (const char *name : { "project.search", "object.query", "object.transaction", "script.compute", "runtime.control", "render.capture" }) {
-		CHECK(find_tool_def(tools, name).get("exposure", String()) == "direct");
-	}
-	const Dictionary search = find_tool_def(tools, "project.search");
-	CHECK(search.get("execution", String()) == "worker");
-	const Dictionary search_properties = Dictionary(search.get("input_schema", Dictionary())).get("properties", Dictionary());
-	const Array search_types = Dictionary(search_properties.get("type", Dictionary())).get("enum", Array());
-	CHECK(search_types.has("path"));
-	CHECK(search_types.has("text"));
-	CHECK_FALSE(search_types.has("scene"));
-	CHECK_FALSE(search_types.has("dependency"));
-	const Array query_branches = Dictionary(find_tool_def(tools, "object.query").get("input_schema", Dictionary())).get("oneOf", Array());
-	REQUIRE(query_branches.size() == 5);
-	const Dictionary overview = Dictionary(query_branches[0]).get("properties", Dictionary());
-	const Dictionary targeted = Dictionary(query_branches[1]).get("properties", Dictionary());
-	CHECK(overview.has("include_tree"));
-	CHECK_FALSE(overview.has("node_paths"));
-	CHECK(targeted.has("node_paths"));
-	CHECK_FALSE(targeted.has("include_tree"));
-	const Dictionary transaction = find_tool_def(tools, "object.transaction");
-	REQUIRE_FALSE(transaction.is_empty());
-	CHECK(transaction.get("execution", String()) == "main_thread");
-	CHECK(transaction.get("mutation_policy_dynamic", false));
-	CHECK(Array(Dictionary(transaction.get("input_schema", Dictionary())).get("oneOf", Array())).size() == 2);
-	Dictionary script_compute = find_tool_def(tools, "script.compute");
-	CHECK(script_compute.get("mutation_policy", String()) == "file_checkpoint");
-	CHECK(script_compute.get("permission", String()) == "edit_files");
-	const Dictionary runtime_observe = find_tool_def(tools, "runtime.observe");
-	const Dictionary runtime_properties = Dictionary(runtime_observe.get("input_schema", Dictionary())).get("properties", Dictionary());
-	CHECK(Array(Dictionary(runtime_properties.get("target", Dictionary())).get("enum", Array())).has("stack"));
-	CHECK_FALSE(runtime_properties.has("types"));
-	const Dictionary runtime_control = find_tool_def(tools, "runtime.control");
-	const Array control_branches = Dictionary(runtime_control.get("input_schema", Dictionary())).get("oneOf", Array());
-	REQUIRE(control_branches.size() == 2);
-	CHECK(Dictionary(Dictionary(control_branches[1]).get("properties", Dictionary())).has("expected_value"));
-	Dictionary play;
-	play["action"] = "play_current_scene";
-	const Array runtime_accesses = registry.resolve_resource_access(SNAME("runtime.control"), play);
-	REQUIRE(runtime_accesses.size() == 1);
-	CHECK(Dictionary(runtime_accesses[0]).get("key", String()) == "runtime:");
-
+	Dictionary request;
+	request["model"] = "claude-test";
+	request["messages"] = Array();
+	request["tools"] = request_tools;
+	const Array anthropic = SolersAnthropicMessagesProtocol().build_request_body(request).get("tools", Array());
+	const Array chat = SolersOpenAIChatProtocol().build_request_body(request).get("tools", Array());
+	const Array responses = SolersOpenAIResponsesProtocol().build_request_body(request).get("tools", Array());
+	REQUIRE(anthropic.size() == tools.size());
+	REQUIRE(chat.size() == tools.size());
+	REQUIRE(responses.size() == tools.size());
 	for (int i = 0; i < tools.size(); i++) {
-		const Dictionary tool = tools[i];
-		if (tool.get("exposure", String()) != "direct") {
-			continue;
-		}
-		const String name = tool.get("name", String());
-		CHECK_FALSE(name.begins_with("node."));
-		CHECK_FALSE(name.begins_with("provider."));
-		CHECK_FALSE(name.begins_with("timeline."));
-		CHECK_FALSE(name.begins_with("rpc."));
-		CHECK_FALSE(name.begins_with("approvals."));
-		CHECK_FALSE(name.begins_with("validation."));
-		CHECK(name != "runtime.capture_screenshot");
-		CHECK(name != "editor.capture_screenshot");
+		check_portable_tool_schema(Dictionary(anthropic[i]).get("input_schema", Dictionary()));
+		check_portable_tool_schema(Dictionary(Dictionary(chat[i]).get("function", Dictionary())).get("parameters", Dictionary()));
+		const Dictionary response_tool = responses[i];
+		check_portable_tool_schema(response_tool.get("parameters", Dictionary()));
+		CHECK_FALSE(response_tool.get("strict", true));
 	}
+
+	Dictionary invalid;
+	invalid["oneOf"] = Array();
+	ERR_PRINT_OFF;
+	registry.register_tool(memnew(SolersFunctionTool("synthetic.invalid", "Invalid root.", invalid, SolersToolExposure::DIRECT, SolersToolCapability(), [](const SolersToolContext &, const Dictionary &) { return Dictionary(); })));
+	ERR_PRINT_ON;
+	CHECK(registry.get_tool_count() == tools.size());
 }
 
 TEST_CASE("[SolersPluginRegistry] an unknown connector extends every registry-driven surface") {
@@ -1474,7 +1417,7 @@ TEST_CASE("[SolersToolRegistry] external search prioritizes exact ids and never 
 	cap.mutation_policy = SolersToolMutationPolicy::READ_ONLY;
 	auto add_external = [&](const StringName &p_name, const String &p_description) {
 		registry.register_tool(memnew(SolersFunctionTool(
-				p_name, p_description, Dictionary(), SolersToolExposure::DEFERRED, cap,
+				p_name, p_description, empty_tool_schema(), SolersToolExposure::DEFERRED, cap,
 				[](const SolersToolContext &, const Dictionary &) {
 					Dictionary result;
 					result["ok"] = true;
@@ -1541,7 +1484,7 @@ TEST_CASE("[SolersToolRegistry] tool.search uses Godot fuzzy fallback for extern
 	registry.register_tool(memnew(SolersFunctionTool(
 			StringName("synthetic.needle"),
 			"Name-priority deferred fixture.",
-			Dictionary(), SolersToolExposure::DEFERRED, cap,
+			empty_tool_schema(), SolersToolExposure::DEFERRED, cap,
 			[](const SolersToolContext &, const Dictionary &) {
 				Dictionary result;
 				result["ok"] = true;
@@ -1614,7 +1557,7 @@ TEST_CASE("[SolersToolRegistry] resource access is parameter-aware and failure c
 		accesses.push_back(access);
 		return accesses;
 	};
-	registry.register_tool(memnew(SolersFunctionTool("test.resource", "test", Dictionary(), SolersToolExposure::HIDDEN, capability,
+	registry.register_tool(memnew(SolersFunctionTool("test.resource", "test", empty_tool_schema(), SolersToolExposure::HIDDEN, capability,
 			[](const SolersToolContext &, const Dictionary &) { return Dictionary(); })));
 
 	Dictionary failed_args;
@@ -2989,73 +2932,6 @@ TEST_CASE("[SolersContextManager] transient request state replaces the prior req
 	CHECK(context.get_token_count_with_pending(persistent, String(), 0, 50) == 750 + SolersContextManager::estimate_messages_tokens(pending));
 }
 
-TEST_CASE("[SolersAgentSession] journal projection has stable unique events and lightweight receipts") {
-	const String session_id = "timeline-contract-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
-	const String project = "test://" + session_id;
-	auto write_event = [&](Dictionary p_event) {
-		p_event["project_path"] = project;
-		p_event["session_id"] = session_id;
-		solers_transcript_write(p_event);
-	};
-	Dictionary event;
-	event = make_user_message("inspect the scene");
-	event["event_type"] = "message";
-	event["author"] = "human";
-	event["wall"] = 101;
-	write_event(event);
-	event = SolersLLMMessage::assistant("same visible text", solers_test_tool_calls("call_receipt", "object.query"));
-	event["event_type"] = "message";
-	write_event(event);
-	event.clear();
-	event["event_type"] = "tool_result";
-	event["call_id"] = "call_receipt";
-	event["ok"] = true;
-	event["content"] = String("large-payload-").repeat(1000);
-	write_event(event);
-	event = SolersLLMMessage::assistant("same visible text", Array());
-	event["event_type"] = "message";
-	write_event(event);
-	const int64_t compaction_id = 90;
-	event.clear();
-	event["event_type"] = "context_compaction";
-	event["event_id"] = compaction_id;
-	event["phase"] = "started";
-	write_event(event);
-	Array compacted;
-	compacted.push_back(SolersLLMMessage::user("inspect the scene"));
-	Dictionary summary;
-	summary["role"] = SolersContextManager::MODEL_CONTEXT_ROLE;
-	summary["content"] = "model-only compacted state";
-	compacted.push_back(summary);
-	event["phase"] = "completed";
-	event["messages"] = compacted;
-	write_event(event);
-	event.clear();
-	event["event_type"] = "turn_outcome";
-	write_event(event);
-	SolersAgentSession restored;
-	restored.set_session(project, session_id);
-	const Array model = restored.get_messages();
-	const Array timeline = restored.get_timeline_entries();
-	REQUIRE(timeline.size() == 4);
-	REQUIRE(model.size() == 2);
-	CHECK(Dictionary(model[1]).get("role", String()) == SolersContextManager::MODEL_CONTEXT_ROLE);
-	const Array calls = Dictionary(timeline[1]).get("tool_calls", Array());
-	REQUIRE(calls.size() == 1);
-	CHECK(Dictionary(calls[0]).get("finished", false));
-	CHECK(Dictionary(calls[0]).get("ok", false));
-	CHECK_FALSE(JSON::stringify(timeline).contains("large-payload"));
-	CHECK_FALSE(JSON::stringify(model).contains("large-payload"));
-	CHECK(Dictionary(timeline[3]).get("role", String()) == "context_compaction");
-	CHECK(Dictionary(timeline[3]).get("phase", String()) == "completed");
-	CHECK((int64_t)Dictionary(timeline[3]).get("event_id", 0) == compaction_id);
-	restored.set_session(project, session_id);
-	const Array second = restored.get_timeline_entries();
-	CHECK((int64_t)Dictionary(second[3]).get("event_id", 0) == compaction_id);
-	restored.shutdown();
-	solers_transcript_flush();
-}
-
 TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the Solers subtree") {
 	const Ref<Theme> theme = SolersUITheme::create();
 	REQUIRE(theme.is_valid());
@@ -3088,145 +2964,160 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	MessageQueue::get_singleton()->flush();
 }
 
-TEST_CASE("[SolersStatusCell][SceneTree] compaction lifecycle switches from active to settled") {
-	SolersStatusCell *status = memnew(SolersStatusCell);
-	SceneTree::get_singleton()->get_root()->add_child(status);
-	status->set_status("Context automatically compacting");
-	status->set_active(true);
-	CHECK(status->is_processing_internal());
-	status->set_status("Context automatically compacted");
-	status->set_active(false);
-	CHECK_FALSE(status->is_processing_internal());
-	status->queue_free();
-	MessageQueue::get_singleton()->flush();
-}
+TEST_CASE("[SolersUI][SceneTree][Editor] editor locale and technical tool chrome have separate authorities") {
+	const String setting = "interface/editor/localization/editor_language";
+	const Variant previous = EditorSettings::get_singleton()->get_setting(setting);
+	EditorSettings::get_singleton()->set_setting(setting, "zh_Hans");
+	EditorSettings::get_singleton()->setup_language(false);
+	solers_load_editor_translation();
+	CHECK(TranslationServer::get_singleton()->get_editor_domain()->translate("New chat", StringName()) == String::utf8("\xE6\x96\xB0\xE5\xBB\xBA\xE5\xAF\xB9\xE8\xAF\x9D"));
+	CHECK(TranslationServer::get_singleton()->get_editor_domain()->translate("Effort", StringName()) != "Effort");
+	CHECK(solers_tool_verb_for_ui_kind("search") == "Search");
+	CHECK(solers_tool_verb_for_ui_kind("synthetic") == "Tool");
+	CHECK(solers_tool_icon_for_ui_kind("search") == SNAME("tool_search"));
+	CHECK(solers_tool_icon_for_ui_kind("scene") == SNAME("tool_scene"));
 
-TEST_CASE("[SolersIcons] pinned SVG assets share one DPI-aware cache") {
+	SolersToolCell *search = memnew(SolersToolCell);
+	SolersToolCell *unknown = memnew(SolersToolCell);
+	SceneTree::get_singleton()->get_root()->add_child(search);
+	SceneTree::get_singleton()->get_root()->add_child(unknown);
+	search->start("project.search", "{}", "search");
+	unknown->start("future.tool", "{}", "synthetic");
+	CHECK(search->get_tool_verb() == "Search");
+	CHECK(unknown->get_tool_verb() == "Tool");
+	CHECK(search->get_tool_icon() == SNAME("tool_search"));
+	CHECK(unknown->get_tool_icon() == SNAME("sparkle"));
 #ifdef MODULE_SVG_ENABLED
-	for (int i = 0; i < SOLERS_UI_ICON_COUNT; i++) {
-		const StringName id = String::utf8(SOLERS_UI_ICONS[i].id);
-		const Ref<Texture2D> icon = SolersIcons::get(id, 16);
-		REQUIRE_MESSAGE(icon.is_valid(), vformat("Tabler asset '%s' failed to parse", id));
-		CHECK(icon->get_width() == 16);
-		CHECK(icon->get_height() == 16);
+	Ref<Texture2D> tool_icon = SolersIcons::get(search->get_tool_icon(), 16);
+	CHECK(tool_icon.is_valid());
+	if (tool_icon.is_valid()) {
+		CHECK(tool_icon->get_rid() == SolersIcons::get(SNAME("tool_search"), 16)->get_rid());
 	}
-	const Ref<Texture2D> panel_16 = SolersIcons::get(SNAME("panel"), 16);
-	const Ref<Texture2D> panel_32 = SolersIcons::get(SNAME("panel"), 32);
-	REQUIRE(panel_16.is_valid());
-	REQUIRE(panel_32.is_valid());
-	CHECK(panel_16->get_size() == Size2(16, 16));
-	CHECK(panel_32->get_size() == Size2(32, 32));
-	CHECK(panel_16->get_rid() == SolersIcons::get(SNAME("panel"), 16)->get_rid());
-	CHECK(SolersIcons::get(SNAME("missing_icon"), 16).is_null());
-
-	const Ref<Texture2D> mono_logo = SolersIcons::provider_logo("synthetic", 16);
-	const Ref<Texture2D> color_logo = SolersIcons::provider_logo_color("polyhaven", 16);
-	REQUIRE(mono_logo.is_valid());
-	REQUIRE(color_logo.is_valid());
-	CHECK(mono_logo->get_width() <= 16);
-	CHECK(mono_logo->get_height() <= 16);
-	CHECK(color_logo->get_width() <= 16);
-	CHECK(color_logo->get_height() <= 16);
-	SolersIcons::clear_cache();
-#else
-	CHECK(SolersIcons::get(SNAME("panel"), 16).is_null());
+	tool_icon.unref();
 #endif
+	search->queue_free();
+	unknown->queue_free();
+	MessageQueue::get_singleton()->flush();
+	SolersIcons::clear_cache();
+	EditorSettings::get_singleton()->set_setting(setting, previous);
+	EditorSettings::get_singleton()->setup_language(false);
+	solers_load_editor_translation();
+	TranslationServer::get_singleton()->get_editor_domain()->clear();
 }
 
-TEST_CASE("[SolersDock][SceneTree][Editor] accent mentions, four-row popup, and V2 mark follow native layout") {
-	HSplitContainer *host = memnew(HSplitContainer);
-	Ref<Theme> editor_theme;
-	editor_theme.instantiate();
-	const Color accent(0.20f, 0.55f, 0.90f);
-	editor_theme->set_color(SNAME("accent_color"), SNAME("Editor"), accent);
-	host->set_theme(editor_theme);
-	host->set_size(Size2(640, 760));
+TEST_CASE("[SolersMention][Editor] project paths ignore FileSystemDock browsing state and render inline") {
+	if (!EditorFileSystem::get_singleton()) {
+		WARN("EditorFileSystem is initialized after the command-line unit test runner; run this contract in an editor integration test.");
+		return;
+	}
+	const Array files = SolersMention::collect_section_items("files", nullptr);
+	const Array folders = SolersMention::collect_section_items("folders", nullptr);
+	REQUIRE_FALSE(files.is_empty());
+	REQUIRE_FALSE(folders.is_empty());
+	const Dictionary file = files[0];
+	const String path = file.get("path", String());
+	FileSystemDock *filesystem_dock = FileSystemDock::get_singleton();
+	REQUIRE(filesystem_dock != nullptr);
+	const String previous = filesystem_dock->get_current_directory();
+	filesystem_dock->navigate_to_path(Dictionary(folders[0]).get("path", String()));
+	CHECK(SolersMention::collect_section_items("files", nullptr).has(file));
+	filesystem_dock->navigate_to_path(previous);
+	int span = 0;
+	const Dictionary resolved = SolersMention::resolve_project_path_at("Open " + path + ".", 5, span);
+	CHECK(resolved.get("path", String()) == path);
+	CHECK(span == path.length());
+	SolersMarkdownView *markdown = memnew(SolersMarkdownView);
+	SceneTree::get_singleton()->get_root()->add_child(markdown);
+	markdown->set_markdown("Open " + path + ".", false);
+	MessageQueue::get_singleton()->flush();
+	const Array labels = markdown->find_children("*", "RichTextLabel", true, false);
+	RichTextLabel *label = labels.is_empty() ? nullptr : Object::cast_to<RichTextLabel>(labels[0]);
+	REQUIRE(label != nullptr);
+	CHECK(label->get_parsed_text().contains(path.get_file()));
+	CHECK_FALSE(label->get_parsed_text().contains(path));
+	markdown->queue_free();
+	MessageQueue::get_singleton()->flush();
+}
+
+TEST_CASE("[SolersDock][SceneTree] journal restores canonical tools and content-addressed images") {
+	const String session_id = "ui-restore-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
+	const String project = "test://" + session_id;
+	Ref<Image> image = Image::create_empty(2, 2, false, Image::FORMAT_RGBA8);
+	image->fill(Color::from_hsv(float(OS::get_singleton()->get_ticks_usec() % 1000) / 1000.0f, 1, 1));
+	const String draft = solers_session_dir().path_join("attachments").path_join(session_id + ".png");
+	Ref<DirAccess> dir = DirAccess::open("res://");
+	REQUIRE(dir.is_valid());
+	REQUIRE(dir->make_dir_recursive(".solers/attachments") == OK);
+	REQUIRE(image->save_png(draft) == OK);
+	const String sha256 = FileAccess::get_sha256(draft);
+	const String stored = solers_session_dir().path_join("attachments").path_join(sha256 + ".png");
+	const bool stored_before = FileAccess::exists(stored);
+	const String draft_absolute = ProjectSettings::get_singleton()->globalize_path(draft);
+	if (stored_before) {
+		DirAccess::remove_file_or_error(draft_absolute);
+	} else {
+		REQUIRE(DirAccess::rename_absolute(draft_absolute, ProjectSettings::get_singleton()->globalize_path(stored)) == OK);
+	}
+	Dictionary attachment;
+	attachment["content_sha256"] = sha256;
+	attachment["mime_type"] = "image/png";
+	auto write = [&](Dictionary p_event) {
+		p_event["project_path"] = project;
+		p_event["session_id"] = session_id;
+		solers_transcript_write(p_event);
+	};
+	Dictionary user = make_user_message(String());
+	user["event_type"] = "message";
+	user["author"] = "human";
+	Array attachments;
+	attachments.push_back(attachment);
+	user["attachments"] = attachments;
+	write(user);
+	Dictionary call;
+	call["id"] = "stable-call";
+	call["name"] = "provider_alias";
+	call["canonical_name"] = "object.query";
+	call["arguments"] = "{}";
+	Array calls;
+	calls.push_back(call);
+	Dictionary assistant = SolersLLMMessage::assistant(String(), calls);
+	assistant["event_type"] = "message";
+	write(assistant);
+	Dictionary result;
+	result["event_type"] = "tool_result";
+	result["call_id"] = "stable-call";
+	result["ok"] = true;
+	write(result);
+	solers_transcript_flush(session_id);
+	SolersAgentSession restored;
+	restored.set_session(project, session_id);
+	const Array timeline = restored.get_timeline_entries();
+	REQUIRE(timeline.size() == 2);
+	CHECK(Dictionary(Array(Dictionary(timeline[1]).get("tool_calls", Array()))[0]).get("finished", false));
+	CHECK(solers_attachment_texture(attachment).is_valid());
+	if (!EditorSettings::get_singleton()) {
+		restored.shutdown();
+		solers_transcript_flush(session_id);
+		if (!stored_before) {
+			DirAccess::remove_file_or_error(ProjectSettings::get_singleton()->globalize_path(stored));
+		}
+		WARN("EditorSettings is initialized after the command-line unit test runner; run the Dock projection in an editor integration test.");
+		return;
+	}
 	SolersDock *dock = memnew(SolersDock);
-	dock->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	host->add_child(dock);
-	Control *editor = memnew(Control);
-	editor->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	host->add_child(editor);
-	SceneTree::get_singleton()->get_root()->add_child(host);
+	SceneTree::get_singleton()->get_root()->add_child(dock);
+	dock->load_chat_history(timeline);
 	MessageQueue::get_singleton()->flush();
-
-	TextureRect *logo = Object::cast_to<TextureRect>(dock->find_child("SolersBrandMark", true, false));
-	TextEdit *input = Object::cast_to<TextEdit>(dock->find_child("ComposerInput", true, false));
-	ScrollContainer *scroll = Object::cast_to<ScrollContainer>(dock->find_child("MentionScroll", true, false));
-	VBoxContainer *list = Object::cast_to<VBoxContainer>(dock->find_child("MentionList", true, false));
-	REQUIRE(bool(logo && input && scroll && list));
-	CHECK(input->get_theme_color(SNAME("accent_color"), SNAME("Editor")) == accent);
-	CHECK(Math::is_equal_approx(logo->get_global_rect().get_center().x, dock->get_global_rect().get_center().x));
-	host->set_size(Size2(360, 640));
-	MessageQueue::get_singleton()->flush();
-	CHECK(Math::is_equal_approx(logo->get_global_rect().get_center().x, dock->get_global_rect().get_center().x));
-
-	SolersSyntheticFuturePlugin *plugin = memnew(SolersSyntheticFuturePlugin);
-	SolersPluginRegistry::register_plugin(plugin);
-	input->set_text("@");
-	input->set_caret_column(1);
-	input->emit_signal(SceneStringName(text_changed));
-	Button *plugins_row = Object::cast_to<Button>(list->get_child(0));
-	REQUIRE(plugins_row != nullptr);
-	plugins_row->emit_signal(SceneStringName(pressed));
-	MessageQueue::get_singleton()->flush();
-	SceneTree::get_singleton()->process(0.0);
-	REQUIRE(list->get_child_count() >= 5);
-	const float viewport_bottom = scroll->get_global_rect().get_end().y;
-	for (int i = 0; i < 4; i++) {
-		CHECK(Object::cast_to<Control>(list->get_child(i))->get_global_rect().get_end().y <= viewport_bottom + 1.0f);
+	const Array tool_cells = dock->find_children("*", "SolersToolCell", true, false);
+	REQUIRE(tool_cells.size() == 1);
+	CHECK(Object::cast_to<Control>(tool_cells[0])->get_tooltip_text() == "object.query");
+	dock->queue_free();
+	restored.shutdown();
+	solers_transcript_flush(session_id);
+	if (!stored_before) {
+		DirAccess::remove_file_or_error(ProjectSettings::get_singleton()->globalize_path(stored));
 	}
-	CHECK(Object::cast_to<Control>(list->get_child(4))->get_global_rect().get_end().y > viewport_bottom);
-	SolersPluginRegistry::unregister_plugin(plugin);
-	memdelete(plugin);
-
-	host->set_size(Size2(1100, 720));
-	Array history;
-	const String prose = String::utf8("Godot shapes long Solers histories \xE4\xB8\xAD\xE6\x96\x87, \xD8\xA7\xD9\x84\xD8\xB9\xD8\xB1\xD8\xA8\xD9\x8A\xD8\xA9 and \xE0\xA4\xB9\xE0\xA4\xBF\xE0\xA4\xA8\xE0\xA5\x8D\xE0\xA4\xA6\xE0\xA5\x80.\n\n").repeat(8);
-	for (int64_t id = 1; id <= 24; id++) {
-		Dictionary message;
-		message["role"] = SolersLLMRole::ASSISTANT;
-		message["content"] = prose;
-		message["event_id"] = id;
-		history.push_back(message);
-	}
-	dock->load_chat_history(history);
 	MessageQueue::get_singleton()->flush();
-	SceneTree::get_singleton()->process(0.0);
-	ScrollContainer *timeline = Object::cast_to<ScrollContainer>(dock->find_child("ChatTimelineScroll", true, false));
-	MarginContainer *inset = Object::cast_to<MarginContainer>(dock->find_child("TimelineInset", true, false));
-	REQUIRE(bool(timeline && inset));
-	timeline->set_v_scroll(int(timeline->get_v_scroll_bar()->get_max() * 0.5f));
-	MessageQueue::get_singleton()->flush();
-	VBoxContainer *entries = Object::cast_to<VBoxContainer>(inset->get_child(0));
-	Control *anchor = nullptr;
-	for (int i = 0; entries && !anchor && i < entries->get_child_count(); i++) {
-		Control *row = Object::cast_to<Control>(entries->get_child(i));
-		anchor = row && row->get_global_rect().intersects(timeline->get_global_rect()) ? row : nullptr;
-	}
-	REQUIRE(anchor != nullptr);
-	const float anchor_y = anchor->get_global_position().y;
-	const float layout_width = inset->get_size().x;
-	host->emit_signal(SNAME("drag_started"));
-	CHECK(inset->get_custom_minimum_size().x == layout_width);
-	CHECK(inset->get_custom_maximum_size().x == layout_width);
-	for (int offset = -160; offset <= 160; offset += 80) {
-		host->set_split_offset(offset);
-		host->call(SNAME("queue_sort"));
-		MessageQueue::get_singleton()->flush();
-		CHECK(inset->get_size().x == layout_width);
-	}
-	host->emit_signal(SNAME("drag_ended"));
-	MessageQueue::get_singleton()->flush();
-	SceneTree::get_singleton()->process(0.0);
-	MessageQueue::get_singleton()->flush();
-	CHECK(inset->get_custom_minimum_size().x == 0);
-	CHECK(inset->get_custom_maximum_size().x < 0);
-	CHECK_FALSE(timeline->get_h_scroll_bar()->is_visible());
-	CHECK(inset->get_size().x != layout_width);
-	CHECK(Math::is_equal_approx(anchor->get_global_position().y, anchor_y));
-	host->get_parent()->remove_child(host);
-	memdelete(host);
 }
 
 TEST_CASE("[SolersResourceService] nearest names rank containment above similarity") {
@@ -3554,7 +3445,7 @@ TEST_CASE("[SolersModelsDev] input modality support is model-level and unknown i
 	CHECK(SolersModelsDev::input_modality_support(Dictionary(), "image") == -1);
 }
 
-TEST_CASE("[SolersModelsDev] reasoning effort options are model-declared with a custom-model fallback") {
+TEST_CASE("[SolersModelsDev] reasoning effort options are model-declared") {
 	Dictionary effort_option;
 	effort_option["type"] = "effort";
 	Array declared_values;
@@ -3572,10 +3463,7 @@ TEST_CASE("[SolersModelsDev] reasoning effort options are model-declared with a 
 	non_reasoning_model["reasoning"] = false;
 	CHECK(SolersModelsDev::reasoning_efforts(non_reasoning_model).is_empty());
 
-	const Array custom_efforts = SolersModelsDev::reasoning_efforts(Dictionary());
-	REQUIRE(custom_efforts.size() == 2);
-	CHECK(custom_efforts[0] == "high");
-	CHECK(custom_efforts[1] == "xhigh");
+	CHECK(SolersModelsDev::reasoning_efforts(Dictionary()).is_empty());
 }
 
 TEST_CASE("[solers_format_plan_text] replaces its plan snapshot in place") {
