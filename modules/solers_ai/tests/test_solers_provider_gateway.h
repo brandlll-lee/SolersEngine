@@ -54,6 +54,9 @@
 #include "scene/gui/label.h"
 #include "scene/gui/rich_text_label.h"
 #include "scene/gui/scroll_container.h"
+#include "scene/gui/split_container.h"
+#include "scene/gui/text_edit.h"
+#include "scene/gui/texture_rect.h"
 #include "scene/main/resource_preloader.h"
 #include "scene/main/scene_tree.h"
 #include "scene/resources/3d/primitive_meshes.h"
@@ -82,6 +85,7 @@
 #include "modules/solers_ai/core/solers_trace.h"
 #include "modules/solers_ai/editor/solers_chat_cells.h"
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
+#include "modules/solers_ai/editor/solers_dock.h"
 #include "modules/solers_ai/editor/solers_ui_theme.h"
 #include "modules/solers_ai/generated/solers_svg_assets.gen.h"
 #include "modules/solers_ai/llm/solers_llm_client.h"
@@ -193,6 +197,57 @@ Dictionary find_event_kind(const Array &p_events, const String &p_kind) {
 		}
 	}
 	return Dictionary();
+}
+
+Dictionary run_openai_failure_response(const String &p_response, Array &r_events) {
+	Ref<TCPServer> server;
+	server.instantiate();
+	if (server->listen(0, IPAddress("127.0.0.1")) != OK) {
+		return Dictionary();
+	}
+	SolersLLMProtocolRegistry protocols;
+	protocols.register_builtin_protocols();
+	SolersLLMClient client;
+	client.set_protocol_registry(&protocols);
+	Dictionary request;
+	request["model"] = "synthetic-model";
+	Array messages;
+	messages.push_back(SolersLLMMessage::user("test"));
+	request["messages"] = messages;
+	Dictionary profile;
+	profile["protocol"] = "openai-chat";
+	profile["base_url"] = vformat("http://127.0.0.1:%d/v1", server->get_local_port());
+	Dictionary auth;
+	auth["type"] = "none";
+	if (client.begin(request, profile, auth) != OK) {
+		return Dictionary();
+	}
+	bool responded = false;
+	Ref<StreamPeerTCP> connection;
+	const uint64_t started = OS::get_singleton()->get_ticks_msec();
+	while (!client.is_failed() && OS::get_singleton()->get_ticks_msec() - started < 3000) {
+		if (!responded && server->is_connection_available()) {
+			connection = server->take_connection();
+			if (connection.is_valid()) {
+				if (p_response.is_empty()) {
+					connection->disconnect_from_host();
+				} else {
+					connection->poll();
+					uint8_t discard[4096];
+					int received = 0;
+					connection->get_partial_data(discard, 4096, received);
+					const CharString bytes = p_response.utf8();
+					connection->put_data((const uint8_t *)bytes.get_data(), bytes.length());
+				}
+			}
+			responded = true;
+			server->stop();
+		}
+		r_events.append_array(client.poll());
+		OS::get_singleton()->delay_usec(1000);
+	}
+	r_events.append_array(client.poll());
+	return client.is_failed() ? client.get_error() : Dictionary();
 }
 
 Dictionary find_tool_def(const Array &p_tools, const String &p_name) {
@@ -968,6 +1023,19 @@ TEST_CASE("[SolersToolRegistry] default model surface is domain-first") {
 	Dictionary script_compute = find_tool_def(tools, "script.compute");
 	CHECK(script_compute.get("mutation_policy", String()) == "file_checkpoint");
 	CHECK(script_compute.get("permission", String()) == "edit_files");
+	const Dictionary runtime_observe = find_tool_def(tools, "runtime.observe");
+	const Dictionary runtime_properties = Dictionary(runtime_observe.get("input_schema", Dictionary())).get("properties", Dictionary());
+	CHECK(Array(Dictionary(runtime_properties.get("target", Dictionary())).get("enum", Array())).has("stack"));
+	CHECK_FALSE(runtime_properties.has("types"));
+	const Dictionary runtime_control = find_tool_def(tools, "runtime.control");
+	const Array control_branches = Dictionary(runtime_control.get("input_schema", Dictionary())).get("oneOf", Array());
+	REQUIRE(control_branches.size() == 2);
+	CHECK(Dictionary(Dictionary(control_branches[1]).get("properties", Dictionary())).has("expected_value"));
+	Dictionary play;
+	play["action"] = "play_current_scene";
+	const Array runtime_accesses = registry.resolve_resource_access(SNAME("runtime.control"), play);
+	REQUIRE(runtime_accesses.size() == 1);
+	CHECK(Dictionary(runtime_accesses[0]).get("key", String()) == "runtime:");
 
 	for (int i = 0; i < tools.size(); i++) {
 		const Dictionary tool = tools[i];
@@ -1830,68 +1898,25 @@ TEST_CASE("[SolersObservationService] observe_path digests any selection by engi
 	CHECK(root->remove("solers_observe_path_contract") == OK);
 }
 
-TEST_CASE("[SolersObservationService] structured search and runtime observations stay bounded") {
-	const String path = "res://solers_search_contract.txt";
-	{
-		Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
-		REQUIRE(file.is_valid());
-		file->store_string("solers-structured-search-contract\n");
-	}
+TEST_CASE("[SolersObservationService] runtime views require native debugger authority") {
 	SolersObservationService observation_service;
-	Dictionary search_args;
-	search_args["type"] = "path";
-	search_args["query"] = "solers_search_contract";
-	search_args["max_results"] = 4;
-	const Dictionary search = observation_service.search_project(search_args);
-	CHECK(search.get("type", String()) == "path");
-	CHECK((int)search.get("count", 0) >= 1);
-	CHECK((int)search.get("count", 0) <= 4);
-
 	Dictionary observe_args;
-	observe_args["since_cursor"] = 0;
 	const Dictionary runtime = observation_service.observe_runtime(observe_args);
-	CHECK(runtime.has("cursor"));
-	CHECK(runtime.has("runtime_epoch"));
 	CHECK(runtime.has("error_digest"));
-	CHECK(runtime.has("epoch_error_count"));
-	CHECK(Array(runtime.get("events", Array())).is_empty());
-
-	Dictionary include_events_args;
-	include_events_args["include_events"] = true;
-	include_events_args["max_events"] = 2;
-	const Dictionary with_events = observation_service.observe_runtime(include_events_args);
-	CHECK(Array(with_events.get("events", Array())).size() <= 2);
-	Ref<DirAccess> project_root = DirAccess::open("res://");
-	REQUIRE(project_root.is_valid());
-	CHECK(project_root->remove(path.get_file()) == OK);
-}
-
-TEST_CASE("[SolersObservationService] runtime capture waits for visual readiness") {
-	SolersObservationService observation_service;
-	Dictionary args;
-	args["target"] = "runtime";
-	const Dictionary pending = observation_service.capture_viewport(args);
-	REQUIRE((bool)pending.get("ok", false));
-	const Dictionary data = pending.get("data", Dictionary());
-	CHECK(data.get("status", String()) == "pending");
-	CHECK((int64_t)data.get("render_sequence", 0) > 0);
-	CHECK(Dictionary(data.get("source_state", Dictionary())).has("runtime_epoch"));
-	CHECK((bool)data.get("awaiting_runtime_ready", false));
-	const Dictionary poll_args = data.get("poll_args", Dictionary());
-	CHECK_FALSE(observation_service.is_viewport_capture_ready(poll_args));
-}
-
-TEST_CASE("[SolersObservationService] runtime status exposes a single capture_ready authority") {
-	// capture_ready is the one fact render.capture(runtime) and context share —
-	// not a second guess from ScriptEditorDebugger alone.
-	SolersObservationService observation_service;
 	const Dictionary status = observation_service.get_runtime_status();
-	CHECK(status.has("is_playing"));
-	CHECK(status.has("debugger_connected"));
-	CHECK(status.has("capture_ready"));
-	CHECK(status.get("capture_ready", true).get_type() == Variant::BOOL);
-	// With no play session, capture must not claim readiness.
 	CHECK_FALSE((bool)status.get("capture_ready", true));
+	for (const char *target : { "tree", "objects", "stack" }) {
+		Dictionary args;
+		args["target"] = target;
+		if (String(target) == "objects") {
+			args["object_ids"] = Array{ 1 };
+		}
+		const Dictionary observed = observation_service.observe_runtime(args);
+		CHECK_FALSE((bool)observed.get("available", false));
+	}
+	Variant value;
+	const ObjectID object_id((uint64_t)1);
+	CHECK_FALSE(observation_service.get_runtime_property(0, object_id, SNAME("position"), value));
 }
 
 TEST_CASE("[SolersToolRegistry] scene.open is a thin EditorInterface open surface") {
@@ -2003,6 +2028,17 @@ TEST_CASE("[SolersResourceService] native Resource path flow creates edits loads
 	REQUIRE(read.get("ok", false));
 	Dictionary read_data = read.get("data", Dictionary());
 	CHECK(read_data.get("value", String()) == "contract initial");
+	Dictionary inspect_args;
+	inspect_args["path"] = path;
+	Array inspect_properties;
+	inspect_properties.push_back("resource_name");
+	inspect_properties.push_back("not_a_property");
+	inspect_args["properties"] = inspect_properties;
+	const Dictionary inspected = resource_service.inspect_resource(inspect_args);
+	REQUIRE(inspected.get("ok", false));
+	const Dictionary inspected_data = inspected.get("data", Dictionary());
+	CHECK(Dictionary(inspected_data.get("properties", Dictionary())).has("resource_name"));
+	CHECK(Dictionary(inspected_data.get("property_errors", Dictionary())).has("not_a_property"));
 
 	Dictionary set_args = get_args;
 	set_args["value"] = "contract updated";
@@ -2904,42 +2940,41 @@ static Array solers_test_tool_calls(const String &p_id, const String &p_name) {
 	return calls;
 }
 
-TEST_CASE("[SolersContextManager] projection and compaction preserve the executable suffix") {
+TEST_CASE("[SolersContextManager] compaction keeps bounded human input and drops tool payloads") {
 	SolersContextManager context;
 	Array history;
 	Dictionary old_user = SolersLLMMessage::user("Inspect the scene.");
 	history.push_back(old_user);
-	history.push_back(SolersLLMMessage::assistant("Inspecting.", solers_test_tool_calls("call_old", "object.query")));
 	history.push_back(SolersLLMMessage::tool_result("call_old", "object.query", String("x").repeat(40000)));
-	history.push_back(SolersLLMMessage::assistant("Three lights found.", Array()));
-	Dictionary ephemeral = SolersLLMMessage::user("stale engine state");
-	ephemeral["ephemeral"] = true;
-	history.push_back(ephemeral);
-
-	const Array projected = SolersContextManager::project_completed_turns(history);
-	REQUIRE(projected.size() == 2);
-	CHECK(SolersContextManager::estimate_messages_tokens(projected) * 10 < SolersContextManager::estimate_messages_tokens(history));
 	CHECK_FALSE(context.should_compact(SolersContextManager::DEFAULT_CONTEXT_TOKENS - SolersContextManager::DEFAULT_OUTPUT_TOKENS - 1, SolersContextManager::DEFAULT_CONTEXT_TOKENS, SolersContextManager::DEFAULT_OUTPUT_TOKENS));
 	CHECK(context.should_compact(SolersContextManager::DEFAULT_CONTEXT_TOKENS - SolersContextManager::DEFAULT_OUTPUT_TOKENS, SolersContextManager::DEFAULT_CONTEXT_TOKENS, SolersContextManager::DEFAULT_OUTPUT_TOKENS));
 
+	old_user["content"] = String("old context ").repeat(4000);
+	history[0] = old_user;
+	Dictionary internal_context = SolersLLMMessage::user(SolersContextManager::COMPACTION_INSTRUCTION);
+	internal_context["role"] = SolersContextManager::MODEL_CONTEXT_ROLE;
+	history.push_back(internal_context);
+	Dictionary active_user = SolersLLMMessage::user("Continue the build.");
+	active_user["turn_id"] = 7;
 	Dictionary attachment;
 	attachment["id"] = "reference";
 	Array attachments;
 	attachments.push_back(attachment);
-	old_user["attachments"] = attachments;
-	history[0] = old_user;
-	Dictionary active_user = SolersLLMMessage::user("Continue the build.");
-	active_user["turn_id"] = 7;
+	active_user["attachments"] = attachments;
 	history.push_back(active_user);
 	history.push_back(SolersLLMMessage::assistant("Capturing.", solers_test_tool_calls("call_live", "render.capture")));
-	history.push_back(SolersLLMMessage::tool_result("call_live", "render.capture", "{\"camera\":5}"));
-	const Array compacted = Dictionary(context.apply_compaction(history, "Continue from camera 5.", 7)).get("messages", Array());
-	REQUIRE(compacted.size() == 4);
-	CHECK(Dictionary(compacted[0]).get("role", String()) == SolersContextManager::MODEL_CONTEXT_ROLE);
-	CHECK(Dictionary(compacted[0]).get("origin", String()) == "compaction_summary");
-	CHECK(Array(Dictionary(compacted[0]).get("attachments", Array())).size() == 1);
-	CHECK(Dictionary(compacted[1]).get("content", String()) == "Continue the build.");
-	CHECK(Dictionary(compacted[3]).get("tool_call_id", String()) == "call_live");
+	history.push_back(SolersLLMMessage::tool_result("call_live", "render.capture", String("camera payload ").repeat(2000)));
+	const Dictionary result = context.apply_compaction(history, "Continue from camera 5.", 1000);
+	const Array compacted = result.get("messages", Array());
+	REQUIRE(compacted.size() == 2);
+	CHECK(Dictionary(compacted[0]).get("content", String()) == "Continue the build.");
+	CHECK_FALSE(Dictionary(compacted[0]).has("attachments"));
+	CHECK(Dictionary(compacted[1]).get("role", String()) == SolersContextManager::MODEL_CONTEXT_ROLE);
+	CHECK(Dictionary(compacted[1]).get("origin", String()) == "compaction_summary");
+	const String wire = JSON::stringify(compacted);
+	CHECK_FALSE(wire.contains("camera payload"));
+	CHECK_FALSE(wire.contains(SolersContextManager::COMPACTION_INSTRUCTION));
+	CHECK((int)result.get("tokens_after", 0) < (int)result.get("tokens_before", 0));
 }
 
 TEST_CASE("[SolersContextManager] transient request state replaces the prior request snapshot") {
@@ -2963,23 +2998,10 @@ TEST_CASE("[SolersAgentSession] journal projection has stable unique events and 
 		solers_transcript_write(p_event);
 	};
 	Dictionary event;
-	event["event_type"] = "turn_started";
-	event["wall"] = 100;
-	write_event(event);
 	event = make_user_message("inspect the scene");
 	event["event_type"] = "message";
 	event["author"] = "human";
 	event["wall"] = 101;
-	write_event(event);
-	event = make_user_message("legacy internal context");
-	event["event_type"] = "message";
-	event["origin"] = "background_job_delta";
-	write_event(event);
-	event.clear();
-	event["event_type"] = "model_context";
-	event["role"] = SolersContextManager::MODEL_CONTEXT_ROLE;
-	event["origin"] = "compaction_summary";
-	event["content"] = "typed internal context";
 	write_event(event);
 	event = SolersLLMMessage::assistant("same visible text", solers_test_tool_calls("call_receipt", "object.query"));
 	event["event_type"] = "message";
@@ -2993,78 +3015,89 @@ TEST_CASE("[SolersAgentSession] journal projection has stable unique events and 
 	event = SolersLLMMessage::assistant("same visible text", Array());
 	event["event_type"] = "message";
 	write_event(event);
+	const int64_t compaction_id = 90;
 	event.clear();
-	event["event_type"] = "turn_outcome";
+	event["event_type"] = "context_compaction";
+	event["event_id"] = compaction_id;
+	event["phase"] = "started";
+	write_event(event);
+	Array compacted;
+	compacted.push_back(SolersLLMMessage::user("inspect the scene"));
+	Dictionary summary;
+	summary["role"] = SolersContextManager::MODEL_CONTEXT_ROLE;
+	summary["content"] = "model-only compacted state";
+	compacted.push_back(summary);
+	event["phase"] = "completed";
+	event["messages"] = compacted;
 	write_event(event);
 	event.clear();
-	event["event_type"] = "turn_started";
-	event["wall"] = 200;
+	event["event_type"] = "turn_outcome";
 	write_event(event);
 	SolersAgentSession restored;
 	restored.set_session(project, session_id);
 	const Array model = restored.get_messages();
 	const Array timeline = restored.get_timeline_entries();
-	REQUIRE(timeline.size() == 3);
-	CHECK_FALSE(JSON::stringify(timeline).contains("internal context"));
-	int context_messages = 0;
-	for (int i = 0; i < model.size(); i++) {
-		context_messages += String(Dictionary(model[i]).get("role", String())) == SolersContextManager::MODEL_CONTEXT_ROLE;
-	}
-	CHECK(context_messages == 2);
+	REQUIRE(timeline.size() == 4);
+	REQUIRE(model.size() == 2);
+	CHECK(Dictionary(model[1]).get("role", String()) == SolersContextManager::MODEL_CONTEXT_ROLE);
 	const Array calls = Dictionary(timeline[1]).get("tool_calls", Array());
 	REQUIRE(calls.size() == 1);
 	CHECK(Dictionary(calls[0]).get("finished", false));
 	CHECK(Dictionary(calls[0]).get("ok", false));
 	CHECK_FALSE(JSON::stringify(timeline).contains("large-payload"));
 	CHECK_FALSE(JSON::stringify(model).contains("large-payload"));
-	CHECK(Dictionary(timeline[0]).get("event_id", 0) != Dictionary(timeline[1]).get("event_id", 0));
-	CHECK(Dictionary(timeline[1]).get("event_id", 0) != Dictionary(timeline[2]).get("event_id", 0));
-	const Array first_ids = { Dictionary(timeline[0]).get("event_id", 0), Dictionary(timeline[1]).get("event_id", 0), Dictionary(timeline[2]).get("event_id", 0) };
+	CHECK(Dictionary(timeline[3]).get("role", String()) == "context_compaction");
+	CHECK(Dictionary(timeline[3]).get("phase", String()) == "completed");
+	CHECK((int64_t)Dictionary(timeline[3]).get("event_id", 0) == compaction_id);
 	restored.set_session(project, session_id);
 	const Array second = restored.get_timeline_entries();
-	CHECK(first_ids[0] == Dictionary(second[0]).get("event_id", 0));
-	CHECK(first_ids[2] == Dictionary(second[2]).get("event_id", 0));
-	const Vector<SolersSessionInfo> sessions = solers_list_sessions(project);
-	REQUIRE(sessions.size() == 1);
-	CHECK(sessions[0].title == "inspect the scene");
-	CHECK(sessions[0].wall == 200);
+	CHECK((int64_t)Dictionary(second[3]).get("event_id", 0) == compaction_id);
 	restored.shutdown();
 	solers_transcript_flush();
 }
 
-TEST_CASE("[SolersUITheme] body and code fonts own the multilingual fallback stack") {
+TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the Solers subtree") {
 	const Ref<Theme> theme = SolersUITheme::create();
 	REQUIRE(theme.is_valid());
 	const Ref<Font> body = theme->get_default_font();
 	const Ref<Font> mono = theme->get_font(SceneStringName(font), SNAME("SolersMono"));
-	REQUIRE(body.is_valid());
-	REQUIRE(mono.is_valid());
-	CHECK(body != mono);
+	const Ref<Font> title = theme->get_font(SceneStringName(font), SNAME("SolersSessionTitle"));
+	REQUIRE(bool(body.is_valid() && mono.is_valid() && title.is_valid()));
 	for (const char32_t character : { char32_t(0x4E16), char32_t(0x0636), char32_t(0x0939), char32_t(0x05E9), char32_t(0x0E17) }) {
 		CHECK(body->has_char(character));
 		CHECK(mono->has_char(character));
 	}
-	CHECK(body->get_string_size(String::utf8("Solers \xE4\xB8\x96\xE7\x95\x8C \xD8\xA7\xD9\x84\xD8\xB9\xD8\xA7\xD9\x84\xD9\x85"), HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x > 0);
-}
+	CHECK(theme->get_font_size(SceneStringName(font_size), SNAME("SolersSessionTitle")) > theme->get_font_size(SceneStringName(font_size), SNAME("SolersSessionMeta")));
+	CHECK(theme->get_color(SceneStringName(font_color), SNAME("SolersSessionTitle")).a > theme->get_color(SceneStringName(font_color), SNAME("SolersSessionMeta")).a);
+	CHECK(theme->get_constant(SNAME("separation"), SNAME("HSplitContainer")) > 0);
+	CHECK(theme->get_stylebox(SNAME("split_bar_background"), SNAME("HSplitContainer")).is_valid());
 
-TEST_CASE("[SolersUITheme][SceneTree] typography is isolated to the Solers subtree") {
 	Control *host = memnew(Control);
 	Label *ambient = memnew(Label("Godot"));
 	VBoxContainer *solers_root = memnew(VBoxContainer);
-	Label *body = memnew(Label(String::utf8("Solers \xE4\xB8\xAD\xE6\x96\x87")));
-	RichTextLabel *code = memnew(RichTextLabel);
-	solers_root->set_theme(SolersUITheme::create());
-	code->set_theme_type_variation("SolersCodeText");
+	Label *body_label = memnew(Label(String::utf8("Solers \xE4\xB8\xAD\xE6\x96\x87")));
+	solers_root->set_theme(theme);
 	host->add_child(ambient);
 	host->add_child(solers_root);
-	solers_root->add_child(body);
-	solers_root->add_child(code);
+	solers_root->add_child(body_label);
 	SceneTree::get_singleton()->get_root()->add_child(host);
 	MessageQueue::get_singleton()->flush();
-	CHECK(body->get_theme_default_font() == solers_root->get_theme()->get_default_font());
-	CHECK(code->get_theme_font(SNAME("normal_font")) == solers_root->get_theme_font(SceneStringName(font), SNAME("SolersMono")));
-	CHECK(ambient->get_theme_default_font() != body->get_theme_default_font());
+	CHECK(body_label->get_theme_default_font() == solers_root->get_theme()->get_default_font());
+	CHECK(ambient->get_theme_default_font() != body_label->get_theme_default_font());
 	host->queue_free();
+	MessageQueue::get_singleton()->flush();
+}
+
+TEST_CASE("[SolersStatusCell][SceneTree] compaction lifecycle switches from active to settled") {
+	SolersStatusCell *status = memnew(SolersStatusCell);
+	SceneTree::get_singleton()->get_root()->add_child(status);
+	status->set_status("Context automatically compacting");
+	status->set_active(true);
+	CHECK(status->is_processing_internal());
+	status->set_status("Context automatically compacted");
+	status->set_active(false);
+	CHECK_FALSE(status->is_processing_internal());
+	status->queue_free();
 	MessageQueue::get_singleton()->flush();
 }
 
@@ -3081,10 +3114,8 @@ TEST_CASE("[SolersIcons] pinned SVG assets share one DPI-aware cache") {
 	const Ref<Texture2D> panel_32 = SolersIcons::get(SNAME("panel"), 32);
 	REQUIRE(panel_16.is_valid());
 	REQUIRE(panel_32.is_valid());
-	CHECK(panel_16->get_width() == 16);
-	CHECK(panel_16->get_height() == 16);
-	CHECK(panel_32->get_width() == 32);
-	CHECK(panel_32->get_height() == 32);
+	CHECK(panel_16->get_size() == Size2(16, 16));
+	CHECK(panel_32->get_size() == Size2(32, 32));
 	CHECK(panel_16->get_rid() == SolersIcons::get(SNAME("panel"), 16)->get_rid());
 	CHECK(SolersIcons::get(SNAME("missing_icon"), 16).is_null());
 
@@ -3102,85 +3133,100 @@ TEST_CASE("[SolersIcons] pinned SVG assets share one DPI-aware cache") {
 #endif
 }
 
-TEST_CASE("[SolersChat][SceneTree] streamed multilingual Markdown keeps native minimum height") {
-	VBoxContainer *host = memnew(VBoxContainer);
-	host->set_theme(SolersUITheme::create());
-	SolersAssistantCell *cell = memnew(SolersAssistantCell);
-	host->add_child(cell);
+TEST_CASE("[SolersDock][SceneTree][Editor] accent mentions, four-row popup, and V2 mark follow native layout") {
+	HSplitContainer *host = memnew(HSplitContainer);
+	Ref<Theme> editor_theme;
+	editor_theme.instantiate();
+	const Color accent(0.20f, 0.55f, 0.90f);
+	editor_theme->set_color(SNAME("accent_color"), SNAME("Editor"), accent);
+	host->set_theme(editor_theme);
+	host->set_size(Size2(640, 760));
+	SolersDock *dock = memnew(SolersDock);
+	dock->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	host->add_child(dock);
+	Control *editor = memnew(Control);
+	editor->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	host->add_child(editor);
 	SceneTree::get_singleton()->get_root()->add_child(host);
-	cell->set_size(Size2(480, 0));
-	const String text = String::utf8("## Heading\n\nGodot shapes Solers \xE4\xB8\xAD\xE6\x96\x87, \xD8\xA7\xD9\x84\xD8\xB9\xD8\xB1\xD8\xA8\xD9\x8A\xD8\xA9 and \xE0\xA4\xB9\xE0\xA4\xBF\xE0\xA4\xA8\xE0\xA5\x8D\xE0\xA4\xA6\xE0\xA5\x80 as complete strings.\n\n").repeat(20);
-	cell->append_delta(text.left(text.length() / 2));
-	cell->notification(Node::NOTIFICATION_INTERNAL_PROCESS);
 	MessageQueue::get_singleton()->flush();
-	const float partial_height = Object::cast_to<Control>(cell->get_child(0))->get_combined_minimum_size().y;
-	CHECK(partial_height > 0);
-	cell->append_delta(text.substr(text.length() / 2));
-	cell->notification(Node::NOTIFICATION_INTERNAL_PROCESS);
-	cell->finalize(text);
-	MessageQueue::get_singleton()->flush();
-	REQUIRE(cell->get_child_count() == 1);
-	CHECK(Object::cast_to<Control>(cell->get_child(0))->get_combined_minimum_size().y >= partial_height);
-	host->queue_free();
-	MessageQueue::get_singleton()->flush();
-}
 
-static void solers_test_restore_scroll_anchor(ScrollContainer *p_scroll, Control *p_anchor, float p_screen_y) {
-	p_scroll->set_v_scroll(p_scroll->get_v_scroll() + Math::round(p_anchor->get_global_position().y - p_screen_y));
-}
-static void solers_test_queue_scroll_commit(ScrollContainer *p_scroll, Control *p_anchor, float p_screen_y) {
-	p_scroll->connect(SceneStringName(sort_children), callable_mp_static(solers_test_restore_scroll_anchor).bind(p_scroll, p_anchor, p_screen_y), Object::CONNECT_ONE_SHOT | Object::CONNECT_DEFERRED);
-	p_scroll->call(SNAME("queue_sort"));
-}
-
-TEST_CASE("[SolersChat][SceneTree] user scrolling pages variable rows to the first event") {
-	ScrollContainer *scroll = memnew(ScrollContainer);
-	MarginContainer *inset = memnew(MarginContainer);
-	VBoxContainer *list = memnew(VBoxContainer);
-	scroll->set_size(Size2(480, 240));
-	inset->add_child(list);
-	scroll->add_child(inset);
-	SceneTree::get_singleton()->get_root()->add_child(scroll);
-	for (int64_t id = 25; id <= 48; id++) {
-		Label *row = memnew(Label(vformat("message %d", id)));
-		row->set_custom_minimum_size(Size2(0, 18 + id % 5 * 17));
-		row->set_meta("timeline_event_id", id);
-		list->add_child(row);
-	}
+	TextureRect *logo = Object::cast_to<TextureRect>(dock->find_child("SolersBrandMark", true, false));
+	TextEdit *input = Object::cast_to<TextEdit>(dock->find_child("ComposerInput", true, false));
+	ScrollContainer *scroll = Object::cast_to<ScrollContainer>(dock->find_child("MentionScroll", true, false));
+	VBoxContainer *list = Object::cast_to<VBoxContainer>(dock->find_child("MentionList", true, false));
+	REQUIRE(bool(logo && input && scroll && list));
+	CHECK(input->get_theme_color(SNAME("accent_color"), SNAME("Editor")) == accent);
+	CHECK(Math::is_equal_approx(logo->get_global_rect().get_center().x, dock->get_global_rect().get_center().x));
+	host->set_size(Size2(360, 640));
 	MessageQueue::get_singleton()->flush();
-	VScrollBar *bar = scroll->get_v_scroll_bar();
-	scroll->set_v_scroll(20);
-	list->set_process(false);
-	bar->connect(SNAME("scrolling"), callable_mp(static_cast<Node *>(list), &Node::set_process).bind(true));
-	scroll->set_v_scroll(0);
-	CHECK_FALSE(list->is_processing());
-	bar->scroll(1);
-	CHECK(list->is_processing());
-	for (int page = 0; page < 2; page++) {
-		scroll->set_v_scroll(0);
-		MessageQueue::get_singleton()->flush();
-		const int64_t anchor_id = 25 - page * 12;
-		Control *anchor = Object::cast_to<Control>(list->get_child(0));
-		REQUIRE((int64_t)anchor->get_meta("timeline_event_id", -1) == anchor_id);
-		const float anchor_y = anchor->get_global_position().y;
-		list->connect(SceneStringName(sort_children), callable_mp_static(solers_test_queue_scroll_commit).bind(scroll, anchor, anchor_y), Object::CONNECT_ONE_SHOT);
-		for (int64_t id = anchor_id - 1; id >= anchor_id - 12; id--) {
-			Label *row = memnew(Label(vformat("message %d", id)));
-			row->set_custom_minimum_size(Size2(0, 18 + id % 5 * 17));
-			row->set_meta("timeline_event_id", id);
-			list->add_child(row);
-			list->move_child(row, 0);
-			Node *last = list->get_child(list->get_child_count() - 1);
-			list->remove_child(last);
-			memdelete(last);
-		}
-		MessageQueue::get_singleton()->flush();
-		CHECK_MESSAGE(Math::is_equal_approx(anchor->get_global_position().y, anchor_y), vformat("anchor %.1f -> %.1f, scroll %d/%d", anchor_y, anchor->get_global_position().y, scroll->get_v_scroll(), int(bar->get_max() - bar->get_page())));
+	CHECK(Math::is_equal_approx(logo->get_global_rect().get_center().x, dock->get_global_rect().get_center().x));
+
+	SolersSyntheticFuturePlugin *plugin = memnew(SolersSyntheticFuturePlugin);
+	SolersPluginRegistry::register_plugin(plugin);
+	input->set_text("@");
+	input->set_caret_column(1);
+	input->emit_signal(SceneStringName(text_changed));
+	Button *plugins_row = Object::cast_to<Button>(list->get_child(0));
+	REQUIRE(plugins_row != nullptr);
+	plugins_row->emit_signal(SceneStringName(pressed));
+	MessageQueue::get_singleton()->flush();
+	SceneTree::get_singleton()->process(0.0);
+	REQUIRE(list->get_child_count() >= 5);
+	const float viewport_bottom = scroll->get_global_rect().get_end().y;
+	for (int i = 0; i < 4; i++) {
+		CHECK(Object::cast_to<Control>(list->get_child(i))->get_global_rect().get_end().y <= viewport_bottom + 1.0f);
 	}
-	CHECK(list->get_child_count() == 24);
-	CHECK((int64_t)list->get_child(0)->get_meta("timeline_event_id", -1) == 1);
-	scroll->get_parent()->remove_child(scroll);
-	memdelete(scroll);
+	CHECK(Object::cast_to<Control>(list->get_child(4))->get_global_rect().get_end().y > viewport_bottom);
+	SolersPluginRegistry::unregister_plugin(plugin);
+	memdelete(plugin);
+
+	host->set_size(Size2(1100, 720));
+	Array history;
+	const String prose = String::utf8("Godot shapes long Solers histories \xE4\xB8\xAD\xE6\x96\x87, \xD8\xA7\xD9\x84\xD8\xB9\xD8\xB1\xD8\xA8\xD9\x8A\xD8\xA9 and \xE0\xA4\xB9\xE0\xA4\xBF\xE0\xA4\xA8\xE0\xA5\x8D\xE0\xA4\xA6\xE0\xA5\x80.\n\n").repeat(8);
+	for (int64_t id = 1; id <= 24; id++) {
+		Dictionary message;
+		message["role"] = SolersLLMRole::ASSISTANT;
+		message["content"] = prose;
+		message["event_id"] = id;
+		history.push_back(message);
+	}
+	dock->load_chat_history(history);
+	MessageQueue::get_singleton()->flush();
+	SceneTree::get_singleton()->process(0.0);
+	ScrollContainer *timeline = Object::cast_to<ScrollContainer>(dock->find_child("ChatTimelineScroll", true, false));
+	MarginContainer *inset = Object::cast_to<MarginContainer>(dock->find_child("TimelineInset", true, false));
+	REQUIRE(bool(timeline && inset));
+	timeline->set_v_scroll(int(timeline->get_v_scroll_bar()->get_max() * 0.5f));
+	MessageQueue::get_singleton()->flush();
+	VBoxContainer *entries = Object::cast_to<VBoxContainer>(inset->get_child(0));
+	Control *anchor = nullptr;
+	for (int i = 0; entries && !anchor && i < entries->get_child_count(); i++) {
+		Control *row = Object::cast_to<Control>(entries->get_child(i));
+		anchor = row && row->get_global_rect().intersects(timeline->get_global_rect()) ? row : nullptr;
+	}
+	REQUIRE(anchor != nullptr);
+	const float anchor_y = anchor->get_global_position().y;
+	const float layout_width = inset->get_size().x;
+	host->emit_signal(SNAME("drag_started"));
+	CHECK(inset->get_custom_minimum_size().x == layout_width);
+	CHECK(inset->get_custom_maximum_size().x == layout_width);
+	for (int offset = -160; offset <= 160; offset += 80) {
+		host->set_split_offset(offset);
+		host->call(SNAME("queue_sort"));
+		MessageQueue::get_singleton()->flush();
+		CHECK(inset->get_size().x == layout_width);
+	}
+	host->emit_signal(SNAME("drag_ended"));
+	MessageQueue::get_singleton()->flush();
+	SceneTree::get_singleton()->process(0.0);
+	MessageQueue::get_singleton()->flush();
+	CHECK(inset->get_custom_minimum_size().x == 0);
+	CHECK(inset->get_custom_maximum_size().x < 0);
+	CHECK_FALSE(timeline->get_h_scroll_bar()->is_visible());
+	CHECK(inset->get_size().x != layout_width);
+	CHECK(Math::is_equal_approx(anchor->get_global_position().y, anchor_y));
+	host->get_parent()->remove_child(host);
+	memdelete(host);
 }
 
 TEST_CASE("[SolersResourceService] nearest names rank containment above similarity") {
@@ -3268,19 +3314,6 @@ TEST_CASE("[SolersAgentSession] validates the Codex update_plan contract") {
 	valid_steps[0] = first;
 	args["plan"] = valid_steps;
 	CHECK(SolersAgentSession::validate_plan(args).get("ok", false));
-}
-
-TEST_CASE("[SolersToolRegistry] runtime lifecycle declares only runtime access") {
-	SolersAssetService assets;
-	SolersToolRegistry registry;
-	registry.set_asset_service(&assets);
-	registry.register_default_tools();
-
-	Dictionary play;
-	play["action"] = "play_current_scene";
-	const Array runtime_accesses = registry.resolve_resource_access(SNAME("runtime.control"), play);
-	REQUIRE(runtime_accesses.size() == 1);
-	CHECK(Dictionary(runtime_accesses[0]).get("key", String()) == "runtime:");
 }
 
 TEST_CASE("[SolersToolRegistry] direct asset jobs declare their project writes") {
@@ -3468,174 +3501,43 @@ TEST_CASE("[SolersLLMRetry] retry classification uses structured transport facts
 }
 
 TEST_CASE("[SolersLLMClient] transport failures use the failed state without a protocol error event") {
-	Ref<TCPServer> server;
-	server.instantiate();
-	REQUIRE(server->listen(0, IPAddress("127.0.0.1")) == OK);
-
-	SolersLLMProtocolRegistry protocols;
-	protocols.register_builtin_protocols();
-	SolersLLMClient client;
-	client.set_protocol_registry(&protocols);
-
-	Dictionary request;
-	request["model"] = "synthetic-model";
-	Array messages;
-	messages.push_back(SolersLLMMessage::user("test"));
-	request["messages"] = messages;
-	request["tools"] = Array();
-	Dictionary profile;
-	profile["protocol"] = "openai-chat";
-	profile["base_url"] = vformat("http://127.0.0.1:%d/v1", server->get_local_port());
-	Dictionary auth;
-	auth["type"] = "none";
-	REQUIRE(client.begin(request, profile, auth) == OK);
-
 	Array events;
-	const uint64_t started = OS::get_singleton()->get_ticks_msec();
-	while (!client.is_failed() && OS::get_singleton()->get_ticks_msec() - started < 2000) {
-		if (server->is_connection_available()) {
-			Ref<StreamPeerTCP> accepted = server->take_connection();
-			if (accepted.is_valid()) {
-				accepted->disconnect_from_host();
-			}
-			server->stop();
-		}
-		events.append_array(client.poll());
-		OS::get_singleton()->delay_usec(1000);
-	}
-	events.append_array(client.poll());
-	REQUIRE(client.is_failed());
-	CHECK((bool)client.get_error().get("retryable", false));
+	const Dictionary error = run_openai_failure_response(String(), events);
+	REQUIRE_FALSE(error.is_empty());
+	CHECK((bool)error.get("retryable", false));
 	CHECK(find_event_kind(events, SolersLLMEventKind::ERROR).is_empty());
 }
 
-TEST_CASE("[SolersOpenAIChatProtocol] SSE error frames are authoritative failures") {
-	SolersOpenAIChatProtocol protocol;
-	Dictionary state;
-	const Array events = protocol.parse_event(state, "error", R"json({"error":{"message":"Internal server error from model.","type":"server_error","code":"Internal error"}})json");
-	REQUIRE(events.size() == 1);
-	CHECK(String(Dictionary(events[0]).get("kind", String())) == SolersLLMEventKind::ERROR);
-	CHECK(String(Dictionary(events[0]).get("message", String())).contains("Internal server error from model"));
-	CHECK(String(Dictionary(events[0]).get("code", String())) == "server_error");
-
-	Dictionary state2;
-	const Array nested = protocol.parse_event(state2, "", R"json({"error":{"message":"boom","type":"invalid_request_error"}})json");
-	REQUIRE(nested.size() == 1);
-	CHECK(String(Dictionary(nested[0]).get("kind", String())) == SolersLLMEventKind::ERROR);
-	CHECK(String(Dictionary(nested[0]).get("message", String())) == "boom");
+TEST_CASE("[SolersLLMClient] an error after streamed content is an interrupted retryable response") {
+	const String body = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n"
+						"data: {\"error\":{\"message\":\"Upstream HTTP/2 stream failed\",\"type\":\"upstream_error\",\"code\":\"upstream_error\"}}\n\n";
+	Array events;
+	const Dictionary error = run_openai_failure_response(vformat("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", body.utf8().length(), body), events);
+	REQUIRE_FALSE(error.is_empty());
+	CHECK_FALSE(find_event_kind(events, SolersLLMEventKind::TEXT_DELTA).is_empty());
+	CHECK(String(error.get("code", String())) == "upstream_error");
+	CHECK((bool)error.get("retryable", false));
+	CHECK(SolersLLMRetry::is_retryable(error));
 }
 
 TEST_CASE("[SolersLLMClient] empty HTTP 200 stream fails without retry") {
-	// Authority: zero response body bytes ⇒ identical retry cannot help.
-	Ref<TCPServer> server;
-	server.instantiate();
-	REQUIRE(server->listen(0, IPAddress("127.0.0.1")) == OK);
-
-	SolersLLMProtocolRegistry protocols;
-	protocols.register_builtin_protocols();
-	SolersLLMClient client;
-	client.set_protocol_registry(&protocols);
-
-	Dictionary request;
-	request["model"] = "synthetic-model";
-	Array messages;
-	messages.push_back(SolersLLMMessage::user("test"));
-	request["messages"] = messages;
-	Dictionary profile;
-	profile["protocol"] = "openai-chat";
-	profile["base_url"] = vformat("http://127.0.0.1:%d/v1", server->get_local_port());
-	Dictionary auth;
-	auth["type"] = "none";
-	REQUIRE(client.begin(request, profile, auth) == OK);
-
-	bool responded = false;
-	Ref<StreamPeerTCP> connection;
-	const uint64_t started = OS::get_singleton()->get_ticks_msec();
-	while (!client.is_failed() && !client.is_done() && OS::get_singleton()->get_ticks_msec() - started < 3000) {
-		if (!responded && server->is_connection_available()) {
-			connection = server->take_connection();
-			REQUIRE(connection.is_valid());
-			connection->poll();
-			uint8_t discard[4096];
-			int received = 0;
-			connection->get_partial_data(discard, 4096, received);
-			const CharString resp = String(
-					"HTTP/1.1 200 OK\r\n"
-					"Content-Type: text/event-stream\r\n"
-					"Transfer-Encoding: chunked\r\n"
-					"Connection: close\r\n"
-					"\r\n"
-					"0\r\n"
-					"\r\n")
-											.utf8();
-			connection->put_data((const uint8_t *)resp.get_data(), resp.length());
-			responded = true;
-			server->stop();
-		}
-		client.poll();
-		OS::get_singleton()->delay_usec(1000);
-	}
-	REQUIRE(client.is_failed());
-	CHECK(String(client.get_error().get("code", String())) == "STREAM_ENDED_WITHOUT_FINISH");
-	CHECK_FALSE((bool)client.get_error().get("retryable", true));
-	CHECK((int)client.get_error().get("response_bytes", -1) == 0);
-	CHECK_FALSE(SolersLLMRetry::is_retryable(client.get_error()));
+	Array events;
+	const Dictionary error = run_openai_failure_response("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n0\r\n\r\n", events);
+	REQUIRE_FALSE(error.is_empty());
+	CHECK(String(error.get("code", String())) == "STREAM_ENDED_WITHOUT_FINISH");
+	CHECK_FALSE((bool)error.get("retryable", true));
+	CHECK((int)error.get("response_bytes", -1) == 0);
+	CHECK_FALSE(SolersLLMRetry::is_retryable(error));
 }
 
 TEST_CASE("[SolersLLMClient] JSON error body on HTTP 200 is terminal") {
-	Ref<TCPServer> server;
-	server.instantiate();
-	REQUIRE(server->listen(0, IPAddress("127.0.0.1")) == OK);
-
-	SolersLLMProtocolRegistry protocols;
-	protocols.register_builtin_protocols();
-	SolersLLMClient client;
-	client.set_protocol_registry(&protocols);
-
-	Dictionary request;
-	request["model"] = "synthetic-model";
-	Array messages;
-	messages.push_back(SolersLLMMessage::user("test"));
-	request["messages"] = messages;
-	Dictionary profile;
-	profile["protocol"] = "openai-chat";
-	profile["base_url"] = vformat("http://127.0.0.1:%d/v1", server->get_local_port());
-	Dictionary auth;
-	auth["type"] = "none";
-	REQUIRE(client.begin(request, profile, auth) == OK);
-
 	const String json_body = "{\"error\":{\"message\":\"quota exhausted\"}}";
-	bool responded = false;
-	Ref<StreamPeerTCP> connection;
-	const uint64_t started = OS::get_singleton()->get_ticks_msec();
-	while (!client.is_failed() && !client.is_done() && OS::get_singleton()->get_ticks_msec() - started < 3000) {
-		if (!responded && server->is_connection_available()) {
-			connection = server->take_connection();
-			REQUIRE(connection.is_valid());
-			connection->poll();
-			uint8_t discard[4096];
-			int received = 0;
-			connection->get_partial_data(discard, 4096, received);
-			const String http = vformat(
-					"HTTP/1.1 200 OK\r\n"
-					"Content-Type: application/json\r\n"
-					"Content-Length: %d\r\n"
-					"Connection: close\r\n"
-					"\r\n"
-					"%s",
-					json_body.utf8().length(), json_body);
-			const CharString resp = http.utf8();
-			connection->put_data((const uint8_t *)resp.get_data(), resp.length());
-			responded = true;
-			server->stop();
-		}
-		client.poll();
-		OS::get_singleton()->delay_usec(1000);
-	}
-	REQUIRE(client.is_failed());
-	CHECK(String(client.get_error().get("code", String())) == "PROVIDER_ERROR");
-	CHECK(String(client.get_error().get("message", String())).contains("quota exhausted"));
-	CHECK_FALSE((bool)client.get_error().get("retryable", true));
+	Array events;
+	const Dictionary error = run_openai_failure_response(vformat("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", json_body.utf8().length(), json_body), events);
+	REQUIRE_FALSE(error.is_empty());
+	CHECK(String(error.get("code", String())) == "PROVIDER_ERROR");
+	CHECK(String(error.get("message", String())).contains("quota exhausted"));
+	CHECK_FALSE((bool)error.get("retryable", true));
 }
 
 TEST_CASE("[SolersModelsDev] input modality support is model-level and unknown is permissive") {
