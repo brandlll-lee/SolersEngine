@@ -1042,59 +1042,27 @@ bool SolersObservationService::_collect_project_folders_indexed(const String &p_
 	return true;
 }
 
-void SolersObservationService::_collect_project_files(const String &p_dir, const String &p_query, int p_max_files, Array &r_files, int &r_scanned_count, bool &r_truncated, uint64_t p_deadline_msec) const {
-	if (r_files.size() >= p_max_files) {
-		r_truncated = true;
+void SolersObservationService::_refresh_project_files() {
+	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
+	if (!filesystem || !filesystem->get_filesystem()) {
 		return;
 	}
-	if (OS::get_singleton()->get_ticks_msec() >= p_deadline_msec) {
-		r_truncated = true;
-		return;
-	}
-
-	Error err = OK;
-	Ref<DirAccess> dir = DirAccess::open(p_dir, &err);
-	if (dir.is_null() || err != OK) {
-		return;
-	}
-
-	dir->set_include_hidden(false);
-	dir->list_dir_begin();
-	LocalVector<String> subdirectories;
-	String entry = dir->get_next();
-	while (!entry.is_empty()) {
-		if (OS::get_singleton()->get_ticks_msec() >= p_deadline_msec) {
-			r_truncated = true;
-			break;
+	PackedStringArray snapshot;
+	LocalVector<EditorFileSystemDirectory *> stack;
+	stack.push_back(filesystem->get_filesystem());
+	while (!stack.is_empty()) {
+		EditorFileSystemDirectory *directory = stack[stack.size() - 1];
+		stack.remove_at(stack.size() - 1);
+		for (int i = 0; i < directory->get_file_count(); i++) {
+			snapshot.push_back(directory->get_file_path(i));
 		}
-		const String path = p_dir.path_join(entry).replace_char('\\', '/');
-		if (dir->current_is_dir()) {
-			if (entry != ".godot" && entry != ".git" && entry != "__pycache__") {
-				subdirectories.push_back(path);
-			}
-		} else {
-			r_scanned_count++;
-			if (p_query.is_empty() || path.findn(p_query) != -1) {
-				r_files.push_back(path);
-				if (r_files.size() >= p_max_files) {
-					r_truncated = true;
-					break;
-				}
-			}
-		}
-		if (OS::get_singleton()->get_ticks_msec() >= p_deadline_msec) {
-			r_truncated = true;
-			break;
-		}
-		entry = dir->get_next();
-	}
-	dir->list_dir_end();
-	for (const String &path : subdirectories) {
-		_collect_project_files(path, p_query, p_max_files, r_files, r_scanned_count, r_truncated, p_deadline_msec);
-		if (r_truncated) {
-			break;
+		for (int i = 0; i < directory->get_subdir_count(); i++) {
+			stack.push_back(directory->get_subdir(i));
 		}
 	}
+	MutexLock lock(project_files_mutex);
+	project_files = snapshot;
+	project_files_ready = true;
 }
 
 // Nodes a subtree contributes, so an elided branch reports how much of the
@@ -1274,25 +1242,32 @@ Dictionary SolersObservationService::get_project_settings_summary() const {
 	return summary;
 }
 
-// Disk-walk fallback budget: the editor index covers every normal case, so
-// the fallback only runs during very early startup; it must never be able to
-// freeze the editor regardless of project size.
-static constexpr uint64_t SOLERS_FILE_WALK_BUDGET_MSEC = 250;
 // Path lists are fed back into the model context; keep them bounded.
 static constexpr int SOLERS_FILE_LIST_HARD_CAP = 2000;
 
 Dictionary SolersObservationService::list_project_files(int p_max_files) const {
 	Dictionary result;
-	Array files;
-	int scanned_count = 0;
-	bool truncated = false;
 	const int max_files = CLAMP(p_max_files, 1, SOLERS_FILE_LIST_HARD_CAP);
-	_collect_project_files("res://", String(), max_files, files, scanned_count, truncated, OS::get_singleton()->get_ticks_msec() + SOLERS_FILE_WALK_BUDGET_MSEC);
+	PackedStringArray snapshot;
+	bool available;
+	{
+		MutexLock lock(project_files_mutex);
+		snapshot = project_files;
+		available = project_files_ready;
+	}
+	Array files;
+	for (int i = 0; i < MIN(max_files, snapshot.size()); i++) {
+		files.push_back(snapshot[i]);
+	}
+	result["available"] = available;
+	if (!available) {
+		result["code"] = "EDITOR_INDEX_UPDATING";
+	}
 	result["files"] = files;
 	result["count"] = files.size();
-	result["scanned_count"] = scanned_count;
-	result["truncated"] = truncated;
-	result["source"] = "disk_walk";
+	result["scanned_count"] = snapshot.size();
+	result["truncated"] = snapshot.size() > max_files;
+	result["source"] = "editor_index";
 	return result;
 }
 
@@ -1322,18 +1297,31 @@ Dictionary SolersObservationService::_search_project_paths(const String &p_query
 		return result;
 	}
 
-	Array files;
-	int scanned_count = 0;
-	bool truncated = false;
 	const int max_files = CLAMP(p_max_files, 1, SOLERS_FILE_LIST_HARD_CAP);
-	_collect_project_files("res://", query, max_files, files, scanned_count, truncated, OS::get_singleton()->get_ticks_msec() + SOLERS_FILE_WALK_BUDGET_MSEC);
+	PackedStringArray indexed_files;
+	bool available;
+	{
+		MutexLock lock(project_files_mutex);
+		indexed_files = project_files;
+		available = project_files_ready;
+	}
+	Array files;
+	for (int i = 0; i < indexed_files.size() && files.size() < max_files; i++) {
+		if (String(indexed_files[i]).findn(query) != -1) {
+			files.push_back(indexed_files[i]);
+		}
+	}
+	result["available"] = available;
+	if (!available) {
+		result["code"] = "EDITOR_INDEX_UPDATING";
+	}
 	result["ok"] = true;
 	result["query"] = query;
 	result["files"] = files;
 	result["count"] = files.size();
-	result["scanned_count"] = scanned_count;
-	result["truncated"] = truncated;
-	result["source"] = "disk_walk";
+	result["scanned_count"] = indexed_files.size();
+	result["truncated"] = files.size() == max_files;
+	result["source"] = "editor_index";
 	return result;
 }
 
@@ -1680,13 +1668,14 @@ Dictionary SolersObservationService::search_project(const Dictionary &p_args) co
 	const String type = String(p_args.get("type", "path")).to_lower();
 	const String query = String(p_args.get("query", String())).strip_edges();
 	const int max_results = CLAMP((int)p_args.get("max_results", 64), 1, 256);
-	const uint64_t deadline = OS::get_singleton()->get_ticks_msec() + 300;
 	Array results;
 	int scanned = 0;
 	bool truncated = false;
+	bool available = true;
 
 	if (type == "path") {
 		const Dictionary paths = _search_project_paths(query, max_results);
+		available = paths.get("available", false);
 		const Array files = paths.get("files", Array());
 		for (int i = 0; i < files.size(); i++) {
 			results.push_back(_solers_project_result(files[i]));
@@ -1694,14 +1683,14 @@ Dictionary SolersObservationService::search_project(const Dictionary &p_args) co
 		scanned = paths.get("scanned_count", 0);
 		truncated = paths.get("truncated", false);
 	} else {
-		const Dictionary index = list_project_files(SOLERS_FILE_LIST_HARD_CAP);
-		const Array files = index.get("files", Array());
+		PackedStringArray files;
+		{
+			MutexLock lock(project_files_mutex);
+			files = project_files;
+			available = project_files_ready;
+		}
 		if (type == "text" || type == "symbol") {
 			for (int i = 0; i < files.size(); i++) {
-				if (OS::get_singleton()->get_ticks_msec() > deadline) {
-					truncated = true;
-					break;
-				}
 				const String path = files[i];
 				if (!_solers_text_search_extension(path.get_extension().to_lower())) {
 					continue;
@@ -1737,6 +1726,10 @@ Dictionary SolersObservationService::search_project(const Dictionary &p_args) co
 	}
 
 	Dictionary result;
+	result["available"] = available;
+	if (!available) {
+		result["code"] = "EDITOR_INDEX_UPDATING";
+	}
 	result["type"] = type;
 	result["query"] = query;
 	result["results"] = results;
@@ -2146,6 +2139,9 @@ void SolersObservationService::_bind_runtime_debugger() {
 }
 
 void SolersObservationService::poll() {
+	if (!project_files_ready) {
+		_refresh_project_files();
+	}
 	_bind_runtime_debugger();
 }
 
@@ -2352,6 +2348,10 @@ Dictionary SolersObservationService::get_editor_logs(int p_max_messages) const {
 }
 
 SolersObservationService::SolersObservationService() {
+	if (EditorFileSystem *filesystem = EditorFileSystem::get_singleton()) {
+		filesystem->connect(SNAME("filesystem_changed"), callable_mp(this, &SolersObservationService::_refresh_project_files));
+		_refresh_project_files();
+	}
 	if (RenderingServer::get_singleton()) {
 		RenderingServer::get_singleton()->connect(SNAME("frame_post_draw"), callable_mp(this, &SolersObservationService::_render_frame_post_draw));
 	}

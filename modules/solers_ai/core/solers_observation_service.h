@@ -31,6 +31,7 @@
 #pragma once
 
 #include "core/object/object.h"
+#include "core/os/mutex.h"
 #include "core/templates/hash_map.h"
 #include "core/templates/vector.h"
 #include "core/variant/dictionary.h"
@@ -41,7 +42,9 @@ class ScriptEditorDebugger;
 
 class SolersObservationService : public Object {
 	GDCLASS(SolersObservationService, Object);
-
+	mutable Mutex project_files_mutex;
+	PackedStringArray project_files;
+	bool project_files_ready = false;
 
 	uint64_t capture_sequence = 0;
 	uint64_t render_post_draw_sequence = 0;
@@ -67,7 +70,7 @@ class SolersObservationService : public Object {
 	Array _serialize_node_array(const TypedArray<Node> &p_nodes, Node *p_edited_root, int p_max_depth, int p_max_children_per_node) const;
 	bool _normalize_project_path(const String &p_path, String &r_res_path, String &r_error) const;
 	bool _collect_project_folders_indexed(const String &p_query, int p_max_folders, Array &r_folders, int &r_scanned_count, bool &r_truncated) const;
-	void _collect_project_files(const String &p_dir, const String &p_query, int p_max_files, Array &r_files, int &r_scanned_count, bool &r_truncated, uint64_t p_deadline_msec) const;
+	void _refresh_project_files();
 	Dictionary _search_project_paths(const String &p_query, int p_max_files) const;
 	void _render_frame_post_draw();
 	Dictionary _capture_error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
