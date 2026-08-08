@@ -271,8 +271,7 @@ String SolersPMAIView::_source_label(const String &p_source) const {
 void SolersPMAIView::_add_section_label(const String &p_text) {
 	Label *label = memnew(Label);
 	label->set_text(p_text);
-	label->add_theme_font_size_override(SNAME("font_size"), int(Math::round(11.0f * EDSCALE)));
-	label->add_theme_color_override(SNAME("font_color"), get_theme_color(SNAME("font_color"), SNAME("Label")).darkened(0.25f));
+	label->set_theme_type_variation(SNAME("SolersSessionMeta"));
 	label->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
 	provider_list->add_child(label);
 }
@@ -952,7 +951,7 @@ void SolersPMAIView::_request_restart() {
 }
 
 void SolersPMAIView::_notification(int p_what) {
-	if (p_what == NOTIFICATION_THEME_CHANGED) {
+	if (p_what == NOTIFICATION_POSTINITIALIZE || p_what == NOTIFICATION_THEME_CHANGED) {
 		if (api_key_reveal) {
 			api_key_reveal->set_button_icon(SolersIcons::get(SNAME("tool_observe"), int(Math::round(15.0f * EDSCALE))));
 		}
@@ -1382,7 +1381,6 @@ SolersPMAIView::SolersPMAIView() {
 
 	restart_required_label = memnew(Label(TTRC("Settings changed! The project manager must be restarted for changes to take effect.")));
 	restart_required_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD);
-	restart_required_label->add_theme_color_override(SceneStringName(font_color), get_theme_color(SNAME("warning_color"), EditorStringName(Editor)));
 	restart_required_label->hide();
 	quick_settings_view->add_child(restart_required_label);
 

@@ -456,6 +456,19 @@ void SolersLLMClient::_run_worker() {
 			case HTTPClient::STATUS_BODY: {
 				if (!response_checked) {
 					const int code = http->get_response_code();
+					List<String> header_list;
+					http->get_response_headers(&header_list);
+					Dictionary headers_dict;
+					for (const String &header : header_list) {
+						const int colon = header.find(":");
+						if (colon > 0) {
+							const String name = header.substr(0, colon).strip_edges();
+							headers_dict[name] = header.substr(colon + 1).strip_edges();
+							if (name.nocasecmp_to("Content-Type") == 0) {
+								last_error["response_content_type"] = headers_dict[name];
+							}
+						}
+					}
 					const bool codex_oauth = String(worker_auth.get("type", String())) == "oauth" && String(worker_profile.get("oauth_kind", String())) == "codex";
 					if (code == 401 && codex_oauth && !oauth_401_retried) {
 						oauth_401_retried = true;
@@ -474,6 +487,8 @@ void SolersLLMClient::_run_worker() {
 							capturing_error = false;
 							error_buffer = String();
 							sse_buffer = String();
+							response_bytes = 0;
+							response_prefix = String();
 							stream_state = initial_stream_state;
 							last_error.clear();
 							state = STATE_CONNECTING;
@@ -485,15 +500,6 @@ void SolersLLMClient::_run_worker() {
 					if (code < 200 || code >= 300) {
 						capturing_error = true;
 						last_error["http_status"] = code;
-						List<String> header_list;
-						http->get_response_headers(&header_list);
-						Dictionary headers_dict;
-						for (const String &h : header_list) {
-							const int hcolon = h.find(":");
-							if (hcolon > 0) {
-								headers_dict[h.substr(0, hcolon).strip_edges()] = h.substr(hcolon + 1).strip_edges();
-							}
-						}
 						last_error["headers"] = headers_dict;
 						Dictionary payload;
 						payload["status"] = code;
@@ -642,8 +648,12 @@ void SolersLLMClient::_complete_stream(Array &r_batch) {
 		return;
 	}
 
-	if (stream_saw_finish || stream_has_content) {
+	if (stream_saw_finish) {
 		state = STATE_DONE;
+		return;
+	}
+	if (stream_has_content) {
+		_fail("STREAM_INTERRUPTED", "Provider stream ended before its terminal protocol event.", true);
 		return;
 	}
 
@@ -670,9 +680,12 @@ void SolersLLMClient::_complete_stream(Array &r_batch) {
 		return;
 	}
 
-	// Zero response bytes: identical retry cannot help. Bytes without a terminal
-	// finish are a truncated stream and stay retryable (pi / OpenCode).
-	_fail("STREAM_ENDED_WITHOUT_FINISH", "Provider stream ended without a terminal finish event.", response_bytes > 0);
+	const String media_type = String(last_error.get("response_content_type", String())).get_slice(";", 0).strip_edges().to_lower();
+	if (!media_type.is_empty() && media_type != "text/event-stream" && media_type != "application/json" && !media_type.ends_with("+json")) {
+		_fail("UNEXPECTED_RESPONSE_MEDIA_TYPE", vformat("Provider returned '%s' instead of a streaming protocol response.", media_type), false);
+	} else {
+		_fail("STREAM_ENDED_WITHOUT_FINISH", "Provider stream ended without a terminal protocol event.", false);
+	}
 	last_error["response_bytes"] = response_bytes;
 	if (!response_prefix.is_empty()) {
 		last_error["body_prefix"] = response_prefix.substr(0, MIN(512, response_prefix.length()));
