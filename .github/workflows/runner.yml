@@ -31,7 +31,7 @@ jobs:
       - name: Compile Solers module
         run: >-
           scons platform=linuxbsd target=editor dev_build=yes accesskit=no
-          use_llvm=yes linker=lld modules/libmodule_solers_ai.linuxbsd.editor.dev.x86_64.llvm.a -j8
+          use_llvm=yes linker=lld solers_ai_compile -j8
 
   # Second stage: Run all the builds and some of the tests.
 
