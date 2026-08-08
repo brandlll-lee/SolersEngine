@@ -102,7 +102,7 @@ class SolersAgentSession : public Object {
 	HashSet<StringName> task_deferred_tools;
 	Array cached_request_tools;
 	int cached_request_tool_tokens = 0;
-	int cached_request_deferred_count = -1;
+	uint32_t cached_request_deferred_count = 0;
 	uint64_t cached_tool_catalog_revision = 0;
 	Array turn_attachments;
 	HashSet<String> delivered_model_attachments;
