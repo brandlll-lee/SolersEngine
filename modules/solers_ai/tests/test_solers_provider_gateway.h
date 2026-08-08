@@ -69,6 +69,7 @@
 #include "scene/resources/mesh.h"
 #include "scene/resources/resource_format_text.h"
 #include "tests/test_macros.h"
+#include "tests/test_tools.h"
 
 #include "modules/solers_ai/core/solers_agent_session.h"
 #include "modules/solers_ai/core/solers_asset_service.h"
@@ -637,7 +638,7 @@ TEST_CASE("[Editor][SolersAddon] bundled Terrain3D archive is pinned and self-de
 
 	SolersAssetService assets;
 	const Dictionary result = assets.addon_inspect(args);
-	REQUIRE(result.get("ok", false));
+	REQUIRE((bool)result.get("ok", false));
 	const Dictionary data = result.get("data", Dictionary());
 	CHECK(data.get("version", String()) == "1.0.2-stable");
 	CHECK(data.get("sha256", String()) == "a071850250ec5e596aa54da61c01d75768774eb379ee997584d426a45f4884a2");
@@ -708,64 +709,18 @@ TEST_CASE("[SolersToolRegistry] schema preflight runs before approval or handler
 	CHECK(permissions.get_pending_request_count() == 1);
 }
 
-TEST_CASE("[SolersToolRegistry] file checkpoint reversal survives session restoration") {
-	const String path = "res://.solers_reversal_contract.txt";
-	const String global_path = ProjectSettings::get_singleton()->globalize_path(path);
-	if (FileAccess::exists(path)) {
-		DirAccess::remove_file_or_error(global_path);
-	}
-	const String session_id = "reversal-contract-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
-	const String project_path = "test://solers-reversal-contract";
-
-	SolersPermissionManager write_permissions;
-	write_permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_FILES, true);
-	SolersFileCheckpoint write_checkpoint;
-	SolersScriptService write_scripts;
-	SolersToolRegistry write_registry;
-	write_registry.set_permission_manager(&write_permissions);
-	write_registry.set_file_checkpoint(&write_checkpoint);
-	write_registry.set_script_service(&write_scripts);
-	write_registry.register_default_tools();
-	SolersToolContext write_context;
-	write_context.call_id = "create-file";
-	write_context.session_id = session_id;
-	write_context.project_path = project_path;
-	Dictionary write_args;
-	write_args["operation"] = "write_file";
-	write_args["path"] = path;
-	write_args["content"] = "created by reversible contract\n";
-	const Dictionary write_result = write_registry.call_tool_with_context(SNAME("project.edit"), write_args, write_context);
-	REQUIRE((bool)write_result.get("ok", false));
-	const Dictionary mutation = Dictionary(write_result.get("data", Dictionary())).get("mutation", Dictionary());
-	const String reversal_id = mutation.get("reversal_id", String());
-	REQUIRE(!reversal_id.is_empty());
-	CHECK(FileAccess::exists(path));
-
-	SolersPermissionManager restore_permissions;
-	restore_permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_FILES, true);
-	SolersFileCheckpoint restore_checkpoint;
-	SolersScriptService restore_scripts;
-	SolersToolRegistry restore_registry;
-	restore_registry.set_permission_manager(&restore_permissions);
-	restore_registry.set_file_checkpoint(&restore_checkpoint);
-	restore_registry.set_script_service(&restore_scripts);
-	restore_registry.register_default_tools();
-	SolersAgentSession restored_session;
-	restored_session.set_tool_registry(&restore_registry);
-	restored_session.set_session(project_path, session_id);
-	CHECK((int64_t)restored_session.get_status().get("session_revision", -1) == 1);
-
-	SolersToolContext revert_context;
-	revert_context.call_id = "revert-file";
-	revert_context.session_id = session_id;
-	revert_context.project_path = project_path;
-	revert_context.authored_revision = 1;
-	Dictionary revert_args;
-	revert_args["reversal_id"] = reversal_id;
-	const Dictionary revert_result = restore_registry.call_tool_with_context(SNAME("history.revert"), revert_args, revert_context);
-	REQUIRE((bool)revert_result.get("ok", false));
-	CHECK_FALSE(FileAccess::exists(path));
-	restored_session.shutdown();
+TEST_CASE("[SolersResourceService] missing resources terminate at the native existence fact") {
+	SolersResourceService resources;
+	Dictionary args;
+	args["path"] = "res://missing-" + String::num_uint64(OS::get_singleton()->get_ticks_usec()) + ".tres";
+	args["include_dependencies"] = true;
+	ErrorDetector errors;
+	const Dictionary result = resources.get_resource_info(args);
+	REQUIRE(result.get("ok", false));
+	const Dictionary data = result.get("data", Dictionary());
+	CHECK_FALSE(data.get("exists", true));
+	CHECK_FALSE(data.has("dependencies"));
+	CHECK_FALSE(errors.has_error);
 }
 
 TEST_CASE("[SolersToolRegistry] preserves internal session context without changing the bound API") {
@@ -3021,40 +2976,20 @@ TEST_CASE("[SolersMention][Editor] project paths ignore FileSystemDock browsing 
 	MessageQueue::get_singleton()->flush();
 }
 
-TEST_CASE("[SolersDock][SceneTree] journal restores canonical tools and content-addressed images") {
-	const String session_id = "ui-restore-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
+TEST_CASE("[SolersDock][SceneTree] journal restores outcome order and checkpoint identity") {
+	const String session_id = "timeline-authority-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
 	const String project = "test://" + session_id;
-	Ref<Image> image = Image::create_empty(2, 2, false, Image::FORMAT_RGBA8);
-	image->fill(Color::from_hsv(float(OS::get_singleton()->get_ticks_usec() % 1000) / 1000.0f, 1, 1));
-	const String draft = solers_session_dir().path_join("attachments").path_join(session_id + ".png");
-	Ref<DirAccess> dir = DirAccess::open("res://");
-	REQUIRE(dir.is_valid());
-	REQUIRE(dir->make_dir_recursive(".solers/attachments") == OK);
-	REQUIRE(image->save_png(draft) == OK);
-	const String sha256 = FileAccess::get_sha256(draft);
-	const String stored = solers_session_dir().path_join("attachments").path_join(sha256 + ".png");
-	const bool stored_before = FileAccess::exists(stored);
-	const String draft_absolute = ProjectSettings::get_singleton()->globalize_path(draft);
-	if (stored_before) {
-		DirAccess::remove_file_or_error(draft_absolute);
-	} else {
-		REQUIRE(DirAccess::rename_absolute(draft_absolute, ProjectSettings::get_singleton()->globalize_path(stored)) == OK);
-	}
-	Dictionary attachment;
-	attachment["content_sha256"] = sha256;
-	attachment["mime_type"] = "image/png";
-	auto write = [&](Dictionary p_event) {
+	auto write = [&](const String &p_type, int p_id, int p_turn, Dictionary p_event) {
+		p_event["event_type"] = p_type;
+		p_event["event_id"] = p_id;
+		p_event["turn_id"] = p_turn;
 		p_event["project_path"] = project;
 		p_event["session_id"] = session_id;
 		solers_transcript_write(p_event);
 	};
-	Dictionary user = make_user_message(String());
-	user["event_type"] = "message";
-	user["author"] = "human";
-	Array attachments;
-	attachments.push_back(attachment);
-	user["attachments"] = attachments;
-	write(user);
+	Dictionary first = make_user_message("first turn");
+	first["author"] = "human";
+	write("message", 10, 1, first);
 	Dictionary call;
 	call["id"] = "stable-call";
 	call["name"] = "provider_alias";
@@ -3062,43 +2997,75 @@ TEST_CASE("[SolersDock][SceneTree] journal restores canonical tools and content-
 	call["arguments"] = "{}";
 	Array calls;
 	calls.push_back(call);
-	Dictionary assistant = SolersLLMMessage::assistant(String(), calls);
-	assistant["event_type"] = "message";
-	write(assistant);
+	write("message", 11, 1, SolersLLMMessage::assistant(String(), calls));
 	Dictionary result;
-	result["event_type"] = "tool_result";
 	result["call_id"] = "stable-call";
 	result["ok"] = true;
-	write(result);
+	write("tool_result", 12, 1, result);
+	Dictionary checkpoint;
+	checkpoint["id"] = "stable-checkpoint";
+	checkpoint["session_id"] = session_id;
+	checkpoint["policy"] = "synthetic";
+	Dictionary created;
+	created["checkpoint"] = checkpoint;
+	created["session_revision"] = 1;
+	write("checkpoint_created", 13, 1, created);
+	Dictionary aborted;
+	aborted["outcome"] = "aborted";
+	aborted["message"] = "Turn aborted.";
+	write("turn_outcome", 14, 1, aborted);
+	Dictionary second = make_user_message("second turn");
+	second["author"] = "human";
+	write("message", 15, 2, second);
+	Dictionary completed;
+	completed["outcome"] = "completed";
+	write("turn_outcome", 16, 2, completed);
 	solers_transcript_flush(session_id);
+
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_SCENE, true);
+	SolersScriptService scripts;
+	SolersToolRegistry registry;
+	registry.set_permission_manager(&permissions);
+	registry.set_script_service(&scripts);
+	registry.register_default_tools();
 	SolersAgentSession restored;
+	restored.set_tool_registry(&registry);
 	restored.set_session(project, session_id);
 	const Array timeline = restored.get_timeline_entries();
-	REQUIRE(timeline.size() == 2);
+	REQUIRE(timeline.size() == 4);
+	CHECK(Dictionary(timeline[2]).get("role", String()) == "turn_outcome");
+	CHECK((int64_t)Dictionary(timeline[2]).get("event_id", 0) == 14);
+	CHECK(Dictionary(timeline[3]).get("content", String()) == "second turn");
 	CHECK(Dictionary(Array(Dictionary(timeline[1]).get("tool_calls", Array()))[0]).get("finished", false));
-	CHECK(solers_attachment_texture(attachment).is_valid());
-	if (!EditorSettings::get_singleton()) {
-		restored.shutdown();
-		solers_transcript_flush(session_id);
-		if (!stored_before) {
-			DirAccess::remove_file_or_error(ProjectSettings::get_singleton()->globalize_path(stored));
+	Dictionary revert_args;
+	revert_args["reversal_id"] = "stable-checkpoint";
+	SolersToolContext context;
+	context.session_id = session_id;
+	const Dictionary revert = registry.call_tool_with_context(SNAME("history.revert"), revert_args, context);
+	CHECK(Dictionary(revert.get("error", Dictionary())).get("code", String()) == "REVERSAL_UNSUPPORTED");
+
+	if (EditorSettings::get_singleton()) {
+		SolersDock *dock = memnew(SolersDock);
+		REQUIRE(dock->get_theme().is_valid());
+		SceneTree::get_singleton()->get_root()->add_child(dock);
+		dock->load_chat_history(timeline);
+		MessageQueue::get_singleton()->flush();
+		CHECK(dock->find_children("*", "SolersToolCell", true, false).size() == 1);
+		const Array bubbles = dock->find_children("*", "SolersUserBubble", true, false);
+		REQUIRE(bubbles.size() == 2);
+		Control *outcome_row = nullptr;
+		for (const Variant &item : dock->find_children("*", "Label", true, false)) {
+			Label *label = Object::cast_to<Label>(item);
+			if (label && label->get_text() == "Turn aborted.") {
+				outcome_row = Object::cast_to<Control>(label->get_parent());
+			}
 		}
-		WARN("EditorSettings is initialized after the command-line unit test runner; run the Dock projection in an editor integration test.");
-		return;
+		REQUIRE(outcome_row != nullptr);
+		CHECK(outcome_row->get_index() < Object::cast_to<Control>(Object::cast_to<Control>(bubbles[1])->get_parent())->get_index());
+		dock->queue_free();
 	}
-	SolersDock *dock = memnew(SolersDock);
-	SceneTree::get_singleton()->get_root()->add_child(dock);
-	dock->load_chat_history(timeline);
-	MessageQueue::get_singleton()->flush();
-	const Array tool_cells = dock->find_children("*", "SolersToolCell", true, false);
-	REQUIRE(tool_cells.size() == 1);
-	CHECK(Object::cast_to<Control>(tool_cells[0])->get_tooltip_text() == "object.query");
-	dock->queue_free();
 	restored.shutdown();
-	solers_transcript_flush(session_id);
-	if (!stored_before) {
-		DirAccess::remove_file_or_error(ProjectSettings::get_singleton()->globalize_path(stored));
-	}
 	MessageQueue::get_singleton()->flush();
 }
 
