@@ -100,14 +100,14 @@ cd SolersEngine
 ### Windows
 
 ```powershell
-python -m SCons platform=windows target=editor dev_build=yes -j4
+.\solers_build.bat
 .\bin\solers.windows.editor.dev.x86_64.exe
 ```
 
 ### Linux/BSD
 
 ```bash
-scons platform=linuxbsd target=editor dev_build=yes -j4
+scons platform=linuxbsd target=editor dev_build=yes tests=yes debug_symbols=no num_jobs=8
 ./bin/solers.linuxbsd.editor.dev.x86_64
 ```
 
@@ -116,18 +116,15 @@ scons platform=linuxbsd target=editor dev_build=yes -j4
 ### macOS
 
 ```bash
-scons platform=macos target=editor dev_build=yes -j4
+scons platform=macos target=editor dev_build=yes tests=yes debug_symbols=no num_jobs=8
 ```
 
 构建完成后，打开或创建项目，并在编辑器左侧的 Solers 设置视图中连接模型。
 
 ## 测试 Solers 模块
 
-启用测试构建编辑器，然后运行 Solers 测试：
-
 ```powershell
-python -m SCons platform=windows target=editor dev_build=yes tests=yes -j4
-.\bin\solers.windows.editor.dev.x86_64.console.exe --test --test-case="*Solers*" --no-colors --minimal
+.\bin\solers.windows.editor.dev.x86_64.console.exe --headless --test --test-case="*Solers*" --no-colors --minimal
 ```
 
 编辑器布局行为测试项目位于 [`modules/solers_ai/tests/editor_layout_project/`](modules/solers_ai/tests/editor_layout_project/)。

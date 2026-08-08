@@ -119,14 +119,14 @@ cd SolersEngine
 ### Windows
 
 ```powershell
-python -m SCons platform=windows target=editor dev_build=yes -j4
+.\solers_build.bat
 .\bin\solers.windows.editor.dev.x86_64.exe
 ```
 
 ### Linux/BSD
 
 ```bash
-scons platform=linuxbsd target=editor dev_build=yes -j4
+scons platform=linuxbsd target=editor dev_build=yes tests=yes debug_symbols=no num_jobs=8
 ./bin/solers.linuxbsd.editor.dev.x86_64
 ```
 
@@ -137,23 +137,18 @@ for distribution-specific dependencies.
 ### macOS
 
 ```bash
-scons platform=macos target=editor dev_build=yes -j4
+scons platform=macos target=editor dev_build=yes tests=yes debug_symbols=no num_jobs=8
 ```
 
-After the build, open or create a project and connect a model from the Solers
-setup view in the editor's left panel.
+After the build, open or create a project and connect a model from the Solers setup view in the editor's left panel.
 
 ## Test the Solers Module
 
-Build the editor with tests enabled, then run the Solers test cases:
-
 ```powershell
-python -m SCons platform=windows target=editor dev_build=yes tests=yes -j4
-.\bin\solers.windows.editor.dev.x86_64.console.exe --test --test-case="*Solers*" --no-colors --minimal
+.\bin\solers.windows.editor.dev.x86_64.console.exe --headless --test --test-case="*Solers*" --no-colors --minimal
 ```
 
-The editor layout behavior project lives at
-[`modules/solers_ai/tests/editor_layout_project/`](modules/solers_ai/tests/editor_layout_project/).
+The editor layout behavior project lives at [`modules/solers_ai/tests/editor_layout_project/`](modules/solers_ai/tests/editor_layout_project/).
 
 ## Tracking Godot
 

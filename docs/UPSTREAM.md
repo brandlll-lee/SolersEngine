@@ -61,7 +61,7 @@ git merge --no-ff "$NEW_BASE"
 ```
 
 Resolve only the conflicts reported by Git. Do not restore deleted compatibility
-layers or duplicate upstream APIs. Run formatting, static checks, the J4 editor
+layers or duplicate upstream APIs. Run formatting, static checks, the J8 editor
 and test builds, all Solers behavior tests, and headless editor initialization.
 
 ## Publication contract
