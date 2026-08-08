@@ -2465,9 +2465,6 @@ void SolersDock::_on_auto_approve_chip_pressed() {
 
 void SolersDock::_notification(int p_what) {
 	switch (p_what) {
-		case NOTIFICATION_POSTINITIALIZE: {
-			set_theme(SolersUITheme::create());
-		} break;
 		case NOTIFICATION_ENTER_TREE: {
 			_bind_layout_splits();
 			_sync_layout_widths();
@@ -2524,6 +2521,7 @@ void SolersDock::make_visible() {
 }
 
 SolersDock::SolersDock() {
+	set_theme(SolersUITheme::create());
 	set_h_size_flags(Control::SIZE_FILL);
 	set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	add_theme_style_override("panel", solers_make_stylebox(SOLERS_BG, Color(0, 0, 0, 0), 0, 0));

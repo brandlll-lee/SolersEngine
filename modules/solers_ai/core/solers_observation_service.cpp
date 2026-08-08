@@ -1044,7 +1044,7 @@ bool SolersObservationService::_collect_project_folders_indexed(const String &p_
 
 void SolersObservationService::_refresh_project_files() {
 	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
-	if (!filesystem || !filesystem->get_filesystem()) {
+	if (!filesystem || filesystem->is_scanning() || filesystem->is_importing() || !filesystem->get_filesystem()) {
 		return;
 	}
 	PackedStringArray snapshot;
@@ -2350,7 +2350,6 @@ Dictionary SolersObservationService::get_editor_logs(int p_max_messages) const {
 SolersObservationService::SolersObservationService() {
 	if (EditorFileSystem *filesystem = EditorFileSystem::get_singleton()) {
 		filesystem->connect(SNAME("filesystem_changed"), callable_mp(this, &SolersObservationService::_refresh_project_files));
-		_refresh_project_files();
 	}
 	if (RenderingServer::get_singleton()) {
 		RenderingServer::get_singleton()->connect(SNAME("frame_post_draw"), callable_mp(this, &SolersObservationService::_render_frame_post_draw));
