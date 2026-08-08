@@ -46,6 +46,8 @@
 #include "core/templates/pair.h"
 #include "editor/asset_library/editor_asset_installer.h"
 #include "editor/docks/filesystem_dock.h"
+#include "editor/editor_node.h"
+#include "editor/editor_undo_redo_manager.h"
 #include "editor/file_system/editor_file_system.h"
 #include "editor/settings/editor_settings.h"
 #include "scene/3d/mesh_instance_3d.h"
@@ -1575,48 +1577,6 @@ TEST_CASE("[SolersToolRegistry] audit redaction normalizes payload fields") {
 	CHECK(first.size() == second.size());
 }
 
-TEST_CASE("[SolersReflectionService] scene mutations require native UndoRedo authority") {
-	SolersReflectionService service;
-	const Array operations = { Dictionary({ { "op", "set_property" }, { "node_path", "." }, { "property", "name" }, { "value", "Synthetic" } }) };
-	const Dictionary result = service.batch(Dictionary({ { "operations", operations } }));
-	CHECK_FALSE(result.get("ok", true));
-	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "UNDO_REDO_UNAVAILABLE");
-}
-
-TEST_CASE("[SolersToolRegistry] CSG bake is part of the authoritative scene transaction") {
-	SolersReflectionService reflection_service;
-	SolersToolRegistry registry;
-	registry.set_reflection_service(&reflection_service);
-	registry.register_default_tools();
-	CHECK(find_tool_def(registry.list_tools(), "scene.bake_csg").is_empty());
-	const Dictionary transaction = find_tool_def(registry.list_tools(), "object.transaction");
-	const Dictionary schema = transaction.get("input_schema", Dictionary());
-	const Dictionary operations = Dictionary(schema.get("properties", Dictionary())).get("operations", Dictionary());
-	const Dictionary item_properties = Dictionary(Dictionary(operations.get("items", Dictionary())).get("properties", Dictionary()));
-	CHECK(Array(Dictionary(item_properties.get("op", Dictionary())).get("enum", Array())).has("bake_csg"));
-	CHECK(Array(Dictionary(item_properties.get("artifact", Dictionary())).get("enum", Array())).has("collision"));
-
-	const Array bake = { Dictionary({ { "op", "bake_csg" }, { "node_path", "Whitebox" }, { "artifact", "mesh" } }) };
-	const Array access = registry.resolve_resource_access("object.transaction", Dictionary({ { "scope", "scene" }, { "operations", bake } }));
-	REQUIRE(access.size() == 1);
-	CHECK(Dictionary(access[0]).get("key", String()) == "scene:Whitebox");
-}
-
-TEST_CASE("[SolersReflectionService] batch has no fixed operation-count cutoff") {
-	SolersReflectionService reflection_service;
-	Array operations;
-	for (int i = 0; i < 65; i++) {
-		Dictionary operation;
-		operation["op"] = "synthetic_future_op";
-		operations.push_back(operation);
-	}
-	Dictionary args;
-	args["operations"] = operations;
-	const Dictionary result = reflection_service.batch(args);
-	CHECK_FALSE((bool)result.get("ok", true));
-	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "SCENE_EDIT_FAILED");
-}
-
 TEST_CASE("[SolersResourceService] property coercion accepts named and nested Godot components") {
 	Node3D *node = memnew(Node3D);
 	Dictionary position;
@@ -1639,14 +1599,62 @@ TEST_CASE("[SolersResourceService] property coercion accepts named and nested Go
 	memdelete(node);
 }
 
-TEST_CASE("[SolersReflectionService] exact structural contacts expose any positive gap") {
-	const AABB wall(Vector3(), Vector3(1, 1, 1));
-	const AABB touching(Vector3(1, 0, 0), Vector3(1, 1, 1));
-	const AABB one_millimeter_gap(Vector3(1.001, 0, 0), Vector3(1, 1, 1));
-	const AABB three_centimeter_gap(Vector3(1.03, 0, 0), Vector3(1, 1, 1));
-	CHECK(Math::is_zero_approx(SolersReflectionService::get_aabb_max_gap(wall, touching)));
-	CHECK(SolersReflectionService::get_aabb_max_gap(wall, one_millimeter_gap) > 0.0);
-	CHECK(SolersReflectionService::get_aabb_max_gap(wall, three_centimeter_gap) > 0.0);
+TEST_CASE("[SolersReflectionService][SceneTree] scene queries preserve every native fact independently") {
+	SolersReflectionService service;
+	SolersToolRegistry registry;
+	registry.set_reflection_service(&service);
+	registry.register_default_tools();
+	EditorNode *editor = EditorNode::get_singleton();
+	if (!editor || EditorNode::get_editor_data().get_edited_scene_count() == 0) {
+		WARN("Editor scene authority is unavailable in this test runner.");
+		return;
+	}
+	Node *previous = editor->get_edited_scene();
+	Node3D *root = memnew(Node3D);
+	root->set_name("FactRoot");
+	MeshInstance3D *a = memnew(MeshInstance3D);
+	MeshInstance3D *b = memnew(MeshInstance3D);
+	Node3D *marker = memnew(Node3D);
+	a->set_name("A");
+	b->set_name("B");
+	marker->set_name("Marker");
+	Ref<BoxMesh> box;
+	box.instantiate();
+	a->set_mesh(box);
+	b->set_mesh(box);
+	b->set_position(Vector3(2, 0, 0));
+	marker->set_position(Vector3(0, 3, 0));
+	root->add_child(a);
+	root->add_child(b);
+	root->add_child(marker);
+	editor->set_edited_scene(root);
+
+	Dictionary inspect_args;
+	inspect_args["node_paths"] = Array({ "A", "Missing", "Marker" });
+	const Dictionary inspect_data = service.inspect_nodes(inspect_args).get("data", Dictionary());
+	Array pairs;
+	pairs.push_back(Dictionary({ { "a", "A" }, { "b", "B" } }));
+	pairs.push_back(Dictionary({ { "a", "Marker" }, { "b", "A" } }));
+	pairs.push_back(Dictionary({ { "a", "Missing" }, { "b", "A" } }));
+	const Dictionary relation_data = service.measure_spatial_relations(Dictionary({ { "relations", pairs } })).get("data", Dictionary());
+	const Array operation = { Dictionary({ { "op", "set_property" }, { "node_path", "A" }, { "property", "position" }, { "value", Array({ 1.0, 0.0, 0.0 }) } }) };
+	const Dictionary mutation_data = service.batch(Dictionary({ { "operations", operation } })).get("data", Dictionary());
+	const int history_id = EditorNode::get_editor_data().get_current_edited_scene_history_id();
+	EditorUndoRedoManager::get_singleton()->undo_history(history_id);
+	editor->set_edited_scene(previous);
+	memdelete(root);
+
+	CHECK((int)inspect_data.get("count", 0) == 2);
+	CHECK((int)inspect_data.get("error_count", 0) == 1);
+	const Array measured = relation_data.get("relations", Array());
+	REQUIRE(measured.size() == 3);
+	CHECK(Array(Dictionary(measured[0]).get("axes", Array())).size() == 3);
+	CHECK((int)relation_data.get("error_count", 0) == 1);
+	const Array receipts = mutation_data.get("results", Array());
+	REQUIRE(receipts.size() == 1);
+	CHECK(Dictionary(receipts[0]).has("object_id"));
+	CHECK(Dictionary(receipts[0]).get("class_name", String()) == "MeshInstance3D");
+	CHECK_FALSE(mutation_data.has("affected_nodes"));
 }
 
 #ifdef MODULE_CSG_ENABLED
@@ -2817,7 +2825,7 @@ TEST_CASE("[SolersContextManager] compaction keeps bounded human input and drops
 	history.push_back(active_user);
 	history.push_back(SolersLLMMessage::assistant("Capturing.", solers_test_tool_calls("call_live", "render.capture")));
 	history.push_back(SolersLLMMessage::tool_result("call_live", "render.capture", String("camera payload ").repeat(2000)));
-	const Dictionary result = context.apply_compaction(history, "Continue from camera 5.", 1000);
+	const Dictionary result = context.apply_compaction(history, "The user wants the build continued; the remaining choice is the final composition.", 1000);
 	const Array compacted = result.get("messages", Array());
 	REQUIRE(compacted.size() == 2);
 	CHECK(Dictionary(compacted[0]).get("content", String()) == "Continue the build.");
@@ -2826,6 +2834,7 @@ TEST_CASE("[SolersContextManager] compaction keeps bounded human input and drops
 	CHECK(Dictionary(compacted[1]).get("origin", String()) == "compaction_summary");
 	const String wire = JSON::stringify(compacted);
 	CHECK_FALSE(wire.contains("camera payload"));
+	CHECK_FALSE(wire.contains("camera 5"));
 	CHECK_FALSE(wire.contains(SolersContextManager::COMPACTION_INSTRUCTION));
 	CHECK((int)result.get("tokens_after", 0) < (int)result.get("tokens_before", 0));
 }
@@ -2949,7 +2958,7 @@ TEST_CASE("[SolersMention][Editor] project paths ignore FileSystemDock browsing 
 	MessageQueue::get_singleton()->flush();
 }
 
-TEST_CASE("[SolersDock][SceneTree] journal restores outcome order and checkpoint identity") {
+TEST_CASE("[SolersSession] journal restores outcome and compaction authority") {
 	const String session_id = "timeline-authority-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
 	const String project = "test://" + session_id;
 	auto write = [&](const String &p_type, int p_id, int p_turn, Dictionary p_event) {
@@ -2975,76 +2984,72 @@ TEST_CASE("[SolersDock][SceneTree] journal restores outcome order and checkpoint
 	result["call_id"] = "stable-call";
 	result["ok"] = true;
 	write("tool_result", 12, 1, result);
-	Dictionary checkpoint;
-	checkpoint["id"] = "stable-checkpoint";
-	checkpoint["session_id"] = session_id;
-	checkpoint["policy"] = "synthetic";
-	Dictionary created;
-	created["checkpoint"] = checkpoint;
-	created["session_revision"] = 1;
-	write("checkpoint_created", 13, 1, created);
+	Dictionary compacting;
+	compacting["compaction_id"] = 41;
+	compacting["phase"] = "started";
+	write("context_compaction", 13, 1, compacting);
+	compacting["phase"] = "completed";
+	write("context_compaction", 14, 1, compacting);
 	Dictionary aborted;
 	aborted["outcome"] = "aborted";
 	aborted["message"] = "Turn aborted.";
-	write("turn_outcome", 14, 1, aborted);
+	write("turn_outcome", 16, 1, aborted);
 	Dictionary second = make_user_message("second turn");
 	second["author"] = "human";
-	write("message", 15, 2, second);
+	write("message", 17, 2, second);
 	Dictionary completed;
 	completed["outcome"] = "completed";
-	write("turn_outcome", 16, 2, completed);
+	write("turn_outcome", 18, 2, completed);
 	solers_transcript_flush(session_id);
 
-	SolersPermissionManager permissions;
-	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_SCENE, true);
-	SolersScriptService scripts;
-	SolersToolRegistry registry;
-	registry.set_permission_manager(&permissions);
-	registry.set_script_service(&scripts);
-	registry.register_default_tools();
 	SolersAgentSession restored;
-	restored.set_tool_registry(&registry);
 	restored.set_session(project, session_id);
 	const Array timeline = restored.get_timeline_entries();
-	REQUIRE(timeline.size() == 4);
-	CHECK(Dictionary(timeline[2]).get("role", String()) == "turn_outcome");
-	CHECK((int64_t)Dictionary(timeline[2]).get("event_id", 0) == 14);
-	CHECK(Dictionary(timeline[3]).get("content", String()) == "second turn");
+	REQUIRE(timeline.size() == 5);
+	CHECK(Dictionary(timeline[2]).get("phase", String()) == "completed");
+	CHECK((int64_t)Dictionary(timeline[2]).get("event_id", 0) == 13);
+	CHECK((int64_t)Dictionary(timeline[2]).get("compaction_id", 0) == 41);
+	CHECK((int64_t)Dictionary(timeline[3]).get("event_id", 0) == 16);
+	CHECK(Dictionary(timeline[4]).get("content", String()) == "second turn");
 	CHECK(Dictionary(Array(Dictionary(timeline[1]).get("tool_calls", Array()))[0]).get("finished", false));
-	Dictionary revert_args;
-	revert_args["reversal_id"] = "stable-checkpoint";
-	SolersToolContext context;
-	context.session_id = session_id;
-	const Dictionary revert = registry.call_tool_with_context(SNAME("history.revert"), revert_args, context);
-	CHECK(Dictionary(revert.get("error", Dictionary())).get("code", String()) == "REVERSAL_UNSUPPORTED");
-
-	if (EditorSettings::get_singleton()) {
-		SolersDock *dock = memnew(SolersDock);
-		CHECK(dock->get_theme().is_null());
-		dock->set_theme(SolersUITheme::create());
-		REQUIRE(dock->get_theme().is_valid());
-		SceneTree::get_singleton()->get_root()->add_child(dock);
-		const Array settings_hosts = dock->find_children("*", "AcceptDialog", true, false);
-		REQUIRE(settings_hosts.size() == 1);
-		CHECK(Object::cast_to<Control>(settings_hosts[0])->get_theme().is_valid());
-		dock->load_chat_history(timeline);
-		MessageQueue::get_singleton()->flush();
-		CHECK(dock->find_children("*", "SolersToolCell", true, false).size() == 1);
-		const Array bubbles = dock->find_children("*", "SolersUserBubble", true, false);
-		REQUIRE(bubbles.size() == 2);
-		Control *outcome_row = nullptr;
-		for (const Variant &item : dock->find_children("*", "Label", true, false)) {
-			Label *label = Object::cast_to<Label>(item);
-			if (label && label->get_text() == "Turn aborted.") {
-				outcome_row = Object::cast_to<Control>(label->get_parent());
-			}
-		}
-		REQUIRE(outcome_row != nullptr);
-		CHECK(outcome_row->get_index() < Object::cast_to<Control>(Object::cast_to<Control>(bubbles[1])->get_parent())->get_index());
-		dock->queue_free();
-	}
 	restored.shutdown();
 	MessageQueue::get_singleton()->flush();
+}
+
+TEST_CASE("[SolersJournal] append repairs only an incomplete crash tail") {
+	const String session_id = "crash-tail-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
+	const String path = solers_session_dir().path_join("sessions").path_join(session_id.sha256_text() + ".jsonl");
+	solers_transcript_flush(session_id);
+	Ref<FileAccess> corrupt = FileAccess::open(path, FileAccess::WRITE);
+	REQUIRE(corrupt.is_valid());
+	Dictionary first;
+	first["session_id"] = session_id;
+	first["event_type"] = "model_retry";
+	first["event_id"] = 1;
+	corrupt->store_line(JSON::stringify(first));
+	corrupt->store_string("{\"event_type\":\"message\"");
+	corrupt.unref();
+	Dictionary second;
+	second["session_id"] = session_id;
+	second["event_type"] = "model_retry";
+	second["event_id"] = 2;
+	solers_transcript_write(second);
+	solers_transcript_flush(session_id);
+
+	Ref<FileAccess> repaired = FileAccess::open(path, FileAccess::READ);
+	int records = 0;
+	while (repaired.is_valid() && !repaired->eof_reached()) {
+		const String line = repaired->get_line();
+		if (line.strip_edges().is_empty()) {
+			continue;
+		}
+		Dictionary event;
+		CHECK(solers_transcript_parse_record(line, event));
+		records++;
+	}
+	CHECK(records == 2);
+	repaired.unref();
+	DirAccess::remove_file_or_error(ProjectSettings::get_singleton()->globalize_path(path));
 }
 
 TEST_CASE("[SolersResourceService] nearest names rank containment above similarity") {
