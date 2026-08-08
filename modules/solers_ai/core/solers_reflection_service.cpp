@@ -64,6 +64,10 @@
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/multimesh_instance_3d.h"
 #include "scene/3d/node_3d.h"
+#ifndef PHYSICS_3D_DISABLED
+#include "scene/3d/physics/collision_shape_3d.h"
+#include "scene/3d/physics/static_body_3d.h"
+#endif
 #include "scene/3d/skeleton_3d.h"
 #include "scene/3d/visual_instance_3d.h"
 #include "scene/3d/world_environment.h"
@@ -171,6 +175,7 @@ enum class SolersBatchOperationKind {
 	CONNECT_SIGNAL,
 	ATTACH_SCRIPT,
 	REMOVE_NODE,
+	BAKE_CSG,
 };
 
 static SolersBatchOperationKind _solers_batch_operation_kind(const String &p_name) {
@@ -195,6 +200,9 @@ static SolersBatchOperationKind _solers_batch_operation_kind(const String &p_nam
 	if (p_name == "remove_node") {
 		return SolersBatchOperationKind::REMOVE_NODE;
 	}
+	if (p_name == "bake_csg") {
+		return SolersBatchOperationKind::BAKE_CSG;
+	}
 	return SolersBatchOperationKind::UNKNOWN;
 }
 
@@ -205,6 +213,7 @@ static Dictionary _solers_normalize_batch_operation(const Dictionary &p_operatio
 		case SolersBatchOperationKind::REPARENT:
 		case SolersBatchOperationKind::ATTACH_SCRIPT:
 		case SolersBatchOperationKind::REMOVE_NODE:
+		case SolersBatchOperationKind::BAKE_CSG:
 			if (!operation.has("node_path") && operation.has("path")) {
 				operation["node_path"] = operation["path"];
 			}
@@ -1473,6 +1482,7 @@ static bool _solers_batch_operation_mutates(SolersBatchOperationKind p_kind) {
 		case SolersBatchOperationKind::CONNECT_SIGNAL:
 		case SolersBatchOperationKind::ATTACH_SCRIPT:
 		case SolersBatchOperationKind::REMOVE_NODE:
+		case SolersBatchOperationKind::BAKE_CSG:
 			return true;
 		default:
 			return false;
@@ -1543,8 +1553,11 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 			case SolersBatchOperationKind::REMOVE_NODE:
 				result = _remove_node(op);
 				break;
+			case SolersBatchOperationKind::BAKE_CSG:
+				result = _bake_csg(op);
+				break;
 			default:
-				result = _error("UNKNOWN_OP", vformat("Unknown scene edit op '%s'. Supported: create_node, instantiate, set_property, reparent, connect_signal, attach_script, remove_node.", kind));
+				result = _error("UNKNOWN_OP", vformat("Unknown scene edit op '%s'.", kind));
 				break;
 		}
 		Dictionary entry;
@@ -1603,6 +1616,9 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 			const String path = result_data.get("node_path", result_data.get("path", String()));
 			if (!path.is_empty()) {
 				receipt["node_path"] = path;
+			}
+			if (result_data.has("native_facts")) {
+				receipt["native_facts"] = result_data["native_facts"];
 			}
 			path_receipts.push_back(receipt);
 		}
@@ -1814,36 +1830,6 @@ Dictionary SolersReflectionService::validate_spatial_relations(const Dictionary 
 	return _ok(data);
 }
 
-static void _solers_collect_geometry_nodes(Node *p_node, Vector<GeometryInstance3D *> &r_nodes) {
-	if (!p_node) {
-		return;
-	}
-	if (GeometryInstance3D *geometry = Object::cast_to<GeometryInstance3D>(p_node)) {
-		r_nodes.push_back(geometry);
-	}
-	for (int i = 0; i < p_node->get_child_count(); i++) {
-		_solers_collect_geometry_nodes(p_node->get_child(i), r_nodes);
-	}
-}
-
-uint64_t SolersReflectionService::get_spatial_geometry_digest() const {
-	Node *root = EditorInterface::get_singleton() ? EditorInterface::get_singleton()->get_edited_scene_root() : nullptr;
-	Vector<GeometryInstance3D *> nodes;
-	_solers_collect_geometry_nodes(root, nodes);
-	Array entries;
-	for (GeometryInstance3D *geometry : nodes) {
-		Dictionary entry;
-		String path;
-		_safe_node_path(geometry, path);
-		entry["path"] = path;
-		entry["transform"] = geometry->get_global_transform();
-		entry["aabb"] = geometry->get_aabb();
-		entry["visible"] = geometry->is_visible();
-		entries.push_back(entry);
-	}
-	return entries.hash();
-}
-
 static Variant _solers_stable_resource_value(const Variant &p_value, HashSet<ObjectID> &r_visiting) {
 	if (p_value.get_type() == Variant::ARRAY) {
 		const Array source = p_value;
@@ -1987,86 +1973,94 @@ uint64_t SolersReflectionService::get_lightmap_input_digest() const {
 }
 
 #ifdef MODULE_CSG_ENABLED
-Dictionary SolersReflectionService::bake_csg(const Dictionary &p_args) {
-	const Array node_paths = p_args.get("node_paths", Array());
-	if (node_paths.is_empty()) {
-		return _error("INVALID_ARGUMENT", "node_paths must contain at least one CSGShape3D root.");
+Dictionary SolersReflectionService::_bake_csg(const Dictionary &p_args) {
+	const String node_path = p_args.get("node_path", String());
+	const String artifact = p_args.get("artifact", String());
+	String resolve_error;
+	CSGShape3D *source = Object::cast_to<CSGShape3D>(_resolve_node(node_path, resolve_error));
+	if (!source) {
+		return _error("CSG_NODE_NOT_FOUND", resolve_error.is_empty() ? vformat("%s is not a CSGShape3D.", node_path) : resolve_error);
 	}
-	const bool hide_sources = p_args.get("hide_sources", true);
-	Vector<CSGShape3D *> sources;
-	Vector<Ref<ArrayMesh>> meshes;
-	for (int i = 0; i < node_paths.size(); i++) {
-		String resolve_error;
-		CSGShape3D *source = Object::cast_to<CSGShape3D>(_resolve_node(String(node_paths[i]), resolve_error));
-		if (!source) {
-			return _error("CSG_NODE_NOT_FOUND", resolve_error.is_empty() ? vformat("node_paths[%d] is not a CSGShape3D.", i) : resolve_error);
-		}
-		if (!source->is_root_shape() || !source->get_parent()) {
-			return _error("INVALID_CSG_ROOT", vformat("%s must be a non-scene-root CSG root shape.", String(node_paths[i])));
-		}
-		source->call(SNAME("_update_shape"));
-		Ref<ArrayMesh> mesh = source->bake_static_mesh();
-		if (mesh.is_null() || mesh->get_surface_count() == 0) {
-			return _error("CSG_BAKE_FAILED", vformat("CSG produced no mesh: %s", String(node_paths[i])));
-		}
-		const AABB source_bounds = source->get_global_transform().xform(source->get_aabb());
-		const AABB baked_bounds = source->get_global_transform().xform(mesh->get_aabb());
-		if (!source_bounds.is_equal_approx(baked_bounds)) {
-			return _error("CSG_BAKE_MISMATCH", vformat("Baked mesh bounds do not match the source CSG: %s", String(node_paths[i])));
-		}
-		sources.push_back(source);
-		meshes.push_back(mesh);
+	if (!source->is_root_shape() || !source->get_parent()) {
+		return _error("INVALID_CSG_ROOT", vformat("%s must be a non-scene-root CSG root shape.", node_path));
 	}
-
-	const uint64_t input_digest = get_spatial_geometry_digest();
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
 	EditorInterface *editor_interface = EditorInterface::get_singleton();
-	if (!undo_redo || !editor_interface || !editor_interface->get_edited_scene_root()) {
+	if (!batch_action_active || !undo_redo || !editor_interface || !editor_interface->get_edited_scene_root()) {
 		return _error("EDITOR_CONTEXT_UNAVAILABLE", "CSG baking requires an edited scene and EditorUndoRedoManager.", false);
 	}
-	Node *owner = editor_interface->get_edited_scene_root();
-	undo_redo->create_action("Bake CSG meshes");
-	Vector<MeshInstance3D *> outputs;
-	for (int i = 0; i < sources.size(); i++) {
-		MeshInstance3D *output = memnew(MeshInstance3D);
-		output->set_name(String(sources[i]->get_name()) + "BakedMesh");
-		output->set_mesh(meshes[i]);
-		output->set_transform(sources[i]->get_transform());
-		output->set_gi_mode(GeometryInstance3D::GI_MODE_STATIC);
-		String source_path;
-		_safe_node_path(sources[i], source_path);
-		output->set_meta(SNAME("_solers_baked_from"), source_path);
-		undo_redo->add_do_method(sources[i], "add_sibling", output, true);
-		undo_redo->add_do_method(output, "set_owner", owner);
-		undo_redo->add_do_reference(output);
-		undo_redo->add_undo_method(sources[i]->get_parent(), "remove_child", output);
-		if (hide_sources) {
-			undo_redo->add_do_method(sources[i], "set_visible", false);
-			undo_redo->add_undo_method(sources[i], "set_visible", sources[i]->is_visible());
-		}
-		outputs.push_back(output);
-	}
-	undo_redo->commit_action();
 
-	Array output_paths;
-	for (MeshInstance3D *output : outputs) {
-		String path;
-		_safe_node_path(output, path);
-		output_paths.push_back(path);
+	source->update_shape();
+	Node3D *output = nullptr;
+	Dictionary native_facts;
+	if (artifact == "mesh") {
+		Ref<ArrayMesh> mesh = source->bake_static_mesh();
+		if (mesh.is_null() || mesh->get_surface_count() == 0) {
+			return _error("CSG_BAKE_FAILED", vformat("CSG produced no mesh: %s", node_path));
+		}
+		MeshInstance3D *mesh_instance = memnew(MeshInstance3D);
+		mesh_instance->set_mesh(mesh);
+		mesh_instance->set_gi_mode(GeometryInstance3D::GI_MODE_STATIC);
+		output = mesh_instance;
+		native_facts = solers_describe_mesh(mesh);
+	} else if (artifact == "collision") {
+#ifndef PHYSICS_3D_DISABLED
+		Ref<ConcavePolygonShape3D> shape = source->bake_collision_shape();
+		if (shape.is_null() || shape->get_faces().is_empty()) {
+			return _error("CSG_BAKE_FAILED", vformat("CSG produced no collision shape: %s", node_path));
+		}
+		StaticBody3D *body = memnew(StaticBody3D);
+		CollisionShape3D *collision = memnew(CollisionShape3D);
+		collision->set_shape(shape);
+		body->add_child(collision, true);
+		output = body;
+		native_facts["triangle_count"] = shape->get_faces().size() / 3;
+#else
+		return _error("PHYSICS_3D_UNAVAILABLE", "This build does not include 3D physics.", false);
+#endif
+	} else {
+		return _error("INVALID_ARGUMENT", "artifact must be mesh or collision.");
 	}
-	Dictionary artifact;
-	artifact["kind"] = "baked_mesh";
-	artifact["input_geometry_digest"] = String::num_uint64(input_digest);
-	artifact["output_geometry_digest"] = String::num_uint64(get_spatial_geometry_digest());
-	artifact["source_paths"] = node_paths;
-	artifact["output_paths"] = output_paths;
+
+	Node *owner = editor_interface->get_edited_scene_root();
+	output->set_name(String(source->get_name()) + (artifact == "mesh" ? "BakedMesh" : "BakedCollision"));
+	output->set_transform(source->get_transform());
+	output->set_meta(SNAME("_solers_baked_from"), node_path);
+	undo_redo->add_do_method(source, "add_sibling", output, true);
+	undo_redo->add_do_method(output, "set_owner", owner);
+#ifndef PHYSICS_3D_DISABLED
+	if (artifact == "collision") {
+		undo_redo->add_do_method(output->get_child(0), "set_owner", owner);
+	}
+#endif
+	undo_redo->add_do_reference(output);
+	undo_redo->add_undo_method(source->get_parent(), "remove_child", output);
+	const bool hide_source = p_args.get("hide_source", false);
+	if (hide_source) {
+		undo_redo->add_do_method(source, "set_visible", false);
+		undo_redo->add_undo_method(source, "set_visible", source->is_visible());
+	}
+	source->add_sibling(output, true);
+	output->set_owner(owner);
+#ifndef PHYSICS_3D_DISABLED
+	if (artifact == "collision") {
+		output->get_child(0)->set_owner(owner);
+	}
+#endif
+	if (hide_source) {
+		source->set_visible(false);
+	}
+	String output_path;
+	_safe_node_path(output, output_path);
 	Dictionary data;
+	data["node_path"] = output_path;
+	data["source_path"] = node_path;
 	data["artifact"] = artifact;
-	data["output_paths"] = output_paths;
+	data["native_facts"] = native_facts;
 	return _ok(data);
 }
 #else
-Dictionary SolersReflectionService::bake_csg(const Dictionary &) {
+Dictionary SolersReflectionService::_bake_csg(const Dictionary &) {
 	return _error("CSG_MODULE_UNAVAILABLE", "This build does not include the CSG module.", false);
 }
 #endif
@@ -2580,6 +2574,7 @@ Array SolersReflectionService::resolve_batch_resource_access(const Dictionary &p
 			case SolersBatchOperationKind::SET_PROPERTY:
 			case SolersBatchOperationKind::ATTACH_SCRIPT:
 			case SolersBatchOperationKind::REMOVE_NODE:
+			case SolersBatchOperationKind::BAKE_CSG:
 				_solers_add_scene_access(accesses, "write", op.get("node_path", "."));
 				break;
 			case SolersBatchOperationKind::REPARENT:
@@ -2853,9 +2848,17 @@ Dictionary SolersReflectionService::_subsystem_facts(Node *p_node) const {
 	} else if (MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(p_node)) {
 		facts["material"] = _solers_material_facts(mesh_instance);
 #ifdef MODULE_CSG_ENABLED
-	} else if (Object::cast_to<CSGShape3D>(p_node)) {
+	} else if (CSGShape3D *csg = Object::cast_to<CSGShape3D>(p_node)) {
+		Dictionary csg_facts;
+		csg_facts["is_root_shape"] = csg->is_root_shape();
+		csg_facts["operation"] = (int)csg->get_operation();
+		csg_facts["autosmooth"] = csg->is_autosmooth();
+#ifndef PHYSICS_3D_DISABLED
+		csg_facts["collision_enabled"] = csg->is_using_collision();
+#endif
+		facts["csg"] = csg_facts;
 		Dictionary material;
-		const Variant csg_material = p_node->get("material");
+		const Variant csg_material = ClassDB::has_property(p_node->get_class(), SNAME("material")) ? p_node->get("material") : Variant();
 		if (csg_material.get_type() == Variant::OBJECT) {
 			material["csg_material"] = _solers_resource_id(csg_material);
 		}

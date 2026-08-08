@@ -2,11 +2,30 @@
 /*  solers_reflection_service.h                                           */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                              SOLERS ENGINE                              */
-/*                        (a fork of Godot Engine)                        */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
 /**************************************************************************/
-/* Solers: AI-native game engine.                                        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
 /*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
 #pragma once
@@ -74,6 +93,7 @@ class SolersReflectionService : public Object {
 	Dictionary _connect_signal(const Dictionary &p_args);
 	Dictionary _attach_script(const Dictionary &p_args);
 	Dictionary _remove_node(const Dictionary &p_args);
+	Dictionary _bake_csg(const Dictionary &p_args);
 	Dictionary _list_properties(const Dictionary &p_args);
 	Dictionary _list_signal_connections(const Dictionary &p_args);
 	static void _uv2_unwrap_thread(void *p_userdata);
@@ -99,14 +119,12 @@ public:
 	Dictionary instantiate_scene(const Dictionary &p_args);
 	Dictionary validate_spatial_relations(const Dictionary &p_args) const;
 	static real_t get_aabb_max_gap(const AABB &p_a, const AABB &p_b);
-	Dictionary bake_csg(const Dictionary &p_args);
 	Dictionary open_scene(const Dictionary &p_args);
 	Dictionary unwrap_uv2(const Dictionary &p_args, const String &p_operation_id = String());
 	Dictionary poll_uv2_unwrap(const Dictionary &p_args);
 	bool is_uv2_unwrap_ready(const Dictionary &p_args) const;
 	void cancel_uv2_unwrap(const String &p_operation_id);
 	Dictionary bake_lightmap(const Dictionary &p_args);
-	uint64_t get_spatial_geometry_digest() const;
 	uint64_t get_lightmap_input_digest() const;
 
 	Dictionary batch(const Dictionary &p_args);

@@ -17,7 +17,7 @@ Use for 3D layout, imported models, PBR materials, lights, Environment/GI, shado
 | Lights | `DirectionalLight3D` / `OmniLight3D` / `SpotLight3D`; physical lux/lumen when `physical_light_units` on |
 | GI (pick **one** final) | SDFGI (dynamic/large) **or** `LightmapGI` (static) **or** `VoxelGI` — not two finals |
 | Materials | One PBR map family (albedo/normal/roughness); `StandardMaterial3D` / `ORMMaterial3D` |
-| CSG | Whitebox only — bake to MeshInstance3D for shipping (`scene.bake_csg`) |
+| CSG | Whitebox through ClassDB; bake mesh or collision artifacts inside the same `object.transaction` |
 | UV2 / lightmaps | `mesh.unwrap_uv2` then `lightmap.bake` after topology stable |
 | Exposure | `CameraAttributesPhysical` / `Practical` on `Camera3D` when using physical units |
 
