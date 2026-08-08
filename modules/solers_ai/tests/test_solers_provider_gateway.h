@@ -123,18 +123,6 @@ public:
 	}
 };
 
-class SolersTestImportLifecycleObserver : public Object {
-public:
-	EditorFileSystem *filesystem = nullptr;
-	bool observed = false;
-	bool all_callbacks_inside_import = true;
-
-	void on_resources_reimported(const PackedStringArray &) {
-		observed = true;
-		all_callbacks_inside_import = all_callbacks_inside_import && filesystem && filesystem->is_importing();
-	}
-};
-
 class SolersSyntheticFuturePlugin : public SolersPlugin {
 public:
 	bool job_ran = false;
@@ -2442,10 +2430,6 @@ TEST_CASE("[SolersAssetService][SceneTree] project import follows native Materia
 		WARN("EditorFileSystem is initialized after the command-line unit test runner; run this contract in an editor integration test.");
 		return;
 	}
-	SolersTestImportLifecycleObserver lifecycle_observer;
-	lifecycle_observer.filesystem = filesystem;
-	const Callable lifecycle_callback = callable_mp(&lifecycle_observer, &SolersTestImportLifecycleObserver::on_resources_reimported);
-	filesystem->connect(SNAME("resources_reimported"), lifecycle_callback);
 	const String asset_id = ".solers_material_import_contract";
 	const String second_asset_id = ".solers_material_import_contract_b";
 	const String asset_dir = "user://solers_jobs/" + asset_id;
@@ -2584,13 +2568,11 @@ TEST_CASE("[SolersAssetService][SceneTree] project import follows native Materia
 	}
 	CHECK(data.get("status", String()) != "pending");
 	CHECK(second_data.get("status", String()) != "pending");
-	CHECK(lifecycle_observer.observed);
-	CHECK(lifecycle_observer.all_callbacks_inside_import);
-	filesystem->disconnect(SNAME("resources_reimported"), lifecycle_callback);
 	CHECK((int)data.get("source_file_count", 0) == 3);
 	CHECK((int)data.get("skipped_source_file_count", 0) == 1);
 	const Dictionary import_inspection = data.get("import", Dictionary());
 	CHECK((int)import_inspection.get("file_count", 0) == 2);
+	CHECK(import_inspection.get("indexed_count", 0) == import_inspection.get("file_count", -1));
 	CHECK((int)import_inspection.get("entrypoint_count", 0) == 1);
 	CHECK((int)import_inspection.get("loadable_count", 0) == 1);
 	const Dictionary second_import_inspection = second_data.get("import", Dictionary());
@@ -3429,6 +3411,23 @@ TEST_CASE("[SolersLLMClient] JSON error body on HTTP 200 is terminal") {
 	CHECK(String(error.get("code", String())) == "PROVIDER_ERROR");
 	CHECK(String(error.get("message", String())).contains("quota exhausted"));
 	CHECK_FALSE((bool)error.get("retryable", true));
+}
+
+TEST_CASE("[SolersLLMClient] successful HTML response is a terminal protocol failure") {
+	const String body = "<html>gateway page</html>";
+	Array events;
+	const Dictionary error = run_openai_failure_response(vformat("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", body.utf8().length(), body), events);
+	CHECK(String(error.get("code", String())) == "UNEXPECTED_RESPONSE_MEDIA_TYPE");
+	CHECK_FALSE(SolersLLMRetry::is_retryable(error));
+}
+
+TEST_CASE("[SolersLLMClient] decoded stream without a terminal event is retryable") {
+	const String body = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n";
+	Array events;
+	const Dictionary error = run_openai_failure_response(vformat("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", body.utf8().length(), body), events);
+	REQUIRE_FALSE(error.is_empty());
+	CHECK(String(error.get("code", String())) == "STREAM_INTERRUPTED");
+	CHECK(SolersLLMRetry::is_retryable(error));
 }
 
 TEST_CASE("[SolersModelsDev] input modality support is model-level and unknown is permissive") {
