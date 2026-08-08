@@ -5,9 +5,10 @@ on:
       changed-files:
         description: A list of changed files, pre-filtered for parsing by clangd-tidy.
         value: ${{ jobs.static-checks.outputs.changed-files }}
-      sources-changed:
-        description: Determines if any source files were changed.
-        value: ${{ jobs.static-checks.outputs.sources-changed }}
+      engine-changed:
+        value: ${{ jobs.static-checks.outputs.engine-changed }}
+      solers-changed:
+        value: ${{ jobs.static-checks.outputs.solers-changed }}
   workflow_dispatch:
 
 jobs:
@@ -17,7 +18,8 @@ jobs:
     timeout-minutes: 30
     outputs:
       changed-files: '"${{ steps.changed-files.outputs.clangd_all_changed_files }}"' # Wrap with quotes to bookend internal quote separators.
-      sources-changed: ${{ steps.changed-files.outputs.sources_any_changed }}
+      engine-changed: ${{ steps.changed-files.outputs.engine_any_changed }}
+      solers-changed: ${{ steps.changed-files.outputs.solers_any_changed }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
