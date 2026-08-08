@@ -36,6 +36,7 @@
 #include "core/templates/hash_set.h"
 #include "core/templates/list.h"
 #include "editor/settings/editor_settings.h"
+
 #include "modules/solers_ai/core/solers_codex_auth.h"
 #include "modules/solers_ai/core/solers_provider_registry.h"
 #include "modules/solers_ai/core/solers_secret_store.h"

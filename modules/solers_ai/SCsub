@@ -4,10 +4,10 @@ from misc.utility.scons_hints import *
 Import("env")
 Import("env_modules")
 
-import solers_svg_assets_builder
-import solers_skills_builder
-import terrain3d_bundle_builder
 import editor_builders
+import solers_skills_builder
+import solers_svg_assets_builder
+import terrain3d_bundle_builder
 
 env_solers_ai = env_modules.Clone()
 
@@ -42,7 +42,11 @@ if env.editor_build:
         "#modules/solers_ai/generated/solers_translations.gen.h",
         "#modules/solers_ai/generated/solers_translations.gen.cpp",
     ]
-    env_solers_ai.CommandNoCache(translation_targets, Glob("#modules/solers_ai/translations/*"), env_solers_ai.Run(editor_builders.make_translations))
+    env_solers_ai.CommandNoCache(
+        translation_targets,
+        Glob("#modules/solers_ai/translations/*"),
+        env_solers_ai.Run(editor_builders.make_translations),
+    )
     env_solers_ai.add_source_files(module_obj, translation_targets[1])
     env_solers_ai.Depends(module_obj, translation_targets)
 

@@ -1665,7 +1665,7 @@ void SolersDock::_append_history_message(const Dictionary &p_message) {
 		SolersStatusCell *cell = memnew(SolersStatusCell);
 		const String phase = p_message.get("phase", "completed");
 		cell->set_status(phase == "started" ? TTR("Context automatically compacting") : phase == "failed" ? TTR("Context compaction failed")
-																									: TTR("Context automatically compacted"));
+																										  : TTR("Context automatically compacted"));
 		cell->set_active(phase == "started");
 		_chat_mount()->add_child(cell);
 	}
