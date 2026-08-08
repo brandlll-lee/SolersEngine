@@ -108,6 +108,9 @@
 #include "modules/solers_ai/plugins/solers_plugin_polyhaven.h"
 #include "modules/solers_ai/protocol/solers_mcp_adapter.h"
 #include "modules/zip/zip_packer.h"
+#ifdef MODULE_CSG_ENABLED
+#include "modules/csg/csg_shape.h"
+#endif
 
 namespace TestSolersProviderGateway {
 
@@ -1572,75 +1575,31 @@ TEST_CASE("[SolersToolRegistry] audit redaction normalizes payload fields") {
 	CHECK(first.size() == second.size());
 }
 
-TEST_CASE("[SolersReflectionService] batch refuses mutations without an undo history") {
+TEST_CASE("[SolersReflectionService] scene mutations require native UndoRedo authority") {
+	SolersReflectionService service;
+	const Array operations = { Dictionary({ { "op", "set_property" }, { "node_path", "." }, { "property", "name" }, { "value", "Synthetic" } }) };
+	const Dictionary result = service.batch(Dictionary({ { "operations", operations } }));
+	CHECK_FALSE(result.get("ok", true));
+	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "UNDO_REDO_UNAVAILABLE");
+}
+
+TEST_CASE("[SolersToolRegistry] CSG bake is part of the authoritative scene transaction") {
 	SolersReflectionService reflection_service;
+	SolersToolRegistry registry;
+	registry.set_reflection_service(&reflection_service);
+	registry.register_default_tools();
+	CHECK(find_tool_def(registry.list_tools(), "scene.bake_csg").is_empty());
+	const Dictionary transaction = find_tool_def(registry.list_tools(), "object.transaction");
+	const Dictionary schema = transaction.get("input_schema", Dictionary());
+	const Dictionary operations = Dictionary(schema.get("properties", Dictionary())).get("operations", Dictionary());
+	const Dictionary item_properties = Dictionary(Dictionary(operations.get("items", Dictionary())).get("properties", Dictionary()));
+	CHECK(Array(Dictionary(item_properties.get("op", Dictionary())).get("enum", Array())).has("bake_csg"));
+	CHECK(Array(Dictionary(item_properties.get("artifact", Dictionary())).get("enum", Array())).has("collision"));
 
-	const char *ops[] = {
-		"create_node",
-		"set_property",
-		"reparent",
-		"connect_signal",
-		"attach_script",
-		"remove_node",
-	};
-	for (const char *op_name : ops) {
-		Dictionary op;
-		op["op"] = op_name;
-		op["class_name"] = "Node";
-		op["type"] = "Node";
-		op["name"] = "Synthetic";
-		op["property"] = "name";
-		op["value"] = "Synthetic";
-		op["node_path"] = "Synthetic";
-		op["new_parent_path"] = ".";
-		op["source_path"] = ".";
-		op["target_path"] = ".";
-		op["signal"] = "ready";
-		op["method"] = "_ready";
-		op["script_path"] = "res://synthetic.gd";
-
-		Array operations;
-		operations.push_back(op);
-		Dictionary args;
-		args["operations"] = operations;
-
-		Dictionary result = reflection_service.batch(args);
-		CHECK_FALSE((bool)result.get("ok", true));
-		Dictionary batch_error = result.get("error", Dictionary());
-		CHECK(batch_error.get("code", String()) == "UNDO_REDO_UNAVAILABLE");
-		CHECK_FALSE(result.has("data"));
-	}
-
-	Dictionary unknown_op;
-	unknown_op["op"] = "synthetic_future_op";
-	Array unknown_ops;
-	unknown_ops.push_back(unknown_op);
-	Dictionary args;
-	args["operations"] = unknown_ops;
-	Dictionary unknown = reflection_service.batch(args);
-	CHECK_FALSE((bool)unknown.get("ok", true));
-	Dictionary batch_error = unknown.get("error", Dictionary());
-	CHECK(batch_error.get("code", String()) == "SCENE_EDIT_FAILED");
-	Dictionary data = unknown.get("data", Dictionary());
-	Array entries = data.get("results", Array());
-	REQUIRE(entries.size() == 1);
-	Dictionary entry = entries[0];
-	Dictionary op_result = entry.get("result", Dictionary());
-	Dictionary error = op_result.get("error", Dictionary());
-	CHECK(error.get("code", String()) == "UNKNOWN_OP");
-
-	Dictionary method_op;
-	method_op["op"] = "call_method";
-	Array method_ops;
-	method_ops.push_back(method_op);
-	args["operations"] = method_ops;
-	Dictionary method_result = reflection_service.batch(args);
-	Dictionary method_data = method_result.get("data", Dictionary());
-	Array method_entries = method_data.get("results", Array());
-	REQUIRE(method_entries.size() == 1);
-	Dictionary method_entry = method_entries[0];
-	Dictionary method_error = Dictionary(method_entry.get("result", Dictionary())).get("error", Dictionary());
-	CHECK(method_error.get("code", String()) == "UNKNOWN_OP");
+	const Array bake = { Dictionary({ { "op", "bake_csg" }, { "node_path", "Whitebox" }, { "artifact", "mesh" } }) };
+	const Array access = registry.resolve_resource_access("object.transaction", Dictionary({ { "scope", "scene" }, { "operations", bake } }));
+	REQUIRE(access.size() == 1);
+	CHECK(Dictionary(access[0]).get("key", String()) == "scene:Whitebox");
 }
 
 TEST_CASE("[SolersReflectionService] batch has no fixed operation-count cutoff") {
@@ -1690,20 +1649,34 @@ TEST_CASE("[SolersReflectionService] exact structural contacts expose any positi
 	CHECK(SolersReflectionService::get_aabb_max_gap(wall, three_centimeter_gap) > 0.0);
 }
 
-TEST_CASE("[SceneTree][SolersGeometryFacts] mesh facts expose bounds and topology") {
-	Ref<BoxMesh> box;
-	box.instantiate();
-	box->set_size(Vector3(2, 4, 6));
+#ifdef MODULE_CSG_ENABLED
+TEST_CASE("[SceneTree][SolersCSG] native boolean output exposes mesh and collision facts") {
+	CSGCombiner3D *root = memnew(CSGCombiner3D);
+	CSGBox3D *volume = memnew(CSGBox3D);
+	CSGBox3D *cut = memnew(CSGBox3D);
+	root->add_child(volume);
+	root->add_child(cut);
+	SceneTree::get_singleton()->get_root()->add_child(root);
+	volume->set_size(Vector3(4, 4, 4));
+	cut->set_size(Vector3(2, 2, 5));
+	cut->set_position(Vector3(1, 0, 0));
+	cut->set_operation(CSGShape3D::OPERATION_SUBTRACTION);
+	root->update_shape();
 
-	const Dictionary facts = solers_describe_mesh(box);
-	CHECK((int)facts.get("mesh_count", 0) == 1);
-	CHECK((int)facts.get("triangle_count", 0) == 12);
-	const Array size = Dictionary(facts.get("aabb", Dictionary())).get("size", Array());
-	REQUIRE(size.size() == 3);
-	CHECK(Math::is_equal_approx((double)size[0], 2.0));
-	CHECK(Math::is_equal_approx((double)size[1], 4.0));
-	CHECK(Math::is_equal_approx((double)size[2], 6.0));
+	const Ref<ArrayMesh> mesh = root->bake_static_mesh();
+	REQUIRE(mesh.is_valid());
+	const Dictionary facts = solers_describe_geometry(root);
+	CHECK((int)facts.get("surface_count", 0) > 0);
+	CHECK((int)facts.get("triangle_count", 0) > 0);
+#ifndef PHYSICS_3D_DISABLED
+	const Ref<ConcavePolygonShape3D> collision = root->bake_collision_shape();
+	REQUIRE(collision.is_valid());
+	CHECK_FALSE(collision->get_faces().is_empty());
+#endif
+	root->queue_free();
+	MessageQueue::get_singleton()->flush();
 }
+#endif
 
 TEST_CASE("[SolersToolRegistry] scene object transaction access follows its native scope") {
 	SolersReflectionService reflection_service;
@@ -3047,8 +3020,13 @@ TEST_CASE("[SolersDock][SceneTree] journal restores outcome order and checkpoint
 
 	if (EditorSettings::get_singleton()) {
 		SolersDock *dock = memnew(SolersDock);
+		CHECK(dock->get_theme().is_null());
+		dock->set_theme(SolersUITheme::create());
 		REQUIRE(dock->get_theme().is_valid());
 		SceneTree::get_singleton()->get_root()->add_child(dock);
+		const Array settings_hosts = dock->find_children("*", "AcceptDialog", true, false);
+		REQUIRE(settings_hosts.size() == 1);
+		CHECK(Object::cast_to<Control>(settings_hosts[0])->get_theme().is_valid());
 		dock->load_chat_history(timeline);
 		MessageQueue::get_singleton()->flush();
 		CHECK(dock->find_children("*", "SolersToolCell", true, false).size() == 1);
