@@ -7,11 +7,8 @@ Godot has a dedicated [Contributing documentation](https://contributing.godoteng
 which details these points and more, and is a recommended read.
 
 ## Solers verification
-
-Install the repository hook once with `prek install`; it applies the checked-in
-`.pre-commit-config.yaml` to staged files. Before publication, run
-`prek run --from-ref <base> --to-ref HEAD` twice; the second pass must make no
-changes, then run the J8 editor build and the complete Solers test suite.
+Install the checked-in `.pre-commit-config.yaml` hook once with `prek install`;
+before publication, run `prek run --from-ref <base> --to-ref HEAD` twice for an idempotence check, then run the J8 editor build and complete Solers test suite.
 
 ## Table of contents
 
