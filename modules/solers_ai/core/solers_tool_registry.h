@@ -14,6 +14,7 @@
 #include "core/templates/hash_map.h"
 #include "core/templates/hash_set.h"
 #include "core/variant/dictionary.h"
+
 #include "modules/solers_ai/core/solers_permission_manager.h"
 #include "modules/solers_ai/core/solers_tool.h"
 
@@ -34,6 +35,7 @@ struct SolersPreparedToolCall {
 	SolersToolExecution execution = SolersToolExecution::MAIN_THREAD;
 	SolersToolMutationPolicy mutation_policy = SolersToolMutationPolicy::READ_ONLY;
 	Dictionary reversal_state;
+	Dictionary journal_event;
 };
 
 class SolersToolRegistry : public Object {
@@ -105,7 +107,6 @@ class SolersToolRegistry : public Object {
 	Dictionary _poll_runtime_control(const Dictionary &p_args) const;
 	bool _is_runtime_control_ready(const Dictionary &p_args) const;
 	Dictionary _revert_latest(const SolersToolContext &p_context, const Dictionary &p_args);
-	void _persist_reversal_event(const SolersToolContext &p_context, const String &p_event, const Dictionary &p_record = Dictionary()) const;
 	Dictionary _prepare_reversal(SolersPreparedToolCall &r_call);
 	void _discard_reversal(const Dictionary &p_record);
 	Dictionary _finalize_prepared_result(SolersPreparedToolCall &r_call, const Dictionary &p_result);

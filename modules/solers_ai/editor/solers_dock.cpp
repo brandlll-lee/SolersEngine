@@ -1668,6 +1668,8 @@ void SolersDock::_append_history_message(const Dictionary &p_message) {
 																										  : TTR("Context automatically compacted"));
 		cell->set_active(phase == "started");
 		_chat_mount()->add_child(cell);
+	} else if (role == "turn_outcome") {
+		_append_error_row(content);
 	}
 }
 
@@ -2465,6 +2467,9 @@ void SolersDock::_on_auto_approve_chip_pressed() {
 
 void SolersDock::_notification(int p_what) {
 	switch (p_what) {
+		case NOTIFICATION_POSTINITIALIZE: {
+			set_theme(SolersUITheme::create());
+		} break;
 		case NOTIFICATION_ENTER_TREE: {
 			_bind_layout_splits();
 			_sync_layout_widths();
@@ -2521,7 +2526,6 @@ void SolersDock::make_visible() {
 }
 
 SolersDock::SolersDock() {
-	set_theme(SolersUITheme::create());
 	set_h_size_flags(Control::SIZE_FILL);
 	set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	add_theme_style_override("panel", solers_make_stylebox(SOLERS_BG, Color(0, 0, 0, 0), 0, 0));
@@ -3155,13 +3159,9 @@ void SolersDock::_on_agent_tool_finished(const String &p_id, const String &p_nam
 	_on_cell_content_changed();
 }
 
-void SolersDock::_on_agent_turn_completed(const Dictionary &p_result) {
+void SolersDock::_on_agent_turn_completed(const Dictionary &) {
 	const bool follow_tail = _is_scroll_pinned();
 	_finish_turn_cells();
-	if (String(p_result.get("outcome", String())) == "aborted") {
-		const String message = String(p_result.get("text", String())).strip_edges();
-		_append_error_row(message.is_empty() ? TTR("Turn aborted.") : message);
-	}
 	if (agent_session) {
 		timeline_messages = agent_session->get_timeline_entries();
 		_render_timeline(follow_tail ? MAX(0, timeline_messages.size() - SOLERS_TIMELINE_WINDOW) : timeline_start);
@@ -3173,13 +3173,12 @@ void SolersDock::_on_agent_turn_completed(const Dictionary &p_result) {
 	notify_sessions_changed();
 }
 
-void SolersDock::_on_agent_turn_failed(const Dictionary &p_error) {
+void SolersDock::_on_agent_turn_failed(const Dictionary &) {
 	_finish_turn_cells();
 	if (agent_session) {
 		timeline_messages = agent_session->get_timeline_entries();
 		_render_timeline(timeline_start);
 	}
-	_append_error_row(String::utf8("\u26a0 ") + String(p_error.get("message", "Agent turn failed.")));
 	_refresh_status();
 	_update_send_enabled();
 }

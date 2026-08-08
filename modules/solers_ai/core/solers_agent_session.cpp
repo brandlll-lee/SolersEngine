@@ -375,6 +375,14 @@ static void _solers_project_timeline_event(const Dictionary &p_event, Array &r_e
 			_solers_finish_timeline_tool(call.value, false, "Interrupted", 0);
 		}
 		r_open_tools.clear();
+		const String outcome = p_event.get("outcome", String());
+		if (outcome != "completed") {
+			Dictionary entry;
+			entry["event_id"] = p_event.get("event_id", 0);
+			entry["role"] = "turn_outcome";
+			entry["content"] = p_event.get("message", String());
+			r_entries.push_back(entry);
+		}
 	}
 }
 
@@ -604,6 +612,17 @@ void SolersAgentSession::_write_transcript_event(const String &p_type, const Dic
 	_stamp_transcript_event(event);
 	_solers_project_timeline_event(event, timeline_entries, open_timeline_tools);
 	solers_transcript_write(event);
+}
+
+void SolersAgentSession::_write_prepared_journal_event(SolersPreparedToolCall *p_call) const {
+	if (!p_call || p_call->journal_event.is_empty()) {
+		return;
+	}
+	Dictionary payload = p_call->journal_event;
+	const String type = payload.get("event_type", String());
+	payload.erase("event_type");
+	_write_transcript_event(type, payload);
+	p_call->journal_event.clear();
 }
 
 int64_t SolersAgentSession::_write_transcript_message(const String &p_role, const String &p_content, const Array &p_mentions, const Array &p_tool_calls, const String &p_reasoning, const Array &p_attachments, int64_t p_event_id) const {
@@ -1120,6 +1139,13 @@ Dictionary SolersAgentSession::_environment_context_message() {
 	if (!diagnostics.is_empty()) {
 		context["godot_diagnostics"] = diagnostics;
 	}
+	Dictionary turn_diagnostics;
+	{
+		MutexLock lock(godot_log_mutex);
+		turn_diagnostics["errors"] = godot_log_error_count;
+		turn_diagnostics["warnings"] = godot_log_warning_count;
+	}
+	context["turn_diagnostics"] = turn_diagnostics;
 	Dictionary message = SolersLLMMessage::user(
 			"Current engine context (authoritative, bounded, and refreshed for this request):\n" + JSON::stringify(context, "", false, true));
 	message["origin"] = "solers_state";
@@ -2550,6 +2576,9 @@ bool SolersAgentSession::_collect_tool_thread_result(bool p_wait) {
 	}
 	if (state->token == tool_exec_token && running && phase == PHASE_TOOL_EXECUTING) {
 		deferred_result = state->result;
+		if (deferred_prepared_call) {
+			deferred_prepared_call->journal_event = state->call.journal_event;
+		}
 		deferred_done = true;
 		SOLERS_TRACE("session.exec_tool", vformat("END %s ok=%d", deferred_canonical_name, (int)(bool)deferred_result.get("ok", false)));
 	}
@@ -2675,6 +2704,7 @@ void SolersAgentSession::_poll_tool_executing() {
 	}
 	if (deferred_prepared_call) {
 		tool_registry->_complete_prepared_tool(*deferred_prepared_call, result);
+		_write_prepared_journal_event(deferred_prepared_call);
 		memdelete(deferred_prepared_call);
 		deferred_prepared_call = nullptr;
 	}
@@ -2890,6 +2920,7 @@ void SolersAgentSession::abort() {
 			const Dictionary cancelled = _tool_denied_result("TOOL_CANCELLED", "The turn was aborted while the tool was running.");
 			tool_registry->_complete_prepared_tool(*deferred_prepared_call, cancelled);
 		}
+		_write_prepared_journal_event(deferred_prepared_call);
 		memdelete(deferred_prepared_call);
 		deferred_prepared_call = nullptr;
 	}

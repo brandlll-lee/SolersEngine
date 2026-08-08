@@ -967,23 +967,6 @@ void SolersToolRegistry::_discard_reversal(const Dictionary &p_record) {
 	}
 }
 
-void SolersToolRegistry::_persist_reversal_event(const SolersToolContext &p_context, const String &p_event, const Dictionary &p_record) const {
-	if (p_context.project_path.is_empty() || p_context.session_id.is_empty()) {
-		return;
-	}
-	Dictionary event;
-	event["event_type"] = p_event;
-	event["project_path"] = p_context.project_path;
-	event["session_id"] = p_context.session_id;
-	event["session_revision"] = (int64_t)(p_context.authored_revision + 1);
-	if (!p_record.is_empty()) {
-		// Protective history snapshot — not a rollback of the agent's edit.
-		event["checkpoint"] = p_record;
-		event["note"] = "Protective checkpoint for history.revert; not a rollback of your edit.";
-	}
-	solers_transcript_write(event);
-}
-
 Dictionary SolersToolRegistry::_finalize_prepared_result(SolersPreparedToolCall &r_call, const Dictionary &p_result) {
 	Dictionary result = p_result.duplicate(true);
 	const Dictionary pending_data = result.get("data", Dictionary());
@@ -1034,6 +1017,9 @@ Dictionary SolersToolRegistry::_finalize_prepared_result(SolersPreparedToolCall 
 		return result;
 	}
 	Dictionary data = result.get("data", Dictionary());
+	if ((bool)data.get("checkpoint_consumed", false)) {
+		r_call.journal_event["event_type"] = "checkpoint_consumed";
+	}
 	bool changed = (bool)data.get("authored_state_changed", false);
 	Dictionary record = r_call.reversal_state.duplicate(true);
 	if (r_call.mutation_policy == SolersToolMutationPolicy::EDITOR_UNDO) {
@@ -1143,7 +1129,9 @@ Dictionary SolersToolRegistry::_finalize_prepared_result(SolersPreparedToolCall 
 		reversals[reversal_id] = record;
 		latest_reversal_by_session[session_key] = reversal_id;
 		mutation["reversal_id"] = reversal_id;
-		_persist_reversal_event(r_call.context, "checkpoint_created", record);
+		r_call.journal_event["event_type"] = "checkpoint_created";
+		r_call.journal_event["checkpoint"] = record;
+		r_call.journal_event["note"] = "Protective checkpoint for history.revert; not a rollback of your edit.";
 	} else {
 		const String *previous_id = latest_reversal_by_session.getptr(session_key);
 		if (previous_id) {
@@ -1153,7 +1141,7 @@ Dictionary SolersToolRegistry::_finalize_prepared_result(SolersPreparedToolCall 
 			}
 			reversals.erase(*previous_id);
 			latest_reversal_by_session.erase(session_key);
-			_persist_reversal_event(r_call.context, "checkpoint_cleared");
+			r_call.journal_event["event_type"] = "checkpoint_cleared";
 		}
 	}
 	data["mutation"] = mutation;
@@ -1210,10 +1198,10 @@ Dictionary SolersToolRegistry::_revert_latest(const SolersToolContext &p_context
 
 	reversals.erase(reversal_id);
 	latest_reversal_by_session.erase(session_key);
-	_persist_reversal_event(p_context, "checkpoint_consumed");
 	Dictionary data;
 	data["reversal_id"] = reversal_id;
 	data["reverted_session_revision"] = record.get("session_revision", 0);
+	data["checkpoint_consumed"] = true;
 	data["authored_state_changed"] = true;
 	return _ok(data);
 }

@@ -40,11 +40,12 @@
 #include "core/io/resource_uid.h"
 #include "core/object/class_db.h"
 #include "core/os/os.h"
-#include "editor/file_system/editor_file_system.h"
 #include "editor/export/editor_export.h"
-#include "modules/solers_ai/core/solers_geometry_facts.h"
+#include "editor/file_system/editor_file_system.h"
 #include "scene/main/node.h"
 #include "scene/resources/packed_scene.h"
+
+#include "modules/solers_ai/core/solers_geometry_facts.h"
 
 void SolersResourceService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_resource_info", "args"), &SolersResourceService::get_resource_info);
@@ -659,7 +660,7 @@ Dictionary SolersResourceService::get_resource_info(const Dictionary &p_args) co
 		}
 	}
 
-	if (include_dependencies) {
+	if (include_dependencies && (bool)data["exists"]) {
 		List<String> dependencies;
 		ResourceLoader::get_dependencies(path, &dependencies, true);
 		Array dependency_items;
