@@ -14,7 +14,6 @@ Solers v0.1 已经从“品牌化 Godot fork”推进到“可编译、可启动
 
 ## 发行版品牌基础
 
-- 通过 `solers_branding.py` 集中管理 Solers 品牌信息。
 - 已完成 Windows/macOS/Linux/Web 构建与打包元数据的 Solers 命名接入。
 - 按要求暂时保留 Godot logo/icon 资产。
 - 已验证编辑器启动标识为 `Solers Engine`，用户数据目录走 `AppData\Roaming\Solers`。

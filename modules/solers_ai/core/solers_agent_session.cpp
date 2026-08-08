@@ -412,23 +412,22 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 		int64_t *event_sequence = nullptr;
 		Dictionary *restored_reversal = nullptr;
 		HashSet<String> *restored_model_attachments = nullptr;
-	} scan;
-	scan.project_path = &p_project_path;
-	scan.session_id = &p_session_id;
-	scan.restored = &restored;
-	scan.restored_timeline = &restored_timeline;
-	scan.restored_open_tools = &restored_open_tools;
-	scan.restored_background_assets = &restored_background_assets;
-	scan.restored_plan = &restored_plan;
-	scan.restored_outcome = &restored_outcome;
-	scan.restored_turn_id = &restored_turn_id;
-	scan.restored_authored_revision = &restored_authored_revision;
-	scan.restored_observed_revision = &restored_observed_revision;
-	scan.event_sequence = &transcript_event_sequence;
-	scan.restored_reversal = &restored_reversal;
-	scan.restored_model_attachments = &restored_model_attachments;
-
-	solers_transcript_foreach_session(p_session_id, &scan, [](void *p_userdata, const String &p_record) -> bool {
+	} restore_state;
+	restore_state.project_path = &p_project_path;
+	restore_state.session_id = &p_session_id;
+	restore_state.restored = &restored;
+	restore_state.restored_timeline = &restored_timeline;
+	restore_state.restored_open_tools = &restored_open_tools;
+	restore_state.restored_background_assets = &restored_background_assets;
+	restore_state.restored_plan = &restored_plan;
+	restore_state.restored_outcome = &restored_outcome;
+	restore_state.restored_turn_id = &restored_turn_id;
+	restore_state.restored_authored_revision = &restored_authored_revision;
+	restore_state.restored_observed_revision = &restored_observed_revision;
+	restore_state.event_sequence = &transcript_event_sequence;
+	restore_state.restored_reversal = &restored_reversal;
+	restore_state.restored_model_attachments = &restored_model_attachments;
+	solers_transcript_foreach_session(p_session_id, &restore_state, [](void *p_userdata, const String &p_record) -> bool {
 		ScanState &scan = *static_cast<ScanState *>(p_userdata);
 		const String line = p_record.strip_edges();
 		if (line.is_empty()) {

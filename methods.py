@@ -266,11 +266,7 @@ def detect_modules(search_path, recursive=False):
         if os.path.exists(version_path):
             with open(version_path, "r", encoding="utf-8") as f:
                 version_content = f.read()
-                if (
-                    'short_name = "godot"' in version_content
-                    or 'short_name = "solers"' in version_content
-                    or "solers_branding" in version_content
-                ):
+                if 'short_name = "godot"' in version_content or 'short_name = "solers"' in version_content:
                     return True
         return False
 

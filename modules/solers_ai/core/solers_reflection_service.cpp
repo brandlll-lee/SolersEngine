@@ -1486,7 +1486,6 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 	}
 	EditorNode *editor_node = EditorNode::get_singleton();
 	const bool has_scene_slot = editor_node && EditorNode::get_editor_data().get_edited_scene_count() > 0;
-	Node *initial_root = has_scene_slot ? editor_node->get_edited_scene() : nullptr;
 	bool has_mutation = false;
 	for (int i = 0; i < operations.size(); i++) {
 		if (operations[i].get_type() == Variant::DICTIONARY) {
