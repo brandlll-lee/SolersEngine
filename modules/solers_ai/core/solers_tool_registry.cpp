@@ -559,22 +559,13 @@ static Array _solers_operation_targets(const Dictionary &p_data) {
 	const Array results = p_data.get("results", Array());
 	for (int i = 0; i < results.size(); i++) {
 		const Dictionary step = results[i];
-		if (step.has("node_path")) {
-			Dictionary target;
-			target["node_path"] = step.get("node_path", String());
-			targets.push_back(target);
-			continue;
+		Dictionary target;
+		for (const char *field : { "node_path", "object_id", "class_name", "native_facts", "path", "sha256" }) {
+			if (step.has(field)) {
+				target[field] = step[field];
+			}
 		}
-		const Dictionary result = step.get("result", Dictionary());
-		const Dictionary data = result.get("data", Dictionary());
-		if (data.has("object_id")) {
-			Dictionary target;
-			target["object_id"] = data["object_id"];
-			target["class_name"] = data.get("class_name", String());
-			targets.push_back(target);
-		} else if (data.has("node_path") || data.has("path")) {
-			Dictionary target;
-			target["node_path"] = data.get("node_path", data.get("path", String()));
+		if (!target.is_empty()) {
 			targets.push_back(target);
 		}
 	}
@@ -1094,6 +1085,9 @@ Dictionary SolersToolRegistry::_finalize_prepared_result(SolersPreparedToolCall 
 	if (r_call.mutation_policy == SolersToolMutationPolicy::EDITOR_UNDO) {
 		receipt["scene_before"] = r_call.reversal_state.get("scene_state_before", Dictionary());
 		receipt["scene_after"] = _solers_scene_state_receipt();
+		data.erase("results");
+		data.erase("state_before");
+		data.erase("state_after");
 	} else if (r_call.mutation_policy == SolersToolMutationPolicy::FILE_CHECKPOINT) {
 		receipt["resources_before"] = r_call.reversal_state.get("resource_states_before", Array());
 		Array resources_after;
@@ -2027,12 +2021,12 @@ void SolersToolRegistry::_register_reflection_tools() {
 	}
 	SolersReflectionService *ref = reflection_service;
 	const SolersPermissionManager::Permission edit_scene = SolersPermissionManager::PERMISSION_EDIT_SCENE;
-	_add_observe_exposed("object.query", "Query the live edited scene, a Resource path, or an ObjectID. Use target=resource for a PackedScene on disk.", R"({"type":"object","properties":{"target":{"type":"string","enum":["scene","resource","object","relations"]},"include_tree":{"type":"boolean"},"include_selection":{"type":"boolean"},"max_depth":{"type":"integer","minimum":0,"maximum":16},"max_children":{"type":"integer","minimum":1,"maximum":256},"node_paths":{"type":"array","items":{"type":"string"},"uniqueItems":true,"minItems":1,"maxItems":64},"include_properties":{"type":"boolean"},"include_connections":{"type":"boolean"},"max_properties":{"type":"integer","minimum":1,"maximum":512},"path":{"type":"string","pattern":"^res://"},"type_hint":{"type":"string"},"include_dependencies":{"type":"boolean"},"max_dependencies":{"type":"integer","minimum":0,"maximum":2048},"properties":{"type":"array","items":{"type":"string"},"uniqueItems":true,"maxItems":128},"object_id":{},"relations":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"},"kind":{"type":"string","enum":["max_gap","contains","align","no_overlap"]},"tolerance":{"type":"number","minimum":0},"axes":{"type":"array","items":{"type":"string","enum":["x","y","z"]},"uniqueItems":true},"axis":{"type":"string","enum":["x","y","z"]},"a_anchor":{"type":"string","enum":["min","center","max"]},"b_anchor":{"type":"string","enum":["min","center","max"]}},"required":["a","b","kind","tolerance"],"additionalProperties":false}}},"required":["target"],"additionalProperties":false})", SolersToolExposure::DIRECT, [this, ref](const SolersToolContext &ctx, const Dictionary &a) {
+	_add_observe_exposed("object.query", "Query the live edited scene, a Resource path, an ObjectID, or native spatial facts between node pairs. Use target=resource for a PackedScene on disk.", R"({"type":"object","properties":{"target":{"type":"string","enum":["scene","resource","object","relations"]},"include_tree":{"type":"boolean"},"include_selection":{"type":"boolean"},"max_depth":{"type":"integer","minimum":0,"maximum":16},"max_children":{"type":"integer","minimum":1,"maximum":256},"node_paths":{"type":"array","items":{"type":"string"},"uniqueItems":true,"minItems":1,"maxItems":64},"include_properties":{"type":"boolean"},"include_connections":{"type":"boolean"},"max_properties":{"type":"integer","minimum":1,"maximum":512},"path":{"type":"string","pattern":"^res://"},"type_hint":{"type":"string"},"include_dependencies":{"type":"boolean"},"max_dependencies":{"type":"integer","minimum":0,"maximum":2048},"properties":{"type":"array","items":{"type":"string"},"uniqueItems":true,"maxItems":128},"object_id":{},"relations":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a","b"],"additionalProperties":false}}},"required":["target"],"additionalProperties":false})", SolersToolExposure::DIRECT, [this, ref](const SolersToolContext &ctx, const Dictionary &a) {
 				const String target = a.get("target", String());
 				if (target == "relations") {
 					Dictionary args = a.duplicate(true);
 					args.erase("target");
-					return ref->validate_spatial_relations(args);
+					return ref->measure_spatial_relations(args);
 				}
 				if (target == "resource") {
 					if (!resource_service) {

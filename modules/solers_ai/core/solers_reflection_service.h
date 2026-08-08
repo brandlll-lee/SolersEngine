@@ -78,7 +78,6 @@ class SolersReflectionService : public Object {
 
 	static bool _safe_node_path(Node *p_node, String &r_out);
 
-	Array _spatial_digest_for_results(const Array &p_results) const;
 	Dictionary _spatial_facts(Node3D *p_node) const;
 	// Facts a subsystem computes and no property dump contains: bone poses,
 	// playback state, live particle bounds, the resolved material, the
@@ -117,8 +116,7 @@ public:
 
 	Dictionary inspect_nodes(const Dictionary &p_args);
 	Dictionary instantiate_scene(const Dictionary &p_args);
-	Dictionary validate_spatial_relations(const Dictionary &p_args) const;
-	static real_t get_aabb_max_gap(const AABB &p_a, const AABB &p_b);
+	Dictionary measure_spatial_relations(const Dictionary &p_args) const;
 	Dictionary open_scene(const Dictionary &p_args);
 	Dictionary unwrap_uv2(const Dictionary &p_args, const String &p_operation_id = String());
 	Dictionary poll_uv2_unwrap(const Dictionary &p_args);

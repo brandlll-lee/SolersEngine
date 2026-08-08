@@ -867,12 +867,18 @@ Dictionary SolersReflectionService::inspect_nodes(const Dictionary &p_args) {
 	const bool include_connections = p_args.get("include_connections", false);
 	const int max_properties = CLAMP((int)p_args.get("max_properties", 128), 1, 512);
 	Array nodes;
-	for (const Variant &value : paths) {
-		const String path = String(value);
+	Array errors;
+	for (int i = 0; i < paths.size(); i++) {
+		const String path = String(paths[i]);
 		String resolve_error;
 		Node *node = _resolve_node(path, resolve_error);
 		if (!node) {
-			return _error("NODE_NOT_FOUND", resolve_error);
+			Dictionary failure;
+			failure["index"] = i;
+			failure["requested_path"] = path;
+			failure["error"] = _error("NODE_NOT_FOUND", resolve_error).get("error", Dictionary());
+			errors.push_back(failure);
+			continue;
 		}
 		Dictionary item;
 		String safe_path;
@@ -905,24 +911,37 @@ Dictionary SolersReflectionService::inspect_nodes(const Dictionary &p_args) {
 			property_args["max_properties"] = max_properties;
 			const Dictionary property_result = _list_properties(property_args);
 			if (!(bool)property_result.get("ok", false)) {
-				return property_result;
+				Dictionary failure;
+				failure["index"] = i;
+				failure["node_path"] = safe_path;
+				failure["error"] = property_result.get("error", Dictionary());
+				errors.push_back(failure);
+			} else {
+				item["properties"] = Dictionary(property_result.get("data", Dictionary())).get("properties", Array());
 			}
-			item["properties"] = Dictionary(property_result.get("data", Dictionary())).get("properties", Array());
 		}
 		if (include_connections) {
 			Dictionary connection_args;
 			connection_args["source_path"] = safe_path;
 			const Dictionary connection_result = _list_signal_connections(connection_args);
 			if (!(bool)connection_result.get("ok", false)) {
-				return connection_result;
+				Dictionary failure;
+				failure["index"] = i;
+				failure["node_path"] = safe_path;
+				failure["error"] = connection_result.get("error", Dictionary());
+				errors.push_back(failure);
+			} else {
+				item["connections"] = Dictionary(connection_result.get("data", Dictionary())).get("connections", Array());
 			}
-			item["connections"] = Dictionary(connection_result.get("data", Dictionary())).get("connections", Array());
 		}
 		nodes.push_back(item);
 	}
 	Dictionary data;
 	data["nodes"] = nodes;
 	data["count"] = nodes.size();
+	data["requested_count"] = paths.size();
+	data["errors"] = errors;
+	data["error_count"] = errors.size();
 	return _ok(data);
 }
 
@@ -1601,11 +1620,6 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 	data["rolled_back"] = rolled_back;
 	data["authored_state_changed"] = has_mutation && error_count == 0;
 	if (error_count == 0) {
-		const Array affected = _spatial_digest_for_results(results);
-		if (!affected.is_empty()) {
-			data["affected_nodes"] = affected;
-		}
-		// Success: path receipts only — not a full per-op node dump.
 		Array path_receipts;
 		for (int i = 0; i < results.size(); i++) {
 			const Dictionary entry = results[i];
@@ -1615,7 +1629,16 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 			const Dictionary result_data = Dictionary(entry.get("result", Dictionary())).get("data", Dictionary());
 			const String path = result_data.get("node_path", result_data.get("path", String()));
 			if (!path.is_empty()) {
-				receipt["node_path"] = path;
+				String resolve_error;
+				Node *node = _resolve_node(path, resolve_error);
+				String safe_path;
+				if (node && _safe_node_path(node, safe_path)) {
+					receipt["node_path"] = safe_path;
+					receipt["object_id"] = String::num_int64((int64_t)node->get_instance_id());
+					receipt["class_name"] = node->get_class();
+				} else {
+					receipt["node_path"] = path;
+				}
 			}
 			if (result_data.has("native_facts")) {
 				receipt["native_facts"] = result_data["native_facts"];
@@ -1651,37 +1674,6 @@ static real_t _solers_axis_max(const AABB &p_bounds, int p_axis) {
 	return p_bounds.position[p_axis] + p_bounds.size[p_axis];
 }
 
-static int _solers_axis_index(const String &p_axis) {
-	if (p_axis == "x") {
-		return Vector3::AXIS_X;
-	}
-	if (p_axis == "y") {
-		return Vector3::AXIS_Y;
-	}
-	if (p_axis == "z") {
-		return Vector3::AXIS_Z;
-	}
-	return -1;
-}
-
-static real_t _solers_axis_anchor(const AABB &p_bounds, int p_axis, const String &p_anchor) {
-	if (p_anchor == "min") {
-		return _solers_axis_min(p_bounds, p_axis);
-	}
-	if (p_anchor == "max") {
-		return _solers_axis_max(p_bounds, p_axis);
-	}
-	return (_solers_axis_min(p_bounds, p_axis) + _solers_axis_max(p_bounds, p_axis)) * 0.5;
-}
-
-real_t SolersReflectionService::get_aabb_max_gap(const AABB &p_a, const AABB &p_b) {
-	real_t max_gap = 0.0;
-	for (int axis = 0; axis < 3; axis++) {
-		max_gap = MAX(max_gap, MAX(MAX(_solers_axis_min(p_a, axis) - _solers_axis_max(p_b, axis), _solers_axis_min(p_b, axis) - _solers_axis_max(p_a, axis)), (real_t)0.0));
-	}
-	return max_gap;
-}
-
 static Dictionary _solers_aabb_data(const AABB &p_bounds) {
 	Dictionary data;
 	data["position"] = _solers_vector3_array(p_bounds.position);
@@ -1689,144 +1681,64 @@ static Dictionary _solers_aabb_data(const AABB &p_bounds) {
 	return data;
 }
 
-Dictionary SolersReflectionService::validate_spatial_relations(const Dictionary &p_args) const {
+Dictionary SolersReflectionService::measure_spatial_relations(const Dictionary &p_args) const {
 	const Array relations = p_args.get("relations", Array());
 	if (relations.is_empty()) {
-		return _error("INVALID_ARGUMENT", "relations must contain at least one spatial contract.");
+		return _error("INVALID_ARGUMENT", "relations must contain at least one node pair.");
 	}
 
 	Array results;
-	int failure_count = 0;
+	int error_count = 0;
 	for (int i = 0; i < relations.size(); i++) {
-		if (relations[i].get_type() != Variant::DICTIONARY) {
-			return _error("INVALID_ARGUMENT", vformat("relations[%d] must be an object.", i));
-		}
-		const Dictionary relation = relations[i];
+		const Dictionary relation = relations[i].get_type() == Variant::DICTIONARY ? Dictionary(relations[i]) : Dictionary();
 		const String a_path = String(relation.get("a", String())).strip_edges();
 		const String b_path = String(relation.get("b", String())).strip_edges();
-		const String kind = String(relation.get("kind", String())).strip_edges();
-		if (a_path.is_empty() || b_path.is_empty() || (kind != "max_gap" && kind != "contains" && kind != "align" && kind != "no_overlap")) {
-			return _error("INVALID_ARGUMENT", vformat("relations[%d] requires a, b, and kind=max_gap|contains|align|no_overlap.", i));
-		}
-		if (!relation.has("tolerance") || (relation["tolerance"].get_type() != Variant::FLOAT && relation["tolerance"].get_type() != Variant::INT)) {
-			return _error("INVALID_ARGUMENT", vformat("relations[%d].tolerance must be an explicit non-negative project-unit value.", i));
-		}
-		const real_t tolerance = relation["tolerance"];
-		if (tolerance < 0.0) {
-			return _error("INVALID_ARGUMENT", vformat("relations[%d].tolerance cannot be negative.", i));
-		}
-
 		String resolve_error;
-		GeometryInstance3D *a = Object::cast_to<GeometryInstance3D>(_resolve_node(a_path, resolve_error));
-		if (!a) {
-			return _error("GEOMETRY_NODE_NOT_FOUND", resolve_error.is_empty() ? vformat("Node is not GeometryInstance3D: %s", a_path) : resolve_error);
-		}
-		GeometryInstance3D *b = Object::cast_to<GeometryInstance3D>(_resolve_node(b_path, resolve_error));
-		if (!b) {
-			return _error("GEOMETRY_NODE_NOT_FOUND", resolve_error.is_empty() ? vformat("Node is not GeometryInstance3D: %s", b_path) : resolve_error);
-		}
-		const AABB a_bounds = a->get_global_transform().xform(a->get_aabb());
-		const AABB b_bounds = b->get_global_transform().xform(b->get_aabb());
-
-		bool checked_axes[3] = { true, true, true };
-		const Array axes = relation.get("axes", Array());
-		if (!axes.is_empty()) {
-			checked_axes[0] = checked_axes[1] = checked_axes[2] = false;
-			for (int axis_index = 0; axis_index < axes.size(); axis_index++) {
-				const String axis = String(axes[axis_index]).to_lower();
-				if (axis == "x") {
-					checked_axes[0] = true;
-				} else if (axis == "y") {
-					checked_axes[1] = true;
-				} else if (axis == "z") {
-					checked_axes[2] = true;
-				} else {
-					return _error("INVALID_ARGUMENT", vformat("relations[%d].axes contains '%s'; expected x, y, or z.", i, axis));
-				}
-			}
-		}
-		String a_anchor;
-		String b_anchor;
-		if (kind == "align") {
-			const String axis_name = String(relation.get("axis", String())).to_lower();
-			const int axis = _solers_axis_index(axis_name);
-			a_anchor = String(relation.get("a_anchor", "center")).to_lower();
-			b_anchor = String(relation.get("b_anchor", "center")).to_lower();
-			const bool valid_a_anchor = a_anchor == "min" || a_anchor == "center" || a_anchor == "max";
-			const bool valid_b_anchor = b_anchor == "min" || b_anchor == "center" || b_anchor == "max";
-			if (axis < 0 || !axes.is_empty() || !valid_a_anchor || !valid_b_anchor) {
-				return _error("INVALID_ARGUMENT", vformat("relations[%d] align requires axis=x|y|z, optional min|center|max anchors, and no axes array.", i));
-			}
-			checked_axes[0] = checked_axes[1] = checked_axes[2] = false;
-			checked_axes[axis] = true;
-		}
-
-		bool passed = kind == "no_overlap" ? false : true;
-		Array measurements;
-		for (int axis = 0; axis < 3; axis++) {
-			if (!checked_axes[axis]) {
-				continue;
-			}
-			Dictionary measurement;
-			measurement["axis"] = axis == 0 ? "x" : (axis == 1 ? "y" : "z");
-			bool axis_passed = false;
-			if (kind == "max_gap") {
-				const real_t gap = MAX(MAX(_solers_axis_min(a_bounds, axis) - _solers_axis_max(b_bounds, axis), _solers_axis_min(b_bounds, axis) - _solers_axis_max(a_bounds, axis)), (real_t)0.0);
-				measurement["gap"] = gap;
-				axis_passed = gap <= tolerance;
-			} else if (kind == "contains") {
-				const real_t underflow = MAX(_solers_axis_min(a_bounds, axis) - _solers_axis_min(b_bounds, axis), (real_t)0.0);
-				const real_t overflow = MAX(_solers_axis_max(b_bounds, axis) - _solers_axis_max(a_bounds, axis), (real_t)0.0);
-				measurement["underflow"] = underflow;
-				measurement["overflow"] = overflow;
-				axis_passed = underflow <= tolerance && overflow <= tolerance;
-			} else if (kind == "align") {
-				const real_t a_value = _solers_axis_anchor(a_bounds, axis, a_anchor);
-				const real_t b_value = _solers_axis_anchor(b_bounds, axis, b_anchor);
-				const real_t delta = Math::abs(a_value - b_value);
-				measurement["a_anchor"] = a_anchor;
-				measurement["b_anchor"] = b_anchor;
-				measurement["a_value"] = a_value;
-				measurement["b_value"] = b_value;
-				measurement["delta"] = delta;
-				axis_passed = delta <= tolerance;
-			} else {
-				const real_t overlap = MIN(_solers_axis_max(a_bounds, axis), _solers_axis_max(b_bounds, axis)) - MAX(_solers_axis_min(a_bounds, axis), _solers_axis_min(b_bounds, axis));
-				measurement["overlap"] = overlap;
-				axis_passed = overlap <= tolerance;
-			}
-			measurement["passed"] = axis_passed;
-			measurements.push_back(measurement);
-			passed = kind == "no_overlap" ? passed || axis_passed : passed && axis_passed;
-		}
-
 		Dictionary result;
 		result["index"] = i;
-		result["kind"] = kind;
 		result["a"] = a_path;
 		result["b"] = b_path;
-		result["a_world_aabb"] = _solers_aabb_data(a_bounds);
-		result["b_world_aabb"] = _solers_aabb_data(b_bounds);
-		if (kind == "max_gap") {
-			result["max_gap"] = get_aabb_max_gap(a_bounds, b_bounds);
+		Node3D *a = Object::cast_to<Node3D>(_resolve_node(a_path, resolve_error));
+		Node3D *b = Object::cast_to<Node3D>(_resolve_node(b_path, resolve_error));
+		if (!a || !b) {
+			result["error"] = _error("NODE_NOT_FOUND", resolve_error.is_empty() ? "Both relation endpoints must resolve to Node3D." : resolve_error).get("error", Dictionary());
+			error_count++;
+			results.push_back(result);
+			continue;
 		}
-		result["measurements"] = measurements;
-		result["passed"] = passed;
+		for (const KeyValue<String, Node3D *> &endpoint : { KeyValue<String, Node3D *>("a_node", a), KeyValue<String, Node3D *>("b_node", b) }) {
+			Dictionary identity = _spatial_facts(endpoint.value);
+			identity["node_path"] = endpoint.value->get_path();
+			identity["object_id"] = String::num_int64((int64_t)endpoint.value->get_instance_id());
+			identity["class_name"] = endpoint.value->get_class();
+			result[endpoint.key] = identity;
+		}
+		result["position_delta"] = _solers_vector3_array(b->get_global_position() - a->get_global_position());
+		result["position_distance"] = a->get_global_position().distance_to(b->get_global_position());
+		GeometryInstance3D *a_geometry = Object::cast_to<GeometryInstance3D>(a);
+		GeometryInstance3D *b_geometry = Object::cast_to<GeometryInstance3D>(b);
+		if (a_geometry && b_geometry) {
+			const AABB a_bounds = a_geometry->get_global_transform().xform(a_geometry->get_aabb());
+			const AABB b_bounds = b_geometry->get_global_transform().xform(b_geometry->get_aabb());
+			Array axes;
+			for (int axis = 0; axis < 3; axis++) {
+				Dictionary measure;
+				measure["axis"] = axis == 0 ? "x" : (axis == 1 ? "y" : "z");
+				measure["gap"] = MAX(MAX(_solers_axis_min(a_bounds, axis) - _solers_axis_max(b_bounds, axis), _solers_axis_min(b_bounds, axis) - _solers_axis_max(a_bounds, axis)), (real_t)0.0);
+				measure["overlap"] = MAX(MIN(_solers_axis_max(a_bounds, axis), _solers_axis_max(b_bounds, axis)) - MAX(_solers_axis_min(a_bounds, axis), _solers_axis_min(b_bounds, axis)), (real_t)0.0);
+				axes.push_back(measure);
+			}
+			result["a_world_aabb"] = _solers_aabb_data(a_bounds);
+			result["b_world_aabb"] = _solers_aabb_data(b_bounds);
+			result["axes"] = axes;
+		}
 		results.push_back(result);
-		if (!passed) {
-			failure_count++;
-		}
 	}
 
 	Dictionary data;
 	data["relations"] = results;
 	data["checked_relation_count"] = results.size();
-	data["failure_count"] = failure_count;
-	if (failure_count > 0) {
-		Dictionary failure = _error("SPATIAL_VALIDATION_FAILED", vformat("%d of %d declared spatial relations failed.", failure_count, results.size()));
-		failure["data"] = data;
-		return failure;
-	}
+	data["error_count"] = error_count;
 	return _ok(data);
 }
 
@@ -2927,35 +2839,6 @@ Array SolersReflectionService::_nested_instance_scenes(const Array &p_results) c
 		}
 	}
 	return scenes;
-}
-
-Array SolersReflectionService::_spatial_digest_for_results(const Array &p_results) const {
-	Array digest;
-	HashSet<String> seen;
-	for (int i = 0; i < p_results.size(); i++) {
-		const Dictionary result = Dictionary(p_results[i]).get("result", Dictionary());
-		if (!(bool)result.get("ok", false)) {
-			continue;
-		}
-		const Dictionary result_data = result.get("data", Dictionary());
-		const String path = result_data.has("path") ? String(result_data.get("path", String())) : String(result_data.get("node_path", String()));
-		if (path.is_empty() || seen.has(path)) {
-			continue;
-		}
-		seen.insert(path);
-		String resolve_error;
-		Node *node = _resolve_node(path, resolve_error);
-		Node3D *node_3d = node ? Object::cast_to<Node3D>(node) : nullptr;
-		const Dictionary facts = _spatial_facts(node_3d);
-		if (facts.is_empty()) {
-			continue;
-		}
-		Dictionary entry = facts;
-		entry["path"] = path;
-		entry["type"] = node_3d->get_class();
-		digest.push_back(entry);
-	}
-	return digest;
 }
 
 SolersReflectionService::SolersReflectionService() {}
