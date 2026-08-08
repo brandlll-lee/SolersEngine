@@ -340,6 +340,20 @@ void SolersLLMClient::_publish(const Array &p_events, State p_state) {
 void SolersLLMClient::_run_worker() {
 	Array batch;
 	Array messages = SolersContextManager::repair_tool_pairing(worker_request.get("messages", Array()));
+	if (!(bool)worker_request.get("image_input_enabled", false)) {
+		for (int i = 0; i < messages.size(); i++) {
+			Dictionary message = messages[i];
+			if (Array(message.get("attachments", Array())).is_empty()) {
+				continue;
+			}
+			message.erase("attachments");
+			String content = message.get("content", String());
+			content += content.is_empty() ? String() : "\n\n";
+			content += "[Solers: image content was omitted because image input is disabled for the selected provider/model.]";
+			message["content"] = content;
+			messages[i] = message;
+		}
+	}
 	HashSet<String> delivered;
 	const Array delivered_identities = worker_request.get("_delivered_attachment_identities", Array());
 	for (int i = 0; i < delivered_identities.size(); i++) {
@@ -348,6 +362,7 @@ void SolersLLMClient::_run_worker() {
 	HashSet<String> emitted;
 	worker_request["messages"] = SolersLLMMessage::project_attachments(messages, delivered, emitted);
 	worker_request.erase("_delivered_attachment_identities");
+	worker_request.erase("image_input_enabled");
 	Array emitted_identities;
 	for (const String &identity : emitted) {
 		emitted_identities.push_back(identity);

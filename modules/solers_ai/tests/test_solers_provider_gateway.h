@@ -300,7 +300,7 @@ TEST_CASE("[Editor][SolersSettingsService] local model policy migrates without c
 	paths.push_back(prefix + "local_models_only");
 	paths.push_back(prefix + "provider");
 	for (const String &provider : { String("ollama"), String("custom_openai_compatible") }) {
-		for (const String &key : { String("configured"), String("model"), String("base_url"), String("api_key"), String("send_session_id_header") }) {
+		for (const String &key : { String("configured"), String("model"), String("base_url"), String("api_key"), String("send_session_id_header"), String("image_input_mode") }) {
 			paths.push_back(prefix + "providers/" + provider + "/" + key);
 		}
 	}
@@ -325,7 +325,7 @@ TEST_CASE("[Editor][SolersSettingsService] local model policy migrates without c
 		migration_service.set_provider_registry(&registry);
 		CHECK(migration_service.get_local_models_only() == enabled);
 		CHECK_FALSE(settings->has_setting(prefix + "privacy_mode"));
-		CHECK((int)settings->get_setting(prefix + "settings_version") == 6);
+		CHECK((int)settings->get_setting(prefix + "settings_version") == 7);
 	}
 
 	settings->set_manually(prefix + "settings_version", 4);
@@ -344,6 +344,7 @@ TEST_CASE("[Editor][SolersSettingsService] local model policy migrates without c
 	CHECK(local_config.get("connected", false));
 	CHECK(local_config.get("available", false));
 	CHECK(local_config.get("send_session_id_header", false));
+	CHECK(local_config.get("image_input_mode", String()) == "auto");
 	CHECK(service.get_local_models_only());
 
 	Dictionary remote;
@@ -352,6 +353,7 @@ TEST_CASE("[Editor][SolersSettingsService] local model policy migrates without c
 	remote["base_url"] = "https://gateway.example/v1";
 	remote["api_key"] = "synthetic-key";
 	remote["send_session_id_header"] = false;
+	remote["image_input_mode"] = "disabled";
 	service.set_local_models_only(false);
 	service.set_provider_config(remote);
 	service.set_local_models_only(true);
@@ -361,6 +363,7 @@ TEST_CASE("[Editor][SolersSettingsService] local model policy migrates without c
 	CHECK(remote_config.get("model", String()) == "synthetic-model");
 	CHECK(remote_config.get("base_url", String()) == "https://gateway.example/v1");
 	CHECK_FALSE(remote_config.get("send_session_id_header", true));
+	CHECK(remote_config.get("image_input_mode", String()) == "disabled");
 	CHECK(Dictionary(service.get_provider_config().get("data", Dictionary())).get("provider", String()) == "custom_openai_compatible");
 
 	// Contract: never-special-cased catalog-style id connects via assembler.

@@ -1066,11 +1066,12 @@ String SolersAgentSession::_default_system_prompt() const {
 			"- Inspect unfamiliar classes with engine.describe; ClassDB property metadata and native documentation are the authority for names, types, units, and usage.\n"
 			"- Read live state with object.query. Edit scenes/resources with object.transaction and its native state/hash preconditions. Use script.compute for isolated bulk generation with declared file outputs.\n"
 			"- Scene transactions are one EditorUndoRedo action and Solers persists successful live-scene changes. Resource transactions are file-checkpointed. Tool results carry native state receipts and persisted file hashes; do not issue a separate save.\n"
-			"- The 3D editor viewport is the live edited scene tree. Use object.transaction for visible scene construction; scripts own runtime behavior. Establish appearance only with render.capture target=editor|camera tied to the source_state receipt (runtime proves Play only). Use object.query target=relations for world-space relations; a screenshot is not a geometry measurement.\n"
+			"- The 3D editor viewport is the live edited scene tree. Use object.transaction for visible scene construction; scripts own runtime behavior. Use object.query target=relations for world-space relations; a screenshot is not a geometry measurement.\n"
 			"- Background tools return stable job ids immediately. Continue independent work; when nothing else is runnable, call job.wait once with the required ids and stop issuing tools. Solers parks this turn and resumes it with a background job delta when any requested job reaches a project-import terminal state; do not poll asset.status for progress.\n"
 			"- Tool errors carry the native cause; read it, change what it names, and retry. Repeating an identical failed call wastes a step.\n"
 			"- Before each non-trivial tool call or group of related calls, write one short sentence saying what you are about to do and why. Group related actions under one preamble; skip it for trivial reads. This narration is how the user follows your progress.\n"
 			"- Use update_plan only as a concise optional progress display. Text without tool calls ends the task, so keep progress notes attached to tool-calling turns and finish with a clear final summary.";
+	prompt += "\n- When render.capture is available, establish appearance with target=editor|camera tied to the source_state receipt (runtime proves Play only). When it is absent, verify with text tools and disclose that visual verification was skipped.";
 	if (tool_registry) {
 		const String skill_catalog = tool_registry->get_skill_catalog_prompt();
 		if (!skill_catalog.is_empty()) {
@@ -1126,7 +1127,8 @@ Array SolersAgentSession::_collect_tools() {
 		return out;
 	}
 	const uint64_t catalog_revision = tool_registry->get_tool_catalog_revision();
-	if (cached_tool_catalog_revision == catalog_revision && cached_request_deferred_count == task_deferred_tools.size()) {
+	const bool image_input_enabled = _image_input_enabled();
+	if (cached_tool_catalog_revision == catalog_revision && cached_request_deferred_count == task_deferred_tools.size() && cached_request_image_input_enabled == image_input_enabled) {
 		return cached_request_tools;
 	}
 	const Array defs = tool_registry->list_tools();
@@ -1134,6 +1136,9 @@ Array SolersAgentSession::_collect_tools() {
 		const Dictionary def = defs[i];
 		const String exposure = def.get("exposure", "direct");
 		const StringName canonical_name = StringName(def.get("name", String()));
+		if (canonical_name == SNAME("render.capture") && !image_input_enabled) {
+			continue;
+		}
 		if (exposure == "hidden" || (exposure == "deferred" && !task_deferred_tools.has(canonical_name))) {
 			continue;
 		}
@@ -1153,6 +1158,7 @@ Array SolersAgentSession::_collect_tools() {
 	cached_request_tool_tokens = SolersContextManager::estimate_tokens(JSON::stringify(out, "", false, true));
 	cached_request_deferred_count = task_deferred_tools.size();
 	cached_tool_catalog_revision = catalog_revision;
+	cached_request_image_input_enabled = image_input_enabled;
 	return cached_request_tools;
 }
 
@@ -1221,6 +1227,20 @@ int SolersAgentSession::_active_model_input_support(const String &p_modality) co
 	return SolersModelsDev::input_modality_support(models_dev->get_model(catalog_provider, active_provider.get("model", String())), p_modality);
 }
 
+bool SolersAgentSession::_image_input_enabled() const {
+	const String mode = String(active_provider.get("image_input_mode", "auto")).strip_edges().to_lower();
+	if (mode == "enabled") {
+		return true;
+	}
+	if (mode == "disabled") {
+		return false;
+	}
+	// Auto mode is capability-forward: only an explicit catalog denial blocks images.
+	// Compatible gateways with incomplete metadata may still accept multimodal input;
+	// users can select Disabled when a particular endpoint does not.
+	return _active_model_input_support("image") != 0;
+}
+
 Dictionary SolersAgentSession::_build_request(const Array &p_messages, const String &p_request_system_prompt, const Array &p_tools) const {
 	Dictionary request;
 	request["model"] = active_provider.get("model", String());
@@ -1252,6 +1272,7 @@ Dictionary SolersAgentSession::_build_request(const Array &p_messages, const Str
 	}
 	request["session_id"] = session_id;
 	request["send_session_id_header"] = active_provider.get("send_session_id_header", true);
+	request["image_input_enabled"] = _image_input_enabled();
 	return request;
 }
 
@@ -1673,7 +1694,7 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 		emit_signal(SNAME("turn_failed"), e.get("error", Dictionary()));
 		return e;
 	}
-	if (!turn_attachments.is_empty() && _active_model_input_support("image") == 0) {
+	if (!turn_attachments.is_empty() && !_image_input_enabled()) {
 		Dictionary e = _error("VISION_CAPABILITY_REQUIRED", "The selected model does not support image input. Choose a vision-capable model before sending image references.");
 		emit_signal(SNAME("turn_failed"), e.get("error", Dictionary()));
 		return e;
@@ -2445,7 +2466,7 @@ void SolersAgentSession::_execute_deferred_tool(uint64_t p_token) {
 		return;
 	}
 	if (deferred_canonical_name == "render.capture") {
-		if (_active_model_input_support("image") == 0) {
+		if (!_image_input_enabled()) {
 			deferred_result = _tool_denied_result("VISION_CAPABILITY_REQUIRED", "The selected model does not support image input, so viewport captures cannot be returned to it.");
 			deferred_done = true;
 			return;
