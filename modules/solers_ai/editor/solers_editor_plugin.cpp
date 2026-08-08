@@ -44,6 +44,7 @@
 
 #include "modules/solers_ai/editor/solers_agent_runtime.h"
 #include "modules/solers_ai/editor/solers_dock.h"
+#include "modules/solers_ai/editor/solers_ui_theme.h"
 #include "modules/solers_ai/generated/solers_translations.gen.h"
 
 static constexpr int SOLERS_WORKSPACE_LAYOUT_VERSION = 1;
@@ -113,6 +114,7 @@ SolersEditorPlugin::SolersEditorPlugin() {
 	project_path = ProjectSettings::get_singleton()->get_resource_path();
 	runtime = memnew(SolersAgentRuntime);
 	dock = memnew(SolersDock);
+	dock->set_theme(SolersUITheme::create());
 	dock->set_name("SolersChat");
 	dock->set_session_select_callback(callable_mp(this, &SolersEditorPlugin::_select_session));
 	dock->set_new_session_callback(callable_mp(this, &SolersEditorPlugin::_new_session));

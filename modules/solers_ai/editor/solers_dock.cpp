@@ -2467,9 +2467,6 @@ void SolersDock::_on_auto_approve_chip_pressed() {
 
 void SolersDock::_notification(int p_what) {
 	switch (p_what) {
-		case NOTIFICATION_POSTINITIALIZE: {
-			set_theme(SolersUITheme::create());
-		} break;
 		case NOTIFICATION_ENTER_TREE: {
 			_bind_layout_splits();
 			_sync_layout_widths();
@@ -2484,6 +2481,7 @@ void SolersDock::_notification(int p_what) {
 			_update_chat_input_height();
 			_refresh_model_chip();
 			_sync_session_button();
+			SolersUITheme::configure_settings_host(provider_settings_dialog, get_theme());
 		} break;
 		case EditorSettings::NOTIFICATION_EDITOR_SETTINGS_CHANGED: {
 			_refresh_status();
@@ -2879,7 +2877,6 @@ SolersDock::SolersDock() {
 	provider_settings_dialog = memnew(AcceptDialog);
 	provider_settings_dialog->set_title(TTR("Settings"));
 	provider_settings_dialog->set_min_size(Size2(980, 640) * EDSCALE);
-	SolersUITheme::configure_settings_host(provider_settings_dialog, get_theme());
 	add_child(provider_settings_dialog);
 
 	provider_settings_view = memnew(SolersPMAIView);
