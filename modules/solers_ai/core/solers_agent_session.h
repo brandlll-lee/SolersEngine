@@ -92,6 +92,7 @@ class SolersAgentSession : public Object {
 	String last_stop_reason;
 	Dictionary last_usage;
 	Dictionary current_plan;
+	Dictionary latest_mutation_receipt;
 	String last_outcome;
 	Dictionary active_provider; // { provider, model, base_url, api_key, features }
 	bool running = false;
@@ -155,7 +156,8 @@ class SolersAgentSession : public Object {
 	int text_delta_count = 0;
 	uint64_t last_text_delta_msec = 0;
 	Array compaction_source_messages;
-	int64_t compaction_event_id = 0;
+	int64_t compaction_id = 0;
+	int64_t compaction_timeline_event_id = 0;
 	Dictionary retry_request;
 	Dictionary retry_profile;
 	int overflow_compaction_attempts = 0;
@@ -198,7 +200,7 @@ class SolersAgentSession : public Object {
 	String _make_session_id() const;
 	Dictionary _read_transcript_state(const String &p_project_path, const String &p_session_id) const;
 	void _stamp_transcript_event(Dictionary &r_event) const;
-	void _write_transcript_event(const String &p_type, const Dictionary &p_payload = Dictionary()) const;
+	int64_t _write_transcript_event(const String &p_type, const Dictionary &p_payload = Dictionary()) const;
 	void _write_prepared_journal_event(SolersPreparedToolCall *p_call) const;
 	void _ensure_godot_log_audit(bool p_turn_active);
 	void _release_godot_log_audit();
@@ -254,7 +256,7 @@ class SolersAgentSession : public Object {
 	int64_t _write_transcript_message(const String &p_role, const String &p_content, const Array &p_mentions = Array(), const Array &p_tool_calls = Array(), const String &p_reasoning = String(), const Array &p_attachments = Array(), int64_t p_event_id = 0) const;
 	void _write_transcript_tool(const String &p_call_id, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result, const String &p_delivered_content) const;
 	void _write_transcript_plan() const;
-	void _write_transcript_compaction(const String &p_phase, const Dictionary &p_payload) const;
+	int64_t _write_transcript_compaction(const String &p_phase, const Dictionary &p_payload) const;
 	Dictionary _tool_denied_result(const String &p_code, const String &p_message) const;
 	void _record(const String &p_event, const Dictionary &p_payload) const;
 	Dictionary _ok(const Variant &p_data) const;

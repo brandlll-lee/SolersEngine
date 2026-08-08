@@ -30,6 +30,7 @@
 
 #include "solers_agent_session.h"
 
+#include "core/io/file_access.h"
 #include "core/io/json.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
@@ -39,6 +40,7 @@
 #include "editor/editor_interface.h"
 #include "editor/editor_log.h"
 #include "editor/editor_node.h"
+#include "editor/editor_undo_redo_manager.h"
 #include "scene/main/node.h"
 
 #include "modules/solers_ai/core/solers_action_timeline.h"
@@ -361,13 +363,18 @@ static void _solers_project_timeline_event(const Dictionary &p_event, Array &r_e
 	if (type == "context_compaction" || type == "context.apply_compaction") {
 		Dictionary entry;
 		entry["event_id"] = p_event.get("event_id", 0);
+		entry["compaction_id"] = p_event.get("compaction_id", entry["event_id"]);
 		entry["role"] = "context_compaction";
 		entry["phase"] = type == "context.apply_compaction" ? "completed" : p_event.get("phase", "completed");
-		if (!r_entries.is_empty() && (int64_t)Dictionary(r_entries[r_entries.size() - 1]).get("event_id", -1) == (int64_t)entry["event_id"]) {
-			r_entries[r_entries.size() - 1] = entry;
-		} else {
-			r_entries.push_back(entry);
+		for (int i = r_entries.size() - 1; i >= 0; i--) {
+			const Dictionary existing = r_entries[i];
+			if (String(existing.get("role", String())) == "context_compaction" && (int64_t)existing.get("compaction_id", -1) == (int64_t)entry["compaction_id"]) {
+				entry["event_id"] = existing.get("event_id", entry["event_id"]);
+				r_entries[i] = entry;
+				return;
+			}
 		}
+		r_entries.push_back(entry);
 		return;
 	}
 	if (type == "turn_outcome") {
@@ -604,7 +611,7 @@ void SolersAgentSession::_stamp_transcript_event(Dictionary &r_event) const {
 	r_event["observed_revision"] = (int64_t)observed_revision;
 }
 
-void SolersAgentSession::_write_transcript_event(const String &p_type, const Dictionary &p_payload) const {
+int64_t SolersAgentSession::_write_transcript_event(const String &p_type, const Dictionary &p_payload) const {
 	Dictionary event = p_payload.duplicate(true);
 	event["event_type"] = p_type;
 	event["turn_id"] = turn_id;
@@ -612,6 +619,7 @@ void SolersAgentSession::_write_transcript_event(const String &p_type, const Dic
 	_stamp_transcript_event(event);
 	_solers_project_timeline_event(event, timeline_entries, open_timeline_tools);
 	solers_transcript_write(event);
+	return event["event_id"];
 }
 
 void SolersAgentSession::_write_prepared_journal_event(SolersPreparedToolCall *p_call) const {
@@ -676,12 +684,11 @@ void SolersAgentSession::_write_transcript_plan() const {
 	_write_transcript_event("plan_updated", event);
 }
 
-void SolersAgentSession::_write_transcript_compaction(const String &p_phase, const Dictionary &p_payload) const {
+int64_t SolersAgentSession::_write_transcript_compaction(const String &p_phase, const Dictionary &p_payload) const {
 	Dictionary event = p_payload.duplicate(true);
-	event["event_id"] = compaction_event_id;
+	event["compaction_id"] = compaction_id;
 	event["phase"] = p_phase;
-	event["current_plan"] = current_plan.duplicate(true);
-	_write_transcript_event("context_compaction", event);
+	return _write_transcript_event("context_compaction", event);
 }
 
 void SolersAgentSession::_write_transcript_tool(const String &p_call_id, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result, const String &p_delivered_content) const {
@@ -1146,6 +1153,27 @@ Dictionary SolersAgentSession::_environment_context_message() {
 		turn_diagnostics["warnings"] = godot_log_warning_count;
 	}
 	context["turn_diagnostics"] = turn_diagnostics;
+	if (!latest_mutation_receipt.is_empty()) {
+		bool current = true;
+		const Dictionary scene = latest_mutation_receipt.get("scene_after", Dictionary());
+		if (!scene.is_empty()) {
+			const int history_id = EditorNode::get_editor_data().get_current_edited_scene_history_id();
+			EditorUndoRedoManager *manager = EditorUndoRedoManager::get_singleton();
+			UndoRedo *history = manager ? manager->get_history_undo_redo(history_id) : nullptr;
+			current = edited_root && (int64_t)edited_root->get_instance_id() == (int64_t)scene.get("root_object_id", 0) && history_id == (int)scene.get("history_id", -1) && history && (int64_t)history->get_version() == (int64_t)scene.get("version", -1);
+		}
+		const Array resources = latest_mutation_receipt.get("resources_after", Array());
+		for (int i = 0; current && i < resources.size(); i++) {
+			const Dictionary resource = resources[i];
+			const String path = resource.get("path", String());
+			current = FileAccess::exists(path) == (bool)resource.get("exists", false) && (!resource.has("sha256") || FileAccess::get_sha256(path) == String(resource["sha256"]));
+		}
+		if (current) {
+			context["latest_mutation_receipt"] = latest_mutation_receipt;
+		} else {
+			latest_mutation_receipt.clear();
+		}
+	}
 	Dictionary message = SolersLLMMessage::user(
 			"Current engine context (authoritative, bounded, and refreshed for this request):\n" + JSON::stringify(context, "", false, true));
 	message["origin"] = "solers_state";
@@ -1410,9 +1438,9 @@ Error SolersAgentSession::_begin_compaction(bool p_from_overflow) {
 	payload["source"] = p_from_overflow ? "overflow" : "auto";
 	_collect_tools();
 	payload["tokens_before"] = context_manager->get_token_count_with_pending(messages, system_prompt, cached_request_tool_tokens);
-	compaction_event_id = ++transcript_event_sequence;
-	_write_transcript_compaction("started", payload);
-	emit_signal(SNAME("timeline_entry_committed"), compaction_event_id, "context_compaction");
+	compaction_id = ++transcript_event_sequence;
+	compaction_timeline_event_id = _write_transcript_compaction("started", payload);
+	emit_signal(SNAME("timeline_entry_committed"), compaction_timeline_event_id, "context_compaction");
 	return _dispatch_compaction_request();
 }
 
@@ -1431,11 +1459,8 @@ Error SolersAgentSession::_dispatch_compaction_request() {
 	const Dictionary profile = settings_service->resolve_provider_profile(provider_id, base_url);
 
 	Array history = compaction_source_messages.duplicate(true);
-	String instruction = SolersContextManager::COMPACTION_INSTRUCTION;
-	if (!current_plan.is_empty()) {
-		instruction += "\n\nCurrent plan:\n" + JSON::stringify(current_plan, "  ", false, true);
-	}
-	history.push_back(SolersLLMMessage::user(instruction));
+	history.push_back(SolersLLMMessage::user(
+			"Write a concise continuation note containing only the user's intent, constraints, decisions, and unresolved questions. Do not include node or resource identities, measurements, engine state, completed work, test claims, tool results, or a precise next tool action; those facts are refreshed by the engine. Respond with text only and do not call tools."));
 	Dictionary request = _build_request(history, system_prompt, Array());
 	Array delivered_attachments;
 	for (const String &identity : delivered_model_attachments) {
@@ -1527,10 +1552,11 @@ void SolersAgentSession::_on_compaction_complete() {
 	const Dictionary result = context_manager->apply_compaction(compaction_source_messages, current_text, projection_budget);
 	messages = result.get("messages", Array());
 	_write_transcript_compaction("completed", result);
-	emit_signal(SNAME("timeline_entry_committed"), compaction_event_id, "context_compaction");
+	emit_signal(SNAME("timeline_entry_committed"), compaction_timeline_event_id, "context_compaction");
 
 	compaction_source_messages.clear();
-	compaction_event_id = 0;
+	compaction_id = 0;
+	compaction_timeline_event_id = 0;
 	retry_attempt = 0;
 	retry_resume_msec = 0;
 	current_text = String();
@@ -2044,9 +2070,9 @@ void SolersAgentSession::_on_model_turn_complete() {
 }
 
 void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_message, const Dictionary &p_error) {
-	if (compaction_event_id > 0) {
+	if (compaction_id > 0) {
 		_write_transcript_compaction("failed", p_error);
-		emit_signal(SNAME("timeline_entry_committed"), compaction_event_id, "context_compaction");
+		emit_signal(SNAME("timeline_entry_committed"), compaction_timeline_event_id, "context_compaction");
 	}
 	if (tool_thread_state) {
 		tool_cancel_requested.set();
@@ -2133,7 +2159,8 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	retry_request.clear();
 	retry_profile.clear();
 	compaction_source_messages.clear();
-	compaction_event_id = 0;
+	compaction_id = 0;
+	compaction_timeline_event_id = 0;
 	overflow_compaction_attempts = 0;
 	tool_exec_token++;
 	tool_exec_requested = false;
@@ -2687,6 +2714,7 @@ void SolersAgentSession::_poll_tool_executing() {
 			authored_revision++;
 			const Dictionary mutation = data.get("mutation", Dictionary());
 			const Dictionary receipt = mutation.get("receipt", Dictionary());
+			latest_mutation_receipt = receipt.duplicate(true);
 			if (receipt.has("scene_after")) {
 				render_artifacts.clear();
 			}
@@ -2935,6 +2963,7 @@ void SolersAgentSession::shutdown() {
 void SolersAgentSession::_reset_session_derived_state() {
 	runtime_observation_cursor = 0;
 	render_artifacts.clear();
+	latest_mutation_receipt.clear();
 	MutexLock lock(godot_log_mutex);
 	pending_godot_diagnostics.clear();
 	pending_godot_diagnostic_index.clear();
