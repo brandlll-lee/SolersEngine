@@ -33,6 +33,16 @@
 #include "core/config/project_settings.h"
 #include "core/io/dir_access.h"
 
+inline Dictionary solers_test_find_dictionary(const Array &p_items, const StringName &p_field, const String &p_value) {
+	for (const Variant &item_variant : p_items) {
+		const Dictionary item = item_variant;
+		if (String(item.get(p_field, String())) == p_value) {
+			return item;
+		}
+	}
+	return Dictionary();
+}
+
 class SolersTestPaths {
 	Vector<String> paths;
 

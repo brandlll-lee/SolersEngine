@@ -4,12 +4,8 @@ extends EditorPlugin
 const IMPORT_PATH := "res://.solers_editor_import_contract.png"
 
 
-func _cleanup_editor_authority() -> void:
-	DirAccess.remove_absolute(ProjectSettings.globalize_path(IMPORT_PATH))
-
-
 func _exit_tree() -> void:
-	_cleanup_editor_authority()
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(IMPORT_PATH))
 
 
 func _check(condition: bool, message: String) -> bool:
@@ -38,9 +34,7 @@ func _find_item(list: ItemList, text: String) -> int:
 
 func _check_editor_authority(base: Control, solers: Control) -> bool:
 	var editor_files := get_editor_interface().get_resource_filesystem()
-	var image := Image.create_empty(2, 2, false, Image.FORMAT_RGBA8)
-	image.fill(Color(0.25, 0.5, 0.75, 1.0))
-	if not _check(image.save_png(IMPORT_PATH) == OK, "Could not create the native import contract"):
+	if not _check(Image.create_empty(1, 1, false, Image.FORMAT_RGBA8).save_png(IMPORT_PATH) == OK, "Could not create the native import contract"):
 		return false
 	editor_files.update_file(IMPORT_PATH)
 	editor_files.reimport_files(PackedStringArray([IMPORT_PATH]))
@@ -63,7 +57,6 @@ func _check_editor_authority(base: Control, solers: Control) -> bool:
 	var files_index := _find_item(list, "Files")
 	if not _check(popup.visible and files_index >= 0, "The context picker did not expose project files"):
 		return false
-	list.select(files_index)
 	list.emit_signal("item_clicked", files_index, Vector2.ZERO, MOUSE_BUTTON_LEFT)
 	await get_tree().process_frame
 	var found_root_import := false
@@ -73,9 +66,6 @@ func _check_editor_authority(base: Control, solers: Control) -> bool:
 	if not _check(found_root_import, "The context picker followed FileSystemDock browsing state instead of the project index"):
 		return false
 
-	input.text = ""
-	_cleanup_editor_authority()
-	editor_files.scan_sources()
 	return true
 
 

@@ -76,16 +76,6 @@ public:
 	}
 };
 
-Dictionary find_tool_def(const Array &p_tools, const String &p_name) {
-	for (int i = 0; i < p_tools.size(); i++) {
-		const Dictionary tool = p_tools[i];
-		if (tool.get("name", String()) == p_name) {
-			return tool;
-		}
-	}
-	return Dictionary();
-}
-
 Dictionary empty_tool_schema() {
 	Dictionary schema;
 	schema["type"] = "object";
@@ -101,16 +91,6 @@ void check_portable_tool_schema(const Dictionary &p_schema) {
 	CHECK_FALSE(p_schema.has("allOf"));
 }
 
-Dictionary find_operation_def(const Array &p_operations, const String &p_operation_id) {
-	for (int i = 0; i < p_operations.size(); i++) {
-		const Dictionary operation = p_operations[i];
-		if (String(operation.get("operation_id", String())) == p_operation_id) {
-			return operation;
-		}
-	}
-	return Dictionary();
-}
-
 Dictionary search_deferred_tools(SolersToolRegistry &p_registry, const String &p_query, int p_max_results = 10) {
 	Dictionary args;
 	args["query"] = p_query;
@@ -121,7 +101,7 @@ Dictionary search_deferred_tools(SolersToolRegistry &p_registry, const String &p
 bool search_result_has_tool(const Dictionary &p_result, const String &p_name) {
 	const Dictionary data = p_result.get("data", Dictionary());
 	const Array tools = data.get("tools", Array());
-	return !find_tool_def(tools, p_name).is_empty();
+	return !solers_test_find_dictionary(tools, SNAME("name"), p_name).is_empty();
 }
 
 TEST_CASE("[SolersToolRegistry] registers tools by lookup, not a hardcoded catalog") {
@@ -481,7 +461,7 @@ TEST_CASE("[SolersToolRegistry] default tools keep one portable ABI across provi
 		check_portable_tool_schema(response_tool.get("parameters", Dictionary()));
 		CHECK_FALSE(response_tool.get("strict", true));
 	}
-	const Dictionary transaction = find_tool_def(tools, "object.transaction");
+	const Dictionary transaction = solers_test_find_dictionary(tools, SNAME("name"), "object.transaction");
 	const Dictionary operation = Dictionary(Dictionary(Dictionary(transaction.get("input_schema", Dictionary())).get("properties", Dictionary())).get("operations", Dictionary())).get("items", Dictionary());
 	const Dictionary operation_properties = operation.get("properties", Dictionary());
 	const Array operation_names = Dictionary(operation_properties.get("op", Dictionary())).get("enum", Array());
@@ -638,7 +618,7 @@ TEST_CASE("[SolersToolRegistry] tool.search is absent without external deferred 
 	SolersToolRegistry registry;
 	registry.set_permission_manager(&permissions);
 	registry.register_default_tools();
-	CHECK(find_tool_def(registry.list_tools(), "tool.search").is_empty());
+	CHECK(solers_test_find_dictionary(registry.list_tools(), SNAME("name"), "tool.search").is_empty());
 	const Dictionary result = search_deferred_tools(registry, "anything", 10);
 	CHECK_FALSE((bool)result.get("ok", true));
 	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "TOOL_NOT_FOUND");
@@ -964,7 +944,7 @@ TEST_CASE("[SolersToolRegistry] scene.open is a thin EditorInterface open surfac
 	registry.set_permission_manager(&permissions);
 	registry.register_default_tools();
 
-	const Dictionary tool = find_tool_def(registry.list_tools(), "scene.open");
+	const Dictionary tool = solers_test_find_dictionary(registry.list_tools(), SNAME("name"), "scene.open");
 	REQUIRE_FALSE(tool.is_empty());
 	CHECK(tool.get("permission", String()) == "observe");
 	CHECK(tool.get("mutation_policy", String()) == "irreversible");
@@ -1030,7 +1010,7 @@ TEST_CASE("[SolersToolRegistry] direct asset jobs declare their project writes")
 	CHECK(Dictionary(generate_accesses[1]).get("key", String()) == "project:res://generated/contract_asset");
 
 	Dictionary first_search;
-	const Dictionary catalog_tool = find_tool_def(registry.list_tools(), "asset.catalog.search");
+	const Dictionary catalog_tool = solers_test_find_dictionary(registry.list_tools(), SNAME("name"), "asset.catalog.search");
 	const Dictionary catalog_properties = Dictionary(catalog_tool.get("input_schema", Dictionary())).get("properties", Dictionary());
 	const Array providers = Dictionary(catalog_properties.get("provider", Dictionary())).get("enum", Array());
 	const Array kinds = Dictionary(catalog_properties.get("kind", Dictionary())).get("enum", Array());

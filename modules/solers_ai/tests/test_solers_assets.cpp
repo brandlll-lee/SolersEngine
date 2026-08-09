@@ -86,26 +86,6 @@ public:
 	}
 };
 
-Dictionary find_tool_def(const Array &p_tools, const String &p_name) {
-	for (const Variant &tool_variant : p_tools) {
-		const Dictionary tool = tool_variant;
-		if (tool.get("name", String()) == p_name) {
-			return tool;
-		}
-	}
-	return Dictionary();
-}
-
-Dictionary find_operation_def(const Array &p_operations, const String &p_operation_id) {
-	for (const Variant &operation_variant : p_operations) {
-		const Dictionary operation = operation_variant;
-		if (operation.get("operation_id", String()) == p_operation_id) {
-			return operation;
-		}
-	}
-	return Dictionary();
-}
-
 class SolersSyntheticFuturePlugin : public SolersPlugin {
 public:
 	bool job_ran = false;
@@ -279,7 +259,7 @@ TEST_CASE("[SolersPluginRegistry] an unknown connector extends every registry-dr
 	SolersToolRegistry registry;
 	registry.set_asset_service(&asset_service);
 	registry.register_default_tools();
-	const Dictionary generate = find_tool_def(registry.list_tools(), "asset.generate");
+	const Dictionary generate = solers_test_find_dictionary(registry.list_tools(), SNAME("name"), "asset.generate");
 	const Dictionary properties = Dictionary(generate.get("input_schema", Dictionary())).get("properties", Dictionary());
 	CHECK(Array(Dictionary(properties.get("provider", Dictionary())).get("enum", Array())).has("synthetic-future"));
 	CHECK(Array(Dictionary(properties.get("kind", Dictionary())).get("enum", Array())).has("novel-geometry"));
@@ -454,9 +434,9 @@ TEST_CASE("[SolersPluginMeshy] enhancement options require standard meshy-6 pipe
 TEST_CASE("[SolersPluginMeshy] offline operation contracts") {
 	SolersPluginMeshy meshy;
 	const Array operations = meshy.get_operation_defs();
-	const Dictionary convert = find_operation_def(operations, "convert");
-	const Dictionary resize = find_operation_def(operations, "resize");
-	const Dictionary uv_unwrap = find_operation_def(operations, "uv_unwrap");
+	const Dictionary convert = solers_test_find_dictionary(operations, SNAME("operation_id"), "convert");
+	const Dictionary resize = solers_test_find_dictionary(operations, SNAME("operation_id"), "resize");
+	const Dictionary uv_unwrap = solers_test_find_dictionary(operations, SNAME("operation_id"), "uv_unwrap");
 	REQUIRE_FALSE(convert.is_empty());
 	REQUIRE_FALSE(resize.is_empty());
 	REQUIRE_FALSE(uv_unwrap.is_empty());
