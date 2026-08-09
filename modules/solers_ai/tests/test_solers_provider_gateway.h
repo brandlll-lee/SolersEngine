@@ -1599,62 +1599,46 @@ TEST_CASE("[SolersResourceService] property coercion accepts named and nested Go
 	memdelete(node);
 }
 
-TEST_CASE("[SolersReflectionService][SceneTree] scene queries preserve every native fact independently") {
+TEST_CASE("[SolersToolRegistry][SceneTree] object.query scopes native facts and reports partial failure") {
 	SolersReflectionService service;
+	SolersObservationService observation;
+	SolersPermissionManager permissions;
 	SolersToolRegistry registry;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
 	registry.set_reflection_service(&service);
+	registry.set_observation_service(&observation);
+	registry.set_permission_manager(&permissions);
 	registry.register_default_tools();
-	EditorNode *editor = EditorNode::get_singleton();
-	if (!editor || EditorNode::get_editor_data().get_edited_scene_count() == 0) {
-		WARN("Editor scene authority is unavailable in this test runner.");
-		return;
-	}
-	Node *previous = editor->get_edited_scene();
-	Node3D *root = memnew(Node3D);
-	root->set_name("FactRoot");
+	SceneTree *tree = SceneTree::get_singleton();
+	Node *previous = tree->get_edited_scene_root();
+	Node *root = memnew(Node);
 	MeshInstance3D *a = memnew(MeshInstance3D);
-	MeshInstance3D *b = memnew(MeshInstance3D);
-	Node3D *marker = memnew(Node3D);
+	Node *b = memnew(Node);
 	a->set_name("A");
 	b->set_name("B");
-	marker->set_name("Marker");
-	Ref<BoxMesh> box;
-	box.instantiate();
-	a->set_mesh(box);
-	b->set_mesh(box);
-	b->set_position(Vector3(2, 0, 0));
-	marker->set_position(Vector3(0, 3, 0));
 	root->add_child(a);
 	root->add_child(b);
-	root->add_child(marker);
-	editor->set_edited_scene(root);
-
-	Dictionary inspect_args;
-	inspect_args["node_paths"] = Array({ "A", "Missing", "Marker" });
-	const Dictionary inspect_data = service.inspect_nodes(inspect_args).get("data", Dictionary());
-	Array pairs;
-	pairs.push_back(Dictionary({ { "a", "A" }, { "b", "B" } }));
-	pairs.push_back(Dictionary({ { "a", "Marker" }, { "b", "A" } }));
-	pairs.push_back(Dictionary({ { "a", "Missing" }, { "b", "A" } }));
-	const Dictionary relation_data = service.measure_spatial_relations(Dictionary({ { "relations", pairs } })).get("data", Dictionary());
-	const Array operation = { Dictionary({ { "op", "set_property" }, { "node_path", "A" }, { "property", "position" }, { "value", Array({ 1.0, 0.0, 0.0 }) } }) };
-	const Dictionary mutation_data = service.batch(Dictionary({ { "operations", operation } })).get("data", Dictionary());
-	const int history_id = EditorNode::get_editor_data().get_current_edited_scene_history_id();
-	EditorUndoRedoManager::get_singleton()->undo_history(history_id);
-	editor->set_edited_scene(previous);
+	Ref<ArrayMesh> mesh;
+	mesh.instantiate();
+	a->set_mesh(mesh);
+	Array arrays;
+	arrays.resize(Mesh::ARRAY_MAX);
+	arrays[Mesh::ARRAY_VERTEX] = PackedVector3Array({ Vector3(), Vector3(1, 0, 0), Vector3(0, 1, 0) });
+	mesh->set_block_signals(true);
+	mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
+	tree->set_edited_scene_root(root);
+	SolersToolContext context;
+	const String tree_wire = JSON::stringify(observation.get_scene_tree(Array({ "B", "Missing" }), 1, 8, 1024));
+	Dictionary args({ { "target", "scene" }, { "node_paths", Array({ "A", "Missing" }) }, { "properties", Array({ "position", "missing_property" }) } });
+	const Dictionary result = registry.call_tool_with_context(SNAME("object.query"), args, context);
+	const String wire = JSON::stringify(result.get("data", Dictionary()));
+	args["node_paths"] = Array({ "Missing" });
+	const Dictionary missing = registry.call_tool_with_context(SNAME("object.query"), args, context);
+	tree->set_edited_scene_root(previous);
 	memdelete(root);
-
-	CHECK((int)inspect_data.get("count", 0) == 2);
-	CHECK((int)inspect_data.get("error_count", 0) == 1);
-	const Array measured = relation_data.get("relations", Array());
-	REQUIRE(measured.size() == 3);
-	CHECK(Array(Dictionary(measured[0]).get("axes", Array())).size() == 3);
-	CHECK((int)relation_data.get("error_count", 0) == 1);
-	const Array receipts = mutation_data.get("results", Array());
-	REQUIRE(receipts.size() == 1);
-	CHECK(Dictionary(receipts[0]).has("object_id"));
-	CHECK(Dictionary(receipts[0]).get("class_name", String()) == "MeshInstance3D");
-	CHECK_FALSE(mutation_data.has("affected_nodes"));
+	CHECK((wire.count("NODE_NOT_FOUND") == 1 && wire.contains("\"source\":\"mesh\"")));
+	CHECK((tree_wire.count("NODE_NOT_FOUND") == 1 && !tree_wire.contains("\"name\":\"A\"")));
+	CHECK(Dictionary(missing.get("error", Dictionary())).get("code", String()) == "NODE_QUERY_FAILED");
 }
 
 #ifdef MODULE_CSG_ENABLED
@@ -2801,7 +2785,7 @@ static Array solers_test_tool_calls(const String &p_id, const String &p_name) {
 	return calls;
 }
 
-TEST_CASE("[SolersContextManager] compaction keeps bounded human input and drops tool payloads") {
+TEST_CASE("[SolersContextManager] compaction replaces the active prefix and preserves its tool suffix") {
 	SolersContextManager context;
 	Array history;
 	Dictionary old_user = SolersLLMMessage::user("Inspect the scene.");
@@ -2809,33 +2793,20 @@ TEST_CASE("[SolersContextManager] compaction keeps bounded human input and drops
 	history.push_back(SolersLLMMessage::tool_result("call_old", "object.query", String("x").repeat(40000)));
 	CHECK_FALSE(context.should_compact(SolersContextManager::DEFAULT_CONTEXT_TOKENS - SolersContextManager::DEFAULT_OUTPUT_TOKENS - 1, SolersContextManager::DEFAULT_CONTEXT_TOKENS, SolersContextManager::DEFAULT_OUTPUT_TOKENS));
 	CHECK(context.should_compact(SolersContextManager::DEFAULT_CONTEXT_TOKENS - SolersContextManager::DEFAULT_OUTPUT_TOKENS, SolersContextManager::DEFAULT_CONTEXT_TOKENS, SolersContextManager::DEFAULT_OUTPUT_TOKENS));
-
-	old_user["content"] = String("old context ").repeat(4000);
+	old_user["content"] = String("obsolete ").repeat(8000);
 	history[0] = old_user;
-	Dictionary internal_context = SolersLLMMessage::user(SolersContextManager::COMPACTION_INSTRUCTION);
-	internal_context["role"] = SolersContextManager::MODEL_CONTEXT_ROLE;
-	history.push_back(internal_context);
-	Dictionary active_user = SolersLLMMessage::user("Continue the build.");
-	active_user["turn_id"] = 7;
-	Dictionary attachment;
-	attachment["id"] = "reference";
-	Array attachments;
-	attachments.push_back(attachment);
-	active_user["attachments"] = attachments;
-	history.push_back(active_user);
+	history.push_back(SolersLLMMessage::user("Continue the build."));
+	const int preserve_from = history.size();
 	history.push_back(SolersLLMMessage::assistant("Capturing.", solers_test_tool_calls("call_live", "render.capture")));
-	history.push_back(SolersLLMMessage::tool_result("call_live", "render.capture", String("camera payload ").repeat(2000)));
-	const Dictionary result = context.apply_compaction(history, "The user wants the build continued; the remaining choice is the final composition.", 1000);
+	history.push_back(SolersLLMMessage::tool_result("call_live", "render.capture", String("exact payload ").repeat(1000)));
+	const Dictionary result = context.apply_compaction(history, "Keep building from engine evidence.", 8000, preserve_from);
 	const Array compacted = result.get("messages", Array());
-	REQUIRE(compacted.size() == 2);
+	REQUIRE(compacted.size() == 4);
 	CHECK(Dictionary(compacted[0]).get("content", String()) == "Continue the build.");
-	CHECK_FALSE(Dictionary(compacted[0]).has("attachments"));
 	CHECK(Dictionary(compacted[1]).get("role", String()) == SolersContextManager::MODEL_CONTEXT_ROLE);
-	CHECK(Dictionary(compacted[1]).get("origin", String()) == "compaction_summary");
 	const String wire = JSON::stringify(compacted);
-	CHECK_FALSE(wire.contains("camera payload"));
-	CHECK_FALSE(wire.contains("camera 5"));
-	CHECK_FALSE(wire.contains(SolersContextManager::COMPACTION_INSTRUCTION));
+	CHECK(wire.contains("exact payload"));
+	CHECK_FALSE(wire.contains("obsolete"));
 	CHECK((int)result.get("tokens_after", 0) < (int)result.get("tokens_before", 0));
 }
 
@@ -2958,7 +2929,7 @@ TEST_CASE("[SolersMention][Editor] project paths ignore FileSystemDock browsing 
 	MessageQueue::get_singleton()->flush();
 }
 
-TEST_CASE("[SolersSession] journal restores outcome and compaction authority") {
+TEST_CASE("[SolersSession] journal preserves terminal compaction semantics and stays lazy when empty") {
 	const String session_id = "timeline-authority-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
 	const String project = "test://" + session_id;
 	auto write = [&](const String &p_type, int p_id, int p_turn, Dictionary p_event) {
@@ -2972,46 +2943,22 @@ TEST_CASE("[SolersSession] journal restores outcome and compaction authority") {
 	Dictionary first = make_user_message("first turn");
 	first["author"] = "human";
 	write("message", 10, 1, first);
-	Dictionary call;
-	call["id"] = "stable-call";
-	call["name"] = "provider_alias";
-	call["canonical_name"] = "object.query";
-	call["arguments"] = "{}";
-	Array calls;
-	calls.push_back(call);
-	write("message", 11, 1, SolersLLMMessage::assistant(String(), calls));
-	Dictionary result;
-	result["call_id"] = "stable-call";
-	result["ok"] = true;
-	write("tool_result", 12, 1, result);
 	Dictionary compacting;
 	compacting["compaction_id"] = 41;
 	compacting["phase"] = "started";
-	write("context_compaction", 13, 1, compacting);
-	compacting["phase"] = "completed";
-	write("context_compaction", 14, 1, compacting);
-	Dictionary aborted;
-	aborted["outcome"] = "aborted";
-	aborted["message"] = "Turn aborted.";
-	write("turn_outcome", 16, 1, aborted);
-	Dictionary second = make_user_message("second turn");
-	second["author"] = "human";
-	write("message", 17, 2, second);
-	Dictionary completed;
-	completed["outcome"] = "completed";
-	write("turn_outcome", 18, 2, completed);
+	write("context_compaction", 11, 1, compacting);
+	compacting["phase"] = "cancelled";
+	write("context_compaction", 12, 1, compacting);
+	write("turn_outcome", 13, 1, Dictionary({ { "outcome", "aborted" } }));
 	solers_transcript_flush(session_id);
-
 	SolersAgentSession restored;
 	restored.set_session(project, session_id);
 	const Array timeline = restored.get_timeline_entries();
-	REQUIRE(timeline.size() == 5);
-	CHECK(Dictionary(timeline[2]).get("phase", String()) == "completed");
-	CHECK((int64_t)Dictionary(timeline[2]).get("event_id", 0) == 13);
-	CHECK((int64_t)Dictionary(timeline[2]).get("compaction_id", 0) == 41);
-	CHECK((int64_t)Dictionary(timeline[3]).get("event_id", 0) == 16);
-	CHECK(Dictionary(timeline[4]).get("content", String()) == "second turn");
-	CHECK(Dictionary(Array(Dictionary(timeline[1]).get("tool_calls", Array()))[0]).get("finished", false));
+	REQUIRE(timeline.size() == 3);
+	CHECK(Dictionary(timeline[1]).get("phase", String()) == "cancelled");
+	restored.reset_conversation();
+	const String empty_id = restored.get_status().get("session_id", String());
+	CHECK_FALSE(FileAccess::exists(solers_session_dir().path_join("sessions").path_join(empty_id.sha256_text() + ".jsonl")));
 	restored.shutdown();
 	MessageQueue::get_singleton()->flush();
 }
