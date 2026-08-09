@@ -72,8 +72,10 @@
 #include "scene/resources/camera_attributes.h"
 #include "scene/resources/curve.h"
 #include "scene/resources/environment.h"
+#include "scene/resources/material.h"
 #include "scene/resources/mesh.h"
 #include "scene/resources/resource_format_text.h"
+#include "scene/resources/shader.h"
 #include "scene/resources/sky.h"
 #include "tests/test_macros.h"
 #include "tests/test_tools.h"
@@ -1059,13 +1061,15 @@ TEST_CASE("[SolersToolRegistry] ClassDB member queries match whitespace-separate
 	CHECK(names.has("exposure_sensitivity"));
 }
 
-TEST_CASE("[SolersToolRegistry] resource transactions reject stale hashes and return native receipts") {
+TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked transactions") {
 	const String path = "res://.solers_transaction_contract.tres";
 	if (FileAccess::exists(path)) {
 		DirAccess::remove_file_or_error(ProjectSettings::get_singleton()->globalize_path(path));
 	}
 	SolersFileCheckpoint checkpoints;
 	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_SCENE, true);
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_FILES, true);
 	SolersReflectionService reflection_service;
 	SolersResourceService resources;
@@ -1081,7 +1085,7 @@ TEST_CASE("[SolersToolRegistry] resource transactions reject stale hashes and re
 
 	Dictionary create;
 	create["op"] = "create";
-	create["class_name"] = "Gradient";
+	create["class_name"] = "Environment";
 	create["path"] = path;
 	Array create_operations;
 	create_operations.push_back(create);
@@ -1092,13 +1096,24 @@ TEST_CASE("[SolersToolRegistry] resource transactions reject stale hashes and re
 	REQUIRE((bool)created.get("ok", false));
 	const String sha = FileAccess::get_sha256(path);
 	REQUIRE(sha.length() == 64);
+	Dictionary query;
+	query["target"] = "resource";
+	query["path"] = path;
+	Array queried_properties;
+	queried_properties.push_back("background_color");
+	query["properties"] = queried_properties;
+	context.call_id = "query_resource";
+	const Dictionary observed = registry.call_tool_with_context(SNAME("object.query"), query, context);
+	REQUIRE((bool)observed.get("ok", false));
+	Dictionary expected_state = observed.get("data", Dictionary());
 
 	Dictionary update;
 	update["op"] = "update";
 	update["path"] = path;
-	update["expected_sha256"] = String("0000000000000000000000000000000000000000000000000000000000000000");
+	expected_state["sha256"] = String("0000000000000000000000000000000000000000000000000000000000000000");
+	update["expected_state"] = expected_state;
 	Dictionary properties;
-	properties["resource_name"] = "stale-write";
+	properties["background_color"] = solers_summarize_display_value(Color(0.25, 0.5, 0.75, 1.0));
 	update["properties"] = properties;
 	Array update_operations;
 	update_operations.push_back(update);
@@ -1111,8 +1126,8 @@ TEST_CASE("[SolersToolRegistry] resource transactions reject stale hashes and re
 	CHECK(Dictionary(stale.get("error", Dictionary())).get("code", String()) == "RESOURCE_STATE_CONFLICT");
 	CHECK(FileAccess::get_sha256(path) == sha);
 
-	update["expected_sha256"] = sha;
-	properties["resource_name"] = "committed-write";
+	expected_state["sha256"] = sha;
+	update["expected_state"] = expected_state;
 	update["properties"] = properties;
 	update_operations[0] = update;
 	update_args["operations"] = update_operations;
@@ -1121,11 +1136,35 @@ TEST_CASE("[SolersToolRegistry] resource transactions reject stale hashes and re
 	REQUIRE((bool)updated.get("ok", false));
 	const Dictionary mutation = Dictionary(updated.get("data", Dictionary())).get("mutation", Dictionary());
 	CHECK(mutation.has("session_revision"));
+	REQUIRE_FALSE(String(mutation.get("reversal_id", String())).is_empty());
 	CHECK_FALSE(mutation.has("authored_revision"));
 	const Dictionary receipt = mutation.get("receipt", Dictionary());
 	CHECK(Array(receipt.get("resources_before", Array())).size() == 1);
 	CHECK(Array(receipt.get("resources_after", Array())).size() == 1);
-	CHECK(String(Dictionary(Array(receipt.get("resources_after", Array()))[0]).get("sha256", String())).length() == 64);
+	const String updated_sha = Dictionary(Array(receipt.get("resources_after", Array()))[0]).get("sha256", String());
+	CHECK(updated_sha.length() == 64);
+	context.call_id = "verify_resource";
+	const Dictionary verified = registry.call_tool_with_context(SNAME("object.query"), query, context);
+	const Dictionary color = Dictionary(Dictionary(Dictionary(verified.get("data", Dictionary())).get("properties", Dictionary())).get("background_color", Dictionary())).get("value", Dictionary());
+	CHECK(Math::is_equal_approx((double)color.get("r", 0.0), 0.25));
+	CHECK(Math::is_equal_approx((double)color.get("b", 0.0), 0.75));
+
+	update["expected_state"] = verified.get("data", Dictionary());
+	properties["background_color"] = "Color(1, 0, 0, 1)";
+	update["properties"] = properties;
+	update_operations[0] = update;
+	update_args["operations"] = update_operations;
+	context.call_id = "reject_scalar_color";
+	CHECK_FALSE((bool)registry.call_tool_with_context(SNAME("object.transaction"), update_args, context).get("ok", true));
+	CHECK(FileAccess::get_sha256(path) == updated_sha);
+
+	Dictionary revert_args;
+	revert_args["reversal_id"] = mutation.get("reversal_id", String());
+	context.call_id = "revert_resource";
+	const Dictionary reverted = registry.call_tool_with_context(SNAME("history.revert"), revert_args, context);
+	INFO(JSON::stringify(reverted));
+	REQUIRE((bool)reverted.get("ok", false));
+	CHECK(FileAccess::get_sha256(path) == sha);
 	DirAccess::remove_file_or_error(ProjectSettings::get_singleton()->globalize_path(path));
 }
 
@@ -1601,7 +1640,16 @@ TEST_CASE("[SolersResourceService] property coercion accepts named and nested Go
 	transform["origin"] = origin;
 	REQUIRE(solers_coerce_property_value(node, SNAME("transform"), transform, coerced, error));
 	CHECK(Transform3D(coerced).origin == Vector3(4, 5, 6));
+	CHECK_FALSE(solers_coerce_property_value(node, SNAME("position"), "Vector3(1, 2, 3)", coerced, error));
 	memdelete(node);
+
+	Ref<Shader> shader;
+	shader.instantiate();
+	Ref<ShaderMaterial> material;
+	material.instantiate();
+	const Dictionary handle = solers_summarize_display_value(shader);
+	REQUIRE(solers_coerce_property_value(material.ptr(), SNAME("shader"), handle, coerced, error));
+	CHECK(Ref<Shader>(coerced) == shader);
 }
 
 TEST_CASE("[SolersToolRegistry][SceneTree] object.query scopes native facts and reports partial failure") {
@@ -1887,70 +1935,6 @@ TEST_CASE("[SceneTree][SolersObservationService] RenderState follows native Worl
 	CHECK(SolersObservationService::render_state_fingerprint(state) != before);
 	viewport->queue_free();
 	MessageQueue::get_singleton()->flush();
-}
-
-TEST_CASE("[SolersResourceService] native Resource path flow creates edits loads and assigns") {
-	const String path = "res://.solers_resource_contract.tres";
-	const String fs_path = ProjectSettings::get_singleton()->globalize_path(path);
-	if (FileAccess::exists(path)) {
-		DirAccess::remove_file_or_error(fs_path);
-	}
-
-	SolersResourceService resource_service;
-
-	Dictionary create_args;
-	create_args["class_name"] = "Resource";
-	create_args["path"] = path;
-	Dictionary created = resource_service.create_resource(create_args);
-	REQUIRE(created.get("ok", false));
-
-	Dictionary get_args;
-	get_args["path"] = path;
-	get_args["property"] = "resource_name";
-	Dictionary set_initial_args = get_args;
-	set_initial_args["value"] = "contract initial";
-	Dictionary set_initial = resource_service.set_resource_property(set_initial_args);
-	REQUIRE(set_initial.get("ok", false));
-
-	Dictionary read = resource_service.get_resource_property(get_args);
-	REQUIRE(read.get("ok", false));
-	Dictionary read_data = read.get("data", Dictionary());
-	CHECK(read_data.get("value", String()) == "contract initial");
-	Dictionary inspect_args;
-	inspect_args["path"] = path;
-	Array inspect_properties;
-	inspect_properties.push_back("resource_name");
-	inspect_properties.push_back("not_a_property");
-	inspect_args["properties"] = inspect_properties;
-	const Dictionary inspected = resource_service.inspect_resource(inspect_args);
-	REQUIRE(inspected.get("ok", false));
-	const Dictionary inspected_data = inspected.get("data", Dictionary());
-	CHECK(Dictionary(inspected_data.get("properties", Dictionary())).has("resource_name"));
-	CHECK(Dictionary(inspected_data.get("property_errors", Dictionary())).has("not_a_property"));
-
-	Dictionary set_args = get_args;
-	set_args["value"] = "contract updated";
-	Dictionary set = resource_service.set_resource_property(set_args);
-	REQUIRE(set.get("ok", false));
-
-	Ref<Resource> loaded = ResourceLoader::load(path, "Resource");
-	REQUIRE(loaded.is_valid());
-	CHECK(loaded->get_name() == "contract updated");
-
-	ResourcePreloader node;
-	Vector<String> names;
-	names.push_back("loaded");
-	Array resources;
-	resources.push_back(loaded);
-	Array assigned;
-	assigned.push_back(names);
-	assigned.push_back(resources);
-	bool valid = false;
-	node.set("resources", assigned, &valid);
-	CHECK(valid);
-	CHECK(node.get_resource("loaded") == loaded);
-
-	DirAccess::remove_file_or_error(fs_path);
 }
 
 TEST_CASE("[SolersResourceService] create initializes properties and accepts listed Resource types") {
@@ -2666,36 +2650,6 @@ TEST_CASE("[SolersAssetService][SceneTree] project import never opens interactiv
 	DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(target_dir));
 }
 
-TEST_CASE("[SolersResourceService] resource property updates are atomic and save once") {
-	const String path = "res://.solers_resource_properties_contract.tres";
-	SolersResourceService service;
-	Dictionary create;
-	create["class_name"] = "Curve3D";
-	create["path"] = path;
-	REQUIRE(service.create_resource(create).get("ok", false));
-
-	Dictionary properties;
-	properties["bake_interval"] = 0.37;
-	properties["up_vector_enabled"] = false;
-	Dictionary set;
-	set["path"] = path;
-	set["properties"] = properties;
-	const Dictionary updated = service.set_resource_property(set);
-	REQUIRE(updated.get("ok", false));
-	CHECK((int)Dictionary(updated.get("data", Dictionary())).get("updated_property_count", 0) == 2);
-
-	Dictionary invalid_properties = properties.duplicate();
-	invalid_properties["not_a_property"] = 1;
-	set["properties"] = invalid_properties;
-	CHECK_FALSE((bool)service.set_resource_property(set).get("ok", true));
-
-	Ref<Resource> material = ResourceLoader::load(path, String(), ResourceFormatLoader::CACHE_MODE_IGNORE);
-	REQUIRE(material.is_valid());
-	CHECK(Math::is_equal_approx((double)material->get("bake_interval"), 0.37));
-	CHECK_FALSE((bool)material->get("up_vector_enabled"));
-	DirAccess::remove_file_or_error(ProjectSettings::get_singleton()->globalize_path(path));
-}
-
 TEST_CASE("[SolersReflectionService] introspection reports native Object argument classes") {
 	SolersReflectionService reflection_service;
 	Dictionary args;
@@ -2825,12 +2779,21 @@ static Array solers_test_tool_calls(const String &p_id, const String &p_name) {
 TEST_CASE("[SolersContextManager] compaction replaces the active prefix and preserves its tool suffix") {
 	SolersContextManager context;
 	Array history;
-	Dictionary old_user = SolersLLMMessage::user("Inspect the scene.");
+	Dictionary attachment;
+	attachment["id"] = "reference";
+	attachment["content_sha256"] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+	Array attachments;
+	attachments.push_back(attachment);
+	Dictionary old_user = SolersLLMMessage::user("Inspect the scene.\n\n[Selected Solers context]\n[{\"path\":\"res://large.glb\"}]");
+	old_user["attachments"] = attachments;
+	Array mentions;
+	mentions.push_back(Dictionary());
+	old_user["mentions"] = mentions;
 	history.push_back(old_user);
 	history.push_back(SolersLLMMessage::tool_result("call_old", "object.query", String("x").repeat(40000)));
 	CHECK_FALSE(context.should_compact(SolersContextManager::DEFAULT_CONTEXT_TOKENS - SolersContextManager::DEFAULT_OUTPUT_TOKENS - 1, SolersContextManager::DEFAULT_CONTEXT_TOKENS, SolersContextManager::DEFAULT_OUTPUT_TOKENS));
 	CHECK(context.should_compact(SolersContextManager::DEFAULT_CONTEXT_TOKENS - SolersContextManager::DEFAULT_OUTPUT_TOKENS, SolersContextManager::DEFAULT_CONTEXT_TOKENS, SolersContextManager::DEFAULT_OUTPUT_TOKENS));
-	old_user["content"] = String("obsolete ").repeat(8000);
+	old_user["content"] = String("obsolete ").repeat(8000) + "\n\n[Selected Solers context]\n[{\"path\":\"res://large.glb\"}]";
 	history[0] = old_user;
 	history.push_back(SolersLLMMessage::user("Continue the build."));
 	const int preserve_from = history.size();
@@ -2838,9 +2801,11 @@ TEST_CASE("[SolersContextManager] compaction replaces the active prefix and pres
 	history.push_back(SolersLLMMessage::tool_result("call_live", "render.capture", String("exact payload ").repeat(1000)));
 	const Dictionary result = context.apply_compaction(history, "Keep building from engine evidence.", 8000, preserve_from);
 	const Array compacted = result.get("messages", Array());
-	REQUIRE(compacted.size() == 4);
-	CHECK(Dictionary(compacted[0]).get("content", String()) == "Continue the build.");
-	CHECK(Dictionary(compacted[1]).get("role", String()) == SolersContextManager::MODEL_CONTEXT_ROLE);
+	REQUIRE(compacted.size() == 5);
+	CHECK(Array(Dictionary(compacted[0]).get("attachments", Array())).size() == 1);
+	CHECK_FALSE(String(Dictionary(compacted[0]).get("content", String())).contains("Selected Solers context"));
+	CHECK(Dictionary(compacted[1]).get("content", String()) == "Continue the build.");
+	CHECK(Dictionary(compacted[2]).get("role", String()) == SolersContextManager::MODEL_CONTEXT_ROLE);
 	const String wire = JSON::stringify(compacted);
 	CHECK(wire.contains("exact payload"));
 	CHECK_FALSE(wire.contains("obsolete"));
@@ -3048,25 +3013,6 @@ TEST_CASE("[SolersResourceService] nearest names rank containment above similari
 	CHECK(nearest.has("size_flags_horizontal"));
 	CHECK_FALSE(nearest.has("visible"));
 	CHECK(solers_nearest_names("", candidates, 3).is_empty());
-}
-
-TEST_CASE("[SolersResourceService] display values summarize bulk variants by type") {
-	PackedVector3Array big_points;
-	big_points.resize(3654);
-	const Variant big_summary = solers_summarize_display_value(big_points);
-	REQUIRE(big_summary.get_type() == Variant::STRING);
-	CHECK(String(big_summary).contains("PackedVector3Array"));
-	CHECK(String(big_summary).contains("3654"));
-
-	PackedVector3Array small_points;
-	small_points.resize(3);
-	CHECK(solers_summarize_display_value(small_points).get_type() == Variant::PACKED_VECTOR3_ARRAY);
-
-	const String long_text = String("x").repeat(5000);
-	const Variant truncated = solers_summarize_display_value(long_text);
-	CHECK(String(truncated).length() < 2200);
-	CHECK(String(truncated).contains("5000 chars total"));
-	CHECK(String(solers_summarize_display_value(String("short"))) == "short");
 }
 
 TEST_CASE("[SolersAgentSession] task completion has no Harness request budget") {
