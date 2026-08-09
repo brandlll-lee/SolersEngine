@@ -1291,14 +1291,18 @@ Dictionary SolersToolRegistry::_transact_objects(const Dictionary &p_args) {
 		}
 		paths.insert(path);
 		if (String(operation.get("op", String())) == "update") {
-			const String expected = String(operation.get("expected_sha256", String())).strip_edges();
+			const Dictionary expected_state = operation.get("expected_state", Dictionary());
+			const String expected = String(expected_state.get("sha256", String())).strip_edges();
 			const String actual = FileAccess::exists(path) ? FileAccess::get_sha256(path) : String();
-			if (expected.is_empty() || expected != actual) {
+			if (String(expected_state.get("path", String())) != path || expected.is_empty() || expected != actual) {
 				Dictionary failure = _error("RESOURCE_STATE_CONFLICT", vformat("Resource '%s' changed since it was inspected.", path));
 				Dictionary data;
 				data["path"] = path;
-				data["expected_sha256"] = expected;
-				data["actual_sha256"] = actual;
+				data["expected_state"] = expected_state;
+				Dictionary actual_state;
+				actual_state["path"] = path;
+				actual_state["sha256"] = actual;
+				data["actual_state"] = actual_state;
 				data["failed_index"] = i;
 				failure["data"] = data;
 				return failure;
@@ -1313,7 +1317,7 @@ Dictionary SolersToolRegistry::_transact_objects(const Dictionary &p_args) {
 		Dictionary args = operation.duplicate(true);
 		args["action"] = action;
 		args.erase("op");
-		args.erase("expected_sha256");
+		args.erase("expected_state");
 		const Dictionary result = resource_service->edit_resource(args);
 		Dictionary step;
 		step["index"] = i;
@@ -1595,15 +1599,6 @@ void SolersToolRegistry::_register_script_tools() {
 					accesses.push_back(access);
 				}
 				return accesses; }, false, [svc](const SolersToolContext &ctx, const Dictionary &) { return svc->compute_script_finalize(ctx.call_id); }, [svc](const SolersToolContext &ctx, const Dictionary &) { return svc->compute_script_ready(ctx.call_id); }, [svc](const SolersToolContext &ctx, const Dictionary &, const Dictionary &) { svc->compute_script_complete(ctx.call_id); });
-	_add("history.revert", "Revert the latest reversible Agent mutation when its native UndoRedo version or file hashes still match.", R"({"type":"object","properties":{"reversal_id":{"type":"string","minLength":1}},"required":["reversal_id"],"additionalProperties":false})", SolersPermissionManager::PERMISSION_EDIT_SCENE, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DIRECT, [this](const SolersToolContext &ctx, const Dictionary &a) { return _revert_latest(ctx, a); }, SolersToolExecution::MAIN_THREAD, [](const Dictionary &) {
-				Array accesses;
-				Dictionary access;
-				access["mode"] = "write";
-				access["key"] = "*";
-				accesses.push_back(access);
-				return accesses; }, false, {}, {}, {}, [this](const Dictionary &a) {
-				const Dictionary *record = reversals.getptr(String(a.get("reversal_id", String())));
-				return record && String(record->get("policy", String())) == "file_checkpoint" ? SolersPermissionManager::PERMISSION_EDIT_FILES : SolersPermissionManager::PERMISSION_EDIT_SCENE; });
 }
 
 void SolersToolRegistry::_register_runtime_tools() {
@@ -2076,7 +2071,7 @@ void SolersToolRegistry::_register_reflection_tools() {
 				}
 				accesses.push_back(access);
 				return accesses; }, false, {}, {}, SolersToolUiKind::SCENE);
-	_add("object.transaction", "Apply one scene UndoRedo transaction or one checkpointed Resource transaction with native state/hash preconditions.", R"({"type":"object","properties":{"scope":{"type":"string","enum":["scene","resource"]},"save_path":{"type":"string","pattern":"^res://","description":"Required only when creating an unsaved scene root."},"expected_state":{"type":"object","properties":{"history_id":{"type":"integer"},"version":{"type":"integer","minimum":0},"root_object_id":{"type":"integer"},"scene_path":{"type":"string"},"resource_uid":{"type":"string"},"saved_sha256":{"type":"string"}},"required":["history_id","version"],"additionalProperties":true},"operations":{"type":"array","minItems":1,"maxItems":256,"items":{"type":"object","properties":{"op":{"type":"string","enum":["create_node","instantiate","set_property","reparent","connect_signal","attach_script","remove_node","bake_csg","create","update"]},"class_name":{"type":"string"},"name":{"type":"string"},"parent_path":{"type":"string"},"resource_path":{"type":"string","pattern":"^res://"},"properties":{"type":"object"},"node_path":{"type":"string"},"artifact":{"type":"string","enum":["mesh","collision"]},"hide_source":{"type":"boolean"},"property":{"type":"string"},"value":{},"new_parent_path":{"type":"string"},"position":{"type":"integer"},"source_path":{"type":"string"},"signal":{"type":"string"},"target_path":{"type":"string"},"method":{"type":"string"},"flags":{"type":"integer"},"script_path":{"type":"string","pattern":"^res://"},"path":{"type":"string","pattern":"^res://"},"type_hint":{"type":"string"},"expected_sha256":{"type":"string","pattern":"^[0-9a-fA-F]{64}$"}},"required":["op"],"additionalProperties":false}}},"required":["scope","operations"],"additionalProperties":false})", edit_scene, SolersToolMutationPolicy::EDITOR_UNDO, Vector<String>(), SolersToolExposure::DIRECT, [this](const SolersToolContext &, const Dictionary &a) { return _transact_objects(a); }, SolersToolExecution::MAIN_THREAD, [ref](const Dictionary &a) {
+	_add("object.transaction", "Apply one scene UndoRedo transaction or one checkpointed Resource transaction. Resource updates copy object.query state into the operation's expected_state and write one properties object.", R"({"type":"object","properties":{"scope":{"type":"string","enum":["scene","resource"]},"save_path":{"type":"string","pattern":"^res://","description":"Required only when creating an unsaved scene root."},"expected_state":{"type":"object","properties":{"history_id":{"type":"integer"},"version":{"type":"integer","minimum":0},"root_object_id":{"type":"integer"},"scene_path":{"type":"string"}},"required":["history_id","version"],"additionalProperties":true},"operations":{"type":"array","minItems":1,"maxItems":256,"items":{"type":"object","properties":{"op":{"type":"string","enum":["create_node","instantiate","set_property","reparent","connect_signal","attach_script","remove_node","bake_csg","create","update"]},"class_name":{"type":"string"},"name":{"type":"string"},"parent_path":{"type":"string"},"resource_path":{"type":"string","pattern":"^res://"},"properties":{"type":"object"},"node_path":{"type":"string"},"artifact":{"type":"string","enum":["mesh","collision"]},"hide_source":{"type":"boolean"},"new_parent_path":{"type":"string"},"position":{"type":"integer"},"source_path":{"type":"string"},"signal":{"type":"string"},"target_path":{"type":"string"},"method":{"type":"string"},"flags":{"type":"integer"},"script_path":{"type":"string","pattern":"^res://"},"path":{"type":"string","pattern":"^res://"},"type_hint":{"type":"string"},"expected_state":{"type":"object","properties":{"path":{"type":"string","pattern":"^res://"},"sha256":{"type":"string","pattern":"^[0-9a-fA-F]{64}$"},"uid":{"type":"string"}},"required":["path","sha256"],"additionalProperties":true}},"required":["op"],"additionalProperties":false}}},"required":["scope","operations"],"additionalProperties":false})", edit_scene, SolersToolMutationPolicy::EDITOR_UNDO, Vector<String>(), SolersToolExposure::DIRECT, [this](const SolersToolContext &, const Dictionary &a) { return _transact_objects(a); }, SolersToolExecution::MAIN_THREAD, [ref](const Dictionary &a) {
 				const String scope = a.get("scope", String());
 				if (scope == "scene") {
 					return ref->resolve_batch_resource_access(a);
@@ -2190,6 +2185,15 @@ void SolersToolRegistry::register_tool(SolersTool *p_tool) {
 
 void SolersToolRegistry::register_default_tools() {
 	_clear_tools();
+	_add("history.revert", "Revert the latest reversible Agent mutation when its native UndoRedo version or file hashes still match.", R"({"type":"object","properties":{"reversal_id":{"type":"string","minLength":1}},"required":["reversal_id"],"additionalProperties":false})", SolersPermissionManager::PERMISSION_EDIT_SCENE, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DIRECT, [this](const SolersToolContext &ctx, const Dictionary &a) { return _revert_latest(ctx, a); }, SolersToolExecution::MAIN_THREAD, [](const Dictionary &) {
+			Array accesses;
+			Dictionary access;
+			access["mode"] = "write";
+			access["key"] = "*";
+			accesses.push_back(access);
+			return accesses; }, false, {}, {}, {}, [this](const Dictionary &a) {
+			const Dictionary *record = reversals.getptr(String(a.get("reversal_id", String())));
+			return record && String(record->get("policy", String())) == "file_checkpoint" ? SolersPermissionManager::PERMISSION_EDIT_FILES : SolersPermissionManager::PERMISSION_EDIT_SCENE; });
 	_register_skill_tools();
 	_register_reflection_tools();
 	_register_observation_tools();
@@ -2388,7 +2392,7 @@ Dictionary SolersToolRegistry::call_tool_with_context(const StringName &p_name, 
 	if (!preparation_error.is_empty()) {
 		return preparation_error;
 	}
-	const Dictionary result = _execute_prepared_tool(call);
+	const Dictionary result = _finalize_prepared_result(call, _execute_prepared_tool(call));
 	_complete_prepared_tool(call, result);
 	return result;
 }
@@ -2526,7 +2530,7 @@ Dictionary SolersToolRegistry::_prepare_tool_call(const StringName &p_name, cons
 Dictionary SolersToolRegistry::_execute_prepared_tool(SolersPreparedToolCall &p_call) {
 	ERR_FAIL_NULL_V(p_call.tool, _error("TOOL_NOT_FOUND", "Prepared Solers tool is unavailable.", false));
 	SOLERS_TRACE("registry.execute_begin", vformat("%s args=%s", String(p_call.name), _trace_json(summarize_tool_args_for_audit(p_call.name, p_call.args), 420)));
-	const Dictionary result = _finalize_prepared_result(p_call, _tool_result_envelope(p_call.tool->execute(p_call.context, p_call.args), p_call.context.call_id));
+	const Dictionary result = _tool_result_envelope(p_call.tool->execute(p_call.context, p_call.args), p_call.context.call_id);
 	SOLERS_TRACE("registry.execute_end", vformat("%s %s", String(p_call.name), summarize_tool_result_for_audit(result)));
 	return result;
 }
@@ -2534,7 +2538,7 @@ Dictionary SolersToolRegistry::_execute_prepared_tool(SolersPreparedToolCall &p_
 Dictionary SolersToolRegistry::_poll_prepared_tool(SolersPreparedToolCall &p_call, const Dictionary &p_args) {
 	ERR_FAIL_NULL_V(p_call.tool, _error("TOOL_NOT_FOUND", "Prepared Solers tool is unavailable.", false));
 	SOLERS_TRACE("registry.poll_begin", vformat("%s args=%s", String(p_call.name), _trace_json(summarize_tool_args_for_audit(p_call.name, p_args), 420)));
-	const Dictionary result = _finalize_prepared_result(p_call, _tool_result_envelope(p_call.tool->poll(p_call.context, p_args), p_call.context.call_id));
+	const Dictionary result = _tool_result_envelope(p_call.tool->poll(p_call.context, p_args), p_call.context.call_id);
 	SOLERS_TRACE("registry.poll_end", vformat("%s %s", String(p_call.name), summarize_tool_result_for_audit(result)));
 	return result;
 }

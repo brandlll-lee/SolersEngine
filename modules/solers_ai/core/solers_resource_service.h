@@ -35,6 +35,7 @@
 #include "core/variant/dictionary.h"
 
 bool solers_coerce_property_value(Object *p_object, const StringName &p_property, const Variant &p_value, Variant &r_out, String &r_error);
+Dictionary solers_native_object_handle(Object *p_object);
 Variant solers_summarize_display_value(const Variant &p_value);
 PackedStringArray solers_nearest_names(const String &p_needle, const PackedStringArray &p_candidates, int p_max = 5);
 String solers_property_suggestions(Object *p_object, const String &p_property);
@@ -48,8 +49,6 @@ class SolersResourceService : public Object {
 	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
 	bool _normalize_project_path(const String &p_path, String &r_res_path, String &r_error) const;
 	bool _resolve_native_object(const Variant &p_object_id, Object *&r_object, String &r_error) const;
-	Dictionary _native_object_handle(Object *p_object) const;
-	Variant _displayable(const Variant &p_value) const;
 	String _export_filter_to_string(int p_filter) const;
 	String _script_export_mode_to_string(int p_mode) const;
 	String _export_message_type_to_string(int p_type) const;
@@ -62,12 +61,10 @@ public:
 	Dictionary inspect_resource(const Dictionary &p_args) const;
 	Dictionary edit_resource(const Dictionary &p_args) const;
 	Dictionary create_resource(const Dictionary &p_args) const;
-	Dictionary get_resource_property(const Dictionary &p_args) const;
 	Dictionary set_resource_property(const Dictionary &p_args) const;
 	Dictionary native_list_properties(const Dictionary &p_args) const;
 	Dictionary native_get(const Dictionary &p_args) const;
 	Dictionary list_export_presets(const Dictionary &p_args) const;
 	Dictionary validate_export_presets(const Dictionary &p_args) const;
 	Dictionary run_export_preset(const Dictionary &p_args) const;
-
 };

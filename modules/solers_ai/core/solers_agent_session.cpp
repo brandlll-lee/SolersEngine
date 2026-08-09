@@ -551,16 +551,13 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 			if (mentions.is_empty() && had_block) {
 				mentions = SolersMention::parse(display);
 			}
-			// Restore path has no image bytes. Keep content-addressed references so
-			// the model uses recorded facts or asks for fresh evidence.
 			String model_content = had_block ? content : (display + SolersMention::prompt_block(mentions));
 			const Array attachments = event.get("attachments", Array());
-			for (int i = 0; i < attachments.size(); i++) {
-				const Dictionary attachment = attachments[i];
-				model_content += vformat("\n[Previously delivered image id=%s sha256=%s; pixel bytes are not replayed after session restore.]", String(attachment.get("id", String())), String(attachment.get("content_sha256", String())));
-			}
 			Dictionary user_message = SolersLLMMessage::user(model_content);
 			user_message["turn_id"] = event.get("turn_id", 0);
+			if (!attachments.is_empty()) {
+				user_message["attachments"] = attachments;
+			}
 			if (!mentions.is_empty()) {
 				user_message["mentions"] = mentions;
 			}
@@ -1466,7 +1463,7 @@ Error SolersAgentSession::_dispatch_compaction_request() {
 		history.resize(compaction_preserve_from);
 	}
 	history.push_back(SolersLLMMessage::user(
-			"Write a concise continuation note containing only the user's intent, constraints, decisions, and unresolved questions. Do not include node or resource identities, measurements, engine state, completed work, test claims, tool results, or a precise next tool action; those facts are refreshed by the engine. Respond with text only and do not call tools."));
+			"Update the existing continuation checkpoint, or create it if none exists. Use concise sections: Goal, Constraints, Verified Done, Active, Blocked, Next Move, and Critical User Evidence. Preserve still-relevant prior checkpoint facts. Record completed work only when backed by a tool receipt or native observation, including exact paths, hashes, identifiers, and errors needed to avoid repeating it; label unverified claims as unverified. Preserve attachment ids and hashes. Current engine state will be refreshed separately, so do not invent it. Respond with text only and do not call tools."));
 	Dictionary request = _build_request(history, system_prompt, Array());
 	Array delivered_attachments;
 	for (const String &identity : delivered_model_attachments) {
@@ -1560,6 +1557,12 @@ void SolersAgentSession::_on_compaction_complete() {
 	const int projection_budget = MAX(0, context_window - max_output_tokens - SolersContextManager::estimate_tokens(system_prompt) - cached_request_tool_tokens);
 	const Dictionary result = context_manager->apply_compaction(compaction_source_messages, current_text, projection_budget, compaction_preserve_from);
 	messages = result.get("messages", Array());
+	for (int i = 0; i < messages.size(); i++) {
+		const Array attachments = Dictionary(messages[i]).get("attachments", Array());
+		for (int attachment_index = 0; attachment_index < attachments.size(); attachment_index++) {
+			delivered_model_attachments.erase(SolersLLMMessage::attachment_identity(attachments[attachment_index]));
+		}
+	}
 	_write_transcript_compaction("completed", result);
 	emit_signal(SNAME("timeline_entry_committed"), compaction_timeline_event_id, "context_compaction");
 
@@ -2720,18 +2723,14 @@ void SolersAgentSession::_poll_tool_executing() {
 		Dictionary evidence_data = result.get("data", Dictionary());
 		evidence_data["godot_errors"] = godot_error.get("events", Array());
 		result["data"] = evidence_data;
-		// A FILE_CHECKPOINT mutation has already committed its write when the
-		// handler reports success; content diagnostics (parser errors from the
-		// reloaded script) are part of that result's own contract, so engine
-		// events stay attached as evidence without contradicting the commit.
-		// Reporting the write as failed would desynchronize the model from the
-		// real file state and poison every follow-up edit.
-		const bool checkpointed_commit = deferred_prepared_call && deferred_prepared_call->mutation_policy == SolersToolMutationPolicy::FILE_CHECKPOINT;
 		const bool target_state_confirmed = (bool)Dictionary(result.get("data", Dictionary())).get("target_state_confirmed", false);
-		if ((bool)result.get("ok", false) && (bool)godot_error.get("handler_window", false) && !checkpointed_commit && !target_state_confirmed) {
+		if ((bool)result.get("ok", false) && (bool)godot_error.get("handler_window", false) && !target_state_confirmed) {
 			result["ok"] = false;
 			result["error"] = godot_error;
 		}
+	}
+	if (deferred_prepared_call) {
+		result = tool_registry->_finalize_prepared_result(*deferred_prepared_call, result);
 	}
 	const bool tool_succeeded = (bool)result.get("ok", false);
 	Dictionary data = result.get("data", Dictionary());
@@ -2935,7 +2934,7 @@ void SolersAgentSession::abort() {
 	}
 	if (deferred_prepared_call) {
 		if (tool_registry) {
-			const Dictionary cancelled = _tool_denied_result("TOOL_CANCELLED", "The turn was aborted while the tool was running.");
+			const Dictionary cancelled = tool_registry->_finalize_prepared_result(*deferred_prepared_call, _tool_denied_result("TOOL_CANCELLED", "The turn was aborted while the tool was running."));
 			tool_registry->_complete_prepared_tool(*deferred_prepared_call, cancelled);
 		}
 		_write_prepared_journal_event(deferred_prepared_call);

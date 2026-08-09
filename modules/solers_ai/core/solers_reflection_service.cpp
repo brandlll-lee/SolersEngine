@@ -343,65 +343,6 @@ bool SolersReflectionService::_coerce_value(Node *p_node, const StringName &p_pr
 	return solers_coerce_property_value(p_node, p_property, p_value, r_out, r_error);
 }
 
-static Dictionary _reflect_object_handle(Object *p_object) {
-	Dictionary data;
-	data["kind"] = "godot_object";
-	if (!p_object) {
-		data["object_id"] = String();
-		data["valid"] = false;
-		return data;
-	}
-	data["valid"] = true;
-	data["object_id"] = String::num_int64((int64_t)p_object->get_instance_id());
-	data["class_name"] = p_object->get_class();
-
-	if (Resource *resource = Object::cast_to<Resource>(p_object)) {
-		data["path"] = resource->get_path();
-		data["resource_name"] = resource->get_name();
-	}
-	if (Node *node = Object::cast_to<Node>(p_object)) {
-		data["name"] = node->get_name();
-		data["inside_tree"] = node->is_inside_tree();
-		if (node->is_inside_tree()) {
-			data["node_path"] = node->get_path();
-		}
-	}
-	return data;
-}
-
-static Variant _reflect_displayable(const Variant &p_value) {
-	if (p_value.get_type() == Variant::OBJECT) {
-		Object *object = p_value;
-		return _reflect_object_handle(object);
-	}
-	if (p_value.get_type() == Variant::ARRAY) {
-		Array in = p_value;
-		if (in.size() > 64) {
-			return vformat("<Array size=%d>", in.size());
-		}
-		Array out;
-		for (int i = 0; i < in.size(); i++) {
-			out.push_back(_reflect_displayable(in[i]));
-		}
-		return out;
-	}
-	if (p_value.get_type() == Variant::DICTIONARY) {
-		Dictionary in = p_value;
-		Array keys = in.keys();
-		if (keys.size() > 64) {
-			return vformat("<Dictionary size=%d>", keys.size());
-		}
-		Dictionary out;
-		for (int i = 0; i < keys.size(); i++) {
-			out[keys[i]] = _reflect_displayable(in[keys[i]]);
-		}
-		return out;
-	}
-	// Bulk Variant payloads (packed arrays, oversized strings) summarize by
-	// type so one node dump can never displace working context.
-	return solers_summarize_display_value(p_value);
-}
-
 bool SolersReflectionService::_apply_initial_properties(Node *p_node, const Dictionary &p_properties, Dictionary &r_applied, String &r_error) const {
 	ERR_FAIL_NULL_V(p_node, false);
 	for (const Variant *key = p_properties.next(nullptr); key; key = p_properties.next(key)) {
@@ -422,7 +363,7 @@ bool SolersReflectionService::_apply_initial_properties(Node *p_node, const Dict
 			r_error = vformat("Setting initial property '%s' failed on %s.", property, p_node->get_class());
 			return false;
 		}
-		r_applied[property] = _reflect_displayable(actual);
+		r_applied[property] = solers_summarize_display_value(actual);
 	}
 	if (r_applied.has("current") && bool(p_node->get("current"))) {
 		if (Camera3D *camera = Object::cast_to<Camera3D>(p_node)) {
@@ -798,7 +739,7 @@ Dictionary SolersReflectionService::set_property(const Dictionary &p_args) {
 		Dictionary data;
 		data["node_path"] = safe_path;
 		data["property"] = normalized;
-		data["value"] = _reflect_displayable(node->get_indexed(subnames));
+		data["value"] = solers_summarize_display_value(node->get_indexed(subnames));
 		return _ok(data);
 	}
 
@@ -840,7 +781,7 @@ Dictionary SolersReflectionService::set_property(const Dictionary &p_args) {
 	Dictionary data;
 	data["node_path"] = safe_path;
 	data["property"] = property;
-	data["value"] = _reflect_displayable(node->get(property_sn));
+	data["value"] = solers_summarize_display_value(node->get(property_sn));
 	return _ok(data);
 }
 
@@ -898,7 +839,7 @@ Dictionary SolersReflectionService::inspect_nodes(const Dictionary &p_args) {
 				bool valid = false;
 				const Variant value = node->get_indexed(_property_path_subnames(property), &valid);
 				if (valid) {
-					values[property] = _reflect_displayable(value);
+					values[property] = solers_summarize_display_value(value);
 					continue;
 				}
 				property_errors[property] = _error("INVALID_PROPERTY_PATH", vformat("Property path '%s' is not valid on %s.", property, node->get_class())).get("error", Dictionary());
@@ -1366,7 +1307,7 @@ Dictionary SolersReflectionService::_remove_node(const Dictionary &p_args) {
 	ERR_FAIL_NULL_V(undo_redo, _error("UNDO_REDO_UNAVAILABLE", "EditorUndoRedoManager is not available.", false));
 
 	const int original_index = node->get_index(false);
-	const Dictionary removed_object = _reflect_object_handle(node);
+	const Dictionary removed_object = solers_native_object_handle(node);
 	if (!batch_action_active) {
 		undo_redo->create_action("Solers: Remove Node", UndoRedo::MERGE_DISABLE, parent);
 	}

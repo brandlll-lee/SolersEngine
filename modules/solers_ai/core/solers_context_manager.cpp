@@ -32,6 +32,7 @@
 
 #include "core/templates/hash_map.h"
 
+#include "modules/solers_ai/core/solers_mention.h"
 #include "modules/solers_ai/llm/solers_llm_message.h"
 
 const char *SolersContextManager::COMPACTION_SUMMARY_PREFIX =
@@ -113,6 +114,14 @@ Array SolersContextManager::repair_tool_pairing(const Array &p_messages) {
 
 Array SolersContextManager::project_completed_turns(const Array &p_messages) {
 	Array projected;
+	int latest_attachment = -1;
+	for (int i = p_messages.size() - 1; i >= 0; i--) {
+		const Dictionary message = p_messages[i];
+		if (String(message.get("role", String())) == SolersLLMRole::USER && !Array(message.get("attachments", Array())).is_empty()) {
+			latest_attachment = i;
+			break;
+		}
+	}
 	for (int i = 0; i < p_messages.size(); i++) {
 		const Dictionary message = p_messages[i];
 		const String role = message.get("role", String());
@@ -122,7 +131,15 @@ Array SolersContextManager::project_completed_turns(const Array &p_messages) {
 		if (role == String(SolersLLMRole::ASSISTANT) && !Array(message.get("tool_calls", Array())).is_empty()) {
 			continue;
 		}
-		projected.push_back(message);
+		Dictionary kept = message;
+		if (role == String(SolersLLMRole::USER) && message.has("mentions")) {
+			kept = message.duplicate(true);
+			kept["content"] = SolersMention::strip_prompt_block(message.get("content", String()));
+		}
+		if (i != latest_attachment && kept.has("attachments")) {
+			kept.erase("attachments");
+		}
+		projected.push_back(kept);
 	}
 	return projected;
 }
@@ -180,14 +197,32 @@ Dictionary SolersContextManager::apply_compaction(const Array &p_messages, const
 	summary_message["origin"] = "compaction_summary";
 	int remaining = MAX(0, p_token_budget - _estimate_message_tokens(summary_message) - estimate_messages_tokens(suffix));
 	Array recent_users;
+	int latest_attachment = -1;
+	for (int i = preserve_from - 1; i >= 0; i--) {
+		const Dictionary message = p_messages[i];
+		if (String(message.get("role", String())) == SolersLLMRole::USER && !Array(message.get("attachments", Array())).is_empty()) {
+			latest_attachment = i;
+			break;
+		}
+	}
 	for (int i = preserve_from - 1; i >= 0; i--) {
 		Dictionary message = p_messages[i];
 		if (String(message.get("role", String())) != SolersLLMRole::USER || (bool)message.get("ephemeral", false)) {
 			continue;
 		}
-		message.erase("attachments");
-		const int tokens = _estimate_message_tokens(message);
+		if (message.has("mentions")) {
+			message = message.duplicate(true);
+			message["content"] = SolersMention::strip_prompt_block(message.get("content", String()));
+		}
+		int tokens = _estimate_message_tokens(message);
+		if (i == latest_attachment && tokens > remaining) {
+			message["content"] = "[Retained user attachment evidence.]";
+			tokens = _estimate_message_tokens(message);
+		}
 		if (tokens > remaining) {
+			if (latest_attachment >= 0 && i > latest_attachment) {
+				continue;
+			}
 			break;
 		}
 		recent_users.push_back(message);
