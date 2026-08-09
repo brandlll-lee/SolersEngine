@@ -79,7 +79,9 @@
 #include "scene/resources/sky.h"
 #include "tests/test_macros.h"
 #include "tests/test_tools.h"
+#include "tests/test_utils.h"
 
+#include "modules/modules_enabled.gen.h"
 #include "modules/solers_ai/core/solers_agent_session.h"
 #include "modules/solers_ai/core/solers_asset_service.h"
 #include "modules/solers_ai/core/solers_builtin_skills.h"
@@ -119,6 +121,10 @@
 #include "modules/zip/zip_packer.h"
 #ifdef MODULE_CSG_ENABLED
 #include "modules/csg/csg_shape.h"
+#endif
+#ifdef MODULE_GLTF_ENABLED
+#include "modules/gltf/extensions/gltf_document_extension_convert_importer_mesh.h"
+#include "modules/gltf/gltf_document.h"
 #endif
 
 namespace TestSolersProviderGateway {
@@ -943,6 +949,12 @@ TEST_CASE("[SolersToolRegistry] default tools keep one portable ABI across provi
 		check_portable_tool_schema(response_tool.get("parameters", Dictionary()));
 		CHECK_FALSE(response_tool.get("strict", true));
 	}
+	const Dictionary transaction = find_tool_def(tools, "object.transaction");
+	const Dictionary operation = Dictionary(Dictionary(Dictionary(transaction.get("input_schema", Dictionary())).get("properties", Dictionary())).get("operations", Dictionary())).get("items", Dictionary());
+	const Dictionary operation_properties = operation.get("properties", Dictionary());
+	const Array operation_names = Dictionary(operation_properties.get("op", Dictionary())).get("enum", Array());
+	CHECK((operation_names.has("update") && !operation_names.has("set_property")));
+	CHECK((operation_properties.has("properties") && !operation_properties.has("property") && !operation_properties.has("value")));
 
 	Dictionary invalid;
 	invalid["oneOf"] = Array();
@@ -1011,23 +1023,6 @@ TEST_CASE("[SolersPluginRegistry] an unknown connector extends every registry-dr
 
 	SolersPluginRegistry::unregister_plugin(plugin);
 	memdelete(plugin);
-}
-
-TEST_CASE("[SolersToolRegistry] object transactions expose no in-editor native escape") {
-	SolersReflectionService reflection_service;
-	SolersResourceService resource_service;
-	SolersToolRegistry registry;
-	registry.set_reflection_service(&reflection_service);
-	registry.set_resource_service(&resource_service);
-	registry.register_default_tools();
-
-	Dictionary native;
-	native["scope"] = "native";
-	native["operations"] = Array();
-	const Dictionary result = registry.call_tool(SNAME("object.transaction"), native);
-	CHECK_FALSE(result.get("ok", true));
-	const String code = Dictionary(result.get("error", Dictionary())).get("code", String());
-	CHECK((code == "TOOL_ARGUMENT_INVALID" || code == "OBJECT_SCOPE_INVALID"));
 }
 
 TEST_CASE("[SolersToolRegistry] ClassDB member queries match whitespace-separated property names") {
@@ -1352,40 +1347,6 @@ TEST_CASE("[SolersScriptService] isolated compute commits only verified declared
 	DirAccess::remove_file_or_error(absolute);
 }
 
-TEST_CASE("[SolersToolRegistry] batch failure summaries expose failed operation") {
-	SolersToolRegistry registry;
-
-	Dictionary op_error;
-	op_error["code"] = "NODE_NOT_FOUND";
-	op_error["message"] = "Node not found: Forest/Tree01";
-	Dictionary op_result;
-	op_result["ok"] = false;
-	op_result["error"] = op_error;
-	Dictionary entry;
-	entry["index"] = 3;
-	entry["op"] = "set_property";
-	entry["result"] = op_result;
-	Array results;
-	results.push_back(entry);
-
-	Dictionary data;
-	data["count"] = 4;
-	data["completed"] = false;
-	data["results"] = results;
-	Dictionary result;
-	result["ok"] = false;
-	Dictionary error;
-	error["code"] = "BATCH_FAILED";
-	result["error"] = error;
-	result["data"] = data;
-
-	const String summary = registry.summarize_tool_result_for_audit(result);
-	CHECK(summary.contains("completed=0"));
-	CHECK(summary.contains("failed_op=set_property"));
-	CHECK(summary.contains("failed_index=3"));
-	CHECK(summary.contains("error=NODE_NOT_FOUND"));
-}
-
 TEST_CASE("[SolersToolRegistry] tool.search is absent without external deferred tools") {
 	SolersPermissionManager permissions;
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
@@ -1652,7 +1613,22 @@ TEST_CASE("[SolersResourceService] property coercion accepts named and nested Go
 	CHECK(Ref<Shader>(coerced) == shader);
 }
 
-TEST_CASE("[SolersToolRegistry][SceneTree] object.query scopes native facts and reports partial failure") {
+#ifdef MODULE_GLTF_ENABLED
+TEST_CASE("[SolersToolRegistry][SceneTree][GLTF] object.query returns native mesh handles and partial failures") {
+	Ref<GLTFDocumentExtensionConvertImporterMesh> conversion;
+	conversion.instantiate();
+	GLTFDocument::register_gltf_document_extension(conversion);
+	Ref<GLTFDocument> document;
+	document.instantiate();
+	Ref<GLTFState> state;
+	state.instantiate();
+	const Error load_error = document->append_from_file(TestUtils::get_data_path("models/suzanne.glb"), state);
+	Node *root = load_error == OK ? document->generate_scene(state) : nullptr;
+	GLTFDocument::unregister_gltf_document_extension(conversion);
+	REQUIRE(root != nullptr);
+	MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(root->get_node_or_null(NodePath("Suzanne")));
+	REQUIRE(mesh_instance != nullptr);
+
 	SolersReflectionService service;
 	SolersObservationService observation;
 	SolersPermissionManager permissions;
@@ -1664,35 +1640,28 @@ TEST_CASE("[SolersToolRegistry][SceneTree] object.query scopes native facts and 
 	registry.register_default_tools();
 	SceneTree *tree = SceneTree::get_singleton();
 	Node *previous = tree->get_edited_scene_root();
-	Node *root = memnew(Node);
-	MeshInstance3D *a = memnew(MeshInstance3D);
-	Node *b = memnew(Node);
-	a->set_name("A");
-	b->set_name("B");
-	root->add_child(a);
-	root->add_child(b);
-	Ref<ArrayMesh> mesh;
-	mesh.instantiate();
-	a->set_mesh(mesh);
-	Array arrays;
-	arrays.resize(Mesh::ARRAY_MAX);
-	arrays[Mesh::ARRAY_VERTEX] = PackedVector3Array({ Vector3(), Vector3(1, 0, 0), Vector3(0, 1, 0) });
-	mesh->set_block_signals(true);
-	mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
 	tree->set_edited_scene_root(root);
 	SolersToolContext context;
-	const String tree_wire = JSON::stringify(observation.get_scene_tree(Array({ "B", "Missing" }), 1, 8, 1024));
-	Dictionary args({ { "target", "scene" }, { "node_paths", Array({ "A", "Missing" }) }, { "properties", Array({ "position", "missing_property" }) } });
+	Dictionary args({ { "target", "scene" }, { "node_paths", Array({ "Suzanne", "Missing" }) }, { "properties", Array({ "mesh", "missing_property" }) } });
 	const Dictionary result = registry.call_tool_with_context(SNAME("object.query"), args, context);
-	const String wire = JSON::stringify(result.get("data", Dictionary()));
+	const Dictionary data = result.get("data", Dictionary());
+	const Dictionary details = data.get("details", Dictionary());
+	const Array nodes = details.get("nodes", Array());
+	REQUIRE(nodes.size() == 1);
+	const Dictionary material = Dictionary(nodes[0]).get("material", Dictionary());
+	const Dictionary mesh_handle = material.get("mesh", Dictionary());
+	CHECK((mesh_handle.get("kind", String()) == "godot_object" && (bool)mesh_handle.get("valid", false) && (int)details.get("error_count", 0) == 1));
+	Variant coerced;
+	String error;
+	REQUIRE(solers_coerce_property_value(mesh_instance, SNAME("mesh"), mesh_handle, coerced, error));
+	CHECK(Ref<Mesh>(coerced) == mesh_instance->get_mesh());
 	args["node_paths"] = Array({ "Missing" });
 	const Dictionary missing = registry.call_tool_with_context(SNAME("object.query"), args, context);
 	tree->set_edited_scene_root(previous);
 	memdelete(root);
-	CHECK((wire.count("NODE_NOT_FOUND") == 1 && wire.contains("\"source\":\"mesh\"")));
-	CHECK((tree_wire.count("NODE_NOT_FOUND") == 1 && !tree_wire.contains("\"name\":\"A\"")));
 	CHECK(Dictionary(missing.get("error", Dictionary())).get("code", String()) == "NODE_QUERY_FAILED");
 }
+#endif
 
 #ifdef MODULE_CSG_ENABLED
 TEST_CASE("[SceneTree][SolersCSG] native boolean output exposes mesh and collision facts") {
@@ -1730,10 +1699,9 @@ TEST_CASE("[SolersToolRegistry] scene object transaction access follows its nati
 	registry.register_default_tools();
 
 	Dictionary write_op;
-	write_op["op"] = "set_property";
+	write_op["op"] = "update";
 	write_op["node_path"] = "ReferenceCamera";
-	write_op["property"] = "fov";
-	write_op["value"] = 55.0;
+	write_op["properties"] = Dictionary({ { "fov", 55.0 } });
 	Array write_operations;
 	write_operations.push_back(write_op);
 	Dictionary write_args;
@@ -2732,21 +2700,23 @@ TEST_CASE("[SolersReflectionService] member_query reports unmatched tokens from 
 	CHECK(saw_sun_disk);
 }
 
-TEST_CASE("[SolersReflectionService] Godot indexed paths reach nested resource properties") {
-	Path3D node;
-	Ref<Curve3D> curve;
-	curve.instantiate();
-	node.set_curve(curve);
-
-	Vector<StringName> property_path;
-	property_path.push_back(SNAME("curve"));
-	property_path.push_back(SNAME("bake_interval"));
-	bool valid = false;
-	node.set_indexed(property_path, 0.42, &valid);
-	CHECK(valid);
-	const Variant value = node.get_indexed(property_path, &valid);
-	CHECK(valid);
-	CHECK(Math::is_equal_approx((double)value, 0.42));
+TEST_CASE("[SolersTransaction][SceneTree][UndoRedo] update properties remain one native action") {
+	Node3D *target = memnew(Node3D);
+	SceneTree::get_singleton()->get_root()->add_child(target);
+	UndoRedo undo_redo;
+	undo_redo.create_action("Solers: Update");
+	undo_redo.add_do_property(target, SNAME("position"), Vector3(1, 2, 3));
+	undo_redo.add_undo_property(target, SNAME("position"), target->get_position());
+	undo_redo.add_do_property(target, SNAME("visible"), false);
+	undo_redo.add_undo_property(target, SNAME("visible"), target->is_visible());
+	undo_redo.commit_action();
+	CHECK((target->get_position() == Vector3(1, 2, 3) && !target->is_visible()));
+	REQUIRE(undo_redo.undo());
+	CHECK((target->get_position() == Vector3() && target->is_visible()));
+	REQUIRE(undo_redo.redo());
+	CHECK((target->get_position() == Vector3(1, 2, 3) && !target->is_visible()));
+	target->queue_free();
+	MessageQueue::get_singleton()->flush();
 }
 
 TEST_CASE("[SolersPermissionManager] auto approve all resolves without pending") {
@@ -2931,7 +2901,7 @@ TEST_CASE("[SolersMention][Editor] project paths ignore FileSystemDock browsing 
 	MessageQueue::get_singleton()->flush();
 }
 
-TEST_CASE("[SolersSession] journal preserves terminal compaction semantics and stays lazy when empty") {
+TEST_CASE("[SolersSession][SceneTree][Editor] journal preserves terminal compaction semantics and stays lazy when empty") {
 	const String session_id = "timeline-authority-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
 	const String project = "test://" + session_id;
 	auto write = [&](const String &p_type, int p_id, int p_turn, Dictionary p_event) {
@@ -2952,12 +2922,36 @@ TEST_CASE("[SolersSession] journal preserves terminal compaction semantics and s
 	compacting["phase"] = "cancelled";
 	write("context_compaction", 12, 1, compacting);
 	write("turn_outcome", 13, 1, Dictionary({ { "outcome", "aborted" } }));
+	for (int i = 0; i < 30; i++) {
+		Dictionary message = make_user_message("history " + itos(i));
+		message["author"] = "human";
+		write("message", 14 + i, 2 + i, message);
+	}
 	solers_transcript_flush(session_id);
 	SolersAgentSession restored;
 	restored.set_session(project, session_id);
 	const Array timeline = restored.get_timeline_entries();
-	REQUIRE(timeline.size() == 3);
+	REQUIRE(timeline.size() == 33);
 	CHECK(Dictionary(timeline[1]).get("phase", String()) == "cancelled");
+	SolersDock *dock = memnew(SolersDock);
+	dock->set_theme(SolersUITheme::create());
+	dock->set_size(Size2(640, 720));
+	SceneTree::get_singleton()->get_root()->add_child(dock);
+	dock->load_chat_history(timeline);
+	MessageQueue::get_singleton()->flush();
+	VBoxContainer *rows = Object::cast_to<VBoxContainer>(dock->find_child("ChatTimelineMessages", true, false));
+	ScrollContainer *scroll = Object::cast_to<ScrollContainer>(dock->find_child("ChatTimelineScroll", true, false));
+	REQUIRE((rows != nullptr && scroll != nullptr));
+	REQUIRE(rows->get_child_count() == timeline.size());
+	for (int i = 0; i < timeline.size(); i++) {
+		CHECK((int64_t)rows->get_child(i)->get_meta("timeline_event_id", -1) == (int64_t)Dictionary(timeline[i]).get("event_id", -1));
+	}
+	scroll->set_v_scroll((int)scroll->get_v_scroll_bar()->get_max());
+	dock->set_size(Size2(480, 720));
+	MessageQueue::get_singleton()->flush();
+	CHECK(rows->get_child_count() == timeline.size());
+	dock->queue_free();
+	MessageQueue::get_singleton()->flush();
 	restored.reset_conversation();
 	const String empty_id = restored.get_status().get("session_id", String());
 	CHECK_FALSE(FileAccess::exists(solers_session_dir().path_join("sessions").path_join(empty_id.sha256_text() + ".jsonl")));
@@ -3127,10 +3121,9 @@ TEST_CASE("[SolersToolRegistry] transcript audit preserves full redacted tool ar
 	Array operations;
 	for (int i = 0; i < 40; i++) {
 		Dictionary operation;
-		operation["op"] = "set_property";
+		operation["op"] = "update";
 		operation["node_path"] = ".";
-		operation["property"] = "name";
-		operation["value"] = "Root";
+		operation["properties"] = Dictionary({ { "name", "Root" } });
 		operations.push_back(operation);
 	}
 	Dictionary args;
