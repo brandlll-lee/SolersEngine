@@ -60,6 +60,7 @@
 #include "editor/run/game_view_plugin.h"
 #include "editor/scene/3d/node_3d_editor_plugin.h"
 #include "scene/3d/camera_3d.h"
+#include "scene/3d/light_3d.h"
 #include "scene/3d/node_3d.h"
 #include "scene/3d/visual_instance_3d.h"
 #include "scene/debugger/scene_debugger.h"
@@ -67,8 +68,10 @@
 #include "scene/main/scene_tree.h"
 #include "scene/main/viewport.h"
 #include "scene/resources/3d/world_3d.h"
+#include "scene/resources/camera_attributes.h"
 #include "scene/resources/environment.h"
 #include "scene/resources/packed_scene.h"
+#include "scene/resources/sky.h"
 #include "servers/rendering/rendering_server.h"
 
 #include "modules/solers_ai/core/solers_context_manager.h"
@@ -106,18 +109,6 @@ static Array _solers_vector3_array(const Vector3 &p_vector) {
 	values.push_back(Math::snapped(p_vector.y, (real_t)0.0001));
 	values.push_back(Math::snapped(p_vector.z, (real_t)0.0001));
 	return values;
-}
-
-static void _solers_collect_geometry_containing_point(Node *p_node, Node *p_root, const Vector3 &p_point, Array &r_paths) {
-	if (GeometryInstance3D *geometry = Object::cast_to<GeometryInstance3D>(p_node)) {
-		const AABB bounds = geometry->get_global_transform().xform(geometry->get_aabb());
-		if (geometry->is_visible_in_tree() && bounds.has_volume() && bounds.has_point(p_point)) {
-			r_paths.push_back(String(p_root->get_path_to(geometry)));
-		}
-	}
-	for (int i = 0; i < p_node->get_child_count(); i++) {
-		_solers_collect_geometry_containing_point(p_node->get_child(i), p_root, p_point, r_paths);
-	}
 }
 
 // Nearest visible-geometry AABB hit along a ray. Works on whitebox scenes with
@@ -215,6 +206,163 @@ static Ref<Environment> _solers_capture_environment(const Ref<World3D> &p_world,
 	return environment.is_valid() ? environment : p_world->get_fallback_environment();
 }
 
+static Array _solers_render_color(const Color &p_color) {
+	Array value;
+	value.push_back(p_color.r);
+	value.push_back(p_color.g);
+	value.push_back(p_color.b);
+	value.push_back(p_color.a);
+	return value;
+}
+static Dictionary _solers_render_resource(const Ref<Resource> &p_resource) {
+	Dictionary facts;
+	if (p_resource.is_null()) {
+		return facts;
+	}
+	facts["class_name"] = p_resource->get_class();
+	facts["resource_path"] = p_resource->get_path();
+	facts["rid"] = (int64_t)p_resource->get_rid().get_id();
+	return facts;
+}
+static Variant _solers_render_value(const Variant &p_value) {
+	if (p_value.get_type() == Variant::OBJECT) {
+		return _solers_render_resource(Ref<Resource>(p_value));
+	}
+	return p_value;
+}
+static Dictionary _solers_shader_facts(const Ref<Material> &p_material) {
+	Dictionary facts = _solers_render_resource(p_material);
+	const Ref<ShaderMaterial> shader_material = p_material;
+	const Ref<Shader> shader = shader_material.is_valid() ? shader_material->get_shader() : Ref<Shader>();
+	if (shader.is_null()) {
+		return facts;
+	}
+	facts["shader"] = _solers_render_resource(shader);
+	facts["shader_source_sha256"] = shader->get_code().sha256_text();
+	Dictionary parameters;
+	List<PropertyInfo> uniforms;
+	shader->get_shader_uniform_list(&uniforms);
+	for (const PropertyInfo &uniform : uniforms) {
+		if (uniform.type == Variant::NIL || (uniform.usage & PROPERTY_USAGE_GROUP)) {
+			continue;
+		}
+		const Variant override_value = shader_material->get_shader_parameter(uniform.name);
+		Dictionary parameter;
+		parameter["source"] = override_value.get_type() == Variant::NIL ? "shader_default" : "material_override";
+		parameter["value"] = _solers_render_value(override_value.get_type() == Variant::NIL ? RenderingServer::get_singleton()->shader_get_parameter_default(shader->get_rid(), uniform.name) : override_value);
+		parameters[uniform.name] = parameter;
+	}
+	facts["parameters"] = parameters;
+	return facts;
+}
+static void _solers_collect_render_lights(Node *p_node, Node *p_root, const Ref<World3D> &p_world, bool p_physical_units, Array &r_lights) {
+	if (Light3D *light = Object::cast_to<Light3D>(p_node)) {
+		if (light->is_visible_in_tree() && light->get_world_3d() == p_world) {
+			Dictionary facts;
+			facts["node_path"] = String(p_root->get_path_to(light));
+			facts["class_name"] = light->get_class();
+			facts["color"] = _solers_render_color(light->get_color());
+			facts["energy_multiplier"] = light->get_param(Light3D::PARAM_ENERGY);
+			facts["intensity"] = light->get_param(Light3D::PARAM_INTENSITY);
+			facts["intensity_unit"] = p_physical_units ? (light->get_light_type() == RSE::LIGHT_DIRECTIONAL ? "lux" : "lumens") : "disabled";
+			facts["indirect_energy"] = light->get_param(Light3D::PARAM_INDIRECT_ENERGY);
+			facts["shadow_enabled"] = light->has_shadow();
+			facts["editor_only"] = light->is_editor_only();
+			if (DirectionalLight3D *directional = Object::cast_to<DirectionalLight3D>(light)) {
+				facts["direction"] = _solers_vector3_array(-directional->get_global_basis().get_column(2).normalized());
+				facts["sky_mode"] = (int)directional->get_sky_mode();
+			}
+			r_lights.push_back(facts);
+		}
+	}
+	for (int i = 0; i < p_node->get_child_count(); i++) {
+		_solers_collect_render_lights(p_node->get_child(i), p_root, p_world, p_physical_units, r_lights);
+	}
+}
+String SolersObservationService::render_state_fingerprint(const Dictionary &p_state) {
+	return JSON::stringify(p_state, "", true, true).sha256_text();
+}
+Dictionary SolersObservationService::describe_render_state(Viewport *p_viewport, Camera3D *p_camera, Node *p_scene_root) const {
+	Dictionary state;
+	const Ref<World3D> world = p_viewport ? p_viewport->find_world_3d() : Ref<World3D>();
+	if (world.is_null()) {
+		return state;
+	}
+	p_camera = p_camera ? p_camera : p_viewport->get_camera_3d();
+	const bool physical_units = GLOBAL_GET("rendering/lights_and_shadows/use_physical_light_units");
+	state["scenario_rid"] = (int64_t)world->get_scenario().get_id();
+	state["viewport_debug_draw"] = (int)p_viewport->get_debug_draw();
+	state["physical_light_units"] = physical_units;
+	const Ref<Environment> camera_environment = p_camera ? p_camera->get_environment() : Ref<Environment>();
+	const Ref<Environment> environment = _solers_capture_environment(world, camera_environment);
+	state["environment_source"] = camera_environment.is_valid() ? "camera" : (world->get_environment().is_valid() ? "world" : "fallback");
+	if (environment.is_valid()) {
+		Dictionary facts = _solers_render_resource(environment);
+		facts["background_mode"] = (int)environment->get_background();
+		facts["background_color"] = _solers_render_color(environment->get_bg_color());
+		facts["background_energy_multiplier"] = environment->get_bg_energy_multiplier();
+		facts["background_intensity"] = environment->get_bg_intensity();
+		facts["ambient_source"] = (int)environment->get_ambient_source();
+		facts["ambient_color"] = _solers_render_color(environment->get_ambient_light_color());
+		facts["ambient_energy"] = environment->get_ambient_light_energy();
+		facts["ambient_sky_contribution"] = environment->get_ambient_light_sky_contribution();
+		facts["reflection_source"] = (int)environment->get_reflection_source();
+		facts["tonemap_mode"] = (int)environment->get_tonemapper();
+		facts["tonemap_exposure"] = environment->get_tonemap_exposure();
+		facts["tonemap_white"] = environment->get_tonemap_white();
+		facts["tonemap_agx_white"] = environment->get_tonemap_agx_white();
+		facts["tonemap_agx_contrast"] = environment->get_tonemap_agx_contrast();
+		facts["glow_enabled"] = environment->is_glow_enabled();
+		facts["ssao_enabled"] = environment->is_ssao_enabled();
+		facts["ssil_enabled"] = environment->is_ssil_enabled();
+		facts["sdfgi_enabled"] = environment->is_sdfgi_enabled();
+		facts["sdfgi_read_sky_light"] = environment->is_sdfgi_reading_sky_light();
+		facts["fog_enabled"] = environment->is_fog_enabled();
+		const Ref<Sky> sky = environment->get_sky();
+		facts["sky"] = _solers_render_resource(sky);
+		if (sky.is_valid()) {
+			facts["sky_material"] = _solers_shader_facts(sky->get_material());
+		}
+		state["environment"] = facts;
+	}
+	const Ref<CameraAttributes> camera_attributes = p_camera ? p_camera->get_attributes() : Ref<CameraAttributes>();
+	const Ref<CameraAttributes> attributes = camera_attributes.is_valid() ? camera_attributes : world->get_camera_attributes();
+	state["camera_attributes_source"] = camera_attributes.is_valid() ? "camera" : (world->get_camera_attributes().is_valid() ? "world" : "none");
+	if (attributes.is_valid()) {
+		Dictionary facts = _solers_render_resource(attributes);
+		facts["exposure_multiplier"] = attributes->get_exposure_multiplier();
+		facts["exposure_sensitivity"] = attributes->get_exposure_sensitivity();
+		facts["auto_exposure_enabled"] = attributes->is_auto_exposure_enabled();
+		facts["exposure_normalization"] = physical_units ? attributes->calculate_exposure_normalization() : 1.0;
+		facts["effective_exposure_multiplier"] = attributes->get_exposure_multiplier() * (float)facts["exposure_normalization"];
+		if (const CameraAttributesPhysical *physical = Object::cast_to<CameraAttributesPhysical>(attributes.ptr())) {
+			facts["aperture"] = physical->get_aperture();
+			facts["shutter_speed"] = physical->get_shutter_speed();
+		}
+		state["camera_attributes"] = facts;
+	}
+	if (p_camera) {
+		Dictionary facts;
+		facts["projection"] = (int)p_camera->get_projection();
+		facts["fov"] = p_camera->get_fov();
+		facts["near"] = p_camera->get_near();
+		facts["far"] = p_camera->get_far();
+		facts["cull_mask"] = (int64_t)p_camera->get_cull_mask();
+		facts["position"] = _solers_vector3_array(p_camera->get_global_position());
+		facts["forward"] = _solers_vector3_array(-p_camera->get_global_basis().get_column(2).normalized());
+		if (p_scene_root && (p_scene_root == p_camera || p_scene_root->is_ancestor_of(p_camera))) {
+			facts["node_path"] = String(p_scene_root->get_path_to(p_camera));
+		}
+		state["camera"] = facts;
+	}
+	Array lights;
+	if (p_scene_root) {
+		_solers_collect_render_lights(p_scene_root, p_scene_root, world, physical_units, lights);
+	}
+	state["lights"] = lights;
+	return state;
+}
+
 static int _solers_capture_settle_frames(const Ref<World3D> &p_world, const Ref<Environment> &p_override = Ref<Environment>()) {
 	const Ref<Environment> environment = _solers_capture_environment(p_world, p_override);
 	const bool sdfgi_enabled = environment.is_valid() && environment->is_sdfgi_enabled();
@@ -259,104 +407,6 @@ Dictionary SolersObservationService::_runtime_capture_unavailable() const {
 	data["runtime"] = get_runtime_status();
 	failure["data"] = data;
 	return failure;
-}
-
-Dictionary SolersObservationService::image_statistics(const Ref<Image> &p_image) {
-	if (p_image.is_null() || p_image->get_width() <= 0 || p_image->get_height() <= 0) {
-		return Dictionary();
-	}
-	Ref<Image> sample = p_image->duplicate();
-	const int max_dimension = MAX(sample->get_width(), sample->get_height());
-	if (max_dimension > 256) {
-		const double scale = 256.0 / (double)max_dimension;
-		sample->resize(MAX(1, (int)(sample->get_width() * scale)), MAX(1, (int)(sample->get_height() * scale)), Image::INTERPOLATE_LANCZOS);
-	}
-	const int64_t pixel_count = (int64_t)sample->get_width() * sample->get_height();
-	double sum = 0.0;
-	double sum_squares = 0.0;
-	double saturation_sum = 0.0;
-	double channel_sums[3] = {};
-	double region_sums[9] = {};
-	int64_t region_counts[9] = {};
-	int64_t near_black = 0;
-	int64_t near_white = 0;
-	int histogram[256] = {};
-	for (int y = 0; y < sample->get_height(); y++) {
-		for (int x = 0; x < sample->get_width(); x++) {
-			const Color color = sample->get_pixel(x, y);
-			const double luminance = 0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b;
-			channel_sums[0] += color.r;
-			channel_sums[1] += color.g;
-			channel_sums[2] += color.b;
-			const int region_x = MIN(2, x * 3 / sample->get_width());
-			const int region_y = MIN(2, y * 3 / sample->get_height());
-			const int region = region_y * 3 + region_x;
-			region_sums[region] += luminance;
-			region_counts[region]++;
-			sum += luminance;
-			sum_squares += luminance * luminance;
-			saturation_sum += color.get_s();
-			histogram[CLAMP((int)Math::round(luminance * 255.0), 0, 255)]++;
-			near_black += luminance <= 0.01;
-			near_white += luminance >= 0.99;
-		}
-	}
-	const double mean = pixel_count > 0 ? sum / pixel_count : 0.0;
-	const double variance = pixel_count > 0 ? MAX(0.0, sum_squares / pixel_count - mean * mean) : 0.0;
-	Dictionary statistics;
-	statistics["sample_width"] = sample->get_width();
-	statistics["sample_height"] = sample->get_height();
-	statistics["mean_luminance"] = mean;
-	statistics["luminance_stddev"] = Math::sqrt(variance);
-	statistics["mean_saturation"] = pixel_count > 0 ? saturation_sum / pixel_count : 0.0;
-	statistics["near_black_fraction"] = pixel_count > 0 ? (double)near_black / pixel_count : 0.0;
-	statistics["near_white_fraction"] = pixel_count > 0 ? (double)near_white / pixel_count : 0.0;
-	const double channel_total = channel_sums[0] + channel_sums[1] + channel_sums[2];
-	Array chromaticity;
-	for (int channel = 0; channel < 3; channel++) {
-		chromaticity.push_back(channel_total > 0.0 ? channel_sums[channel] / channel_total : 0.0);
-	}
-	statistics["mean_rgb_chromaticity"] = chromaticity;
-	Array regions;
-	for (int region = 0; region < 9; region++) {
-		regions.push_back(region_counts[region] > 0 ? region_sums[region] / region_counts[region] : 0.0);
-	}
-	statistics["region_luminance_3x3"] = regions;
-	const int percentile_ranks[3] = { 5, 50, 95 };
-	const char *percentile_names[3] = { "luminance_p05", "luminance_p50", "luminance_p95" };
-	for (int percentile = 0; percentile < 3; percentile++) {
-		const int target = pixel_count > 0 ? (int)(((int64_t)percentile_ranks[percentile] * (pixel_count - 1)) / 100) : 0;
-		int cumulative = 0;
-		int value = 0;
-		for (; value < 256; value++) {
-			cumulative += histogram[value];
-			if (cumulative > target) {
-				break;
-			}
-		}
-		statistics[percentile_names[percentile]] = (double)MIN(value, 255) / 255.0;
-	}
-	// Compress the 256-bin histogram into 8 equal exposure bands so the model
-	// gets a structured ladder without inventing bedroom-specific thresholds.
-	Array exposure_bands;
-	exposure_bands.resize(8);
-	if (pixel_count > 0) {
-		for (int band = 0; band < 8; band++) {
-			int64_t band_count = 0;
-			const int start = band * 32;
-			const int end = start + 32;
-			for (int value = start; value < end; value++) {
-				band_count += histogram[value];
-			}
-			exposure_bands[band] = (double)band_count / (double)pixel_count;
-		}
-	} else {
-		for (int band = 0; band < 8; band++) {
-			exposure_bands[band] = 0.0;
-		}
-	}
-	statistics["exposure_bands_8"] = exposure_bands;
-	return statistics;
 }
 
 Dictionary SolersObservationService::_capture_image(const Ref<Image> &p_image, const String &p_target, const String &p_capture_id) {
@@ -406,7 +456,6 @@ Dictionary SolersObservationService::_capture_image(const Ref<Image> &p_image, c
 	data["capture_id"] = p_capture_id;
 	data["width"] = image->get_width();
 	data["height"] = image->get_height();
-	data["visual_statistics"] = image_statistics(image);
 	data["content_sha256"] = content_sha256;
 	attachment["content_sha256"] = content_sha256;
 	data["attachment"] = attachment;
@@ -439,7 +488,9 @@ Dictionary SolersObservationService::_attach_render_receipt(Dictionary p_result,
 	receipt["viewport_object_id"] = p_pending.get("viewport_id", 0);
 	receipt["viewport_rid"] = p_pending.get("viewport_rid", 0);
 	receipt["source_state"] = p_pending.get("source_state", Dictionary());
+	receipt["render_state_sha256"] = p_pending.get("render_state_sha256", String());
 	receipt["image_sha256"] = data.get("content_sha256", String());
+	data["render_state"] = p_pending.get("render_state", Dictionary());
 
 	const Dictionary source_state = receipt.get("source_state", Dictionary());
 	String view_key = target + ":" + String(source_state.get("scene_path", String()));
@@ -456,7 +507,9 @@ Dictionary SolersObservationService::_attach_render_receipt(Dictionary p_result,
 	receipt["view_key"] = view_key.sha256_text();
 	const Dictionary *previous = last_render_by_view.getptr(view_key);
 	const bool same_pixels = previous && String(previous->get("image_sha256", String())) == String(receipt.get("image_sha256", String()));
+	const bool same_render_state = previous && String(previous->get("render_state_sha256", String())) == String(receipt.get("render_state_sha256", String()));
 	receipt["same_pixels"] = same_pixels;
+	receipt["same_render_state"] = same_render_state;
 	if (same_pixels) {
 		receipt["same_as"] = previous->get("capture_id", String());
 		receipt["same_as_source_state"] = previous->get("source_state", Dictionary());
@@ -464,6 +517,7 @@ Dictionary SolersObservationService::_attach_render_receipt(Dictionary p_result,
 	Dictionary current;
 	current["capture_id"] = capture_id;
 	current["image_sha256"] = receipt.get("image_sha256", String());
+	current["render_state_sha256"] = receipt.get("render_state_sha256", String());
 	current["source_state"] = receipt.get("source_state", Dictionary());
 	last_render_by_view[view_key] = current;
 	data["render_receipt"] = receipt;
@@ -483,24 +537,18 @@ Dictionary SolersObservationService::_editor_3d_viewport_state() const {
 	const Viewport::DebugDraw debug_draw = viewport->get_debug_draw();
 	result["state"] = editor_viewport->get_state();
 	result["debug_draw"] = (int)debug_draw;
-	result["material_preview"] = debug_draw == Viewport::DEBUG_DRAW_DISABLED;
-	Array containing_geometry;
-	Camera3D *camera = editor_viewport->get_camera_3d();
-	EditorNode *editor = EditorNode::get_singleton();
-	Node *edited_root = editor && EditorNode::get_editor_data().get_edited_scene_count() > 0 ? editor->get_edited_scene() : nullptr;
-	if (camera && edited_root) {
-		result["camera_position"] = _solers_vector3_array(camera->get_global_position());
-		_solers_collect_geometry_containing_point(edited_root, edited_root, camera->get_global_position(), containing_geometry);
-	}
-	result["camera_inside_geometry"] = containing_geometry;
-	result["camera_inside_geometry_is_aabb_test"] = true;
 	result["frame_valid"] = debug_draw == Viewport::DEBUG_DRAW_DISABLED;
 	if (debug_draw != Viewport::DEBUG_DRAW_DISABLED) {
 		result["verification_warning"] = "The editor viewport is using a debug display mode, so this image is not valid evidence of final material appearance. Switch View > Display Normal and capture again.";
-	} else if (!containing_geometry.is_empty()) {
-		result["verification_warning"] = "One or more geometry AABBs contain the editor camera. This is a conservative overlap warning, not proof that the camera is inside a solid surface; inspect the capture before accepting it.";
 	}
 	return result;
+}
+
+Dictionary SolersObservationService::_render_state_for_pending(const Dictionary &p_pending) const {
+	Viewport *viewport = Object::cast_to<Viewport>(ObjectDB::get_instance(ObjectID((uint64_t)(int64_t)p_pending.get("viewport_id", 0))));
+	Camera3D *camera = Object::cast_to<Camera3D>(ObjectDB::get_instance(ObjectID((uint64_t)(int64_t)p_pending.get("camera_id", 0))));
+	EditorInterface *editor = EditorInterface::get_singleton();
+	return describe_render_state(viewport, camera, editor ? editor->get_edited_scene_root() : nullptr);
 }
 
 void SolersObservationService::_runtime_screenshot_ready(int64_t p_width, int64_t p_height, const String &p_path, const Rect2i &p_rect, const String &p_capture_id) {
@@ -595,13 +643,18 @@ Dictionary SolersObservationService::_register_pending_capture(const String &p_t
 		}
 	}
 	if (p_target != "runtime") {
+		const Dictionary render_state = _render_state_for_pending(data);
+		if (render_state.is_empty()) {
+			_solers_free_capture_viewport(data);
+			return _capture_error("RENDER_STATE_UNAVAILABLE", "The requested viewport has no authoritative World3D render state.", true);
+		}
+		data["render_state"] = render_state;
+		data["render_state_sha256"] = render_state_fingerprint(render_state);
 		if (p_target == "editor") {
 			Node3DEditor *editor_3d = Node3DEditor::get_singleton();
 			Node3DEditorViewport *editor_viewport = editor_3d ? editor_3d->get_last_used_viewport() : nullptr;
 			Viewport *viewport = editor_viewport ? editor_viewport->get_viewport_node() : nullptr;
 			const Ref<World3D> world = viewport ? viewport->find_world_3d() : Ref<World3D>();
-			const Ref<Environment> environment = _solers_capture_environment(world);
-			data["sdfgi_enabled"] = environment.is_valid() && environment->is_sdfgi_enabled();
 			data["render_frames_required"] = _solers_capture_settle_frames(world);
 		}
 		const uint64_t start_frame = Engine::get_singleton()->get_frames_drawn();
@@ -629,6 +682,18 @@ Dictionary SolersObservationService::_finish_frame_gated_capture(const String &p
 		_solers_free_capture_viewport(p_data);
 		return _capture_error("CAPTURE_SOURCE_CHANGED", "The edited scene changed while the requested viewport frame was rendering.", true);
 	}
+	const Dictionary readback_state = _render_state_for_pending(p_data);
+	const String readback_sha256 = render_state_fingerprint(readback_state);
+	if (readback_state.is_empty() || readback_sha256 != String(p_data.get("render_state_sha256", String()))) {
+		_solers_free_capture_viewport(p_data);
+		Dictionary failure = _capture_error("CAPTURE_RENDER_STATE_CHANGED", "The World3D render state changed while the requested frame was rendering.", true);
+		Dictionary data;
+		data["requested_render_state_sha256"] = p_data.get("render_state_sha256", String());
+		data["readback_render_state_sha256"] = readback_sha256;
+		data["readback_render_state"] = readback_state;
+		failure["data"] = data;
+		return failure;
+	}
 	if (target == "editor") {
 		Node3DEditor *editor_3d = Node3DEditor::get_singleton();
 		Node3DEditorViewport *editor_viewport = editor_3d ? editor_3d->get_last_used_viewport() : nullptr;
@@ -643,12 +708,10 @@ Dictionary SolersObservationService::_finish_frame_gated_capture(const String &p
 			const int64_t post_draws_waited = (int64_t)render_post_draw_sequence - (int64_t)p_data.get("start_post_draw", 0);
 			const bool settled = post_draws_waited >= (int64_t)p_data.get("render_frames_required", 1);
 			data["editor_viewport"] = viewport_state;
-			data["material_preview"] = viewport_state.get("material_preview", false);
 			data["frame_valid"] = settled && (bool)viewport_state.get("frame_valid", false);
 			data["render_frames_required"] = p_data.get("render_frames_required", 1);
 			data["render_frames_waited"] = frames_waited;
 			data["render_post_draws_waited"] = post_draws_waited;
-			data["sdfgi_enabled"] = p_data.get("sdfgi_enabled", false);
 			result["data"] = data;
 		}
 		return _attach_render_receipt(result, p_data);
@@ -669,12 +732,10 @@ Dictionary SolersObservationService::_finish_frame_gated_capture(const String &p
 		const int64_t frames_waited = (int64_t)Engine::get_singleton()->get_frames_drawn() - (int64_t)p_data.get("start_frame", 0);
 		const int64_t post_draws_waited = (int64_t)render_post_draw_sequence - (int64_t)p_data.get("start_post_draw", 0);
 		const bool settled = post_draws_waited >= (int64_t)p_data.get("render_frames_required", 1);
-		data["material_preview"] = true;
 		data["frame_valid"] = settled;
 		data["render_frames_required"] = p_data.get("render_frames_required", 1);
 		data["render_frames_waited"] = frames_waited;
 		data["render_post_draws_waited"] = post_draws_waited;
-		data["sdfgi_enabled"] = p_data.get("sdfgi_enabled", false);
 		for (const char *key : { "camera_path", "camera_forward_hit_node", "camera_forward_hit_distance", "orientation", "axis", "direction", "section_position", "focus_paths", "view_spec_hash" }) {
 			if (p_data.has(key)) {
 				data[key] = p_data[key];
@@ -765,6 +826,15 @@ Dictionary SolersObservationService::_begin_scene_view_capture(const String &p_t
 	Ref<Environment> camera_environment;
 	SubViewport *viewport = memnew(SubViewport);
 	viewport->set_name("SolersCaptureViewport");
+	if (p_args.has("debug_draw")) {
+		PropertyInfo debug_draw_property;
+		const int debug_draw = (int)p_args["debug_draw"];
+		if (!ClassDB::get_property_info(SNAME("Viewport"), SNAME("debug_draw"), &debug_draw_property) || debug_draw < 0 || debug_draw >= debug_draw_property.hint_string.get_slice_count(",")) {
+			memdelete(viewport);
+			return _capture_error("INVALID_DEBUG_DRAW", "debug_draw must be a value from Godot's Viewport.debug_draw enum.", true);
+		}
+		viewport->set_debug_draw((Viewport::DebugDraw)debug_draw);
+	}
 	const Ref<World3D> world = world_viewport->find_world_3d();
 	viewport->set_world_3d(world);
 	viewport->set_update_mode(SubViewport::UPDATE_ALWAYS);
@@ -881,8 +951,6 @@ Dictionary SolersObservationService::_begin_scene_view_capture(const String &p_t
 		extra["orientation"] = axis == Vector3::AXIS_Y ? String("Orthographic top view. Image up = -Z, image right = +X.") : vformat("Orthographic %s-axis view. Image up = +Y.", axis_name.to_upper());
 	}
 	camera->set_current(true);
-	const Ref<Environment> environment = _solers_capture_environment(world, camera_environment);
-	extra["sdfgi_enabled"] = environment.is_valid() && environment->is_sdfgi_enabled();
 	extra["render_frames_required"] = _solers_capture_settle_frames(world, camera_environment);
 
 	EditorNode *editor_node = EditorNode::get_singleton();
@@ -897,10 +965,11 @@ Dictionary SolersObservationService::_begin_scene_view_capture(const String &p_t
 		camera->look_at_from_position(camera->get_global_position(), orthographic_target, up);
 	}
 	extra["viewport_id"] = (int64_t)(uint64_t)viewport->get_instance_id();
+	extra["camera_id"] = (int64_t)(uint64_t)camera->get_instance_id();
 	extra["owns_viewport"] = true;
 	extra["viewport_rid"] = (int64_t)viewport->get_viewport_rid().get_id();
-	if (p_args.has("_source_state")) {
-		extra["source_state"] = p_args["_source_state"];
+	if (p_args.has("source_state")) {
+		extra["source_state"] = p_args["source_state"];
 	}
 	return _register_pending_capture(p_target, extra);
 }
@@ -912,6 +981,12 @@ Dictionary SolersObservationService::capture_viewport(const Dictionary &p_args) 
 	}
 
 	const String target = String(p_args.get("target", String())).strip_edges().to_lower();
+	if (target != "runtime" && !_solers_capture_source_is_current(p_args.get("source_state", Dictionary()))) {
+		return _capture_error("CAPTURE_SOURCE_CONFLICT", "The edited scene changed before capture started.", true);
+	}
+	if (p_args.has("debug_draw") && target != "camera" && target != "top_down" && target != "orthographic") {
+		return _capture_error("DEBUG_DRAW_TARGET_UNSUPPORTED", "debug_draw is available on transient camera and orthographic captures.", true);
+	}
 	if (target == "editor") {
 		EditorNode *editor_node = EditorNode::get_singleton();
 		if (!editor_node || editor_node->get_editor_main_screen()->get_selected_index() != EditorMainScreen::EDITOR_3D) {
@@ -923,8 +998,8 @@ Dictionary SolersObservationService::capture_viewport(const Dictionary &p_args) 
 			return _capture_error("EDITOR_VIEWPORT_UNAVAILABLE", "The active 3D editor viewport is unavailable.", true);
 		}
 		Dictionary extra;
-		if (p_args.has("_source_state")) {
-			extra["source_state"] = p_args["_source_state"];
+		if (p_args.has("source_state")) {
+			extra["source_state"] = p_args["source_state"];
 		}
 		return _register_pending_capture("editor", extra);
 	}
@@ -1114,12 +1189,10 @@ Dictionary SolersObservationService::_serialize_node(Node *p_node, Node *p_edite
 		node_data["global_aabb"] = global_aabb;
 	}
 	if (Camera3D *camera = Object::cast_to<Camera3D>(p_node)) {
-		Array containing_geometry;
 		const Vector3 origin = camera->get_global_position();
 		const Vector3 forward = -camera->get_global_transform().basis.get_column(2).normalized();
 		node_data["camera_forward"] = _solers_vector3_array(forward);
 		if (p_edited_root) {
-			_solers_collect_geometry_containing_point(p_edited_root, p_edited_root, origin, containing_geometry);
 			real_t hit_distance = -1;
 			String hit_path;
 			_solers_collect_ray_hit(p_edited_root, p_edited_root, origin, forward, hit_distance, hit_path);
@@ -1128,7 +1201,6 @@ Dictionary SolersObservationService::_serialize_node(Node *p_node, Node *p_edite
 				node_data["camera_forward_hit_distance"] = hit_distance;
 			}
 		}
-		node_data["camera_inside_geometry"] = containing_geometry;
 	}
 	Dictionary resource_properties;
 	List<PropertyInfo> properties;

@@ -39,6 +39,8 @@
 
 class Image;
 class ScriptEditorDebugger;
+class Camera3D;
+class Viewport;
 
 class SolersObservationService : public Object {
 	GDCLASS(SolersObservationService, Object);
@@ -76,6 +78,7 @@ class SolersObservationService : public Object {
 	Dictionary _capture_error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
 	Dictionary _runtime_capture_unavailable() const;
 	Dictionary _capture_image(const Ref<Image> &p_image, const String &p_target, const String &p_capture_id = String());
+	Dictionary _render_state_for_pending(const Dictionary &p_pending) const;
 	Dictionary _attach_render_receipt(Dictionary p_result, const Dictionary &p_pending);
 	Dictionary _register_pending_capture(const String &p_target, const Dictionary &p_extra);
 	Dictionary _poll_pending_capture(const String &p_capture_id);
@@ -101,7 +104,8 @@ protected:
 
 public:
 	static int get_capture_settle_frame_count(bool p_sdfgi_enabled, int p_convergence_setting);
-	static Dictionary image_statistics(const Ref<Image> &p_image);
+	static String render_state_fingerprint(const Dictionary &p_state);
+	Dictionary describe_render_state(Viewport *p_viewport, Camera3D *p_camera = nullptr, Node *p_scene_root = nullptr) const;
 	Dictionary get_project_info() const;
 	Dictionary get_project_settings_summary() const;
 	Dictionary list_project_files(int p_max_files = 512) const;

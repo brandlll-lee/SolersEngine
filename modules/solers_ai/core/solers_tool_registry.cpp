@@ -1543,40 +1543,7 @@ void SolersToolRegistry::_register_observation_tools() {
 				}
 				return _ok(file); }, _access_by_arg("read", "project:", "path"), {}, {}, SolersToolUiKind::READ);
 	_add_observe("runtime.observe", "Observe the running game through Godot's native debugger. Query lifecycle events, the remote SceneTree, selected object properties, paused stack frames, or one performance sample.", R"({"type":"object","properties":{"target":{"type":"string","enum":["events","tree","objects","stack","performance"]},"since_cursor":{"type":"integer","minimum":0},"include_events":{"type":"boolean"},"max_events":{"type":"integer","minimum":0,"maximum":256},"object_ids":{"type":"array","items":{"type":"integer","minimum":1},"minItems":1,"maxItems":16,"uniqueItems":true},"properties":{"type":"array","items":{"type":"string","minLength":1},"maxItems":64,"uniqueItems":true},"max_results":{"type":"integer","minimum":1,"maximum":512}},"additionalProperties":false})", [this, obs](const SolersToolContext &, const Dictionary &a) { return _ok(obs->observe_runtime(a)); }, {}, [this, obs](const SolersToolContext &, const Dictionary &a) { return _ok(obs->observe_runtime(a)); }, [obs](const SolersToolContext &, const Dictionary &a) { return obs->is_runtime_observation_ready(a); });
-	_add_observe_exposed("render.capture", "Capture content-addressed visual evidence from an explicit native state. Edited-scene captures require the history/version returned by object.query or object.transaction; the render receipt binds that state to the viewport ObjectID/RID, render frames, and image hash.", R"({"type":"object","properties":{"target":{"type":"string","enum":["editor","camera","top_down","orthographic","runtime"]},"source_state":{"type":"object","properties":{"history_id":{"type":"integer"},"version":{"type":"integer","minimum":0},"root_object_id":{"type":"integer"}},"required":["history_id","version"],"additionalProperties":true},"node_path":{"type":"string"},"axis":{"type":"string","enum":["x","y","z"]},"direction":{"type":"string","enum":["positive","negative"]},"focus_paths":{"type":"array","items":{"type":"string"}},"section_position":{"type":"number"}},"required":["target"],"additionalProperties":false})", SolersToolExposure::DIRECT, [this, obs](const SolersToolContext &, const Dictionary &a) {
-				Dictionary args = a.duplicate(true);
-				if (String(a.get("target", String())) != "runtime") {
-					const Dictionary expected = a.get("source_state", Dictionary());
-					const Dictionary actual = _solers_scene_state_receipt();
-					if (!_solers_scene_state_matches(expected, actual)) {
-						Dictionary failure = _error("CAPTURE_SOURCE_CONFLICT", "The edited scene changed before capture started.");
-						Dictionary data;
-						data["expected_state"] = expected;
-						data["actual_state"] = actual;
-						failure["data"] = data;
-						return failure;
-					}
-					args["_source_state"] = actual;
-				}
-				return obs->capture_viewport(args); }, {}, false, [this, obs](const SolersToolContext &, const Dictionary &a) {
-				Dictionary result = obs->poll_viewport_capture(a);
-				Dictionary data = result.get("data", Dictionary());
-				if ((bool)result.get("ok", false) && String(data.get("status", String())) == "complete" && String(data.get("target", String())) != "runtime") {
-					Dictionary receipt = data.get("render_receipt", Dictionary());
-					const Dictionary source = receipt.get("source_state", Dictionary());
-					const Dictionary actual = _solers_scene_state_receipt();
-					const bool matches = _solers_scene_state_matches(source, actual);
-					receipt["state_at_readback"] = actual;
-					receipt["source_state_match"] = matches;
-					data["render_receipt"] = receipt;
-					result["data"] = data;
-					if (!matches) {
-						Dictionary failure = _error("CAPTURE_SOURCE_CHANGED", "The edited scene changed while the requested viewport frame was rendering.");
-						failure["data"] = data;
-						return failure;
-					}
-				}
-				return result; }, [obs](const SolersToolContext &, const Dictionary &a) { return obs->is_viewport_capture_ready(a); }, SolersToolUiKind::CAPTURE);
+	_add_observe_exposed("render.capture", "Capture content-addressed visual evidence from an explicit native state. Edited-scene captures require the history/version returned by object.query or object.transaction; the receipt binds the image to the exact World3D render-state fingerprint. debug_draw uses Godot's Viewport enum; inspect it with engine.describe.", R"({"type":"object","properties":{"target":{"type":"string","enum":["editor","camera","top_down","orthographic","runtime"]},"source_state":{"type":"object","properties":{"history_id":{"type":"integer"},"version":{"type":"integer","minimum":0},"root_object_id":{"type":"integer"}},"required":["history_id","version"],"additionalProperties":true},"node_path":{"type":"string"},"axis":{"type":"string","enum":["x","y","z"]},"direction":{"type":"string","enum":["positive","negative"]},"focus_paths":{"type":"array","items":{"type":"string"}},"section_position":{"type":"number"},"debug_draw":{"type":"integer","minimum":0}},"required":["target"],"additionalProperties":false})", SolersToolExposure::DIRECT, [obs](const SolersToolContext &, const Dictionary &a) { return obs->capture_viewport(a); }, {}, false, [obs](const SolersToolContext &, const Dictionary &a) { return obs->poll_viewport_capture(a); }, [obs](const SolersToolContext &, const Dictionary &a) { return obs->is_viewport_capture_ready(a); }, SolersToolUiKind::CAPTURE);
 
 	if (resource_service) {
 		SolersResourceService *svc = resource_service;

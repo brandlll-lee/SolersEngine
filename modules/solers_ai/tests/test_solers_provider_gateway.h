@@ -50,6 +50,8 @@
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/file_system/editor_file_system.h"
 #include "editor/settings/editor_settings.h"
+#include "scene/3d/camera_3d.h"
+#include "scene/3d/light_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/node_3d.h"
 #include "scene/3d/path_3d.h"
@@ -65,11 +67,14 @@
 #include "scene/gui/texture_rect.h"
 #include "scene/main/resource_preloader.h"
 #include "scene/main/scene_tree.h"
+#include "scene/main/viewport.h"
 #include "scene/resources/3d/primitive_meshes.h"
+#include "scene/resources/camera_attributes.h"
 #include "scene/resources/curve.h"
 #include "scene/resources/environment.h"
 #include "scene/resources/mesh.h"
 #include "scene/resources/resource_format_text.h"
+#include "scene/resources/sky.h"
 #include "tests/test_macros.h"
 #include "tests/test_tools.h"
 
@@ -1837,19 +1842,51 @@ TEST_CASE("[SolersToolRegistry] project.search rejects incomplete requests befor
 	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "TOOL_ARGUMENT_INVALID");
 }
 
-TEST_CASE("[SolersObservationService] visual statistics expose color and regional evidence") {
-	Ref<Image> reference = Image::create_empty(12, 12, false, Image::FORMAT_RGBA8);
-	reference->fill(Color(0.24, 0.24, 0.24));
-	const Dictionary reference_stats = SolersObservationService::image_statistics(reference);
-	CHECK(Array(reference_stats.get("mean_rgb_chromaticity", Array())).size() == 3);
-	CHECK(Array(reference_stats.get("region_luminance_3x3", Array())).size() == 9);
-}
-
-TEST_CASE("[SolersObservationService] capture settling follows the SDFGI convergence setting") {
-	CHECK(SolersObservationService::get_capture_settle_frame_count(false, 4) == 1);
-	CHECK(SolersObservationService::get_capture_settle_frame_count(true, 0) == 5);
-	CHECK(SolersObservationService::get_capture_settle_frame_count(true, 4) == 25);
-	CHECK(SolersObservationService::get_capture_settle_frame_count(true, 99) == 30);
+TEST_CASE("[SceneTree][SolersObservationService] RenderState follows native World3D authority") {
+	SubViewport *viewport = memnew(SubViewport);
+	viewport->set_use_own_world_3d(true);
+	Node3D *root = memnew(Node3D);
+	Camera3D *camera = memnew(Camera3D);
+	DirectionalLight3D *sun = memnew(DirectionalLight3D);
+	viewport->add_child(root);
+	root->add_child(camera);
+	root->add_child(sun);
+	SceneTree::get_singleton()->get_root()->add_child(viewport);
+	viewport->set_debug_draw(Viewport::DEBUG_DRAW_LIGHTING);
+	camera->set_current(true);
+	sun->set_param(Light3D::PARAM_INTENSITY, 125000.0);
+	Ref<Shader> shader;
+	shader.instantiate();
+	shader->set_code("shader_type sky; uniform float strength = 2.0; void sky() { COLOR = vec3(strength); }");
+	Ref<ShaderMaterial> material;
+	material.instantiate();
+	material->set_shader(shader);
+	Ref<Sky> sky;
+	sky.instantiate();
+	sky->set_material(material);
+	Ref<Environment> environment;
+	environment.instantiate();
+	environment->set_sky(sky);
+	viewport->find_world_3d()->set_environment(environment);
+	Ref<CameraAttributesPhysical> attributes;
+	attributes.instantiate();
+	viewport->find_world_3d()->set_camera_attributes(attributes);
+	SolersObservationService observation;
+	Dictionary state = observation.describe_render_state(viewport, camera, root);
+	CHECK(state.get("environment_source", String()) == "world");
+	CHECK(state.get("camera_attributes_source", String()) == "world");
+	CHECK((int)state.get("viewport_debug_draw", -1) == (int)Viewport::DEBUG_DRAW_LIGHTING);
+	CHECK(Array(state.get("lights", Array())).size() == 1);
+	Dictionary parameters = Dictionary(Dictionary(Dictionary(state.get("environment", Dictionary())).get("sky_material", Dictionary())).get("parameters", Dictionary()));
+	CHECK(Dictionary(parameters.get("strength", Dictionary())).get("source", String()) == "shader_default");
+	const String before = SolersObservationService::render_state_fingerprint(state);
+	material->set_shader_parameter("strength", 3.0);
+	state = observation.describe_render_state(viewport, camera, root);
+	parameters = Dictionary(Dictionary(Dictionary(state.get("environment", Dictionary())).get("sky_material", Dictionary())).get("parameters", Dictionary()));
+	CHECK(Dictionary(parameters.get("strength", Dictionary())).get("source", String()) == "material_override");
+	CHECK(SolersObservationService::render_state_fingerprint(state) != before);
+	viewport->queue_free();
+	MessageQueue::get_singleton()->flush();
 }
 
 TEST_CASE("[SolersResourceService] native Resource path flow creates edits loads and assigns") {

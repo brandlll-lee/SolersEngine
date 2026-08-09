@@ -78,13 +78,9 @@
 #include "scene/main/node.h"
 #include "scene/main/scene_tree.h"
 #include "scene/resources/3d/primitive_meshes.h"
-#include "scene/resources/3d/sky_material.h"
-#include "scene/resources/camera_attributes.h"
-#include "scene/resources/environment.h"
 #include "scene/resources/material.h"
 #include "scene/resources/mesh.h"
 #include "scene/resources/packed_scene.h"
-#include "scene/resources/sky.h"
 #include "servers/rendering/rendering_server.h"
 
 static constexpr int SOLERS_CLASS_SEARCH_DEFAULT_CAP = 40;
@@ -2635,76 +2631,6 @@ static Dictionary _solers_material_facts(MeshInstance3D *p_mesh_instance) {
 	return facts;
 }
 
-static Dictionary _solers_camera_attributes_facts(const Ref<CameraAttributes> &p_attributes) {
-	Dictionary facts;
-	if (p_attributes.is_null()) {
-		return facts;
-	}
-	facts["class_name"] = p_attributes->get_class();
-	facts["exposure_multiplier"] = p_attributes->get_exposure_multiplier();
-	facts["exposure_sensitivity"] = p_attributes->get_exposure_sensitivity();
-	facts["auto_exposure_enabled"] = p_attributes->is_auto_exposure_enabled();
-	if (const CameraAttributesPhysical *physical = Object::cast_to<CameraAttributesPhysical>(p_attributes.ptr())) {
-		facts["exposure_aperture"] = physical->get_aperture();
-		facts["exposure_shutter_speed"] = physical->get_shutter_speed();
-	}
-	return facts;
-}
-
-static Dictionary _solers_light_facts(Light3D *p_light) {
-	Dictionary facts;
-	const bool physical_units = GLOBAL_GET("rendering/lights_and_shadows/use_physical_light_units");
-	facts["use_physical_light_units"] = physical_units;
-	facts["light_color"] = _solers_color_array(p_light->get_color());
-	// PARAM_ENERGY is the dimensionless multiplier; PARAM_INTENSITY is lux/lumens
-	// when physical units are on. Report both ClassDB axes — never conflate them.
-	facts["light_energy"] = p_light->get_param(Light3D::PARAM_ENERGY);
-	facts["light_intensity"] = p_light->get_param(Light3D::PARAM_INTENSITY);
-	if (physical_units) {
-		if (p_light->get_light_type() == RSE::LIGHT_DIRECTIONAL) {
-			facts["light_intensity_lux"] = p_light->get_param(Light3D::PARAM_INTENSITY);
-		} else {
-			facts["light_intensity_lumens"] = p_light->get_param(Light3D::PARAM_INTENSITY);
-		}
-		facts["light_temperature"] = p_light->get_temperature();
-	}
-	facts["light_indirect_energy"] = p_light->get_param(Light3D::PARAM_INDIRECT_ENERGY);
-	facts["light_specular"] = p_light->get_param(Light3D::PARAM_SPECULAR);
-	facts["shadow_enabled"] = p_light->has_shadow();
-	facts["editor_only"] = p_light->is_editor_only();
-	facts["cull_mask"] = (int64_t)p_light->get_cull_mask();
-	facts["bake_mode"] = (int)p_light->get_bake_mode();
-	if (DirectionalLight3D *directional = Object::cast_to<DirectionalLight3D>(p_light)) {
-		facts["sky_mode"] = (int)directional->get_sky_mode();
-		facts["light_angular_distance"] = directional->get_param(Light3D::PARAM_SIZE);
-	}
-	return facts;
-}
-
-static Dictionary _solers_environment_facts(const Ref<Environment> &p_environment) {
-	Dictionary facts;
-	facts["background"] = (int)p_environment->get_background();
-	facts["background_color"] = _solers_color_array(p_environment->get_bg_color());
-	facts["background_energy"] = p_environment->get_bg_energy_multiplier();
-	facts["background_intensity"] = p_environment->get_bg_intensity();
-	facts["sky"] = _solers_resource_id(p_environment->get_sky());
-	facts["ambient_source"] = (int)p_environment->get_ambient_source();
-	facts["ambient_color"] = _solers_color_array(p_environment->get_ambient_light_color());
-	facts["ambient_energy"] = p_environment->get_ambient_light_energy();
-	facts["ambient_sky_contribution"] = p_environment->get_ambient_light_sky_contribution();
-	facts["reflection_source"] = (int)p_environment->get_reflection_source();
-	facts["tonemap_mode"] = (int)p_environment->get_tonemapper();
-	facts["tonemap_exposure"] = p_environment->get_tonemap_exposure();
-	facts["tonemap_white"] = p_environment->get_tonemap_white();
-	facts["glow_enabled"] = p_environment->is_glow_enabled();
-	facts["ssao_enabled"] = p_environment->is_ssao_enabled();
-	facts["ssil_enabled"] = p_environment->is_ssil_enabled();
-	facts["sdfgi_enabled"] = p_environment->is_sdfgi_enabled();
-	facts["sdfgi_read_sky_light"] = p_environment->is_sdfgi_reading_sky_light();
-	facts["fog_enabled"] = p_environment->is_fog_enabled();
-	return facts;
-}
-
 // Each branch is keyed on the engine's own class, which is the authoritative
 // statement of which subsystem owns this node; there is no generic way to read
 // a bone pose or a resolved material out of a property list.
@@ -2747,23 +2673,6 @@ Dictionary SolersReflectionService::_subsystem_facts(Node *p_node) const {
 		}
 		facts["material"] = material;
 #endif
-	} else if (Light3D *light = Object::cast_to<Light3D>(p_node)) {
-		facts["light"] = _solers_light_facts(light);
-	} else if (Camera3D *camera = Object::cast_to<Camera3D>(p_node)) {
-		Dictionary camera_facts;
-		camera_facts["current"] = camera->is_current();
-		camera_facts["attributes"] = _solers_camera_attributes_facts(camera->get_attributes());
-		facts["camera"] = camera_facts;
-	} else if (WorldEnvironment *world_environment = Object::cast_to<WorldEnvironment>(p_node)) {
-		const Ref<Environment> environment = world_environment->get_environment();
-		if (environment.is_valid()) {
-			facts["environment"] = _solers_environment_facts(environment);
-		} else {
-			// An empty WorldEnvironment is the usual reason a scene renders
-			// against the fallback gray instead of the authored sky.
-			facts["environment_missing"] = true;
-		}
-		facts["camera_attributes"] = _solers_camera_attributes_facts(world_environment->get_camera_attributes());
 	}
 	return facts;
 }
