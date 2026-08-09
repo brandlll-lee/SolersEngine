@@ -1533,7 +1533,10 @@ void SolersAgentSession::_poll_compaction() {
 
 	if (client->is_failed()) {
 		turn_wire_body_bytes += client->get_request_body_bytes();
-		const Dictionary error = client->get_error();
+		Dictionary error = client->get_error();
+		if (String(error.get("message", String())).strip_edges().is_empty()) {
+			error = _error("COMPACTION_FAILED", "The context compaction request failed without provider error details.").get("error", Dictionary());
+		}
 		if (_schedule_llm_retry(error)) {
 			return;
 		}
