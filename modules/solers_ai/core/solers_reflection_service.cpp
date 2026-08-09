@@ -167,7 +167,7 @@ enum class SolersBatchOperationKind {
 	UNKNOWN,
 	CREATE_NODE,
 	INSTANTIATE_SCENE,
-	SET_PROPERTY,
+	UPDATE,
 	REPARENT,
 	CONNECT_SIGNAL,
 	ATTACH_SCRIPT,
@@ -182,8 +182,8 @@ static SolersBatchOperationKind _solers_batch_operation_kind(const String &p_nam
 	if (p_name == "instantiate") {
 		return SolersBatchOperationKind::INSTANTIATE_SCENE;
 	}
-	if (p_name == "set_property") {
-		return SolersBatchOperationKind::SET_PROPERTY;
+	if (p_name == "update") {
+		return SolersBatchOperationKind::UPDATE;
 	}
 	if (p_name == "reparent") {
 		return SolersBatchOperationKind::REPARENT;
@@ -201,24 +201,6 @@ static SolersBatchOperationKind _solers_batch_operation_kind(const String &p_nam
 		return SolersBatchOperationKind::BAKE_CSG;
 	}
 	return SolersBatchOperationKind::UNKNOWN;
-}
-
-static Dictionary _solers_normalize_batch_operation(const Dictionary &p_operation, SolersBatchOperationKind p_kind) {
-	Dictionary operation = p_operation.duplicate(true);
-	switch (p_kind) {
-		case SolersBatchOperationKind::SET_PROPERTY:
-		case SolersBatchOperationKind::REPARENT:
-		case SolersBatchOperationKind::ATTACH_SCRIPT:
-		case SolersBatchOperationKind::REMOVE_NODE:
-		case SolersBatchOperationKind::BAKE_CSG:
-			if (!operation.has("node_path") && operation.has("path")) {
-				operation["node_path"] = operation["path"];
-			}
-			break;
-		default:
-			break;
-	}
-	return operation;
 }
 
 static void _solers_add_scene_access(Array &r_accesses, const String &p_mode, const String &p_path) {
@@ -239,7 +221,6 @@ static Array _solers_vector3_array(const Vector3 &p_vector) {
 void SolersReflectionService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("search_classes", "args"), &SolersReflectionService::search_classes);
 	ClassDB::bind_method(D_METHOD("introspect_class", "args"), &SolersReflectionService::introspect_class);
-	ClassDB::bind_method(D_METHOD("set_property", "args"), &SolersReflectionService::set_property);
 	ClassDB::bind_method(D_METHOD("batch", "args"), &SolersReflectionService::batch);
 	ClassDB::bind_method(D_METHOD("open_scene", "args"), &SolersReflectionService::open_scene);
 }
@@ -688,100 +669,70 @@ Dictionary SolersReflectionService::introspect_class(const Dictionary &p_args) {
 	return _ok(data);
 }
 
-Dictionary SolersReflectionService::set_property(const Dictionary &p_args) {
+Dictionary SolersReflectionService::_update_node(const Dictionary &p_args) {
 	const String node_path = p_args.get("node_path", ".");
-	const String property = p_args.get("property", String());
-	if (property.strip_edges().is_empty()) {
-		return _error("INVALID_ARGUMENT", "property is required.");
+	const Variant properties_value = p_args.get("properties", Variant());
+	if (properties_value.get_type() != Variant::DICTIONARY || Dictionary(properties_value).is_empty()) {
+		return _error("INVALID_ARGUMENT", "properties must be a non-empty object.");
 	}
-	if (!p_args.has("value")) {
-		return _error("INVALID_ARGUMENT", "value is required.");
-	}
-
 	String error;
 	Node *node = _resolve_node(node_path, error);
 	if (!node) {
 		return _error("NODE_NOT_FOUND", error);
 	}
-
-	if (property.find("/") >= 0 || property.find(":") >= 0) {
-		const String normalized = property.replace(":", "/");
-		const Vector<StringName> subnames = _property_path_subnames(property);
-		bool valid = false;
-		const Variant old_value = node->get_indexed(subnames, &valid);
-		if (!valid) {
-			return _error("INVALID_PROPERTY_PATH", vformat("Property path '%s' is not valid on %s. Use '/' for nested resource properties, e.g. environment/ambient_light_energy.", normalized, node->get_class()));
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	ERR_FAIL_NULL_V(undo_redo, _error("UNDO_REDO_UNAVAILABLE", "EditorUndoRedoManager is not available.", false));
+	const Dictionary properties = properties_value;
+	Dictionary applied;
+	for (const Variant *key = properties.next(nullptr); key; key = properties.next(key)) {
+		const String property = String(*key).strip_edges();
+		if (property.is_empty()) {
+			return _error("INVALID_ARGUMENT", "Property names must not be empty.");
 		}
-
-		EditorInterface *editor_interface = EditorInterface::get_singleton();
-		ERR_FAIL_NULL_V(editor_interface, _error("EDITOR_INTERFACE_UNAVAILABLE", "EditorInterface is not available.", false));
-		EditorUndoRedoManager *undo_redo = editor_interface->get_editor_undo_redo();
-		ERR_FAIL_NULL_V(undo_redo, _error("UNDO_REDO_UNAVAILABLE", "EditorUndoRedoManager is not available.", false));
-
-		const NodePath property_path = NodePath(Vector<StringName>(), subnames, false);
-		if (!batch_action_active) {
-			undo_redo->create_action(vformat("Solers: Set %s.%s", node->get_class(), normalized), UndoRedo::MERGE_DISABLE, node);
-		} else {
-			bool set_valid = false;
-			node->set_indexed(subnames, p_args["value"], &set_valid);
-			if (!set_valid) {
+		if (property.contains("/") || property.contains(":")) {
+			const String normalized = property.replace(":", "/");
+			const Vector<StringName> subnames = _property_path_subnames(normalized);
+			bool valid = false;
+			const Variant old_value = node->get_indexed(subnames, &valid);
+			if (!valid) {
+				return _error("INVALID_PROPERTY_PATH", vformat("Property path '%s' is not valid on %s.", normalized, node->get_class()));
+			}
+			node->set_indexed(subnames, properties[*key], &valid);
+			if (!valid) {
+				node->set_indexed(subnames, old_value);
 				return _error("PROPERTY_SET_FAILED", vformat("Setting property path '%s' failed on %s.", normalized, node->get_class()));
 			}
+			const NodePath property_path = NodePath(Vector<StringName>(), subnames, false);
+			undo_redo->add_do_method(node, "set_indexed", property_path, properties[*key]);
+			undo_redo->add_undo_method(node, "set_indexed", property_path, old_value);
+			applied[normalized] = solers_summarize_display_value(node->get_indexed(subnames));
+			continue;
 		}
-		undo_redo->add_do_method(node, "set_indexed", property_path, p_args["value"]);
-		undo_redo->add_undo_method(node, "set_indexed", property_path, old_value);
-		if (!batch_action_active) {
-			undo_redo->commit_action();
+		const StringName property_name(property);
+		Variant value;
+		if (!_coerce_value(node, property_name, properties[*key], value, error)) {
+			return _error("INVALID_PROPERTY_VALUE", error);
 		}
-
-		String safe_path;
-		_safe_node_path(node, safe_path);
-		Dictionary data;
-		data["node_path"] = safe_path;
-		data["property"] = normalized;
-		data["value"] = solers_summarize_display_value(node->get_indexed(subnames));
-		return _ok(data);
+		const Variant old_value = node->get(property_name);
+		bool valid = false;
+		node->set(property_name, value, &valid);
+		const Variant actual = node->get(property_name);
+		if (!valid || (value.get_type() == Variant::OBJECT && actual != value)) {
+			node->set(property_name, old_value);
+			return _error("PROPERTY_SET_FAILED", vformat("Setting property '%s' failed on %s.", property, node->get_class()));
+		}
+		undo_redo->add_do_property(node, property_name, value);
+		undo_redo->add_undo_property(node, property_name, old_value);
+		applied[property] = solers_summarize_display_value(actual);
+		if (property == "current" && value && Object::cast_to<Camera3D>(node)) {
+			Object::cast_to<Camera3D>(node)->make_current();
+		}
 	}
-
-	const StringName property_sn = StringName(property);
-	Variant coerced;
-	if (!_coerce_value(node, property_sn, p_args["value"], coerced, error)) {
-		return _error("INVALID_PROPERTY_VALUE", error);
-	}
-
-	EditorInterface *editor_interface = EditorInterface::get_singleton();
-	ERR_FAIL_NULL_V(editor_interface, _error("EDITOR_INTERFACE_UNAVAILABLE", "EditorInterface is not available.", false));
-	EditorUndoRedoManager *undo_redo = editor_interface->get_editor_undo_redo();
-	ERR_FAIL_NULL_V(undo_redo, _error("UNDO_REDO_UNAVAILABLE", "EditorUndoRedoManager is not available.", false));
-
-	const Variant old_value = node->get(property_sn);
-	bool valid = false;
-	node->set(property_sn, coerced, &valid);
-	if (!valid || (coerced.get_type() == Variant::OBJECT && node->get(property_sn) != coerced)) {
-		node->set(property_sn, old_value);
-		return _error("PROPERTY_SET_FAILED", vformat("Setting property '%s' failed on %s.", property, node->get_class()));
-	}
-
-	if (!batch_action_active) {
-		undo_redo->create_action(vformat("Solers: Set %s.%s", node->get_class(), property), UndoRedo::MERGE_DISABLE, node);
-	}
-	undo_redo->add_do_property(node, property_sn, coerced);
-	undo_redo->add_undo_property(node, property_sn, old_value);
-	if (!batch_action_active) {
-		undo_redo->commit_action(false);
-	}
-
-	if (property == "current" && coerced && Object::cast_to<Camera3D>(node)) {
-		Camera3D *camera = Object::cast_to<Camera3D>(node);
-		camera->make_current();
-	}
-
 	String safe_path;
 	_safe_node_path(node, safe_path);
 	Dictionary data;
 	data["node_path"] = safe_path;
-	data["property"] = property;
-	data["value"] = solers_summarize_display_value(node->get(property_sn));
+	data["properties"] = applied;
 	return _ok(data);
 }
 
@@ -1388,7 +1339,7 @@ static bool _solers_batch_operation_mutates(SolersBatchOperationKind p_kind) {
 	switch (p_kind) {
 		case SolersBatchOperationKind::CREATE_NODE:
 		case SolersBatchOperationKind::INSTANTIATE_SCENE:
-		case SolersBatchOperationKind::SET_PROPERTY:
+		case SolersBatchOperationKind::UPDATE:
 		case SolersBatchOperationKind::REPARENT:
 		case SolersBatchOperationKind::CONNECT_SIGNAL:
 		case SolersBatchOperationKind::ATTACH_SCRIPT:
@@ -1437,10 +1388,9 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 			error_count++;
 			break;
 		}
-		const Dictionary raw_op = operations[i];
-		const String kind = raw_op.get("op", String());
+		const Dictionary op = operations[i];
+		const String kind = op.get("op", String());
 		const SolersBatchOperationKind operation_kind = _solers_batch_operation_kind(kind);
-		const Dictionary op = _solers_normalize_batch_operation(raw_op, operation_kind);
 		Dictionary result;
 		switch (operation_kind) {
 			case SolersBatchOperationKind::CREATE_NODE:
@@ -1449,8 +1399,8 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 			case SolersBatchOperationKind::INSTANTIATE_SCENE:
 				result = instantiate_scene(op);
 				break;
-			case SolersBatchOperationKind::SET_PROPERTY:
-				result = set_property(op);
+			case SolersBatchOperationKind::UPDATE:
+				result = _update_node(op);
 				break;
 			case SolersBatchOperationKind::REPARENT:
 				result = _reparent_node(op);
@@ -1475,12 +1425,6 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 		entry["index"] = i;
 		entry["op"] = kind;
 		entry["result"] = result;
-		if (!(bool)result.get("ok", false) && op.has("property")) {
-			Dictionary error = result.get("error", Dictionary());
-			error["hint"] = "For nested resource properties, use '/' paths such as environment/ambient_light_energy.";
-			result["error"] = error;
-			entry["result"] = result;
-		}
 		results.push_back(entry);
 		if ((bool)result.get("ok", false)) {
 			ok_count++;
@@ -1534,6 +1478,9 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 			}
 			if (result_data.has("native_facts")) {
 				receipt["native_facts"] = result_data["native_facts"];
+			}
+			if (result_data.has("properties")) {
+				receipt["properties"] = result_data["properties"];
 			}
 			path_receipts.push_back(receipt);
 		}
@@ -2379,9 +2326,8 @@ Array SolersReflectionService::resolve_batch_resource_access(const Dictionary &p
 			_solers_add_scene_access(accesses, "write", "*");
 			continue;
 		}
-		const Dictionary raw_op = operations[i];
-		const SolersBatchOperationKind kind = _solers_batch_operation_kind(raw_op.get("op", String()));
-		const Dictionary op = _solers_normalize_batch_operation(raw_op, kind);
+		const Dictionary op = operations[i];
+		const SolersBatchOperationKind kind = _solers_batch_operation_kind(op.get("op", String()));
 		switch (kind) {
 			case SolersBatchOperationKind::CREATE_NODE:
 				_solers_add_scene_access(accesses, "write", op.get("parent_path", op.get("parent", ".")));
@@ -2393,7 +2339,7 @@ Array SolersReflectionService::resolve_batch_resource_access(const Dictionary &p
 				accesses.push_back(resource);
 				_solers_add_scene_access(accesses, "write", op.get("parent_path", "."));
 			} break;
-			case SolersBatchOperationKind::SET_PROPERTY:
+			case SolersBatchOperationKind::UPDATE:
 			case SolersBatchOperationKind::ATTACH_SCRIPT:
 			case SolersBatchOperationKind::REMOVE_NODE:
 			case SolersBatchOperationKind::BAKE_CSG:
@@ -2448,14 +2394,6 @@ static Array _solers_color_array(const Color &p_color) {
 	return values;
 }
 
-static String _solers_resource_id(const Ref<Resource> &p_resource) {
-	if (p_resource.is_null()) {
-		return String();
-	}
-	const String path = p_resource->get_path();
-	return path.is_empty() ? p_resource->get_class() : vformat("%s (%s)", path, p_resource->get_class());
-}
-
 static Dictionary _solers_skeleton_facts(Skeleton3D *p_skeleton) {
 	Dictionary facts;
 	const Transform3D skeleton_to_world = p_skeleton->get_global_transform();
@@ -2505,7 +2443,7 @@ static Dictionary _solers_animation_facts(AnimationMixer *p_mixer) {
 		if (tree->is_state_invalid()) {
 			facts["tree_invalid_reason"] = tree->get_editor_error_message();
 		}
-		facts["tree_root"] = _solers_resource_id(tree->get_root_animation_node());
+		facts["tree_root"] = solers_summarize_display_value(tree->get_root_animation_node());
 		const Ref<AnimationNodeStateMachinePlayback> state_machine = tree->get(SNAME("parameters/playback"));
 		if (state_machine.is_valid()) {
 			facts["state_machine_playing"] = state_machine->is_playing();
@@ -2523,8 +2461,8 @@ static Dictionary _solers_particles_facts(GeometryInstance3D *p_particles) {
 		facts["amount"] = gpu->get_amount();
 		facts["lifetime"] = gpu->get_lifetime();
 		facts["local_coords"] = gpu->get_use_local_coordinates();
-		facts["process_material"] = _solers_resource_id(gpu->get_process_material());
-		facts["draw_pass_mesh"] = gpu->get_draw_passes() > 0 ? _solers_resource_id(gpu->get_draw_pass_mesh(0)) : String();
+		facts["process_material"] = solers_summarize_display_value(gpu->get_process_material());
+		facts["draw_pass_mesh"] = gpu->get_draw_passes() > 0 ? solers_summarize_display_value(gpu->get_draw_pass_mesh(0)) : solers_summarize_display_value(Ref<Mesh>());
 		facts["visibility_aabb"] = _solers_aabb_data(gpu->get_visibility_aabb());
 		// The server holds the only live answer to "did anything actually
 		// spawn, and where": a configured emitter can still draw nothing.
@@ -2537,7 +2475,7 @@ static Dictionary _solers_particles_facts(GeometryInstance3D *p_particles) {
 		facts["amount"] = cpu->get_amount();
 		facts["lifetime"] = cpu->get_lifetime();
 		facts["local_coords"] = cpu->get_use_local_coordinates();
-		facts["draw_pass_mesh"] = _solers_resource_id(cpu->get_mesh());
+		facts["draw_pass_mesh"] = solers_summarize_display_value(cpu->get_mesh());
 	}
 	return facts;
 }
@@ -2545,7 +2483,7 @@ static Dictionary _solers_particles_facts(GeometryInstance3D *p_particles) {
 static Dictionary _solers_material_facts(MeshInstance3D *p_mesh_instance) {
 	Dictionary facts;
 	const Ref<Mesh> mesh = p_mesh_instance->get_mesh();
-	facts["mesh"] = _solers_resource_id(mesh);
+	facts["mesh"] = solers_summarize_display_value(mesh);
 	if (mesh.is_null()) {
 		return facts;
 	}
@@ -2555,12 +2493,12 @@ static Dictionary _solers_material_facts(MeshInstance3D *p_mesh_instance) {
 		surface["index"] = i;
 		String source;
 		const Ref<Material> active = _solers_resolved_material(p_mesh_instance, i, &source);
-		surface["active_material"] = _solers_resource_id(active);
+		surface["active_material"] = solers_summarize_display_value(active);
 		surface["source"] = source;
 		if (BaseMaterial3D *base_material = Object::cast_to<BaseMaterial3D>(active.ptr())) {
 			surface["shading_mode"] = (int)base_material->get_shading_mode();
 			surface["albedo"] = _solers_color_array(base_material->get_albedo());
-			surface["albedo_texture"] = _solers_resource_id(base_material->get_texture(BaseMaterial3D::TEXTURE_ALBEDO));
+			surface["albedo_texture"] = solers_summarize_display_value(base_material->get_texture(BaseMaterial3D::TEXTURE_ALBEDO));
 			surface["metallic"] = base_material->get_metallic();
 			surface["roughness"] = base_material->get_roughness();
 			surface["transparency"] = (int)base_material->get_transparency();
@@ -2568,7 +2506,7 @@ static Dictionary _solers_material_facts(MeshInstance3D *p_mesh_instance) {
 		surfaces.push_back(surface);
 	}
 	facts["surfaces"] = surfaces;
-	facts["material_overlay"] = _solers_resource_id(p_mesh_instance->get_material_overlay());
+	facts["material_overlay"] = solers_summarize_display_value(p_mesh_instance->get_material_overlay());
 	return facts;
 }
 
@@ -2604,10 +2542,10 @@ Dictionary SolersReflectionService::_subsystem_facts(Node *p_node) const {
 		Dictionary material;
 		const Variant csg_material = ClassDB::has_property(p_node->get_class(), SNAME("material")) ? p_node->get("material") : Variant();
 		if (csg_material.get_type() == Variant::OBJECT) {
-			material["csg_material"] = _solers_resource_id(csg_material);
+			material["csg_material"] = solers_summarize_display_value(csg_material);
 		}
 		if (GeometryInstance3D *geometry = Object::cast_to<GeometryInstance3D>(p_node)) {
-			material["material_override"] = _solers_resource_id(geometry->get_material_override());
+			material["material_override"] = solers_summarize_display_value(geometry->get_material_override());
 			const bool has_override = geometry->get_material_override().is_valid();
 			const bool has_csg = csg_material.get_type() == Variant::OBJECT && ((Ref<Resource>)csg_material).is_valid();
 			material["resolved"] = has_override ? "material_override" : (has_csg ? "csg_material" : "none");

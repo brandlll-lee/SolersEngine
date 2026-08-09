@@ -88,6 +88,7 @@ class SolersReflectionService : public Object {
 	Array _nested_instance_scenes(const Array &p_results) const;
 
 	Dictionary _create_node(const Dictionary &p_args);
+	Dictionary _update_node(const Dictionary &p_args);
 	Dictionary _reparent_node(const Dictionary &p_args);
 	Dictionary _connect_signal(const Dictionary &p_args);
 	Dictionary _attach_script(const Dictionary &p_args);
@@ -110,8 +111,6 @@ public:
 	Dictionary search_classes(const Dictionary &p_args);
 
 	Dictionary introspect_class(const Dictionary &p_args);
-
-	Dictionary set_property(const Dictionary &p_args);
 
 	Dictionary inspect_nodes(const Dictionary &p_args);
 	Dictionary instantiate_scene(const Dictionary &p_args);
