@@ -58,14 +58,12 @@
 
 #include "modules/solers_ai/core/solers_geometry_facts.h"
 #include "modules/solers_ai/core/solers_secret_store.h"
+#include "modules/solers_ai/generated/terrain3d_lock.gen.h"
 #include "modules/solers_ai/plugins/solers_plugin.h"
 #include "modules/zip/zip_reader.h"
 
 static constexpr const char *SOLERS_PLUGIN_LOCK_PATH = "res://.solers/plugins.lock.json";
 static constexpr const char *SOLERS_TERRAIN3D_ID = "terrain3d";
-static constexpr const char *SOLERS_TERRAIN3D_VERSION = "1.0.2-stable";
-static constexpr const char *SOLERS_TERRAIN3D_SHA256 = "a071850250ec5e596aa54da61c01d75768774eb379ee997584d426a45f4884a2";
-static constexpr const char *SOLERS_TERRAIN3D_ARCHIVE = "Terrain3D_v1.0.2-stable.zip";
 
 static Dictionary _solers_terrain3d_agent_contract() {
 	Dictionary contract;

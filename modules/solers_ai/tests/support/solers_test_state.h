@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  test_solers_provider_gateway.cpp                                      */
+/*  solers_test_state.h                                                   */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -28,4 +28,33 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#include "test_solers_provider_gateway.h"
+#pragma once
+
+#include "core/config/project_settings.h"
+#include "core/io/dir_access.h"
+
+class SolersTestPaths {
+	Vector<String> paths;
+
+	static void _remove(const String &p_path) {
+		const String absolute = ProjectSettings::get_singleton()->globalize_path(p_path);
+		if (DirAccess::dir_exists_absolute(absolute)) {
+			if (Ref<DirAccess> dir = DirAccess::open(absolute); dir.is_valid()) {
+				dir->erase_contents_recursive();
+			}
+		}
+		DirAccess::remove_absolute(absolute);
+	}
+
+public:
+	~SolersTestPaths() {
+		for (int i = paths.size() - 1; i >= 0; i--) {
+			_remove(paths[i]);
+		}
+	}
+
+	void add(const String &p_path) {
+		_remove(p_path);
+		paths.push_back(p_path);
+	}
+};

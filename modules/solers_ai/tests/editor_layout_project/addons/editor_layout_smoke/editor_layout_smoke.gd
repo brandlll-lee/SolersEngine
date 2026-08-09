@@ -1,6 +1,16 @@
 @tool
 extends EditorPlugin
 
+const IMPORT_PATH := "res://.solers_editor_import_contract.png"
+
+
+func _cleanup_editor_authority() -> void:
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(IMPORT_PATH))
+
+
+func _exit_tree() -> void:
+	_cleanup_editor_authority()
+
 
 func _check(condition: bool, message: String) -> bool:
 	if condition:
@@ -19,6 +29,56 @@ func _contains_button_text(node: Node, text: String) -> bool:
 	return false
 
 
+func _find_item(list: ItemList, text: String) -> int:
+	for index in list.item_count:
+		if list.get_item_text(index) == text:
+			return index
+	return -1
+
+
+func _check_editor_authority(base: Control, solers: Control) -> bool:
+	var editor_files := get_editor_interface().get_resource_filesystem()
+	var image := Image.create_empty(2, 2, false, Image.FORMAT_RGBA8)
+	image.fill(Color(0.25, 0.5, 0.75, 1.0))
+	if not _check(image.save_png(IMPORT_PATH) == OK, "Could not create the native import contract"):
+		return false
+	editor_files.update_file(IMPORT_PATH)
+	editor_files.reimport_files(PackedStringArray([IMPORT_PATH]))
+	if not _check(ResourceLoader.exists(IMPORT_PATH), "EditorFileSystem did not register the imported resource"):
+		return false
+
+	var filesystem_docks := base.find_children("*", "FileSystemDock", true, false)
+	if not _check(not filesystem_docks.is_empty(), "The native FileSystemDock is unavailable"):
+		return false
+	filesystem_docks[0].navigate_to_path("res://addons")
+	var input := solers.find_child("ComposerInput", true, false) as TextEdit
+	var popup := solers.find_child("MentionPopup", true, false) as Control
+	var list := solers.find_child("MentionList", true, false) as ItemList
+	if not _check(input != null and popup != null and list != null, "The context picker is unavailable"):
+		return false
+	input.text = "@"
+	input.set_caret_column(1)
+	input.emit_signal("text_changed")
+	await get_tree().process_frame
+	var files_index := _find_item(list, "Files")
+	if not _check(popup.visible and files_index >= 0, "The context picker did not expose project files"):
+		return false
+	list.select(files_index)
+	list.emit_signal("item_clicked", files_index, Vector2.ZERO, MOUSE_BUTTON_LEFT)
+	await get_tree().process_frame
+	var found_root_import := false
+	for index in list.item_count:
+		var mention: Dictionary = list.get_item_metadata(index).get("mention", {})
+		found_root_import = found_root_import or mention.get("path", "") == IMPORT_PATH
+	if not _check(found_root_import, "The context picker followed FileSystemDock browsing state instead of the project index"):
+		return false
+
+	input.text = ""
+	_cleanup_editor_authority()
+	editor_files.scan_sources()
+	return true
+
+
 func _enter_tree() -> void:
 	print("SOLERS_LAYOUT_TEST_START")
 	_check_layout.call_deferred()
@@ -29,7 +89,7 @@ func _check_layout() -> void:
 	await get_tree().process_frame
 
 	var base := get_editor_interface().get_base_control()
-	var solers := base.find_child("SolersChat", true, false)
+	var solers := base.find_child("SolersChat", true, false) as Control
 	if not _check(solers != null, "Solers chat is not mounted"):
 		return
 	if not _check(solers.get_parent().name == "EditorSidePanel", "Solers chat is not in the fixed left host"):
@@ -62,6 +122,8 @@ func _check_layout() -> void:
 
 	var secondary_tabs := base.find_child("DockSlotRightBL", true, false) as TabContainer
 	if not _check(secondary_tabs != null and secondary_tabs.get_popup() is PopupPanel, "Native dock context popup was replaced outside the palette slot"):
+		return
+	if not await _check_editor_authority(base, solers):
 		return
 
 	print("SOLERS_LAYOUT_TEST_PASS")

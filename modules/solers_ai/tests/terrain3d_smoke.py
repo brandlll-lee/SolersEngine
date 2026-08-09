@@ -4,7 +4,9 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-ARCHIVE = "Terrain3D_v1.0.2-stable.zip"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from terrain3d_bundle_builder import ARCHIVE_NAME
+
 PROJECT = """config_version=5
 
 [application]
@@ -82,7 +84,7 @@ def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("usage: terrain3d_smoke.py <editor-binary>")
     editor = Path(sys.argv[1]).resolve()
-    archive = editor.parent / "solers_bundles" / ARCHIVE
+    archive = editor.parent / "solers_bundles" / ARCHIVE_NAME
     if not editor.is_file() or not archive.is_file():
         raise SystemExit(f"missing editor or Terrain3D bundle: {editor}, {archive}")
 

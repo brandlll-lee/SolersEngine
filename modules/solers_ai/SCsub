@@ -13,6 +13,13 @@ env_solers_ai = env_modules.Clone()
 
 module_obj = []
 
+generated_terrain3d_lock = "#modules/solers_ai/generated/terrain3d_lock.gen.h"
+env_solers_ai.CommandNoCache(
+    generated_terrain3d_lock,
+    env.Value(terrain3d_bundle_builder.VERSION + terrain3d_bundle_builder.SHA256),
+    env_solers_ai.Run(terrain3d_bundle_builder.make_lock_header),
+)
+
 skill_sources = Glob("#modules/solers_ai/skills/*/SKILL.md")
 generated_skills_header = "#modules/solers_ai/generated/solers_builtin_skills.gen.h"
 env_solers_ai.CommandNoCache(
@@ -36,6 +43,7 @@ env_solers_ai.add_source_files(module_obj, "plugins/*.cpp")
 env_solers_ai.add_source_files(module_obj, "protocol/*.cpp")
 env_solers_ai.Depends(module_obj, generated_skills_header)
 env_solers_ai.Depends(module_obj, generated_svg_header)
+env_solers_ai.Depends(module_obj, generated_terrain3d_lock)
 
 if env.editor_build:
     translation_targets = [
