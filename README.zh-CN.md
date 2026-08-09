@@ -124,9 +124,12 @@ scons platform=macos target=editor dev_build=yes tests=yes debug_symbols=no num_
 ## 测试 Solers 模块
 
 ```powershell
-.\bin\solers.windows.editor.dev.x86_64.console.exe --headless --test --test-case="*Solers*" --no-colors --minimal
-.\bin\solers.windows.editor.dev.x86_64.console.exe --headless --editor --path modules/solers_ai/tests/editor_layout_project
-python modules/solers_ai/tests/terrain3d_smoke.py .\bin\solers.windows.editor.dev.x86_64.exe
+$editor = (Resolve-Path .\bin\solers.windows.editor.dev.x86_64.console.exe).Path
+Push-Location modules/solers_ai/tests/editor_layout_project
+& $editor --headless --path . --test --test-case="*Solers*" --no-colors
+& $editor --headless --editor --path .
+Pop-Location
+python modules/solers_ai/tests/terrain3d_smoke.py $editor
 ```
 
 这些命令运行 CI 使用的单元测试、真实编辑器生命周期测试和内置 Terrain3D 契约测试。

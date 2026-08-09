@@ -120,9 +120,12 @@ jobs:
         if: matrix.compiler == 'msvc' && matrix.target == 'editor'
         shell: pwsh
         run: |
-          & "${{ matrix.bin }}" --headless --test --test-case="*Solers*" --no-colors --minimal
-          & "${{ matrix.bin }}" --headless --editor --path modules/solers_ai/tests/editor_layout_project
-          python modules/solers_ai/tests/terrain3d_smoke.py "${{ matrix.bin }}"
+          $editor = (Resolve-Path "${{ matrix.bin }}").Path
+          Push-Location modules/solers_ai/tests/editor_layout_project
+          & $editor --headless --path . --test --test-case="*Solers*" --no-colors
+          & $editor --headless --editor --path .
+          Pop-Location
+          python modules/solers_ai/tests/terrain3d_smoke.py $editor
       - name: Save Godot build cache
         uses: ./.github/actions/godot-cache-save
         with:

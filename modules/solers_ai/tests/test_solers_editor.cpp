@@ -51,13 +51,16 @@ namespace TestSolersEditor {
 class ScopedEditorLanguage {
 	String setting = "interface/editor/localization/editor_language";
 	Variant previous;
+	String previous_locale;
 
 public:
-	ScopedEditorLanguage() : previous(EditorSettings::get_singleton()->get_setting(setting)) {}
+	ScopedEditorLanguage() :
+			previous(EditorSettings::get_singleton()->get_setting(setting)),
+			previous_locale(TranslationServer::get_singleton()->get_locale()) {}
 
 	~ScopedEditorLanguage() {
 		EditorSettings::get_singleton()->set_setting(setting, previous);
-		EditorSettings::get_singleton()->setup_language(false);
+		TranslationServer::get_singleton()->set_locale(previous_locale);
 		solers_load_editor_translation();
 	}
 };
@@ -98,7 +101,7 @@ TEST_CASE("[SolersUI][SceneTree][Editor] editor locale and technical tool chrome
 	const String setting = "interface/editor/localization/editor_language";
 	ScopedEditorLanguage restore;
 	EditorSettings::get_singleton()->set_setting(setting, "zh_Hans");
-	EditorSettings::get_singleton()->setup_language(false);
+	TranslationServer::get_singleton()->set_locale("zh_Hans");
 	solers_load_editor_translation();
 	CHECK(TranslationServer::get_singleton()->get_editor_domain()->translate("New chat", StringName()) == String::utf8("\xE6\x96\xB0\xE5\xBB\xBA\xE5\xAF\xB9\xE8\xAF\x9D"));
 	CHECK(TranslationServer::get_singleton()->get_editor_domain()->translate("Effort", StringName()) != "Effort");

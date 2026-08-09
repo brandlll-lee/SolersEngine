@@ -6,6 +6,7 @@ const IMPORT_PATH := "res://.solers_editor_import_contract.png"
 
 func _exit_tree() -> void:
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(IMPORT_PATH))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(IMPORT_PATH + ".import"))
 
 
 func _check(condition: bool, message: String) -> bool:

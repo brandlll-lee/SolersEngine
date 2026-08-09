@@ -145,9 +145,12 @@ After the build, open or create a project and connect a model from the Solers se
 ## Test the Solers Module
 
 ```powershell
-.\bin\solers.windows.editor.dev.x86_64.console.exe --headless --test --test-case="*Solers*" --no-colors --minimal
-.\bin\solers.windows.editor.dev.x86_64.console.exe --headless --editor --path modules/solers_ai/tests/editor_layout_project
-python modules/solers_ai/tests/terrain3d_smoke.py .\bin\solers.windows.editor.dev.x86_64.exe
+$editor = (Resolve-Path .\bin\solers.windows.editor.dev.x86_64.console.exe).Path
+Push-Location modules/solers_ai/tests/editor_layout_project
+& $editor --headless --path . --test --test-case="*Solers*" --no-colors
+& $editor --headless --editor --path .
+Pop-Location
+python modules/solers_ai/tests/terrain3d_smoke.py $editor
 ```
 
 These commands run the unit, real editor lifecycle, and bundled Terrain3D contracts used by CI.
