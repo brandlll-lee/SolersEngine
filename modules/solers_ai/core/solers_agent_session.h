@@ -156,6 +156,8 @@ class SolersAgentSession : public Object {
 	int text_delta_count = 0;
 	uint64_t last_text_delta_msec = 0;
 	Array compaction_source_messages;
+	int compaction_preserve_from = -1;
+	int tool_message_index = -1;
 	int64_t compaction_id = 0;
 	int64_t compaction_timeline_event_id = 0;
 	Dictionary retry_request;
@@ -221,7 +223,7 @@ class SolersAgentSession : public Object {
 	Error _dispatch_model_request(bool p_skip_compaction = false);
 	Error _dispatch_compaction_request();
 	void _commit_attachment_projection();
-	Error _begin_compaction(bool p_from_overflow);
+	Error _begin_compaction(bool p_from_overflow, int p_preserve_from = -1);
 	void _poll_compaction();
 	void _on_compaction_complete();
 	bool _is_context_overflow(const Dictionary &p_error) const;
@@ -246,7 +248,7 @@ class SolersAgentSession : public Object {
 	void _execute_deferred_tool(uint64_t p_token);
 	static void _tool_thread_func(void *p_userdata);
 	bool _collect_tool_thread_result(bool p_wait);
-	void _deliver_tool_result(const String &p_id, const String &p_model_name, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result, int p_budget = INT32_MAX);
+	void _deliver_tool_result(const String &p_id, const String &p_model_name, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result);
 	bool _is_awaiting_approval_result(const Dictionary &p_result) const;
 	void _register_session_tools();
 	Dictionary _handle_update_plan(const Dictionary &p_args);
@@ -273,11 +275,6 @@ public:
 	void set_permission_manager(SolersPermissionManager *p_permission_manager) { permission_manager = p_permission_manager; }
 
 	static Dictionary validate_plan(const Dictionary &p_args);
-	// Exactly what a tool result contributes to the conversation: the whole
-	// serialized result, or — when it exceeds the budget — an envelope naming
-	// what was elided and where the complete body lives. Always valid JSON, so
-	// no measurement the engine made reaches the model as unparsable text.
-	static String deliverable_tool_result(const String &p_call_id, const Dictionary &p_result, int p_budget);
 	Dictionary start_turn(const Dictionary &p_args); // { prompt: String }
 	// Steer the running turn: the message is queued and joins the
 	// conversation after the current tool batch, before the next model

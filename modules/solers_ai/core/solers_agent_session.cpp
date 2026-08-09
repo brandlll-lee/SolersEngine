@@ -746,7 +746,9 @@ void SolersAgentSession::_ensure_godot_log_audit(bool p_turn_active) {
 		}
 		baseline["counts"] = log->get_message_counts();
 	}
-	_write_transcript_event("godot_log_baseline", baseline);
+	if (p_turn_active) {
+		_write_transcript_event("godot_log_baseline", baseline);
+	}
 }
 
 void SolersAgentSession::_release_godot_log_audit() {
@@ -1423,11 +1425,12 @@ Error SolersAgentSession::_begin_provider_request(const Dictionary &p_request, c
 	return OK;
 }
 
-Error SolersAgentSession::_begin_compaction(bool p_from_overflow) {
+Error SolersAgentSession::_begin_compaction(bool p_from_overflow, int p_preserve_from) {
 	if (!context_manager || messages.is_empty()) {
 		return ERR_UNAVAILABLE;
 	}
 	compaction_source_messages = messages.duplicate(true);
+	compaction_preserve_from = p_preserve_from;
 	current_text = String();
 	current_reasoning = String();
 	pending_tool_calls.clear();
@@ -1459,6 +1462,9 @@ Error SolersAgentSession::_dispatch_compaction_request() {
 	const Dictionary profile = settings_service->resolve_provider_profile(provider_id, base_url);
 
 	Array history = compaction_source_messages.duplicate(true);
+	if (compaction_preserve_from >= 0) {
+		history.resize(compaction_preserve_from);
+	}
 	history.push_back(SolersLLMMessage::user(
 			"Write a concise continuation note containing only the user's intent, constraints, decisions, and unresolved questions. Do not include node or resource identities, measurements, engine state, completed work, test claims, tool results, or a precise next tool action; those facts are refreshed by the engine. Respond with text only and do not call tools."));
 	Dictionary request = _build_request(history, system_prompt, Array());
@@ -1549,12 +1555,15 @@ void SolersAgentSession::_poll_compaction() {
 void SolersAgentSession::_on_compaction_complete() {
 	_commit_attachment_projection();
 	const int projection_budget = MAX(0, context_window - max_output_tokens - SolersContextManager::estimate_tokens(system_prompt) - cached_request_tool_tokens);
-	const Dictionary result = context_manager->apply_compaction(compaction_source_messages, current_text, projection_budget);
+	const Dictionary result = context_manager->apply_compaction(compaction_source_messages, current_text, projection_budget, compaction_preserve_from);
 	messages = result.get("messages", Array());
 	_write_transcript_compaction("completed", result);
 	emit_signal(SNAME("timeline_entry_committed"), compaction_timeline_event_id, "context_compaction");
 
 	compaction_source_messages.clear();
+	const bool resume_tools = compaction_preserve_from >= 0;
+	compaction_preserve_from = -1;
+	tool_message_index = -1;
 	compaction_id = 0;
 	compaction_timeline_event_id = 0;
 	retry_attempt = 0;
@@ -1562,7 +1571,11 @@ void SolersAgentSession::_on_compaction_complete() {
 	current_text = String();
 	current_reasoning = String();
 	last_stop_reason = String();
-	_dispatch_model_request(true);
+	if (resume_tools) {
+		phase = PHASE_TOOLS;
+	} else {
+		_dispatch_model_request(true);
+	}
 }
 
 Dictionary SolersAgentSession::_tool_call_from_event(const Dictionary &p_event) const {
@@ -1996,6 +2009,7 @@ void SolersAgentSession::_on_model_turn_complete() {
 	}
 
 	tool_queue = pending_tool_calls.duplicate();
+	tool_message_index = messages.size() - 1;
 	const uint64_t queued_msec = OS::get_singleton()->get_ticks_msec();
 	for (int i = 0; i < tool_queue.size(); i++) {
 		Dictionary call = tool_queue[i];
@@ -2071,7 +2085,7 @@ void SolersAgentSession::_on_model_turn_complete() {
 
 void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_message, const Dictionary &p_error) {
 	if (compaction_id > 0) {
-		_write_transcript_compaction("failed", p_error);
+		_write_transcript_compaction(p_outcome == "aborted" ? "cancelled" : "failed", p_error);
 		emit_signal(SNAME("timeline_entry_committed"), compaction_timeline_event_id, "context_compaction");
 	}
 	if (tool_thread_state) {
@@ -2159,6 +2173,7 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	retry_request.clear();
 	retry_profile.clear();
 	compaction_source_messages.clear();
+	compaction_preserve_from = -1;
 	compaction_id = 0;
 	compaction_timeline_event_id = 0;
 	overflow_compaction_attempts = 0;
@@ -2409,7 +2424,6 @@ void SolersAgentSession::_queue_tool_result(int p_queue_index, const String &p_i
 	if (p_queue_index >= 0 && p_queue_index < tool_queue.size()) {
 		const Dictionary call = tool_queue[p_queue_index];
 		queued_msec = (int64_t)call.get("queued_msec", queued_msec);
-		terminal["result_token_budget"] = call.get("result_token_budget", INT32_MAX);
 	}
 	terminal["queued_msec"] = queued_msec;
 	terminal["started_msec"] = (int64_t)(p_started_msec > 0 ? p_started_msec : completed_msec);
@@ -2424,13 +2438,23 @@ bool SolersAgentSession::_flush_tool_results() {
 			return true;
 		}
 		const Dictionary entry = *terminal;
-		completed_tool_results.erase(tool_delivery_index);
 		tool_queued_msec = (uint64_t)(int64_t)entry.get("queued_msec", 0);
 		tool_started_msec = (uint64_t)(int64_t)entry.get("started_msec", 0);
 		tool_completed_msec = (uint64_t)(int64_t)entry.get("completed_msec", tool_started_msec);
 		const String canonical_name = entry.get("canonical_name", String());
 		const Dictionary result = entry.get("result", Dictionary());
-		_deliver_tool_result(entry.get("id", String()), entry.get("model_name", String()), canonical_name, entry.get("args", Dictionary()), result, entry.get("result_token_budget", INT32_MAX));
+		if (tool_message_index > 0 && context_manager && context_window > 0) {
+			_collect_tools();
+			const int used = context_manager->get_token_count_with_pending(messages, system_prompt, cached_request_tool_tokens);
+			const int available = MAX(0, context_window - max_output_tokens - used);
+			Dictionary projected = result.duplicate(true);
+			projected["call_id"] = entry.get("id", String());
+			if (SolersContextManager::estimate_tokens(JSON::stringify(projected, "", false, true)) > available && _begin_compaction(false, tool_message_index) == OK) {
+				return false;
+			}
+		}
+		completed_tool_results.erase(tool_delivery_index);
+		_deliver_tool_result(entry.get("id", String()), entry.get("model_name", String()), canonical_name, entry.get("args", Dictionary()), result);
 		tool_delivery_index++;
 	}
 	return false;
@@ -2475,8 +2499,7 @@ void SolersAgentSession::_cancel_undelivered_tools() {
 				model_name,
 				call.get("canonical_name", model_name),
 				call.get("parsed_args", Dictionary()),
-				entry.has("result") ? Dictionary(entry.get("result", cancelled)) : cancelled,
-				call.get("result_token_budget", INT32_MAX));
+				entry.has("result") ? Dictionary(entry.get("result", cancelled)) : cancelled);
 	}
 	tool_delivery_index = tool_queue.size();
 }
@@ -2763,34 +2786,6 @@ bool SolersAgentSession::_is_awaiting_approval_result(const Dictionary &p_result
 	return String(error.get("code", String())) == "USER_APPROVAL_REQUIRED";
 }
 
-String SolersAgentSession::deliverable_tool_result(const String &p_call_id, const Dictionary &p_result, int p_budget) {
-	const String full_result = JSON::stringify(p_result, "", false, true);
-	const int tokens = SolersContextManager::estimate_tokens(full_result);
-	if (tokens <= p_budget) {
-		return full_result;
-	}
-	// Every mutating tool exposes the same receipt contract. Large observation
-	// bodies are audit data and can be requested again with narrower arguments.
-	Dictionary envelope;
-	envelope["ok"] = p_result.get("ok", false);
-	if (p_result.has("error")) {
-		envelope["error"] = p_result["error"];
-	}
-	const Dictionary data = p_result.get("data", Dictionary());
-	if (data.has("mutation")) {
-		Dictionary kept_data;
-		kept_data["mutation"] = data["mutation"];
-		envelope["data"] = kept_data;
-	}
-	Dictionary elided;
-	elided["tokens"] = tokens;
-	elided["token_budget"] = p_budget;
-	elided["result_sha256"] = full_result.sha256_text();
-	elided["recovery"] = "Re-run with narrower arguments for details; mutation receipts remain above.";
-	envelope["data_elided"] = elided;
-	return JSON::stringify(envelope, "", false, true);
-}
-
 Dictionary SolersAgentSession::_tool_denied_result(const String &p_code, const String &p_message) const {
 	Dictionary error;
 	error["code"] = p_code;
@@ -2802,7 +2797,7 @@ Dictionary SolersAgentSession::_tool_denied_result(const String &p_code, const S
 	return result;
 }
 
-void SolersAgentSession::_deliver_tool_result(const String &p_id, const String &p_model_name, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result, int p_budget) {
+void SolersAgentSession::_deliver_tool_result(const String &p_id, const String &p_model_name, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result) {
 	Dictionary result = p_result.duplicate(true);
 	result["call_id"] = p_id;
 	// A result widens the tool surface by declaring what it unlocks, so this
@@ -2815,15 +2810,7 @@ void SolersAgentSession::_deliver_tool_result(const String &p_id, const String &
 	if (!diagnostics.is_empty()) {
 		result["diagnostics"] = diagnostics;
 	}
-	// The transcript records exactly the bytes the model was given, so a
-	// restored session rebuilds the same conversation it originally had.
-	int result_budget = p_budget;
-	if (context_manager && context_window > 0) {
-		_collect_tools();
-		const int used = context_manager->get_token_count_with_pending(messages, system_prompt, cached_request_tool_tokens);
-		result_budget = MIN(result_budget, MAX(0, context_window - max_output_tokens - used));
-	}
-	const String content = deliverable_tool_result(p_id, result, result_budget);
+	const String content = JSON::stringify(result, "", false, true);
 	_write_transcript_tool(p_id, p_canonical_name, p_args, result, content);
 	const uint64_t duration_msec = tool_completed_msec >= tool_started_msec ? tool_completed_msec - tool_started_msec : 0;
 	if (!_is_session_tool(p_canonical_name)) {

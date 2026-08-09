@@ -2,22 +2,40 @@
 /*  solers_context_manager.cpp                                            */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                              SOLERS ENGINE                              */
-/*                        (a fork of Godot Engine)                        */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
 /**************************************************************************/
-/* Solers: AI-native game engine.                                        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
 #include "solers_context_manager.h"
 
 #include "core/templates/hash_map.h"
+
 #include "modules/solers_ai/llm/solers_llm_message.h"
 
 const char *SolersContextManager::COMPACTION_SUMMARY_PREFIX =
 		"The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it.";
-const char *SolersContextManager::COMPACTION_INSTRUCTION =
-		"You are about to run out of context. Write a first-person handoff note to yourself so you can seamlessly continue this task after the earlier conversation is cleared.\n\n"
-		"Write the note as your own continuing train of thought, in present tense. Preserve the latest user request verbatim, active constraints, exact files and commands already used, verified results versus uncertainty, and the precise next action. Be concise and self-sufficient. Respond with text only and do not call tools.";
 const char *SolersContextManager::CANCELLED_TOOL_RESULT =
 		"{\"ok\":false,\"error\":{\"code\":\"TOOL_CANCELLED\",\"message\":\"This call never produced a result: the turn ended before it finished. Re-run it if its output is still needed.\",\"recoverable\":true}}";
 const char *SolersContextManager::MODEL_CONTEXT_ROLE = "model_context";
@@ -110,11 +128,7 @@ Array SolersContextManager::project_completed_turns(const Array &p_messages) {
 }
 
 String SolersContextManager::_build_summary_text(const String &p_summary) {
-	String text = String::utf8(COMPACTION_SUMMARY_PREFIX) + "\n" + p_summary.strip_edges();
-	if (p_summary.strip_edges().is_empty()) {
-		text += "(no summary available)";
-	}
-	return text;
+	return String::utf8(COMPACTION_SUMMARY_PREFIX) + "\n" + p_summary.strip_edges();
 }
 
 void SolersContextManager::record_usage(int p_input_tokens, int p_covered_message_count, int p_transient_tokens) {
@@ -155,16 +169,18 @@ bool SolersContextManager::should_compact(const Array &p_messages, const String 
 	return should_compact(get_token_count_with_pending(p_messages, p_system_prompt, p_tool_tokens, p_transient_tokens), p_context_window, p_max_output_tokens);
 }
 
-Dictionary SolersContextManager::apply_compaction(const Array &p_messages, const String &p_summary, int p_token_budget) {
+Dictionary SolersContextManager::apply_compaction(const Array &p_messages, const String &p_summary, int p_token_budget, int p_preserve_from) {
 	const int tokens_before = estimate_messages_tokens(p_messages);
+	const int preserve_from = p_preserve_from < 0 ? p_messages.size() : CLAMP(p_preserve_from, 0, p_messages.size());
+	const Array suffix = p_messages.slice(preserve_from);
 	const String context_summary = _build_summary_text(p_summary);
 	Dictionary summary_message;
 	summary_message["role"] = MODEL_CONTEXT_ROLE;
 	summary_message["content"] = context_summary;
 	summary_message["origin"] = "compaction_summary";
-	int remaining = MAX(0, p_token_budget - _estimate_message_tokens(summary_message));
+	int remaining = MAX(0, p_token_budget - _estimate_message_tokens(summary_message) - estimate_messages_tokens(suffix));
 	Array recent_users;
-	for (int i = p_messages.size() - 1; i >= 0; i--) {
+	for (int i = preserve_from - 1; i >= 0; i--) {
 		Dictionary message = p_messages[i];
 		if (String(message.get("role", String())) != SolersLLMRole::USER || (bool)message.get("ephemeral", false)) {
 			continue;
@@ -182,6 +198,7 @@ Dictionary SolersContextManager::apply_compaction(const Array &p_messages, const
 		compacted.push_back(recent_users[i]);
 	}
 	compacted.push_back(summary_message);
+	compacted.append_array(suffix);
 	const int tokens_after = estimate_messages_tokens(compacted);
 	authoritative_tokens = tokens_after;
 	covered_message_count = compacted.size();
