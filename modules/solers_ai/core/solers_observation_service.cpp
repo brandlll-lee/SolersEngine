@@ -64,6 +64,7 @@
 #include "scene/3d/visual_instance_3d.h"
 #include "scene/debugger/scene_debugger.h"
 #include "scene/debugger/scene_debugger_object.h"
+#include "scene/main/scene_tree.h"
 #include "scene/main/viewport.h"
 #include "scene/resources/3d/world_3d.h"
 #include "scene/resources/environment.h"
@@ -1088,7 +1089,7 @@ Dictionary SolersObservationService::_serialize_node(Node *p_node, Node *p_edite
 	node_data["valid"] = true;
 	node_data["name"] = p_node->get_name();
 	node_data["type"] = p_node->get_class();
-	node_data["path"] = p_node->is_inside_tree() ? String(p_node->get_path()) : String(p_node->get_name());
+	node_data["path"] = p_edited_root && p_node != p_edited_root ? String(p_edited_root->get_path_to(p_node)) : String(".");
 	node_data["scene_file_path"] = p_node->get_scene_file_path();
 	node_data["child_count"] = p_node->get_child_count();
 	const Ref<Script> script = p_node->get_script();
@@ -1149,17 +1150,10 @@ Dictionary SolersObservationService::_serialize_node(Node *p_node, Node *p_edite
 		node_data["resource_properties"] = resource_properties;
 	}
 
-	if (p_edited_root) {
-		if (p_node == p_edited_root) {
-			node_data["relative_path"] = ".";
-		} else if (p_edited_root->is_ancestor_of(p_node)) {
-			node_data["relative_path"] = String(p_edited_root->get_path_to(p_node));
-		}
-	}
-
 	Node *owner = p_node->get_owner();
 	if (owner) {
-		node_data["owner_path"] = owner->is_inside_tree() ? String(owner->get_path()) : String(owner->get_name());
+		node_data["owner_path"] = p_edited_root && owner == p_edited_root ? String(".") : p_edited_root && p_edited_root->is_ancestor_of(owner) ? String(p_edited_root->get_path_to(owner))
+																																				: String(owner->get_name());
 	}
 
 	// This node's own payload is charged before descending, so the budget is
@@ -1832,26 +1826,38 @@ Dictionary SolersObservationService::get_selection(int p_max_depth, int p_max_ch
 	return result;
 }
 
-Dictionary SolersObservationService::get_scene_tree(int p_max_depth, int p_max_children_per_node, int p_token_budget) const {
+Dictionary SolersObservationService::get_scene_tree(const Array &p_node_paths, int p_max_depth, int p_max_children_per_node, int p_token_budget) const {
 	Dictionary result;
-	EditorInterface *editor_interface = EditorInterface::get_singleton();
-	ERR_FAIL_NULL_V(editor_interface, result);
+	Node *edited_root = SceneTree::get_singleton()->get_edited_scene_root();
+	ERR_FAIL_NULL_V(edited_root, result);
 
-	Node *edited_root = editor_interface->get_edited_scene_root();
-	result["has_edited_scene"] = edited_root != nullptr;
-	if (!edited_root) {
-		result["root"] = Dictionary();
-		return result;
+	Array roots;
+	Array errors;
+	if (p_node_paths.is_empty()) {
+		roots.push_back(edited_root);
+	} else {
+		for (int i = 0; i < p_node_paths.size(); i++) {
+			const String path = p_node_paths[i];
+			Node *node = edited_root->get_node_or_null(NodePath(path));
+			if (node) {
+				roots.push_back(node);
+			} else {
+				errors.push_back(Dictionary({ { "index", i }, { "requested_path", path }, { "code", "NODE_NOT_FOUND" } }));
+			}
+		}
 	}
 
 	const int token_budget_start = MAX(1, p_token_budget);
 	int token_budget = token_budget_start;
 	int elided_nodes = 0;
-	result["root"] = _serialize_node(edited_root, edited_root, 0, p_max_depth, p_max_children_per_node, token_budget, elided_nodes);
+	Array serialized;
+	for (int i = 0; i < roots.size() && token_budget > 0; i++) {
+		serialized.push_back(_serialize_node(Object::cast_to<Node>(roots[i]), edited_root, 0, p_max_depth, p_max_children_per_node, token_budget, elided_nodes));
+	}
+	result["roots"] = serialized;
+	result["errors"] = errors;
 	result["max_depth"] = p_max_depth;
 	if (elided_nodes > 0) {
-		// The model is told exactly how much of the scene it is not seeing and
-		// how to ask a narrower question that fits.
 		result["elided_nodes"] = elided_nodes;
 		result["token_budget"] = token_budget_start;
 		result["recovery"] = "This tree filled the per-result token budget. Pass node_paths for the nodes that matter, or lower max_depth/max_children, instead of re-reading the whole tree.";

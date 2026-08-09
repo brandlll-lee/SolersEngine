@@ -76,6 +76,7 @@
 #include "scene/animation/animation_player.h"
 #include "scene/animation/animation_tree.h"
 #include "scene/main/node.h"
+#include "scene/main/scene_tree.h"
 #include "scene/resources/3d/primitive_meshes.h"
 #include "scene/resources/3d/sky_material.h"
 #include "scene/resources/camera_attributes.h"
@@ -267,16 +268,7 @@ Dictionary SolersReflectionService::_error(const String &p_code, const String &p
 }
 
 Node *SolersReflectionService::_resolve_node(const String &p_node_path, String &r_error) const {
-	EditorInterface *editor_interface = EditorInterface::get_singleton();
-	if (!editor_interface) {
-		r_error = "EditorInterface is not available.";
-		return nullptr;
-	}
-	if (!EditorNode::get_singleton() || EditorNode::get_editor_data().get_edited_scene_count() <= 0) {
-		r_error = "No edited scene root.";
-		return nullptr;
-	}
-	Node *edited_root = EditorNode::get_singleton()->get_edited_scene();
+	Node *edited_root = SceneTree::get_singleton()->get_edited_scene_root();
 	if (!edited_root) {
 		r_error = "No edited scene root.";
 		return nullptr;
@@ -338,7 +330,7 @@ Node *SolersReflectionService::_resolve_node(const String &p_node_path, String &
 }
 
 bool SolersReflectionService::_safe_node_path(Node *p_node, String &r_out) {
-	Node *edited_root = (EditorNode::get_singleton() && EditorNode::get_editor_data().get_edited_scene_count() > 0) ? EditorNode::get_singleton()->get_edited_scene() : nullptr;
+	Node *edited_root = SceneTree::get_singleton()->get_edited_scene_root();
 	if (edited_root && (p_node == edited_root || edited_root->is_ancestor_of(p_node))) {
 		r_out = String(edited_root->get_path_to(p_node));
 		return true;
@@ -861,11 +853,8 @@ Dictionary SolersReflectionService::inspect_nodes(const Dictionary &p_args) {
 	if (paths.is_empty()) {
 		paths.push_back(".");
 	}
-	// Property dumps are the single largest observation payload, so they are
-	// opt-in: identity, class, and structure answer most inspect calls.
-	const bool include_properties = p_args.get("include_properties", false);
+	const Array requested_properties = p_args.get("properties", Array());
 	const bool include_connections = p_args.get("include_connections", false);
-	const int max_properties = CLAMP((int)p_args.get("max_properties", 128), 1, 512);
 	Array nodes;
 	Array errors;
 	for (int i = 0; i < paths.size(); i++) {
@@ -905,19 +894,22 @@ Dictionary SolersReflectionService::inspect_nodes(const Dictionary &p_args) {
 			item["instance_scene_path"] = instance_scene;
 			item["owned_by_instance"] = true;
 		}
-		if (include_properties) {
-			Dictionary property_args;
-			property_args["node_path"] = safe_path;
-			property_args["max_properties"] = max_properties;
-			const Dictionary property_result = _list_properties(property_args);
-			if (!(bool)property_result.get("ok", false)) {
-				Dictionary failure;
-				failure["index"] = i;
-				failure["node_path"] = safe_path;
-				failure["error"] = property_result.get("error", Dictionary());
-				errors.push_back(failure);
-			} else {
-				item["properties"] = Dictionary(property_result.get("data", Dictionary())).get("properties", Array());
+		if (!requested_properties.is_empty()) {
+			Dictionary values;
+			Dictionary property_errors;
+			for (int property_index = 0; property_index < requested_properties.size(); property_index++) {
+				const String property = requested_properties[property_index];
+				bool valid = false;
+				const Variant value = node->get_indexed(_property_path_subnames(property), &valid);
+				if (valid) {
+					values[property] = _reflect_displayable(value);
+					continue;
+				}
+				property_errors[property] = _error("INVALID_PROPERTY_PATH", vformat("Property path '%s' is not valid on %s.", property, node->get_class())).get("error", Dictionary());
+			}
+			item["properties"] = values;
+			if (!property_errors.is_empty()) {
+				item["property_errors"] = property_errors;
 			}
 		}
 		if (include_connections) {
@@ -942,6 +934,11 @@ Dictionary SolersReflectionService::inspect_nodes(const Dictionary &p_args) {
 	data["requested_count"] = paths.size();
 	data["errors"] = errors;
 	data["error_count"] = errors.size();
+	if (nodes.is_empty() && !errors.is_empty()) {
+		Dictionary result = _error("NODE_QUERY_FAILED", "None of the requested nodes exist in the live edited scene.");
+		result["data"] = data;
+		return result;
+	}
 	return _ok(data);
 }
 
@@ -1403,48 +1400,6 @@ Dictionary SolersReflectionService::_remove_node(const Dictionary &p_args) {
 	return _ok(data);
 }
 
-Dictionary SolersReflectionService::_list_properties(const Dictionary &p_args) {
-	const String node_path = p_args.get("node_path", ".");
-	const int max_properties = CLAMP((int)p_args.get("max_properties", 128), 0, 512);
-
-	String error;
-	Node *node = _resolve_node(node_path, error);
-	if (!node) {
-		return _error("NODE_NOT_FOUND", error);
-	}
-
-	List<PropertyInfo> property_list;
-	node->get_property_list(&property_list);
-	Array properties;
-	int count = 0;
-	for (const PropertyInfo &property : property_list) {
-		if (count >= max_properties) {
-			break;
-		}
-		if (!(property.usage & PROPERTY_USAGE_EDITOR) && !(property.usage & PROPERTY_USAGE_STORAGE)) {
-			continue;
-		}
-		Dictionary item;
-		item["name"] = property.name;
-		item["type"] = Variant::get_type_name(property.type);
-		item["hint"] = property.hint;
-		item["hint_string"] = property.hint_string;
-		item["usage"] = property.usage;
-		item["value"] = _reflect_displayable(node->get(property.name));
-		properties.push_back(item);
-		count++;
-	}
-
-	String safe_path;
-	_safe_node_path(node, safe_path);
-	Dictionary data;
-	data["node_path"] = safe_path;
-	data["properties"] = properties;
-	data["count"] = properties.size();
-	data["truncated"] = count >= max_properties;
-	return _ok(data);
-}
-
 Dictionary SolersReflectionService::_list_signal_connections(const Dictionary &p_args) {
 	const String source_path = p_args.get("source_path", ".");
 	const String signal_name = p_args.get("signal", String());
@@ -1824,6 +1779,24 @@ static Dictionary _solers_stable_object_properties(Object *p_object) {
 	return properties;
 }
 
+static Ref<Material> _solers_resolved_material(MeshInstance3D *p_mesh_instance, int p_surface, String *r_source = nullptr) {
+	Ref<Material> material = p_mesh_instance->get_material_override();
+	String source = "material_override";
+	if (!material.is_valid() && p_surface < p_mesh_instance->get_surface_override_material_count()) {
+		material = p_mesh_instance->get_surface_override_material(p_surface);
+		source = "surface_override";
+	}
+	if (!material.is_valid()) {
+		const Ref<Mesh> mesh = p_mesh_instance->get_mesh();
+		material = mesh.is_valid() && p_surface < mesh->get_surface_count() ? mesh->surface_get_material(p_surface) : Ref<Material>();
+		source = "mesh";
+	}
+	if (r_source) {
+		*r_source = source;
+	}
+	return material;
+}
+
 static void _solers_collect_lightmap_inputs(Node *p_node, Array &r_entries) {
 	if (!p_node) {
 		return;
@@ -1846,7 +1819,7 @@ static void _solers_collect_lightmap_inputs(Node *p_node, Array &r_entries) {
 					Dictionary surface_state;
 					surface_state["format"] = (int64_t)mesh->surface_get_format(surface);
 					surface_state["arrays_hash"] = (int64_t)mesh->surface_get_arrays(surface).hash();
-					const Variant material = mesh_instance->get_active_material(surface);
+					const Variant material = _solers_resolved_material(mesh_instance, surface);
 					surface_state["material"] = _solers_stable_resource_value(material, visiting);
 					surfaces.push_back(surface_state);
 				}
@@ -2643,18 +2616,10 @@ static Dictionary _solers_material_facts(MeshInstance3D *p_mesh_instance) {
 	for (int i = 0; i < mesh->get_surface_count(); i++) {
 		Dictionary surface;
 		surface["index"] = i;
-		// get_active_material resolves Godot's own precedence, so the answer is
-		// what will actually be drawn rather than what a property dump lists.
-		const Ref<Material> active = p_mesh_instance->get_active_material(i);
+		String source;
+		const Ref<Material> active = _solers_resolved_material(p_mesh_instance, i, &source);
 		surface["active_material"] = _solers_resource_id(active);
-		const Ref<Material> override_material = p_mesh_instance->get_material_override();
-		if (override_material.is_valid()) {
-			surface["source"] = "material_override";
-		} else if (i < p_mesh_instance->get_surface_override_material_count() && p_mesh_instance->get_surface_override_material(i).is_valid()) {
-			surface["source"] = "surface_override";
-		} else {
-			surface["source"] = "mesh";
-		}
+		surface["source"] = source;
 		if (BaseMaterial3D *base_material = Object::cast_to<BaseMaterial3D>(active.ptr())) {
 			surface["shading_mode"] = (int)base_material->get_shading_mode();
 			surface["albedo"] = _solers_color_array(base_material->get_albedo());
@@ -2807,8 +2772,7 @@ Dictionary SolersReflectionService::_subsystem_facts(Node *p_node) const {
 // file a change did *not* enter: Godot writes edits below an instance root as
 // overrides in the editing scene, never back into the instanced file.
 String SolersReflectionService::_instance_scene_path(Node *p_node) const {
-	EditorInterface *editor_interface = EditorInterface::get_singleton();
-	Node *edited_root = editor_interface ? editor_interface->get_edited_scene_root() : nullptr;
+	Node *edited_root = SceneTree::get_singleton()->get_edited_scene_root();
 	for (Node *ancestor = p_node; ancestor && ancestor != edited_root; ancestor = ancestor->get_parent()) {
 		const String scene_path = ancestor->get_scene_file_path();
 		if (!scene_path.is_empty()) {

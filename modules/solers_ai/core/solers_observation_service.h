@@ -115,7 +115,7 @@ public:
 	Dictionary read_project_file(const String &p_path, int p_max_bytes = 262144, bool p_raw = false) const;
 	Dictionary get_open_scenes(int p_max_depth = 1, int p_max_children_per_node = 16) const;
 	Dictionary get_selection(int p_max_depth = 1, int p_max_children_per_node = 16) const;
-	Dictionary get_scene_tree(int p_max_depth, int p_max_children_per_node, int p_token_budget) const;
+	Dictionary get_scene_tree(const Array &p_node_paths, int p_max_depth, int p_max_children_per_node, int p_token_budget) const;
 	Dictionary get_runtime_status() const;
 	Dictionary observe_runtime(const Dictionary &p_args);
 	bool is_runtime_observation_ready(const Dictionary &p_args) const;

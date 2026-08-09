@@ -47,6 +47,7 @@
 #include "editor/run/editor_run_bar.h"
 #include "editor/run/game_view_plugin.h"
 #include "scene/main/node.h"
+#include "scene/main/scene_tree.h"
 
 #include "modules/solers_ai/core/solers_action_timeline.h"
 #include "modules/solers_ai/core/solers_asset_service.h"
@@ -2021,7 +2022,7 @@ void SolersToolRegistry::_register_reflection_tools() {
 	}
 	SolersReflectionService *ref = reflection_service;
 	const SolersPermissionManager::Permission edit_scene = SolersPermissionManager::PERMISSION_EDIT_SCENE;
-	_add_observe_exposed("object.query", "Query the live edited scene, a Resource path, an ObjectID, or native spatial facts between node pairs. Use target=resource for a PackedScene on disk.", R"({"type":"object","properties":{"target":{"type":"string","enum":["scene","resource","object","relations"]},"include_tree":{"type":"boolean"},"include_selection":{"type":"boolean"},"max_depth":{"type":"integer","minimum":0,"maximum":16},"max_children":{"type":"integer","minimum":1,"maximum":256},"node_paths":{"type":"array","items":{"type":"string"},"uniqueItems":true,"minItems":1,"maxItems":64},"include_properties":{"type":"boolean"},"include_connections":{"type":"boolean"},"max_properties":{"type":"integer","minimum":1,"maximum":512},"path":{"type":"string","pattern":"^res://"},"type_hint":{"type":"string"},"include_dependencies":{"type":"boolean"},"max_dependencies":{"type":"integer","minimum":0,"maximum":2048},"properties":{"type":"array","items":{"type":"string"},"uniqueItems":true,"maxItems":128},"object_id":{},"relations":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a","b"],"additionalProperties":false}}},"required":["target"],"additionalProperties":false})", SolersToolExposure::DIRECT, [this, ref](const SolersToolContext &ctx, const Dictionary &a) {
+	_add_observe_exposed("object.query", "Query the live edited scene, a Resource path, an ObjectID, or native spatial facts between node pairs. node_paths scopes include_tree to those live subtrees; properties reads only the named native properties. Use target=resource for a PackedScene on disk.", R"({"type":"object","properties":{"target":{"type":"string","enum":["scene","resource","object","relations"]},"include_tree":{"type":"boolean"},"include_selection":{"type":"boolean"},"max_depth":{"type":"integer","minimum":0,"maximum":16},"max_children":{"type":"integer","minimum":1,"maximum":256},"node_paths":{"type":"array","items":{"type":"string"},"uniqueItems":true,"minItems":1,"maxItems":64},"include_connections":{"type":"boolean"},"path":{"type":"string","pattern":"^res://"},"type_hint":{"type":"string"},"include_dependencies":{"type":"boolean"},"max_dependencies":{"type":"integer","minimum":0,"maximum":2048},"properties":{"type":"array","items":{"type":"string"},"uniqueItems":true,"maxItems":128},"object_id":{},"relations":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a","b"],"additionalProperties":false}}},"required":["target"],"additionalProperties":false})", SolersToolExposure::DIRECT, [this, ref](const SolersToolContext &ctx, const Dictionary &a) {
 				const String target = a.get("target", String());
 				if (target == "relations") {
 					Dictionary args = a.duplicate(true);
@@ -2069,24 +2070,24 @@ void SolersToolRegistry::_register_reflection_tools() {
 				}
 
 				Dictionary data;
-				EditorNode *editor = EditorNode::get_singleton();
-				Node *edited_root = editor && EditorNode::get_editor_data().get_edited_scene_count() > 0 ? editor->get_edited_scene() : nullptr;
+				Node *edited_root = SceneTree::get_singleton()->get_edited_scene_root();
 				if (!edited_root) {
 					return _error("NO_EDITED_SCENE", "Open a scene before querying target=scene.", true);
 				}
-				Dictionary digest;
-				digest["name"] = edited_root->get_name();
-				digest["type"] = edited_root->get_class();
-				digest["child_count"] = edited_root->get_child_count();
-				digest["scene_path"] = edited_root->get_scene_file_path();
-				data["digest"] = digest;
+				const Array node_paths = a.get("node_paths", Array());
 				if (observation_service && (bool)a.get("include_tree", false)) {
-					data["scene_tree"] = observation_service->get_scene_tree((int)a.get("max_depth", 8), (int)a.get("max_children", 128), ctx.result_token_budget);
+					const Dictionary scene_tree = observation_service->get_scene_tree(node_paths, (int)a.get("max_depth", 8), (int)a.get("max_children", 128), ctx.result_token_budget);
+					data["scene_tree"] = scene_tree;
+					if (!node_paths.is_empty() && Array(scene_tree.get("roots", Array())).is_empty()) {
+						Dictionary result = _error("NODE_QUERY_FAILED", "None of the requested subtree roots exist in the live edited scene.");
+						result["data"] = data;
+						return result;
+					}
 				}
 				if (observation_service && (bool)a.get("include_selection", false)) {
 					data["selection"] = observation_service->get_selection(1, (int)a.get("max_children", 128));
 				}
-				if (a.has("node_paths")) {
+				if (!node_paths.is_empty() && (!(bool)a.get("include_tree", false) || a.has("properties") || (bool)a.get("include_connections", false))) {
 					const Dictionary inspected = ref->inspect_nodes(a);
 					if (!(bool)inspected.get("ok", false)) {
 						return inspected;

@@ -93,7 +93,6 @@ class SolersReflectionService : public Object {
 	Dictionary _attach_script(const Dictionary &p_args);
 	Dictionary _remove_node(const Dictionary &p_args);
 	Dictionary _bake_csg(const Dictionary &p_args);
-	Dictionary _list_properties(const Dictionary &p_args);
 	Dictionary _list_signal_connections(const Dictionary &p_args);
 	static void _uv2_unwrap_thread(void *p_userdata);
 	Dictionary _advance_uv2_unwrap(UV2UnwrapTask *p_task);
