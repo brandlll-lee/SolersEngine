@@ -146,9 +146,11 @@ After the build, open or create a project and connect a model from the Solers se
 
 ```powershell
 .\bin\solers.windows.editor.dev.x86_64.console.exe --headless --test --test-case="*Solers*" --no-colors --minimal
+.\bin\solers.windows.editor.dev.x86_64.console.exe --headless --editor --path modules/solers_ai/tests/editor_layout_project
+python modules/solers_ai/tests/terrain3d_smoke.py .\bin\solers.windows.editor.dev.x86_64.exe
 ```
 
-The editor layout behavior project lives at [`modules/solers_ai/tests/editor_layout_project/`](modules/solers_ai/tests/editor_layout_project/).
+These commands run the unit, real editor lifecycle, and bundled Terrain3D contracts used by CI.
 
 ## Tracking Godot
 

@@ -125,9 +125,11 @@ scons platform=macos target=editor dev_build=yes tests=yes debug_symbols=no num_
 
 ```powershell
 .\bin\solers.windows.editor.dev.x86_64.console.exe --headless --test --test-case="*Solers*" --no-colors --minimal
+.\bin\solers.windows.editor.dev.x86_64.console.exe --headless --editor --path modules/solers_ai/tests/editor_layout_project
+python modules/solers_ai/tests/terrain3d_smoke.py .\bin\solers.windows.editor.dev.x86_64.exe
 ```
 
-编辑器布局行为测试项目位于 [`modules/solers_ai/tests/editor_layout_project/`](modules/solers_ai/tests/editor_layout_project/)。
+这些命令运行 CI 使用的单元测试、真实编辑器生命周期测试和内置 Terrain3D 契约测试。
 
 ## 跟踪 Godot 上游
 

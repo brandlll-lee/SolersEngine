@@ -116,10 +116,13 @@ jobs:
           platform: windows
           target: ${{ matrix.target }}
 
-      - name: Solers module tests
+      - name: Solers module and editor behavior tests
         if: matrix.compiler == 'msvc' && matrix.target == 'editor'
         shell: pwsh
-        run: '& "${{ matrix.bin }}" --headless --test --test-case="*Solers*" --no-colors --minimal'
+        run: |
+          & "${{ matrix.bin }}" --headless --test --test-case="*Solers*" --no-colors --minimal
+          & "${{ matrix.bin }}" --headless --editor --path modules/solers_ai/tests/editor_layout_project
+          python modules/solers_ai/tests/terrain3d_smoke.py "${{ matrix.bin }}"
       - name: Save Godot build cache
         uses: ./.github/actions/godot-cache-save
         with:
