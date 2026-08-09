@@ -743,9 +743,6 @@ void SolersDock::_clear_chat_view(bool p_show_empty) {
 	tool_cells_by_id.clear();
 	last_started_tool_cell = nullptr;
 	timeline_messages.clear();
-	timeline_start = 0;
-	timeline_rows_sorted = false;
-	timeline_anchor_event_id = -1;
 	if (plan_capsule) {
 		plan_capsule->clear_plan();
 	}
@@ -1446,12 +1443,10 @@ void SolersDock::start_new_chat() {
 	notify_sessions_changed();
 }
 
-static constexpr int SOLERS_TIMELINE_WINDOW = 24;
-
 void SolersDock::load_chat_history(const Array &p_messages) {
 	_clear_chat_view(false);
 	timeline_messages = p_messages.duplicate(true);
-	_render_timeline(MAX(0, timeline_messages.size() - SOLERS_TIMELINE_WINDOW));
+	_render_timeline();
 	callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
 }
 
@@ -1490,15 +1485,6 @@ void SolersDock::_set_layout_dragging(bool p_active) {
 		if (width <= 0.0f) {
 			return;
 		}
-		const Rect2 viewport = chat_scroll->get_global_rect();
-		for (int i = 0; timeline_anchor_event_id < 0 && i < message_list->get_child_count(); i++) {
-			Control *anchor = Object::cast_to<Control>(message_list->get_child(i));
-			if (anchor && (int64_t)anchor->get_meta("timeline_event_id", -1) >= 0 && anchor->get_global_rect().intersects(viewport)) {
-				timeline_rows_sorted = false;
-				timeline_anchor_event_id = anchor->get_meta("timeline_event_id", -1);
-				timeline_anchor_screen_y = anchor->get_global_position().y;
-			}
-		}
 		Size2 minimum = timeline_inset->get_custom_minimum_size();
 		Size2 maximum = timeline_inset->get_custom_maximum_size();
 		minimum.x = maximum.x = width;
@@ -1515,27 +1501,21 @@ void SolersDock::_set_layout_dragging(bool p_active) {
 		maximum.x = -1;
 		timeline_inset->set_custom_maximum_size(maximum);
 		timeline_inset->set_custom_minimum_size(minimum);
-		if (timeline_anchor_event_id >= 0) {
-			message_list->call(SNAME("queue_sort"));
-		}
 	}
 }
 
-void SolersDock::_render_timeline(int p_start) {
-	if (!message_list || timeline_anchor_event_id >= 0) {
+void SolersDock::_render_timeline() {
+	if (!message_list) {
 		return;
 	}
-	timeline_rows_sorted = false;
 	_clear_empty_state();
-	const int next_start = CLAMP(p_start, 0, MAX(0, timeline_messages.size() - SOLERS_TIMELINE_WINDOW));
-	const int next_end = MIN(timeline_messages.size(), next_start + SOLERS_TIMELINE_WINDOW);
 	if (timeline_messages.is_empty()) {
 		_show_empty_state();
 		return;
 	}
 	HashSet<int64_t> desired;
 	HashMap<int64_t, Control *> mounted;
-	for (int index = next_start; index < next_end; index++) {
+	for (int index = 0; index < timeline_messages.size(); index++) {
 		desired.insert(Dictionary(timeline_messages[index]).get("event_id", -1));
 	}
 	for (int i = 0; i < message_list->get_child_count(); i++) {
@@ -1545,16 +1525,6 @@ void SolersDock::_render_timeline(int p_start) {
 			mounted[id] = row;
 		}
 	}
-	Control *anchor = nullptr;
-	for (int index = next_start; index < next_end && !anchor; index++) {
-		Control **row = mounted.getptr(Dictionary(timeline_messages[index]).get("event_id", -1));
-		anchor = row ? *row : nullptr;
-	}
-	if (anchor) {
-		timeline_anchor_event_id = anchor->get_meta("timeline_event_id", -1);
-		timeline_anchor_screen_y = anchor->get_global_position().y;
-	}
-	bool layout_pending = false;
 	for (int i = message_list->get_child_count() - 1; i >= 0; i--) {
 		Control *row = Object::cast_to<Control>(message_list->get_child(i));
 		const int64_t id = row ? (int64_t)row->get_meta("timeline_event_id", -1) : -1;
@@ -1564,10 +1534,9 @@ void SolersDock::_render_timeline(int p_start) {
 			mounted.erase(id);
 			message_list->remove_child(row);
 			row->queue_free();
-			layout_pending = true;
 		}
 	}
-	for (int index = next_start; index < next_end; index++) {
+	for (int index = 0; index < timeline_messages.size(); index++) {
 		const int64_t id = Dictionary(timeline_messages[index]).get("event_id", -1);
 		Control **found = mounted.getptr(id);
 		Control *row = found ? *found : nullptr;
@@ -1576,38 +1545,13 @@ void SolersDock::_render_timeline(int p_start) {
 			if (row) {
 				row->set_meta("timeline_row", true);
 				row->set_meta("timeline_event_id", id);
-				layout_pending = true;
+				mounted[id] = row;
 			}
 		}
-		if (row && row->get_index() != index - next_start) {
-			layout_pending = true;
-			message_list->move_child(row, index - next_start);
+		if (row && row->get_index() != index) {
+			message_list->move_child(row, index);
 		}
 	}
-	timeline_start = next_start;
-	if (!anchor || !layout_pending) {
-		timeline_anchor_event_id = -1;
-	}
-}
-
-void SolersDock::_queue_timeline_layout_commit() {
-	if (layout_drag_depth > 0 || timeline_anchor_event_id < 0 || !chat_scroll) {
-		return;
-	}
-	timeline_rows_sorted = true;
-	chat_scroll->call(SNAME("queue_sort"));
-}
-
-void SolersDock::_commit_timeline_layout() {
-	if (!timeline_rows_sorted || timeline_anchor_event_id < 0) {
-		return;
-	}
-	Control *anchor = _solers_timeline_row(message_list, timeline_anchor_event_id);
-	if (anchor) {
-		chat_scroll->set_v_scroll(chat_scroll->get_v_scroll() + Math::round(anchor->get_global_position().y - timeline_anchor_screen_y));
-	}
-	timeline_anchor_event_id = -1;
-	timeline_rows_sorted = false;
 }
 
 Control *SolersDock::_create_history_entry(const Dictionary &p_message) {
@@ -1671,19 +1615,6 @@ void SolersDock::_append_history_message(const Dictionary &p_message) {
 		_chat_mount()->add_child(cell);
 	} else if (role == "turn_outcome") {
 		_append_error_row(content);
-	}
-}
-
-void SolersDock::_on_timeline_scrolled() {
-	if (timeline_anchor_event_id >= 0 || !chat_scroll) {
-		return;
-	}
-	VScrollBar *bar = chat_scroll->get_v_scroll_bar();
-	const double p_value = bar->get_value();
-	if (timeline_start > 0 && Math::is_equal_approx(p_value, bar->get_min())) {
-		_render_timeline(MAX(0, timeline_start - SOLERS_TIMELINE_WINDOW / 2));
-	} else if (timeline_start + SOLERS_TIMELINE_WINDOW < timeline_messages.size() && Math::is_equal_approx(p_value, bar->get_max() - bar->get_page())) {
-		_render_timeline(MIN(timeline_messages.size() - SOLERS_TIMELINE_WINDOW, timeline_start + SOLERS_TIMELINE_WINDOW / 2));
 	}
 }
 
@@ -2638,17 +2569,14 @@ SolersDock::SolersDock() {
 	chat_scroll->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	chat_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	chat_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_SHOW_NEVER);
-	chat_scroll->get_v_scroll_bar()->connect(SNAME("scrolling"), callable_mp(this, &SolersDock::_on_timeline_scrolled));
-	chat_scroll->connect(SceneStringName(sort_children), callable_mp(this, &SolersDock::_commit_timeline_layout), CONNECT_DEFERRED);
 	chat_scroll->hide();
 	chat_column->add_child(chat_scroll);
 
 	message_list = memnew(VBoxContainer);
+	message_list->set_name("ChatTimelineMessages");
 	message_list->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	message_list->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	message_list->add_theme_constant_override("separation", 14 * EDSCALE);
-	message_list->connect(SceneStringName(sort_children), callable_mp(this, &SolersDock::_queue_timeline_layout_commit));
-
 	timeline_inset = memnew(MarginContainer);
 	timeline_inset->set_name("TimelineInset");
 	timeline_inset->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -2998,7 +2926,7 @@ void SolersDock::_on_agent_timeline_entry_committed(int64_t p_event_id, const St
 			message_list->remove_child(row);
 			row->queue_free();
 		}
-		_render_timeline(MAX(0, timeline_messages.size() - SOLERS_TIMELINE_WINDOW));
+		_render_timeline();
 		return;
 	}
 	if (!message_list) {
@@ -3162,7 +3090,10 @@ void SolersDock::_on_agent_turn_completed(const Dictionary &) {
 	_finish_turn_cells();
 	if (agent_session) {
 		timeline_messages = agent_session->get_timeline_entries();
-		_render_timeline(follow_tail ? MAX(0, timeline_messages.size() - SOLERS_TIMELINE_WINDOW) : timeline_start);
+		_render_timeline();
+		if (follow_tail) {
+			callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
+		}
 		const Dictionary plan = agent_session->get_plan();
 		_on_agent_plan_updated(plan.get("explanation", String()), plan.get("plan", Array()));
 	}
@@ -3175,7 +3106,7 @@ void SolersDock::_on_agent_turn_failed(const Dictionary &) {
 	_finish_turn_cells();
 	if (agent_session) {
 		timeline_messages = agent_session->get_timeline_entries();
-		_render_timeline(timeline_start);
+		_render_timeline();
 	}
 	_refresh_status();
 	_update_send_enabled();

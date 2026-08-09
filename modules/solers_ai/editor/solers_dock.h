@@ -149,10 +149,6 @@ class SolersDock : public PanelContainer {
 	String session_project_path;
 	String session_current_id;
 	Array timeline_messages;
-	int timeline_start = 0;
-	bool timeline_rows_sorted = false;
-	int64_t timeline_anchor_event_id = -1;
-	float timeline_anchor_screen_y = 0.0f;
 	int layout_drag_depth = 0;
 
 	SolersObservationService *observation_service = nullptr;
@@ -179,10 +175,7 @@ class SolersDock : public PanelContainer {
 	void _on_session_row_pressed(const String &p_session_id);
 	Control *_create_history_entry(const Dictionary &p_message);
 	void _append_history_message(const Dictionary &p_message);
-	void _render_timeline(int p_start);
-	void _queue_timeline_layout_commit();
-	void _commit_timeline_layout();
-	void _on_timeline_scrolled();
+	void _render_timeline();
 	void _bind_layout_splits();
 	void _set_layout_dragging(bool p_active);
 	VBoxContainer *_chat_mount() const;
