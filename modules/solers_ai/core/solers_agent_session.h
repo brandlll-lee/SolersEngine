@@ -93,6 +93,7 @@ class SolersAgentSession : public Object {
 	Dictionary last_usage;
 	Dictionary current_plan;
 	Dictionary latest_mutation_receipt;
+	Dictionary latest_tool_failure;
 	String last_outcome;
 	Dictionary active_provider; // { provider, model, base_url, api_key, features }
 	bool running = false;

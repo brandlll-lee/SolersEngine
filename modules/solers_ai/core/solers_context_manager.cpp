@@ -36,7 +36,7 @@
 #include "modules/solers_ai/llm/solers_llm_message.h"
 
 const char *SolersContextManager::COMPACTION_SUMMARY_PREFIX =
-		"The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it.";
+		"Typed continuation: this note preserves only the user's goal, constraints, and unresolved decisions. Current engine state, receipts, diagnostics, and pending tool work are supplied separately by Solers and remain authoritative.";
 const char *SolersContextManager::CANCELLED_TOOL_RESULT =
 		"{\"ok\":false,\"error\":{\"code\":\"TOOL_CANCELLED\",\"message\":\"This call never produced a result: the turn ended before it finished. Re-run it if its output is still needed.\",\"recoverable\":true}}";
 const char *SolersContextManager::MODEL_CONTEXT_ROLE = "model_context";
