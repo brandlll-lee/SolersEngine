@@ -34,6 +34,8 @@
 
 class SolersMarkdownView;
 class TextParagraph;
+class TextEdit;
+class Button;
 class VBoxContainer;
 
 String solers_summarize_tool_args(const String &p_arguments_json);
@@ -55,8 +57,18 @@ class SolersUserBubble : public Control {
 	float cell_height = 0.0f;
 
 	Callable content_changed;
+	Callable rewind_callback;
+	TextEdit *inline_editor = nullptr;
+	Button *rewind_button = nullptr;
+	bool editing = false;
 
 	void _shape(float p_cell_width);
+	void _begin_edit();
+	void _end_edit();
+	void _cancel_edit_deferred();
+	void _rewind_pressed();
+	void _layout_editor();
+	void _gui_input(const Ref<InputEvent> &p_event);
 
 protected:
 	void _notification(int p_what);
@@ -68,6 +80,7 @@ public:
 	void set_message(const String &p_text);
 	void set_attachments(const Array &p_attachments);
 	void set_content_changed_callback(const Callable &p_cb) { content_changed = p_cb; }
+	void set_rewind_callback(const Callable &p_cb) { rewind_callback = p_cb; }
 
 	SolersUserBubble();
 };

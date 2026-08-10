@@ -60,6 +60,7 @@
 #include "scene/gui/line_edit.h"
 #include "scene/gui/margin_container.h"
 #include "scene/gui/panel_container.h"
+#include "scene/gui/popup_menu.h"
 #include "scene/gui/scroll_bar.h"
 #include "scene/gui/scroll_container.h"
 #include "scene/gui/separator.h"
@@ -680,7 +681,7 @@ void SolersDock::_on_cell_content_changed() {
 	}
 }
 
-Control *SolersDock::_append_user_message(const String &p_message, const Array &p_attachments) {
+Control *SolersDock::_append_user_message(const String &p_message, const Array &p_attachments, int64_t p_event_id) {
 	VBoxContainer *mount = _chat_mount();
 	if (!mount) {
 		return nullptr;
@@ -693,11 +694,77 @@ Control *SolersDock::_append_user_message(const String &p_message, const Array &
 	mount->add_child(bubble);
 	bubble->set_attachments(p_attachments);
 	bubble->set_message(p_message);
+	if (p_event_id >= 0) {
+		bubble->connect(SceneStringName(gui_input), callable_mp(this, &SolersDock::_on_user_message_gui_input).bind(p_event_id));
+		bubble->set_rewind_callback(callable_mp(this, &SolersDock::_on_user_message_rewind).bind(p_event_id));
+		bubble->set_tooltip_text(TTR("Right-click for conversation actions"));
+	}
 
 	if (!timeline_rendering) {
 		callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
 	}
 	return bubble;
+}
+
+void SolersDock::_on_user_message_rewind(const String &p_text, int64_t p_event_id) {
+	if (!agent_session) {
+		return;
+	}
+	const Dictionary result = agent_session->rewind_to_event(p_event_id);
+	if (!(bool)result.get("ok", false)) {
+		_append_error_row(String(Dictionary(result.get("error", Dictionary())).get("message", TTR("Could not rewind conversation."))));
+		return;
+	}
+	_reload_branched_session(result.get("data", Dictionary()));
+	chat_input->set_text(p_text);
+	chat_input->grab_focus();
+	_update_chat_input_height();
+	_update_send_enabled();
+}
+
+void SolersDock::_on_user_message_gui_input(const Ref<InputEvent> &p_event, int64_t p_event_id) {
+	const Ref<InputEventMouseButton> mouse = p_event;
+	if (mouse.is_null() || !mouse->is_pressed() || mouse->get_button_index() != MouseButton::RIGHT || !message_menu) {
+		return;
+	}
+	message_menu_event_id = p_event_id;
+	message_menu->set_position(DisplayServer::get_singleton()->mouse_get_position());
+	message_menu->reset_size();
+	message_menu->popup();
+}
+
+void SolersDock::_reload_branched_session(const Dictionary &p_data) {
+	if (!agent_session) {
+		return;
+	}
+	session_current_id = p_data.get("session_id", session_current_id);
+	load_chat_history(agent_session->get_timeline_entries());
+	set_session_context(session_project_path, session_current_id);
+	notify_sessions_changed();
+}
+
+void SolersDock::_on_message_menu_id_pressed(int p_id) {
+	if (!agent_session || message_menu_event_id < 0) {
+		return;
+	}
+	const Dictionary result = p_id == 2 ? agent_session->rewind_to_event(message_menu_event_id) : agent_session->branch_from_event(message_menu_event_id);
+	if (!(bool)result.get("ok", false)) {
+		_append_error_row(String(Dictionary(result.get("error", Dictionary())).get("message", TTR("Conversation action failed."))));
+		return;
+	}
+	const Dictionary data = result.get("data", Dictionary());
+	_reload_branched_session(data);
+	const String prompt = SolersMention::strip_prompt_block(data.get("prompt", String()));
+	if (p_id == 0) {
+		_submit_chat_prompt(prompt);
+	} else {
+		chat_input->set_text(prompt);
+		chat_input->grab_focus();
+		chat_input->set_caret_line(chat_input->get_line_count() - 1);
+		chat_input->set_caret_column(chat_input->get_line(chat_input->get_line_count() - 1).length());
+		_update_chat_input_height();
+		_update_send_enabled();
+	}
 }
 
 void SolersDock::_append_error_row(const String &p_text) {
@@ -1652,7 +1719,7 @@ void SolersDock::_append_history_message(const Dictionary &p_message) {
 			return;
 		}
 		_settle_tool_group();
-		_append_user_message(SolersMention::strip_prompt_block(content), p_message.get("attachments", Array()));
+		_append_user_message(SolersMention::strip_prompt_block(content), p_message.get("attachments", Array()), p_message.get("event_id", -1));
 	} else if (role == SolersLLMRole::ASSISTANT) {
 		_settle_tool_group();
 		const String reasoning = String(p_message.get("reasoning", String())).strip_edges();
@@ -1728,7 +1795,15 @@ void SolersDock::_submit_chat_prompt(const String &p_prompt, const Array &p_atta
 		_append_error_row(String::utf8("\u26a0 ") + String(error.get("message", "Could not start the agent turn.")));
 	} else {
 		if (user_row) {
-			user_row->set_meta("timeline_event_id", Dictionary(result.get("data", Dictionary())).get("event_id", -1));
+			const int64_t event_id = Dictionary(result.get("data", Dictionary())).get("event_id", -1);
+			user_row->set_meta("timeline_event_id", event_id);
+			if (event_id >= 0) {
+				user_row->connect(SceneStringName(gui_input), callable_mp(this, &SolersDock::_on_user_message_gui_input).bind(event_id));
+				if (SolersUserBubble *bubble = Object::cast_to<SolersUserBubble>(user_row)) {
+					bubble->set_rewind_callback(callable_mp(this, &SolersDock::_on_user_message_rewind).bind(event_id));
+				}
+				user_row->set_tooltip_text(TTR("Right-click for conversation actions"));
+			}
 		}
 		timeline_messages = agent_session->get_timeline_entries();
 		session_current_id = agent_session->get_status().get("session_id", session_current_id);
@@ -2695,6 +2770,14 @@ SolersDock::SolersDock() {
 	// Cursor-flat shell: fill only — no inset card border. Pane edges come from
 	// apply_chrome_edges (HSplit hairline) + EditorTitleBar, same as session_sidebar.
 	add_theme_style_override("panel", solers_make_stylebox(SOLERS_BG, Color(0, 0, 0, 0), 0, 0));
+
+	message_menu = memnew(PopupMenu);
+	message_menu->add_item(TTR("Retry from here"), 0);
+	message_menu->add_item(TTR("Edit and retry"), 1);
+	message_menu->add_separator();
+	message_menu->add_item(TTR("Rewind conversation and project changes"), 2);
+	message_menu->connect("id_pressed", callable_mp(this, &SolersDock::_on_message_menu_id_pressed));
+	add_child(message_menu);
 
 	root_box = memnew(VBoxContainer);
 	root_box->set_h_size_flags(Control::SIZE_EXPAND_FILL);

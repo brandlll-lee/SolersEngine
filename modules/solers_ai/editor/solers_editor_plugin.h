@@ -50,8 +50,6 @@ protected:
 
 public:
 	String get_plugin_name() const override { return "Solers"; }
-	void set_window_layout(Ref<ConfigFile> p_layout) override;
-	void get_window_layout(Ref<ConfigFile> p_layout) override;
 
 	SolersEditorPlugin();
 	~SolersEditorPlugin();

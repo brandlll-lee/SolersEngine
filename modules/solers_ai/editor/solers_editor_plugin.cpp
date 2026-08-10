@@ -31,16 +31,11 @@
 #include "solers_editor_plugin.h"
 
 #include "core/config/project_settings.h"
-#include "core/io/config_file.h"
 #include "core/object/callable_mp.h"
 #include "core/os/os.h"
-#include "editor/docks/editor_dock_manager.h"
-#include "editor/editor_node.h"
 
 #include "modules/solers_ai/editor/solers_agent_runtime.h"
 #include "modules/solers_ai/editor/solers_dock.h"
-
-static constexpr int SOLERS_WORKSPACE_LAYOUT_VERSION = 1;
 
 void SolersEditorPlugin::_select_session(const String &p_session_id) {
 	runtime->set_session(project_path, p_session_id);
@@ -60,17 +55,6 @@ void SolersEditorPlugin::_notification(int p_what) {
 			dock->queue_redraw();
 		}
 	}
-}
-
-void SolersEditorPlugin::set_window_layout(Ref<ConfigFile> p_layout) {
-	if ((int)p_layout->get_value("Solers", "workspace_layout_version", 0) < SOLERS_WORKSPACE_LAYOUT_VERSION) {
-		EditorDockManager::get_singleton()->consolidate_vertical_docks(EditorDock::DOCK_SLOT_RIGHT_UL);
-		EditorNode::get_singleton()->save_editor_layout_delayed();
-	}
-}
-
-void SolersEditorPlugin::get_window_layout(Ref<ConfigFile> p_layout) {
-	p_layout->set_value("Solers", "workspace_layout_version", SOLERS_WORKSPACE_LAYOUT_VERSION);
 }
 
 SolersEditorPlugin::SolersEditorPlugin() {

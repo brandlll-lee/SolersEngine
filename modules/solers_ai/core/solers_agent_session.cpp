@@ -131,6 +131,8 @@ static Dictionary _update_plan_schema() {
 void SolersAgentSession::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("start_turn", "args"), &SolersAgentSession::start_turn);
 	ClassDB::bind_method(D_METHOD("queue_user_message", "args"), &SolersAgentSession::queue_user_message);
+	ClassDB::bind_method(D_METHOD("branch_from_event", "event_id"), &SolersAgentSession::branch_from_event);
+	ClassDB::bind_method(D_METHOD("rewind_to_event", "event_id"), &SolersAgentSession::rewind_to_event);
 	ClassDB::bind_method(D_METHOD("poll"), &SolersAgentSession::poll);
 	ClassDB::bind_method(D_METHOD("abort"), &SolersAgentSession::abort);
 	ClassDB::bind_method(D_METHOD("reset_conversation"), &SolersAgentSession::reset_conversation);
@@ -159,6 +161,102 @@ Dictionary SolersAgentSession::_ok(const Variant &p_data) const {
 	result["ok"] = true;
 	result["data"] = p_data;
 	return result;
+}
+
+Dictionary SolersAgentSession::branch_from_event(int64_t p_event_id) {
+	if (running) {
+		return _error("AGENT_BUSY", "Stop the current turn before branching the conversation.");
+	}
+	struct BranchScan {
+		String project_path;
+		int64_t target_id = 0;
+		Array prefix;
+		Dictionary target;
+	} scan;
+	scan.project_path = project_path;
+	scan.target_id = p_event_id;
+	solers_transcript_foreach_session(session_id, &scan, [](void *p_userdata, const String &p_record) -> bool {
+		BranchScan &state = *static_cast<BranchScan *>(p_userdata);
+		Dictionary event;
+		if (!solers_transcript_parse_record(p_record.strip_edges(), event) || String(event.get("project_path", String())) != state.project_path) {
+			return true;
+		}
+		const int64_t id = event.get("event_id", 0);
+		if (id == state.target_id) {
+			state.target = event.duplicate(true);
+			return true;
+		}
+		if (id < state.target_id) {
+			const String type = event.get("event_type", String());
+			if (type != "checkpoint_created" && type != "checkpoint_consumed" && type != "checkpoint_cleared") {
+				state.prefix.push_back(event.duplicate(true));
+			}
+		}
+		return true;
+	});
+	if (scan.target.is_empty() || String(scan.target.get("event_type", String())) != "message" || String(scan.target.get("role", String())) != SolersLLMRole::USER) {
+		return _error("MESSAGE_NOT_FOUND", "The selected user message is no longer available in this session.");
+	}
+	const String source_session = session_id;
+	const String new_session = _make_session_id();
+	for (int i = 0; i < scan.prefix.size(); i++) {
+		Dictionary event = Dictionary(scan.prefix[i]).duplicate(true);
+		event["session_id"] = new_session;
+		event["branch_source_session_id"] = source_session;
+		solers_transcript_write(event);
+	}
+	solers_transcript_flush(new_session);
+	set_session(project_path, new_session);
+	Dictionary data;
+	data["session_id"] = new_session;
+	data["source_session_id"] = source_session;
+	data["prompt"] = scan.target.get("content", String());
+	data["mentions"] = scan.target.get("mentions", Array());
+	data["attachments"] = scan.target.get("attachments", Array());
+	data["target_revision"] = scan.target.get("session_revision", 0);
+	return _ok(data);
+}
+
+Dictionary SolersAgentSession::rewind_to_event(int64_t p_event_id) {
+	if (running) {
+		return _error("AGENT_BUSY", "Stop the current turn before rewinding the conversation.");
+	}
+	Dictionary selected;
+	bool irreversible_after = false;
+	struct FindScan { int64_t id; Dictionary *selected; bool *irreversible_after; } scan{ p_event_id, &selected, &irreversible_after };
+	solers_transcript_foreach_session(session_id, &scan, [](void *p_userdata, const String &p_record) -> bool {
+		FindScan &state = *static_cast<FindScan *>(p_userdata);
+		Dictionary event;
+		if (solers_transcript_parse_record(p_record.strip_edges(), event) && (int64_t)event.get("event_id", 0) == state.id) {
+			*state.selected = event.duplicate(true);
+			return true;
+		}
+		if (!state.selected->is_empty() && String(event.get("event_type", String())) == "checkpoint_cleared" && (int64_t)event.get("session_revision", 0) > (int64_t)state.selected->get("session_revision", 0)) {
+			*state.irreversible_after = true;
+		}
+		return true;
+	});
+	if (selected.is_empty() || String(selected.get("role", String())) != SolersLLMRole::USER) {
+		return _error("MESSAGE_NOT_FOUND", "The selected user message is no longer available in this session.");
+	}
+	if (irreversible_after) {
+		return _error("REWIND_IRREVERSIBLE", "A later Agent action has no reversible checkpoint. The conversation can be branched, but project changes cannot be safely rewound.");
+	}
+	if (!tool_registry) {
+		return _error("REWIND_UNAVAILABLE", "The project history service is unavailable.");
+	}
+	const uint64_t revision = (int64_t)selected.get("session_revision", 0);
+	const Dictionary reverted = tool_registry->rewind_session_to_revision(project_path, session_id, revision);
+	if (!(bool)reverted.get("ok", false)) {
+		return reverted;
+	}
+	Dictionary branched = branch_from_event(p_event_id);
+	if ((bool)branched.get("ok", false)) {
+		Dictionary data = branched.get("data", Dictionary());
+		data["reverted_count"] = Dictionary(reverted.get("data", Dictionary())).get("reverted_count", 0);
+		branched["data"] = data;
+	}
+	return branched;
 }
 
 Dictionary SolersAgentSession::_error(const String &p_code, const String &p_message) const {
@@ -379,7 +477,7 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 	uint64_t restored_authored_revision = 0;
 	uint64_t restored_runtime_epoch = 0;
 	uint64_t restored_observed_revision = 0;
-	Dictionary restored_reversal;
+	Array restored_reversals;
 	HashSet<String> restored_model_attachments;
 	if (p_project_path.is_empty() || p_session_id.is_empty()) {
 		Dictionary empty;
@@ -402,7 +500,7 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 		uint64_t *restored_runtime_epoch = nullptr;
 		uint64_t *restored_observed_revision = nullptr;
 		int64_t *event_sequence = nullptr;
-		Dictionary *restored_reversal = nullptr;
+		Array *restored_reversals = nullptr;
 		HashSet<String> *restored_model_attachments = nullptr;
 	} scan;
 	scan.project_path = &p_project_path;
@@ -418,7 +516,7 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 	scan.restored_runtime_epoch = &restored_runtime_epoch;
 	scan.restored_observed_revision = &restored_observed_revision;
 	scan.event_sequence = &transcript_event_sequence;
-	scan.restored_reversal = &restored_reversal;
+	scan.restored_reversals = &restored_reversals;
 	scan.restored_model_attachments = &restored_model_attachments;
 
 	solers_transcript_foreach_session(p_session_id, &scan, [](void *p_userdata, const String &p_record) -> bool {
@@ -458,11 +556,21 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 		}
 		if (event_type == "checkpoint_created") {
 			Dictionary checkpoint = event.get("checkpoint", Dictionary());
-			*scan.restored_reversal = checkpoint.duplicate(true);
+			scan.restored_reversals->push_back(checkpoint.duplicate(true));
 			return true;
 		}
-		if (event_type == "checkpoint_cleared" || event_type == "checkpoint_consumed") {
-			scan.restored_reversal->clear();
+		if (event_type == "checkpoint_cleared") {
+			scan.restored_reversals->clear();
+			return true;
+		}
+		if (event_type == "checkpoint_consumed") {
+			const String consumed_id = String(Dictionary(event.get("checkpoint", Dictionary())).get("id", String()));
+			for (int i = scan.restored_reversals->size() - 1; i >= 0; i--) {
+				if (consumed_id.is_empty() || String(Dictionary((*scan.restored_reversals)[i]).get("id", String())) == consumed_id) {
+					scan.restored_reversals->remove_at(i);
+					break;
+				}
+			}
 			return true;
 		}
 		if (event_type == "tool_result") {
@@ -576,7 +684,7 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 		delivered_attachments.push_back(identity);
 	}
 	state["delivered_model_attachments"] = delivered_attachments;
-	state["reversal"] = restored_reversal;
+	state["reversals"] = restored_reversals;
 	return state;
 }
 
@@ -2926,7 +3034,7 @@ void SolersAgentSession::reset_conversation() {
 		context_manager->reset();
 	}
 	if (tool_registry) {
-		tool_registry->restore_session_reversal(session_id, Dictionary());
+		tool_registry->restore_session_reversals(session_id, Array());
 	}
 	session_id = _make_session_id();
 	authored_revision = 0;
@@ -2955,7 +3063,7 @@ void SolersAgentSession::set_session(const String &p_project_path, const String 
 		session_id = p_session_id;
 	}
 	if (tool_registry && previous_session_id != session_id) {
-		tool_registry->restore_session_reversal(previous_session_id, Dictionary());
+		tool_registry->restore_session_reversals(previous_session_id, Array());
 	}
 	transcript_event_sequence = 0;
 	const Dictionary state = _read_transcript_state(project_path, session_id);
@@ -2975,7 +3083,7 @@ void SolersAgentSession::set_session(const String &p_project_path, const String 
 		delivered_model_attachments.insert(delivered_attachments[i]);
 	}
 	if (tool_registry) {
-		tool_registry->restore_session_reversal(session_id, state.get("reversal", Dictionary()));
+		tool_registry->restore_session_reversals(session_id, state.get("reversals", Array()));
 	}
 	pending_background_assets = state.get("background_assets", Array());
 	background_resume_suppressed = false;

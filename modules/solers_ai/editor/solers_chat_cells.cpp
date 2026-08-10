@@ -37,6 +37,8 @@
 #include "core/os/os.h"
 #include "editor/themes/editor_scale.h"
 #include "scene/gui/box_container.h"
+#include "scene/gui/button.h"
+#include "scene/gui/text_edit.h"
 #include "scene/resources/image_texture.h"
 #include "scene/resources/style_box_flat.h"
 #include "scene/resources/text_paragraph.h"
@@ -198,8 +200,87 @@ String solers_summarize_tool_args(const String &p_arguments_json) {
 /* ------------------------------------------------------------------ */
 
 SolersUserBubble::SolersUserBubble() {
-	set_mouse_filter(MOUSE_FILTER_IGNORE);
+	// Receive the context-menu click while still allowing wheel/drag events to
+	// reach the surrounding chat ScrollContainer.
+	set_mouse_filter(MOUSE_FILTER_PASS);
 	set_h_size_flags(SIZE_EXPAND_FILL);
+	connect(SceneStringName(gui_input), callable_mp(this, &SolersUserBubble::_gui_input));
+}
+
+void SolersUserBubble::_begin_edit() {
+	if (editing || !rewind_callback.is_valid()) {
+		return;
+	}
+	editing = true;
+	inline_editor = memnew(TextEdit);
+	inline_editor->set_text(SolersMention::strip_prompt_block(text));
+	inline_editor->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	inline_editor->set_fit_content_height_enabled(true);
+	inline_editor->connect(SceneStringName(focus_exited), callable_mp(this, &SolersUserBubble::_cancel_edit_deferred), CONNECT_DEFERRED);
+	add_child(inline_editor);
+	rewind_button = memnew(Button(TTR("Rewind")));
+	rewind_button->connect(SceneStringName(pressed), callable_mp(this, &SolersUserBubble::_rewind_pressed));
+	add_child(rewind_button);
+	cell_height = MAX(cell_height, 126.0f * EDSCALE);
+	update_minimum_size();
+	_layout_editor();
+	inline_editor->grab_focus();
+	inline_editor->set_caret_line(inline_editor->get_line_count() - 1);
+	inline_editor->set_caret_column(inline_editor->get_line(inline_editor->get_line_count() - 1).length());
+	queue_redraw();
+}
+
+void SolersUserBubble::_end_edit() {
+	editing = false;
+	if (inline_editor) {
+		inline_editor->queue_free();
+		inline_editor = nullptr;
+	}
+	if (rewind_button) {
+		rewind_button->queue_free();
+		rewind_button = nullptr;
+	}
+	shaped_for_width = -1.0f;
+	_shape(get_size().x);
+	queue_redraw();
+}
+
+void SolersUserBubble::_cancel_edit_deferred() {
+	if (!editing || (inline_editor && inline_editor->has_focus()) || (rewind_button && rewind_button->has_focus())) {
+		return;
+	}
+	_end_edit();
+}
+
+void SolersUserBubble::_rewind_pressed() {
+	if (!editing || !inline_editor || !rewind_callback.is_valid()) {
+		return;
+	}
+	const String edited_text = inline_editor->get_text();
+	_end_edit();
+	rewind_callback.call(edited_text);
+}
+
+void SolersUserBubble::_layout_editor() {
+	if (!editing || !inline_editor || !rewind_button) {
+		return;
+	}
+	const float ed = EDSCALE;
+	const float width = MIN(get_size().x, 440.0f * ed);
+	const float x = get_size().x - width;
+	inline_editor->set_position(Point2(x + 8.0f * ed, 8.0f * ed));
+	inline_editor->set_size(Size2(width - 16.0f * ed, cell_height - 48.0f * ed));
+	const Size2 button_size(MAX(82.0f * ed, rewind_button->get_combined_minimum_size().x), 30.0f * ed);
+	rewind_button->set_position(Point2(get_size().x - button_size.x - 8.0f * ed, cell_height - button_size.y - 8.0f * ed));
+	rewind_button->set_size(button_size);
+}
+
+void SolersUserBubble::_gui_input(const Ref<InputEvent> &p_event) {
+	const Ref<InputEventMouseButton> mouse = p_event;
+	if (mouse.is_valid() && mouse->is_pressed() && mouse->get_button_index() == MouseButton::LEFT) {
+		_begin_edit();
+		accept_event();
+	}
 }
 
 void SolersUserBubble::set_message(const String &p_text) {
@@ -322,6 +403,7 @@ void SolersUserBubble::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_RESIZED: {
 			_shape(get_size().x);
+			_layout_editor();
 		} break;
 		case NOTIFICATION_THEME_CHANGED: {
 			shaped_for_width = -1.0f;
@@ -329,6 +411,11 @@ void SolersUserBubble::_notification(int p_what) {
 			queue_redraw();
 		} break;
 		case NOTIFICATION_DRAW: {
+			if (editing) {
+				const float width = MIN(get_size().x, 440.0f * EDSCALE);
+				solers_cell_fill(this, Rect2(Point2(get_size().x - width, 0), Size2(width, cell_height)), SOLERS_CELL_BUBBLE_BG, 14.0f * EDSCALE);
+				break;
+			}
 			if (text.is_empty() && attachment_textures.is_empty()) {
 				break;
 			}

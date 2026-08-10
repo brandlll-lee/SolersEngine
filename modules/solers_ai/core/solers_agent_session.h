@@ -282,6 +282,12 @@ public:
 	// conversation after the current tool batch, before the next model
 	// dispatch. Fails with AGENT_IDLE when no turn is running.
 	Dictionary queue_user_message(const Dictionary &p_args);
+	// Preserve the original audit log and create a new conversation whose
+	// history ends immediately before the selected user message.
+	Dictionary branch_from_event(int64_t p_event_id);
+	// Atomically restore reversible project mutations after the selected
+	// message's revision, then create the same conversation branch.
+	Dictionary rewind_to_event(int64_t p_event_id);
 	void poll();
 	void shutdown();
 	void abort();
