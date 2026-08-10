@@ -34,12 +34,14 @@
 
 class SolersAgentRuntime;
 class SolersDock;
+class EditorDock;
 
 class SolersEditorPlugin : public EditorPlugin {
 	GDCLASS(SolersEditorPlugin, EditorPlugin);
 
 	SolersAgentRuntime *runtime = nullptr;
 	SolersDock *dock = nullptr;
+	EditorDock *dock_host = nullptr;
 	String project_path;
 
 	void _select_session(const String &p_session_id);

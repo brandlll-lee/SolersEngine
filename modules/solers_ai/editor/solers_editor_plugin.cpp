@@ -33,6 +33,7 @@
 #include "core/config/project_settings.h"
 #include "core/object/callable_mp.h"
 #include "core/os/os.h"
+#include "editor/docks/editor_dock.h"
 
 #include "modules/solers_ai/editor/solers_agent_runtime.h"
 #include "modules/solers_ai/editor/solers_dock.h"
@@ -65,7 +66,13 @@ SolersEditorPlugin::SolersEditorPlugin() {
 	dock->set_session_select_callback(callable_mp(this, &SolersEditorPlugin::_select_session));
 	dock->set_new_session_callback(callable_mp(this, &SolersEditorPlugin::_new_session));
 	runtime->bind_dock(dock);
-	add_control_to_container(CONTAINER_EDITOR_SIDE_LEFT, dock);
+	dock_host = memnew(EditorDock);
+	dock_host->set_title(TTR("Solers"));
+	dock_host->set_layout_key("SolersChat");
+	dock_host->set_default_slot(EditorDock::DOCK_SLOT_LEFT_UL);
+	dock_host->set_available_layouts(EditorDock::DOCK_LAYOUT_ALL);
+	dock_host->add_child(dock);
+	add_dock(dock_host);
 
 	const String session_id = OS::get_singleton()->get_environment("SOLERS_SESSION_ID");
 	if (session_id.is_empty()) {
@@ -82,8 +89,12 @@ SolersEditorPlugin::SolersEditorPlugin() {
 
 SolersEditorPlugin::~SolersEditorPlugin() {
 	memdelete(runtime);
-	if (dock && dock->get_parent()) {
-		remove_control_from_container(CONTAINER_EDITOR_SIDE_LEFT, dock);
+	if (dock_host) {
+		remove_dock(dock_host);
+		if (dock && dock->get_parent() == dock_host) {
+			dock_host->remove_child(dock);
+		}
+		memdelete(dock_host);
 	}
 	memdelete(dock);
 }
