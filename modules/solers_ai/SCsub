@@ -4,13 +4,21 @@ from misc.utility.scons_hints import *
 Import("env")
 Import("env_modules")
 
-import solers_provider_logos_builder
+import editor_builders
 import solers_skills_builder
+import solers_svg_assets_builder
 import terrain3d_bundle_builder
 
 env_solers_ai = env_modules.Clone()
 
 module_obj = []
+
+generated_terrain3d_lock = "#modules/solers_ai/generated/terrain3d_lock.gen.h"
+env_solers_ai.CommandNoCache(
+    generated_terrain3d_lock,
+    env.Value(terrain3d_bundle_builder.VERSION + terrain3d_bundle_builder.SHA256),
+    env_solers_ai.Run(terrain3d_bundle_builder.make_lock_header),
+)
 
 skill_sources = Glob("#modules/solers_ai/skills/*/SKILL.md")
 generated_skills_header = "#modules/solers_ai/generated/solers_builtin_skills.gen.h"
@@ -20,12 +28,12 @@ env_solers_ai.CommandNoCache(
     env_solers_ai.Run(solers_skills_builder.make_builtin_skills_header),
 )
 
-logo_sources = Glob("#modules/solers_ai/assets/provider_logos/*.svg")
-generated_logos_header = "#modules/solers_ai/generated/solers_provider_logos.gen.h"
+svg_sources = Glob("#modules/solers_ai/assets/provider_logos/*.svg") + Glob("#modules/solers_ai/assets/ui_icons/*.svg")
+generated_svg_header = "#modules/solers_ai/generated/solers_svg_assets.gen.h"
 env_solers_ai.CommandNoCache(
-    generated_logos_header,
-    logo_sources,
-    env_solers_ai.Run(solers_provider_logos_builder.make_provider_logos_header),
+    generated_svg_header,
+    svg_sources,
+    env_solers_ai.Run(solers_svg_assets_builder.make_svg_assets_header),
 )
 
 env_solers_ai.add_source_files(module_obj, "*.cpp")
@@ -34,9 +42,22 @@ env_solers_ai.add_source_files(module_obj, "llm/*.cpp")
 env_solers_ai.add_source_files(module_obj, "plugins/*.cpp")
 env_solers_ai.add_source_files(module_obj, "protocol/*.cpp")
 env_solers_ai.Depends(module_obj, generated_skills_header)
-env_solers_ai.Depends(module_obj, generated_logos_header)
+env_solers_ai.Depends(module_obj, generated_svg_header)
+env_solers_ai.Depends(module_obj, generated_terrain3d_lock)
 
 if env.editor_build:
+    translation_targets = [
+        "#modules/solers_ai/generated/solers_translations.gen.h",
+        "#modules/solers_ai/generated/solers_translations.gen.cpp",
+    ]
+    env_solers_ai.CommandNoCache(
+        translation_targets,
+        Glob("#modules/solers_ai/translations/*"),
+        env_solers_ai.Run(editor_builders.make_translations),
+    )
+    env_solers_ai.add_source_files(module_obj, translation_targets[1])
+    env_solers_ai.Depends(module_obj, translation_targets)
+
     terrain3d_bundle = env_solers_ai.CommandNoCache(
         "#bin/solers_bundles/" + terrain3d_bundle_builder.ARCHIVE_NAME,
         env.Value(terrain3d_bundle_builder.SHA256),
@@ -55,10 +76,9 @@ if env.editor_build:
     env.Depends(module_obj, thirdparty_obj)
 
 if env["tests"]:
-    env_solers_ai.Append(CPPDEFINES=["TESTS_ENABLED"])
-    env_solers_ai.add_source_files(module_obj, "tests/*.cpp")
-
+    env_solers_tests = env_solers_ai.Clone()
     if env["disable_exceptions"]:
-        env_solers_ai.Append(CPPDEFINES=["DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS"])
-
+        env_solers_tests.Append(CPPDEFINES=["DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS"])
+    env_solers_tests.add_source_files(module_obj, "tests/*.cpp")
+env_solers_ai.Alias("solers_ai_compile", module_obj)
 env.modules_sources += module_obj

@@ -61,9 +61,9 @@ git merge --no-ff "$NEW_BASE"
 ```
 
 Resolve only the conflicts reported by Git. Do not restore deleted compatibility
-layers or duplicate upstream APIs. Run formatting, static checks, the J4 editor
-and test builds, all Solers behavior tests, and headless editor initialization.
-
+layers or duplicate upstream APIs. The strict J8 Solers gate must pass first.
+Engine changes and integration trees require the full platform matrix, all
+behavior tests, and headless editor initialization before publication.
 ## Publication contract
 
 The tested integration Tree is projected onto `main` without copying files and
@@ -90,7 +90,7 @@ Before pushing, require all of the following:
 - The previous `main` is an ancestor of the new `main`.
 - `NEW_BASE` is not an ancestor of `main`.
 - The recorded upstream branch and audit tag resolve to the declared commits.
-- The worktree is clean and every build and behavior gate passes.
+- The worktree is clean and the required fast and full gates pass.
 
 Push `main`, the immutable upstream branch, and the audit tag atomically. Never
 merge an `upstream/*` or full-lineage ref into `main`, rewrite upstream authors,

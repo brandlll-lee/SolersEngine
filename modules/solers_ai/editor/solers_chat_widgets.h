@@ -2,24 +2,30 @@
 /*  solers_chat_widgets.h                                                 */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                              SOLERS ENGINE                              */
-/*                        (a fork of Godot Engine)                        */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
 /**************************************************************************/
-/* Solers: AI-native game engine.                                        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
 /*                                                                        */
-/* Self-drawn widget kit for the Solers AI chat dock. Follows the same    */
-/* philosophy as SolersCategoryCard in the Project Manager: fully         */
-/* custom-drawn Controls (no stock Button/Panel skeleton) so the chat     */
-/* chrome escapes the recognizable Godot look and matches the refined,    */
-/* low-contrast Codex composer aesthetic.                                 */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
 /*                                                                        */
-/* All widgets are event-driven: hover/press transitions run a short,     */
-/* bounded internal process for the highlight blend, then processing      */
-/* stops. Steady state costs zero CPU and zero redraws.                   */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
 /*                                                                        */
-/* Icon glyphs are Lucide geometry (MIT, see UI_ICON_LICENSE.txt),        */
-/* rasterized once per (name, size) as white strokes and tinted at draw   */
-/* time via modulate — hover color blends never re-rasterize.             */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
 #pragma once
@@ -35,12 +41,12 @@
 #include "scene/resources/font.h"
 #include "scene/resources/texture.h"
 
-// One-shot Lucide glyph rasterizer with a process-lifetime texture cache.
-class SolersChatGlyphs {
+// Module-owned SVG catalog with one process-lifetime texture cache.
+class SolersIcons {
 public:
-	// Returns a white-stroke glyph texture at p_size_px physical pixels.
+	// Returns a white glyph texture at p_size_px physical pixels.
 	// Tint it with CanvasItem draw modulate; never bake colors into the cache.
-	static Ref<Texture2D> get(const StringName &p_name, int p_size_px, float p_stroke_width = 1.7f);
+	static Ref<Texture2D> get(const StringName &p_name, int p_size_px);
 	// White provider mark for a models.dev catalog id (profile field
 	// `catalog_provider`), from the build-time vendored logo table. Unknown
 	// ids fall back to the generic "synthetic" mark, mirroring opencode.
@@ -99,8 +105,6 @@ public:
 };
 
 // Self-drawn select chip: [glyph] strong-text muted-text chevron.
-// Used for the access selector ("Full access", accent-tinted) and the
-// model/effort selector ("5.5  Extra High"). Hugs its content width.
 class SolersSelectChip : public Control {
 	GDCLASS(SolersSelectChip, Control);
 
@@ -108,9 +112,7 @@ class SolersSelectChip : public Control {
 	Ref<Texture2D> leading_texture; // Optional leading mark (e.g. provider logo); wins over glyph.
 	String strong_text;
 	String muted_text;
-	Color accent = Color(0, 0, 0, 0); // Transparent means neutral gray ramp.
 	bool show_chevron = true; // Trailing dropdown chevron (false for static pills).
-	bool filled = false; // Idle capsule wash (Cursor Agent chip); model chip stays ghost.
 
 	bool hovering = false;
 	bool pressing = false;
@@ -131,11 +133,9 @@ public:
 	virtual Size2 get_minimum_size() const override;
 
 	void configure(const StringName &p_glyph, const String &p_strong, const String &p_muted, const String &p_tooltip);
-	void set_accent(const Color &p_accent);
 	void set_texts(const String &p_strong, const String &p_muted);
 	void set_leading_texture(const Ref<Texture2D> &p_texture);
 	void set_show_chevron(bool p_show);
-	void set_filled(bool p_filled);
 	void set_pressed_callback(const Callable &p_cb) { pressed_callback = p_cb; }
 
 	SolersSelectChip();
@@ -220,31 +220,22 @@ inline Color solers_composer_bg() {
 inline Color solers_cell_bubble_bg() {
 	return solers_composer_bg().lightened(0.04f);
 }
-inline Color solers_accent() {
-	return Color(0.94f, 0.78f, 0.46f);
-}
-inline Color solers_chip_bg() {
-	return Color(solers_accent().r, solers_accent().g, solers_accent().b, 0.88f);
-}
-inline Color solers_chip_text() {
-	return Color(0.12f, 0.10f, 0.06f);
-}
 // Same RGB as Tokens.hairline; slightly stronger alpha for the composer card edge.
 inline Color solers_composer_border() {
 	return Color(0.95f, 0.95f, 0.97f, 0.16f);
 }
 
-// One UI table: ui_kind wire string → glyph + localized verb (TTR).
-StringName solers_tool_glyph_for_ui_kind(const String &p_ui_kind);
+// Technical tool chrome stays English while ui_kind remains the authority.
+StringName solers_tool_icon_for_ui_kind(const String &p_ui_kind);
 String solers_tool_verb_for_ui_kind(const String &p_ui_kind);
-String solers_tool_verb_for_glyph(const StringName &p_glyph);
 
 // Bare search field (mention / model / provider pickers) — Cursor-flat, no chrome.
 void solers_style_bare_search_line_edit(LineEdit *p_edit);
 
 String solers_mention_chip_label(const Dictionary &p_mention);
 float solers_mention_chip_width(const String &p_label, const Ref<Font> &p_font, int p_font_size, bool p_has_icon);
-void solers_draw_mention_chip(RID p_ci, const Rect2 &p_pill, const String &p_label, const Ref<Font> &p_font, int p_font_size, const Ref<Texture2D> &p_icon);
-// Compact chip icon (plugin logos + class/file fallbacks). Composer popup may
+void solers_draw_mention_chip(RID p_ci, const Rect2 &p_pill, const String &p_label, const Ref<Font> &p_font, int p_font_size, const Ref<Texture2D> &p_icon, const Color &p_text_color);
+// Compact chip icon (provider logos + Solers UI fallbacks). Composer popup may
 // still use richer path previews locally.
 Ref<Texture2D> solers_mention_chip_icon(const Dictionary &p_mention, int p_px);
+Ref<Texture2D> solers_attachment_texture(const Dictionary &p_attachment);

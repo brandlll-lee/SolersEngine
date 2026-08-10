@@ -1,21 +1,46 @@
 /**************************************************************************/
 /*  solers_mention.cpp                                                    */
 /**************************************************************************/
+/*                         This file is part of:                          */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
 
 #include "solers_mention.h"
 
 #include "core/config/project_settings.h"
 #include "core/io/config_file.h"
-#include "core/io/dir_access.h"
-#include "core/io/file_access.h"
 #include "core/io/json.h"
-#include "core/io/resource_loader.h"
 #include "core/templates/hash_set.h"
 #include "editor/editor_interface.h"
+#include "editor/file_system/editor_file_system.h"
 #include "editor/plugins/editor_plugin_settings.h"
+#include "scene/main/node.h"
+
 #include "modules/solers_ai/core/solers_observation_service.h"
 #include "modules/solers_ai/plugins/solers_plugin.h"
-#include "scene/main/node.h"
 
 namespace SolersMention {
 
@@ -34,17 +59,8 @@ static String _source_of(const Dictionary &p_mention) {
 
 static bool _path_exists(const String &p_path) {
 	const String path = p_path.strip_edges();
-	if (path.is_empty()) {
-		return false;
-	}
-	if (ResourceLoader::exists(path) || FileAccess::exists(path)) {
-		return true;
-	}
-	String dir = path;
-	while (dir.ends_with("/")) {
-		dir = dir.substr(0, dir.length() - 1);
-	}
-	return !dir.is_empty() && DirAccess::exists(dir);
+	int length = 0;
+	return !path.is_empty() && !resolve_project_path_at(path, 0, length).is_empty() && length == path.length();
 }
 
 static bool _node_exists(const String &p_node_path) {
@@ -169,60 +185,92 @@ static Array _collect_addons(const String &p_query) {
 	return items;
 }
 
-static Array _collect_files(SolersObservationService *p_observation, const String &p_query, int p_max_items) {
+static void _collect_filesystem(EditorFileSystemDirectory *p_dir, bool p_folders, const String &p_query, int p_limit, bool p_recursive, Array &r_items, HashSet<String> &r_seen) {
+	if (!p_dir || (p_limit > 0 && r_items.size() >= p_limit)) {
+		return;
+	}
+	const int count = p_folders ? p_dir->get_subdir_count() : p_dir->get_file_count();
+	for (int i = 0; i < count && (p_limit <= 0 || r_items.size() < p_limit); i++) {
+		Dictionary mention;
+		if (p_folders) {
+			EditorFileSystemDirectory *subdir = p_dir->get_subdir(i);
+			mention = _path_mention("folder", subdir->get_path(), subdir->get_name());
+		} else {
+			mention = _path_mention("file", p_dir->get_file_path(i), p_dir->get_file(i));
+			mention["resource_type"] = p_dir->get_file_type(i);
+			mention["icon_path"] = p_dir->get_file_icon_path(i);
+			mention["import_valid"] = p_dir->get_file_import_is_valid(i);
+		}
+		if (_matches_query(mention, p_query)) {
+			_append_unique(r_items, r_seen, mention);
+		}
+	}
+	if (p_recursive) {
+		for (int i = 0; i < p_dir->get_subdir_count() && (p_limit <= 0 || r_items.size() < p_limit); i++) {
+			_collect_filesystem(p_dir->get_subdir(i), p_folders, p_query, p_limit, true, r_items, r_seen);
+		}
+	}
+}
+
+static Array _collect_filesystem(bool p_folders, const String &p_query, int p_limit) {
 	Array items;
-	if (!p_observation) {
+	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
+	if (!filesystem || filesystem->is_scanning()) {
 		return items;
 	}
-	const int limit = CLAMP(p_max_items, 1, BROWSE_LIMIT);
 	HashSet<String> seen;
-	Dictionary args;
-	args["type"] = "path";
-	args["query"] = p_query;
-	args["max_results"] = limit;
-	const Dictionary search = p_observation->search_project(args);
-	const Array results = search.get("results", Array());
-	for (int i = 0; i < results.size() && items.size() < limit; i++) {
-		const String path = String(Dictionary(results[i]).get("path", String())).strip_edges();
-		if (path.is_empty() || !_path_exists(path)) {
-			continue;
-		}
-		Dictionary mention = _path_mention("file", path);
-		if (!_matches_query(mention, p_query)) {
-			continue;
-		}
-		_append_unique(items, seen, mention);
-	}
+	_collect_filesystem(filesystem->get_filesystem(), p_folders, p_query, p_limit, true, items, seen);
 	return items;
 }
 
-static Array _collect_folders(SolersObservationService *p_observation, const String &p_query, int p_max_items) {
-	Array items;
-	if (!p_observation) {
-		return items;
+Dictionary resolve_project_path_at(const String &p_text, int p_offset, int &r_length) {
+	r_length = 0;
+	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
+	if (!filesystem || filesystem->is_scanning() || p_offset < 0 || !p_text.substr(p_offset).begins_with("res://")) {
+		return Dictionary();
 	}
-	const int limit = CLAMP(p_max_items, 1, BROWSE_LIMIT);
-	HashSet<String> seen;
-	const Dictionary listed = p_observation->list_project_folders(limit, p_query);
-	const Array folders = listed.get("folders", Array());
-	for (int i = 0; i < folders.size() && items.size() < limit; i++) {
-		String path = String(folders[i]).strip_edges();
-		if (path.is_empty()) {
+	EditorFileSystemDirectory *dir = filesystem->get_filesystem();
+	Dictionary resolved;
+	int cursor = p_offset + 6;
+	while (dir && cursor < p_text.length()) {
+		EditorFileSystemDirectory *next = nullptr;
+		int matched_length = -1;
+		for (int i = 0; i < dir->get_subdir_count(); i++) {
+			EditorFileSystemDirectory *candidate = dir->get_subdir(i);
+			const String name = candidate->get_name();
+			if (name.length() <= matched_length || !p_text.substr(cursor).begins_with(name)) {
+				continue;
+			}
+			resolved = _path_mention("folder", candidate->get_path(), name);
+			r_length = cursor + name.length() - p_offset;
+			matched_length = name.length();
+			next = nullptr;
+			if (cursor + name.length() < p_text.length() && p_text[cursor + name.length()] == '/') {
+				next = candidate;
+				r_length++;
+			}
+		}
+		if (next) {
+			cursor += matched_length + 1;
+			dir = next;
 			continue;
 		}
-		if (!path.ends_with("/")) {
-			path += "/";
+		matched_length = -1;
+		for (int i = 0; i < dir->get_file_count(); i++) {
+			const String name = dir->get_file(i);
+			if (name.length() <= matched_length || !p_text.substr(cursor).begins_with(name)) {
+				continue;
+			}
+			resolved = _path_mention("file", dir->get_file_path(i), name);
+			resolved["resource_type"] = dir->get_file_type(i);
+			resolved["icon_path"] = dir->get_file_icon_path(i);
+			resolved["import_valid"] = dir->get_file_import_is_valid(i);
+			r_length = cursor + name.length() - p_offset;
+			matched_length = name.length();
 		}
-		if (!_path_exists(path)) {
-			continue;
-		}
-		Dictionary mention = _path_mention("folder", path, path.trim_suffix("/").get_file());
-		if (!_matches_query(mention, p_query)) {
-			continue;
-		}
-		_append_unique(items, seen, mention);
+		break;
 	}
-	return items;
+	return resolved;
 }
 
 static Array _collect_scenes(SolersObservationService *p_observation, const String &p_query) {
@@ -233,7 +281,7 @@ static Array _collect_scenes(SolersObservationService *p_observation, const Stri
 		const Array paths = open.get("paths", Array());
 		for (int i = 0; i < paths.size() && items.size() < COLLECT_LIMIT; i++) {
 			const String path = String(paths[i]).strip_edges();
-			if (path.is_empty() || !_path_exists(path)) {
+			if (path.is_empty()) {
 				continue;
 			}
 			Dictionary mention = _path_mention("scene", path);
@@ -243,7 +291,7 @@ static Array _collect_scenes(SolersObservationService *p_observation, const Stri
 			_append_unique(items, seen, mention);
 		}
 		const String current = String(open.get("current_scene_path", String())).strip_edges();
-		if (!current.is_empty() && _path_exists(current)) {
+		if (!current.is_empty()) {
 			Dictionary mention = _path_mention("scene", current);
 			if (_matches_query(mention, p_query)) {
 				_append_unique(items, seen, mention);
@@ -498,13 +546,13 @@ Array scan_line_spans(const String &p_line) {
 
 Array collect_section_items(const String &p_section_id, SolersObservationService *p_observation, const String &p_query, int p_max_items) {
 	const String section = p_section_id.strip_edges().to_lower();
-	const int limit = p_max_items > 0 ? p_max_items : BROWSE_LIMIT;
+	const int limit = p_max_items;
 	if (section.is_empty()) {
 		Array all;
 		HashSet<String> seen;
 		auto merge = [&](const Array &p_items) {
 			for (int i = 0; i < p_items.size(); i++) {
-				if (all.size() >= limit) {
+				if (limit > 0 && all.size() >= limit) {
 					return;
 				}
 				_append_unique(all, seen, p_items[i]);
@@ -512,8 +560,8 @@ Array collect_section_items(const String &p_section_id, SolersObservationService
 		};
 		merge(_collect_plugins(p_query));
 		merge(_collect_addons(p_query));
-		merge(_collect_files(p_observation, p_query, limit));
-		merge(_collect_folders(p_observation, p_query, limit));
+		merge(_collect_filesystem(false, p_query, limit));
+		merge(_collect_filesystem(true, p_query, limit));
 		merge(_collect_scenes(p_observation, p_query));
 		merge(_collect_selection(p_observation, p_query));
 		return all;
@@ -525,10 +573,10 @@ Array collect_section_items(const String &p_section_id, SolersObservationService
 		return _collect_addons(p_query);
 	}
 	if (section == "files") {
-		return _collect_files(p_observation, p_query, limit);
+		return _collect_filesystem(false, p_query, limit);
 	}
 	if (section == "folders") {
-		return _collect_folders(p_observation, p_query, limit);
+		return _collect_filesystem(true, p_query, limit);
 	}
 	if (section == "scenes") {
 		return _collect_scenes(p_observation, p_query);
@@ -539,7 +587,7 @@ Array collect_section_items(const String &p_section_id, SolersObservationService
 	return Array();
 }
 
-Array collect_root_sections(SolersObservationService *p_observation, const String &p_query) {
+Array collect_root_sections() {
 	struct SectionDef {
 		const char *id;
 		const char *label;
@@ -555,16 +603,9 @@ Array collect_root_sections(SolersObservationService *p_observation, const Strin
 
 	Array sections;
 	for (const SectionDef &def : defs) {
-		// Badge only — full browse happens after opening the section.
-		const Array items = collect_section_items(def.id, p_observation, p_query, COLLECT_LIMIT);
-		if (items.is_empty()) {
-			continue;
-		}
 		Dictionary section;
 		section["id"] = def.id;
 		section["label"] = String(def.label);
-		section["count"] = items.size();
-		section["truncated"] = items.size() >= COLLECT_LIMIT;
 		sections.push_back(section);
 	}
 	return sections;

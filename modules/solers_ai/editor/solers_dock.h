@@ -2,17 +2,30 @@
 /*  solers_dock.h                                                         */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                              SOLERS ENGINE                              */
-/*                        (a fork of Godot Engine)                        */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
 /**************************************************************************/
-/* Solers: AI-native game engine.                                        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
 /*                                                                        */
-/* The Solers AI chat dock. Pure native implementation: Godot container   */
-/* Controls for layout and text (TextEdit keeps OS-grade IME/CJK input),  */
-/* plus the self-drawn Codex-style widget kit in solers_chat_widgets.h    */
-/* for every piece of chat chrome (icon buttons, select chips, send pill).*/
-/* No embedded UI runtime; rendering goes straight through the editor's   */
-/* canvas like every other dock, so steady state costs zero CPU.          */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
 #pragma once
@@ -27,9 +40,9 @@ class Button;
 class ButtonGroup;
 class Control;
 class AcceptDialog;
-class EditorFileDialog;
 class HBoxContainer;
 class HSplitContainer;
+class ItemList;
 class Label;
 class LineEdit;
 class MarginContainer;
@@ -37,6 +50,7 @@ class PanelContainer;
 class PopupMenu;
 class ScrollContainer;
 class TextEdit;
+class Texture2D;
 class VBoxContainer;
 class SolersActionTimeline;
 class SolersAgentSession;
@@ -61,6 +75,7 @@ class SolersDock : public PanelContainer {
 	GDCLASS(SolersDock, PanelContainer);
 
 	ScrollContainer *chat_scroll = nullptr;
+	MarginContainer *timeline_inset = nullptr;
 	VBoxContainer *message_list = nullptr;
 	VBoxContainer *history_mount = nullptr;
 	Control *empty_state = nullptr;
@@ -79,19 +94,17 @@ class SolersDock : public PanelContainer {
 	SolersGlyphButton *add_context_button = nullptr;
 	SolersGlyphButton *send_chat_button = nullptr;
 	HBoxContainer *attachment_bar = nullptr;
-	EditorFileDialog *attachment_file_dialog = nullptr;
 	AcceptDialog *provider_settings_dialog = nullptr;
 	SolersPMAIView *provider_settings_view = nullptr;
 	SolersSelectChip *model_chip = nullptr;
 	PanelContainer *plugin_mention_popup = nullptr;
 	VBoxContainer *plugin_mention_box = nullptr;
 	LineEdit *plugin_mention_search = nullptr;
-	ScrollContainer *plugin_mention_scroll = nullptr;
-	VBoxContainer *plugin_mention_list = nullptr;
-	Vector<Button *> plugin_mention_rows;
+	ItemList *plugin_mention_list = nullptr;
 	int plugin_mention_line = -1;
 	int plugin_mention_start_column = -1;
-	int plugin_mention_selected = 0;
+	uint64_t mention_generation = 0;
+	bool mention_picker_explicit = false;
 	String mention_section; // empty = root; otherwise section id (solers/addons/files/folders/…)
 	Control *model_popup_overlay = nullptr;
 	// Cascading model menu: a compact root menu (Model / Effort / actions)
@@ -139,11 +152,7 @@ class SolersDock : public PanelContainer {
 	String session_project_path;
 	String session_current_id;
 	Array timeline_messages;
-	int timeline_start = 0;
-	bool timeline_rendering = false;
-	bool timeline_rows_sorted = false;
-	int64_t timeline_anchor_event_id = -1;
-	float timeline_anchor_screen_y = 0.0f;
+	int layout_drag_depth = 0;
 
 	SolersObservationService *observation_service = nullptr;
 	SolersToolRegistry *tool_registry = nullptr;
@@ -159,6 +168,7 @@ class SolersDock : public PanelContainer {
 	void _refresh_status();
 	void _refresh_model_chip();
 	void _sync_layout_widths();
+	void _sync_session_button();
 	void _on_send_chat_pressed();
 	void _on_stop_chat_pressed();
 	void _toggle_session_sidebar();
@@ -168,10 +178,9 @@ class SolersDock : public PanelContainer {
 	void _on_session_row_pressed(const String &p_session_id);
 	Control *_create_history_entry(const Dictionary &p_message);
 	void _append_history_message(const Dictionary &p_message);
-	void _render_timeline(int p_start);
-	void _queue_timeline_layout_commit();
-	void _commit_timeline_layout();
-	void _on_timeline_scrolled();
+	void _render_timeline();
+	void _bind_layout_splits();
+	void _set_layout_dragging(bool p_active);
 	VBoxContainer *_chat_mount() const;
 	void _on_new_chat_pressed();
 	void _on_model_chip_pressed();
@@ -216,14 +225,13 @@ class SolersDock : public PanelContainer {
 	bool _try_delete_mention_span(int p_direction);
 	void _refresh_mention_popup();
 	void _on_mention_search_changed(const String &p_text);
+	void _on_mention_item_clicked(int p_index, const Vector2 &p_position, MouseButton p_button);
+	void _on_mention_preview_ready(const String &p_path, const Ref<Texture2D> &p_preview, const Ref<Texture2D> &p_small_preview, uint64_t p_generation, int p_index);
 	void _hide_mention_popup();
 	void _select_mention(const Dictionary &p_mention);
-	void _open_mention_section(const String &p_section_id);
 	void _activate_mention_selection();
 	void _move_mention_selection(int p_delta);
 	void _on_add_context_pressed();
-	void _on_attachment_file_selected(const String &p_file);
-	bool _add_image_attachment_from_path(const String &p_path);
 	bool _add_image_attachment_from_clipboard();
 	void _refresh_attachment_bar();
 	void _remove_attachment(int p_index);

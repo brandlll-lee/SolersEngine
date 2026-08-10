@@ -2,22 +2,41 @@
 /*  solers_context_manager.cpp                                            */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                              SOLERS ENGINE                              */
-/*                        (a fork of Godot Engine)                        */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
 /**************************************************************************/
-/* Solers: AI-native game engine.                                        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
 #include "solers_context_manager.h"
 
-#include "core/templates/hash_set.h"
+#include "core/templates/hash_map.h"
+
+#include "modules/solers_ai/core/solers_mention.h"
 #include "modules/solers_ai/llm/solers_llm_message.h"
 
 const char *SolersContextManager::COMPACTION_SUMMARY_PREFIX =
 		"The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it.";
-const char *SolersContextManager::COMPACTION_INSTRUCTION =
-		"You are about to run out of context. Write a first-person handoff note to yourself so you can seamlessly continue this task after the earlier conversation is cleared.\n\n"
-		"Write the note as your own continuing train of thought, in present tense. Preserve the latest user request verbatim, active constraints, exact files and commands already used, verified results versus uncertainty, and the precise next action. Be concise and self-sufficient. Respond with text only and do not call tools.";
 const char *SolersContextManager::CANCELLED_TOOL_RESULT =
 		"{\"ok\":false,\"error\":{\"code\":\"TOOL_CANCELLED\",\"message\":\"This call never produced a result: the turn ended before it finished. Re-run it if its output is still needed.\",\"recoverable\":true}}";
 const char *SolersContextManager::MODEL_CONTEXT_ROLE = "model_context";
@@ -61,49 +80,31 @@ int SolersContextManager::estimate_messages_tokens(const Array &p_messages) {
 
 Array SolersContextManager::repair_tool_pairing(const Array &p_messages) {
 	Array repaired;
-	Vector<String> open_ids; // calls of the assistant turn currently being answered
-	Vector<String> open_names;
-	HashSet<String> answered;
-
-	// Stubs land immediately after the run of real results, keeping the
-	// assistant turn and its answers adjacent the way providers require.
+	HashMap<String, String> open_calls;
 	auto close_open_calls = [&]() {
-		for (int i = 0; i < open_ids.size(); i++) {
-			if (!answered.has(open_ids[i])) {
-				repaired.push_back(SolersLLMMessage::tool_result(open_ids[i], open_names[i], String::utf8(CANCELLED_TOOL_RESULT)));
-			}
+		for (const KeyValue<String, String> &call : open_calls) {
+			repaired.push_back(SolersLLMMessage::tool_result(call.key, call.value, String::utf8(CANCELLED_TOOL_RESULT)));
 		}
-		open_ids.clear();
-		open_names.clear();
-		answered.clear();
+		open_calls.clear();
 	};
-
 	for (int i = 0; i < p_messages.size(); i++) {
 		const Dictionary message = p_messages[i];
 		const String role = message.get("role", String());
 		if (role == String(SolersLLMRole::TOOL)) {
 			const String id = message.get("tool_call_id", String());
-			// A result for an unknown or already-answered id is rejected just
-			// as hard as a missing one, so it is dropped instead of forwarded.
-			if (id.is_empty() || answered.has(id) || open_ids.find(id) < 0) {
-				continue;
+			if (open_calls.erase(id)) {
+				repaired.push_back(message);
 			}
-			answered.insert(id);
-			repaired.push_back(message);
 			continue;
 		}
 		close_open_calls();
 		repaired.push_back(message);
-		if (role != String(SolersLLMRole::ASSISTANT)) {
-			continue;
-		}
-		const Array tool_calls = message.get("tool_calls", Array());
-		for (int call_index = 0; call_index < tool_calls.size(); call_index++) {
-			const Dictionary call = tool_calls[call_index];
+		const Array calls = role == String(SolersLLMRole::ASSISTANT) ? Array(message.get("tool_calls", Array())) : Array();
+		for (int call_index = 0; call_index < calls.size(); call_index++) {
+			const Dictionary call = calls[call_index];
 			const String id = call.get("id", String());
 			if (!id.is_empty()) {
-				open_ids.push_back(id);
-				open_names.push_back(call.get("name", String()));
+				open_calls[id] = call.get("name", String());
 			}
 		}
 	}
@@ -113,6 +114,14 @@ Array SolersContextManager::repair_tool_pairing(const Array &p_messages) {
 
 Array SolersContextManager::project_completed_turns(const Array &p_messages) {
 	Array projected;
+	int latest_attachment = -1;
+	for (int i = p_messages.size() - 1; i >= 0; i--) {
+		const Dictionary message = p_messages[i];
+		if (String(message.get("role", String())) == SolersLLMRole::USER && !Array(message.get("attachments", Array())).is_empty()) {
+			latest_attachment = i;
+			break;
+		}
+	}
 	for (int i = 0; i < p_messages.size(); i++) {
 		const Dictionary message = p_messages[i];
 		const String role = message.get("role", String());
@@ -122,17 +131,21 @@ Array SolersContextManager::project_completed_turns(const Array &p_messages) {
 		if (role == String(SolersLLMRole::ASSISTANT) && !Array(message.get("tool_calls", Array())).is_empty()) {
 			continue;
 		}
-		projected.push_back(message);
+		Dictionary kept = message;
+		if (role == String(SolersLLMRole::USER) && message.has("mentions")) {
+			kept = message.duplicate(true);
+			kept["content"] = SolersMention::strip_prompt_block(message.get("content", String()));
+		}
+		if (i != latest_attachment && kept.has("attachments")) {
+			kept.erase("attachments");
+		}
+		projected.push_back(kept);
 	}
 	return projected;
 }
 
 String SolersContextManager::_build_summary_text(const String &p_summary) {
-	String text = String::utf8(COMPACTION_SUMMARY_PREFIX) + "\n" + p_summary.strip_edges();
-	if (p_summary.strip_edges().is_empty()) {
-		text += "(no summary available)";
-	}
-	return text;
+	return String::utf8(COMPACTION_SUMMARY_PREFIX) + "\n" + p_summary.strip_edges();
 }
 
 void SolersContextManager::record_usage(int p_input_tokens, int p_covered_message_count, int p_transient_tokens) {
@@ -173,46 +186,54 @@ bool SolersContextManager::should_compact(const Array &p_messages, const String 
 	return should_compact(get_token_count_with_pending(p_messages, p_system_prompt, p_tool_tokens, p_transient_tokens), p_context_window, p_max_output_tokens);
 }
 
-Dictionary SolersContextManager::apply_compaction(const Array &p_messages, const String &p_summary, int p_turn_id) {
-	const Array repaired = repair_tool_pairing(p_messages);
-	const int tokens_before = estimate_messages_tokens(repaired);
-	int suffix_start = repaired.size();
-	for (int i = 0; i < repaired.size(); i++) {
-		if ((int)Dictionary(repaired[i]).get("turn_id", 0) == p_turn_id) {
-			suffix_start = i;
-			break;
-		}
-	}
-
+Dictionary SolersContextManager::apply_compaction(const Array &p_messages, const String &p_summary, int p_token_budget, int p_preserve_from) {
+	const int tokens_before = estimate_messages_tokens(p_messages);
+	const int preserve_from = p_preserve_from < 0 ? p_messages.size() : CLAMP(p_preserve_from, 0, p_messages.size());
+	const Array suffix = p_messages.slice(preserve_from);
 	const String context_summary = _build_summary_text(p_summary);
 	Dictionary summary_message;
 	summary_message["role"] = MODEL_CONTEXT_ROLE;
 	summary_message["content"] = context_summary;
 	summary_message["origin"] = "compaction_summary";
-	Array retained_attachments;
-	HashSet<String> attachment_ids;
-	for (int i = 0; i < suffix_start; i++) {
-		const Dictionary message = repaired[i];
-		const Array attachments = message.get("attachments", Array());
-		for (int attachment_index = 0; attachment_index < attachments.size(); attachment_index++) {
-			const Dictionary attachment = attachments[attachment_index];
-			const String id = attachment.get("id", String());
-			if (!id.is_empty() && !attachment_ids.has(id)) {
-				attachment_ids.insert(id);
-				retained_attachments.push_back(attachment);
-			}
+	int remaining = MAX(0, p_token_budget - _estimate_message_tokens(summary_message) - estimate_messages_tokens(suffix));
+	Array recent_users;
+	int latest_attachment = -1;
+	for (int i = preserve_from - 1; i >= 0; i--) {
+		const Dictionary message = p_messages[i];
+		if (String(message.get("role", String())) == SolersLLMRole::USER && !Array(message.get("attachments", Array())).is_empty()) {
+			latest_attachment = i;
+			break;
 		}
 	}
-	if (!retained_attachments.is_empty()) {
-		summary_message["attachments"] = retained_attachments;
+	for (int i = preserve_from - 1; i >= 0; i--) {
+		Dictionary message = p_messages[i];
+		if (String(message.get("role", String())) != SolersLLMRole::USER || (bool)message.get("ephemeral", false)) {
+			continue;
+		}
+		if (message.has("mentions")) {
+			message = message.duplicate(true);
+			message["content"] = SolersMention::strip_prompt_block(message.get("content", String()));
+		}
+		int tokens = _estimate_message_tokens(message);
+		if (i == latest_attachment && tokens > remaining) {
+			message["content"] = "[Retained user attachment evidence.]";
+			tokens = _estimate_message_tokens(message);
+		}
+		if (tokens > remaining) {
+			if (latest_attachment >= 0 && i > latest_attachment) {
+				continue;
+			}
+			break;
+		}
+		recent_users.push_back(message);
+		remaining -= tokens;
 	}
 	Array compacted;
-	compacted.push_back(summary_message);
-	for (int i = suffix_start; i < repaired.size(); i++) {
-		if (!(bool)Dictionary(repaired[i]).get("ephemeral", false)) {
-			compacted.push_back(repaired[i]);
-		}
+	for (int i = recent_users.size() - 1; i >= 0; i--) {
+		compacted.push_back(recent_users[i]);
 	}
+	compacted.push_back(summary_message);
+	compacted.append_array(suffix);
 	const int tokens_after = estimate_messages_tokens(compacted);
 	authoritative_tokens = tokens_after;
 	covered_message_count = compacted.size();

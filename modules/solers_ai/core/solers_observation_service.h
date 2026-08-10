@@ -31,6 +31,7 @@
 #pragma once
 
 #include "core/object/object.h"
+#include "core/os/mutex.h"
 #include "core/templates/hash_map.h"
 #include "core/templates/vector.h"
 #include "core/variant/dictionary.h"
@@ -38,10 +39,14 @@
 
 class Image;
 class ScriptEditorDebugger;
+class Camera3D;
+class Viewport;
 
 class SolersObservationService : public Object {
 	GDCLASS(SolersObservationService, Object);
-
+	mutable Mutex project_files_mutex;
+	PackedStringArray project_files;
+	bool project_files_ready = false;
 
 	uint64_t capture_sequence = 0;
 	uint64_t render_post_draw_sequence = 0;
@@ -51,7 +56,12 @@ class SolersObservationService : public Object {
 	uint64_t runtime_cursor = 0;
 	uint64_t runtime_epoch = 0;
 	Vector<Dictionary> runtime_events;
+	uint64_t runtime_query_sequence = 0;
+	Dictionary runtime_query;
+	Dictionary runtime_object_cache;
+	Array runtime_stack_frames;
 	bool performance_capture_active = false;
+	uint64_t performance_sample_cursor = 0;
 	Array performance_monitor_names;
 	Array performance_monitor_types;
 
@@ -62,12 +72,13 @@ class SolersObservationService : public Object {
 	Array _serialize_node_array(const TypedArray<Node> &p_nodes, Node *p_edited_root, int p_max_depth, int p_max_children_per_node) const;
 	bool _normalize_project_path(const String &p_path, String &r_res_path, String &r_error) const;
 	bool _collect_project_folders_indexed(const String &p_query, int p_max_folders, Array &r_folders, int &r_scanned_count, bool &r_truncated) const;
-	void _collect_project_files(const String &p_dir, const String &p_query, int p_max_files, Array &r_files, int &r_scanned_count, bool &r_truncated, uint64_t p_deadline_msec) const;
+	void _refresh_project_files();
 	Dictionary _search_project_paths(const String &p_query, int p_max_files) const;
 	void _render_frame_post_draw();
 	Dictionary _capture_error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
 	Dictionary _runtime_capture_unavailable() const;
 	Dictionary _capture_image(const Ref<Image> &p_image, const String &p_target, const String &p_capture_id = String());
+	Dictionary _render_state_for_pending(const Dictionary &p_pending) const;
 	Dictionary _attach_render_receipt(Dictionary p_result, const Dictionary &p_pending);
 	Dictionary _register_pending_capture(const String &p_target, const Dictionary &p_extra);
 	Dictionary _poll_pending_capture(const String &p_capture_id);
@@ -83,7 +94,8 @@ class SolersObservationService : public Object {
 	void _runtime_breaked(bool p_breaked, bool p_can_debug, const String &p_reason, bool p_has_stackdump);
 	void _runtime_debug_data(const String &p_message, const Array &p_data);
 	void _runtime_tree_updated();
-	bool _has_runtime_event_after(const StringName &p_type, uint64_t p_cursor) const;
+	void _runtime_stack_dump(const Array &p_frames);
+	void _finish_runtime_query(Dictionary p_result);
 	bool _is_runtime_visual_ready() const;
 	bool _request_runtime_screenshot(const String &p_capture_id);
 
@@ -92,7 +104,8 @@ protected:
 
 public:
 	static int get_capture_settle_frame_count(bool p_sdfgi_enabled, int p_convergence_setting);
-	static Dictionary image_statistics(const Ref<Image> &p_image);
+	static String render_state_fingerprint(const Dictionary &p_state);
+	Dictionary describe_render_state(Viewport *p_viewport, Camera3D *p_camera = nullptr, Node *p_scene_root = nullptr) const;
 	Dictionary get_project_info() const;
 	Dictionary get_project_settings_summary() const;
 	Dictionary list_project_files(int p_max_files = 512) const;
@@ -106,10 +119,12 @@ public:
 	Dictionary read_project_file(const String &p_path, int p_max_bytes = 262144, bool p_raw = false) const;
 	Dictionary get_open_scenes(int p_max_depth = 1, int p_max_children_per_node = 16) const;
 	Dictionary get_selection(int p_max_depth = 1, int p_max_children_per_node = 16) const;
-	Dictionary get_scene_tree(int p_max_depth, int p_max_children_per_node, int p_token_budget) const;
+	Dictionary get_scene_tree(const Array &p_node_paths, int p_max_depth, int p_max_children_per_node, int p_token_budget) const;
 	Dictionary get_runtime_status() const;
 	Dictionary observe_runtime(const Dictionary &p_args);
 	bool is_runtime_observation_ready(const Dictionary &p_args) const;
+	bool has_runtime_query() const { return !runtime_query.is_empty(); }
+	bool get_runtime_property(uint64_t p_epoch, ObjectID p_object_id, const StringName &p_property, Variant &r_value) const;
 	Dictionary get_editor_logs(int p_max_messages = 200) const;
 	Dictionary capture_viewport(const Dictionary &p_args);
 	Dictionary poll_viewport_capture(const Dictionary &p_args);

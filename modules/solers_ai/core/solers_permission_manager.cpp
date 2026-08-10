@@ -90,6 +90,8 @@ String SolersPermissionManager::get_permission_name(Permission p_permission) con
 			return "install_plugin";
 		case PERMISSION_SHELL:
 			return "shell";
+		case PERMISSION_MAX:
+			break;
 	}
 
 	return "unknown";

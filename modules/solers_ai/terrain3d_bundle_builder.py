@@ -11,6 +11,19 @@ URL = f"https://github.com/TokisanGames/Terrain3D/releases/download/v{VERSION}/{
 SHA256 = "a071850250ec5e596aa54da61c01d75768774eb379ee997584d426a45f4884a2"
 
 
+def make_lock_header(target, source, env):
+    destination = Path(str(target[0]))
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        "#pragma once\n\n"
+        f'static constexpr const char *SOLERS_TERRAIN3D_VERSION = "{VERSION}";\n'
+        f'static constexpr const char *SOLERS_TERRAIN3D_ARCHIVE = "{ARCHIVE_NAME}";\n'
+        f'static constexpr const char *SOLERS_TERRAIN3D_SHA256 = "{SHA256}";\n',
+        encoding="utf-8",
+    )
+    return 0
+
+
 def _hash(path):
     digest = hashlib.sha256()
     with open(path, "rb") as archive:
@@ -52,7 +65,7 @@ def bundle_terrain3d(target, source, env):
             temporary.unlink(missing_ok=True)
             raise RuntimeError(
                 "Terrain3D bundle is unavailable. Restore network access, populate the Solers cache, "
-                "or set SOLERS_TERRAIN3D_ARCHIVE to the official v1.0.2-stable archive."
+                f"or set SOLERS_TERRAIN3D_ARCHIVE to the official v{VERSION} archive."
             ) from error
 
     destination.parent.mkdir(parents=True, exist_ok=True)

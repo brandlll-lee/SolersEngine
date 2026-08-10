@@ -64,6 +64,10 @@
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/multimesh_instance_3d.h"
 #include "scene/3d/node_3d.h"
+#ifndef PHYSICS_3D_DISABLED
+#include "scene/3d/physics/collision_shape_3d.h"
+#include "scene/3d/physics/static_body_3d.h"
+#endif
 #include "scene/3d/skeleton_3d.h"
 #include "scene/3d/visual_instance_3d.h"
 #include "scene/3d/world_environment.h"
@@ -72,14 +76,11 @@
 #include "scene/animation/animation_player.h"
 #include "scene/animation/animation_tree.h"
 #include "scene/main/node.h"
+#include "scene/main/scene_tree.h"
 #include "scene/resources/3d/primitive_meshes.h"
-#include "scene/resources/3d/sky_material.h"
-#include "scene/resources/camera_attributes.h"
-#include "scene/resources/environment.h"
 #include "scene/resources/material.h"
 #include "scene/resources/mesh.h"
 #include "scene/resources/packed_scene.h"
-#include "scene/resources/sky.h"
 #include "servers/rendering/rendering_server.h"
 
 static constexpr int SOLERS_CLASS_SEARCH_DEFAULT_CAP = 40;
@@ -166,11 +167,12 @@ enum class SolersBatchOperationKind {
 	UNKNOWN,
 	CREATE_NODE,
 	INSTANTIATE_SCENE,
-	SET_PROPERTY,
+	UPDATE,
 	REPARENT,
 	CONNECT_SIGNAL,
 	ATTACH_SCRIPT,
 	REMOVE_NODE,
+	BAKE_CSG,
 };
 
 static SolersBatchOperationKind _solers_batch_operation_kind(const String &p_name) {
@@ -180,8 +182,8 @@ static SolersBatchOperationKind _solers_batch_operation_kind(const String &p_nam
 	if (p_name == "instantiate") {
 		return SolersBatchOperationKind::INSTANTIATE_SCENE;
 	}
-	if (p_name == "set_property") {
-		return SolersBatchOperationKind::SET_PROPERTY;
+	if (p_name == "update") {
+		return SolersBatchOperationKind::UPDATE;
 	}
 	if (p_name == "reparent") {
 		return SolersBatchOperationKind::REPARENT;
@@ -195,24 +197,10 @@ static SolersBatchOperationKind _solers_batch_operation_kind(const String &p_nam
 	if (p_name == "remove_node") {
 		return SolersBatchOperationKind::REMOVE_NODE;
 	}
-	return SolersBatchOperationKind::UNKNOWN;
-}
-
-static Dictionary _solers_normalize_batch_operation(const Dictionary &p_operation, SolersBatchOperationKind p_kind) {
-	Dictionary operation = p_operation.duplicate(true);
-	switch (p_kind) {
-		case SolersBatchOperationKind::SET_PROPERTY:
-		case SolersBatchOperationKind::REPARENT:
-		case SolersBatchOperationKind::ATTACH_SCRIPT:
-		case SolersBatchOperationKind::REMOVE_NODE:
-			if (!operation.has("node_path") && operation.has("path")) {
-				operation["node_path"] = operation["path"];
-			}
-			break;
-		default:
-			break;
+	if (p_name == "bake_csg") {
+		return SolersBatchOperationKind::BAKE_CSG;
 	}
-	return operation;
+	return SolersBatchOperationKind::UNKNOWN;
 }
 
 static void _solers_add_scene_access(Array &r_accesses, const String &p_mode, const String &p_path) {
@@ -233,7 +221,6 @@ static Array _solers_vector3_array(const Vector3 &p_vector) {
 void SolersReflectionService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("search_classes", "args"), &SolersReflectionService::search_classes);
 	ClassDB::bind_method(D_METHOD("introspect_class", "args"), &SolersReflectionService::introspect_class);
-	ClassDB::bind_method(D_METHOD("set_property", "args"), &SolersReflectionService::set_property);
 	ClassDB::bind_method(D_METHOD("batch", "args"), &SolersReflectionService::batch);
 	ClassDB::bind_method(D_METHOD("open_scene", "args"), &SolersReflectionService::open_scene);
 }
@@ -258,16 +245,7 @@ Dictionary SolersReflectionService::_error(const String &p_code, const String &p
 }
 
 Node *SolersReflectionService::_resolve_node(const String &p_node_path, String &r_error) const {
-	EditorInterface *editor_interface = EditorInterface::get_singleton();
-	if (!editor_interface) {
-		r_error = "EditorInterface is not available.";
-		return nullptr;
-	}
-	if (!EditorNode::get_singleton() || EditorNode::get_editor_data().get_edited_scene_count() <= 0) {
-		r_error = "No edited scene root.";
-		return nullptr;
-	}
-	Node *edited_root = EditorNode::get_singleton()->get_edited_scene();
+	Node *edited_root = SceneTree::get_singleton()->get_edited_scene_root();
 	if (!edited_root) {
 		r_error = "No edited scene root.";
 		return nullptr;
@@ -329,7 +307,7 @@ Node *SolersReflectionService::_resolve_node(const String &p_node_path, String &
 }
 
 bool SolersReflectionService::_safe_node_path(Node *p_node, String &r_out) {
-	Node *edited_root = (EditorNode::get_singleton() && EditorNode::get_editor_data().get_edited_scene_count() > 0) ? EditorNode::get_singleton()->get_edited_scene() : nullptr;
+	Node *edited_root = SceneTree::get_singleton()->get_edited_scene_root();
 	if (edited_root && (p_node == edited_root || edited_root->is_ancestor_of(p_node))) {
 		r_out = String(edited_root->get_path_to(p_node));
 		return true;
@@ -344,65 +322,6 @@ bool SolersReflectionService::_safe_node_path(Node *p_node, String &r_out) {
 
 bool SolersReflectionService::_coerce_value(Node *p_node, const StringName &p_property, const Variant &p_value, Variant &r_out, String &r_error) const {
 	return solers_coerce_property_value(p_node, p_property, p_value, r_out, r_error);
-}
-
-static Dictionary _reflect_object_handle(Object *p_object) {
-	Dictionary data;
-	data["kind"] = "godot_object";
-	if (!p_object) {
-		data["object_id"] = String();
-		data["valid"] = false;
-		return data;
-	}
-	data["valid"] = true;
-	data["object_id"] = String::num_int64((int64_t)p_object->get_instance_id());
-	data["class_name"] = p_object->get_class();
-
-	if (Resource *resource = Object::cast_to<Resource>(p_object)) {
-		data["path"] = resource->get_path();
-		data["resource_name"] = resource->get_name();
-	}
-	if (Node *node = Object::cast_to<Node>(p_object)) {
-		data["name"] = node->get_name();
-		data["inside_tree"] = node->is_inside_tree();
-		if (node->is_inside_tree()) {
-			data["node_path"] = node->get_path();
-		}
-	}
-	return data;
-}
-
-static Variant _reflect_displayable(const Variant &p_value) {
-	if (p_value.get_type() == Variant::OBJECT) {
-		Object *object = p_value;
-		return _reflect_object_handle(object);
-	}
-	if (p_value.get_type() == Variant::ARRAY) {
-		Array in = p_value;
-		if (in.size() > 64) {
-			return vformat("<Array size=%d>", in.size());
-		}
-		Array out;
-		for (int i = 0; i < in.size(); i++) {
-			out.push_back(_reflect_displayable(in[i]));
-		}
-		return out;
-	}
-	if (p_value.get_type() == Variant::DICTIONARY) {
-		Dictionary in = p_value;
-		Array keys = in.keys();
-		if (keys.size() > 64) {
-			return vformat("<Dictionary size=%d>", keys.size());
-		}
-		Dictionary out;
-		for (int i = 0; i < keys.size(); i++) {
-			out[keys[i]] = _reflect_displayable(in[keys[i]]);
-		}
-		return out;
-	}
-	// Bulk Variant payloads (packed arrays, oversized strings) summarize by
-	// type so one node dump can never displace working context.
-	return solers_summarize_display_value(p_value);
 }
 
 bool SolersReflectionService::_apply_initial_properties(Node *p_node, const Dictionary &p_properties, Dictionary &r_applied, String &r_error) const {
@@ -425,7 +344,7 @@ bool SolersReflectionService::_apply_initial_properties(Node *p_node, const Dict
 			r_error = vformat("Setting initial property '%s' failed on %s.", property, p_node->get_class());
 			return false;
 		}
-		r_applied[property] = _reflect_displayable(actual);
+		r_applied[property] = solers_summarize_display_value(actual);
 	}
 	if (r_applied.has("current") && bool(p_node->get("current"))) {
 		if (Camera3D *camera = Object::cast_to<Camera3D>(p_node)) {
@@ -750,100 +669,70 @@ Dictionary SolersReflectionService::introspect_class(const Dictionary &p_args) {
 	return _ok(data);
 }
 
-Dictionary SolersReflectionService::set_property(const Dictionary &p_args) {
+Dictionary SolersReflectionService::_update_node(const Dictionary &p_args) {
 	const String node_path = p_args.get("node_path", ".");
-	const String property = p_args.get("property", String());
-	if (property.strip_edges().is_empty()) {
-		return _error("INVALID_ARGUMENT", "property is required.");
+	const Variant properties_value = p_args.get("properties", Variant());
+	if (properties_value.get_type() != Variant::DICTIONARY || Dictionary(properties_value).is_empty()) {
+		return _error("INVALID_ARGUMENT", "properties must be a non-empty object.");
 	}
-	if (!p_args.has("value")) {
-		return _error("INVALID_ARGUMENT", "value is required.");
-	}
-
 	String error;
 	Node *node = _resolve_node(node_path, error);
 	if (!node) {
 		return _error("NODE_NOT_FOUND", error);
 	}
-
-	if (property.find("/") >= 0 || property.find(":") >= 0) {
-		const String normalized = property.replace(":", "/");
-		const Vector<StringName> subnames = _property_path_subnames(property);
-		bool valid = false;
-		const Variant old_value = node->get_indexed(subnames, &valid);
-		if (!valid) {
-			return _error("INVALID_PROPERTY_PATH", vformat("Property path '%s' is not valid on %s. Use '/' for nested resource properties, e.g. environment/ambient_light_energy.", normalized, node->get_class()));
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	ERR_FAIL_NULL_V(undo_redo, _error("UNDO_REDO_UNAVAILABLE", "EditorUndoRedoManager is not available.", false));
+	const Dictionary properties = properties_value;
+	Dictionary applied;
+	for (const Variant *key = properties.next(nullptr); key; key = properties.next(key)) {
+		const String property = String(*key).strip_edges();
+		if (property.is_empty()) {
+			return _error("INVALID_ARGUMENT", "Property names must not be empty.");
 		}
-
-		EditorInterface *editor_interface = EditorInterface::get_singleton();
-		ERR_FAIL_NULL_V(editor_interface, _error("EDITOR_INTERFACE_UNAVAILABLE", "EditorInterface is not available.", false));
-		EditorUndoRedoManager *undo_redo = editor_interface->get_editor_undo_redo();
-		ERR_FAIL_NULL_V(undo_redo, _error("UNDO_REDO_UNAVAILABLE", "EditorUndoRedoManager is not available.", false));
-
-		const NodePath property_path = NodePath(Vector<StringName>(), subnames, false);
-		if (!batch_action_active) {
-			undo_redo->create_action(vformat("Solers: Set %s.%s", node->get_class(), normalized), UndoRedo::MERGE_DISABLE, node);
-		} else {
-			bool set_valid = false;
-			node->set_indexed(subnames, p_args["value"], &set_valid);
-			if (!set_valid) {
+		if (property.contains("/") || property.contains(":")) {
+			const String normalized = property.replace(":", "/");
+			const Vector<StringName> subnames = _property_path_subnames(normalized);
+			bool valid = false;
+			const Variant old_value = node->get_indexed(subnames, &valid);
+			if (!valid) {
+				return _error("INVALID_PROPERTY_PATH", vformat("Property path '%s' is not valid on %s.", normalized, node->get_class()));
+			}
+			node->set_indexed(subnames, properties[*key], &valid);
+			if (!valid) {
+				node->set_indexed(subnames, old_value);
 				return _error("PROPERTY_SET_FAILED", vformat("Setting property path '%s' failed on %s.", normalized, node->get_class()));
 			}
+			const NodePath property_path = NodePath(Vector<StringName>(), subnames, false);
+			undo_redo->add_do_method(node, "set_indexed", property_path, properties[*key]);
+			undo_redo->add_undo_method(node, "set_indexed", property_path, old_value);
+			applied[normalized] = solers_summarize_display_value(node->get_indexed(subnames));
+			continue;
 		}
-		undo_redo->add_do_method(node, "set_indexed", property_path, p_args["value"]);
-		undo_redo->add_undo_method(node, "set_indexed", property_path, old_value);
-		if (!batch_action_active) {
-			undo_redo->commit_action();
+		const StringName property_name(property);
+		Variant value;
+		if (!_coerce_value(node, property_name, properties[*key], value, error)) {
+			return _error("INVALID_PROPERTY_VALUE", error);
 		}
-
-		String safe_path;
-		_safe_node_path(node, safe_path);
-		Dictionary data;
-		data["node_path"] = safe_path;
-		data["property"] = normalized;
-		data["value"] = _reflect_displayable(node->get_indexed(subnames));
-		return _ok(data);
+		const Variant old_value = node->get(property_name);
+		bool valid = false;
+		node->set(property_name, value, &valid);
+		const Variant actual = node->get(property_name);
+		if (!valid || (value.get_type() == Variant::OBJECT && actual != value)) {
+			node->set(property_name, old_value);
+			return _error("PROPERTY_SET_FAILED", vformat("Setting property '%s' failed on %s.", property, node->get_class()));
+		}
+		undo_redo->add_do_property(node, property_name, value);
+		undo_redo->add_undo_property(node, property_name, old_value);
+		applied[property] = solers_summarize_display_value(actual);
+		if (property == "current" && value && Object::cast_to<Camera3D>(node)) {
+			Object::cast_to<Camera3D>(node)->make_current();
+		}
 	}
-
-	const StringName property_sn = StringName(property);
-	Variant coerced;
-	if (!_coerce_value(node, property_sn, p_args["value"], coerced, error)) {
-		return _error("INVALID_PROPERTY_VALUE", error);
-	}
-
-	EditorInterface *editor_interface = EditorInterface::get_singleton();
-	ERR_FAIL_NULL_V(editor_interface, _error("EDITOR_INTERFACE_UNAVAILABLE", "EditorInterface is not available.", false));
-	EditorUndoRedoManager *undo_redo = editor_interface->get_editor_undo_redo();
-	ERR_FAIL_NULL_V(undo_redo, _error("UNDO_REDO_UNAVAILABLE", "EditorUndoRedoManager is not available.", false));
-
-	const Variant old_value = node->get(property_sn);
-	bool valid = false;
-	node->set(property_sn, coerced, &valid);
-	if (!valid || (coerced.get_type() == Variant::OBJECT && node->get(property_sn) != coerced)) {
-		node->set(property_sn, old_value);
-		return _error("PROPERTY_SET_FAILED", vformat("Setting property '%s' failed on %s.", property, node->get_class()));
-	}
-
-	if (!batch_action_active) {
-		undo_redo->create_action(vformat("Solers: Set %s.%s", node->get_class(), property), UndoRedo::MERGE_DISABLE, node);
-	}
-	undo_redo->add_do_property(node, property_sn, coerced);
-	undo_redo->add_undo_property(node, property_sn, old_value);
-	if (!batch_action_active) {
-		undo_redo->commit_action(false);
-	}
-
-	if (property == "current" && coerced && Object::cast_to<Camera3D>(node)) {
-		Camera3D *camera = Object::cast_to<Camera3D>(node);
-		camera->make_current();
-	}
-
 	String safe_path;
 	_safe_node_path(node, safe_path);
 	Dictionary data;
 	data["node_path"] = safe_path;
-	data["property"] = property;
-	data["value"] = _reflect_displayable(node->get(property_sn));
+	data["properties"] = applied;
 	return _ok(data);
 }
 
@@ -852,18 +741,21 @@ Dictionary SolersReflectionService::inspect_nodes(const Dictionary &p_args) {
 	if (paths.is_empty()) {
 		paths.push_back(".");
 	}
-	// Property dumps are the single largest observation payload, so they are
-	// opt-in: identity, class, and structure answer most inspect calls.
-	const bool include_properties = p_args.get("include_properties", false);
+	const Array requested_properties = p_args.get("properties", Array());
 	const bool include_connections = p_args.get("include_connections", false);
-	const int max_properties = CLAMP((int)p_args.get("max_properties", 128), 1, 512);
 	Array nodes;
-	for (const Variant &value : paths) {
-		const String path = String(value);
+	Array errors;
+	for (int i = 0; i < paths.size(); i++) {
+		const String path = String(paths[i]);
 		String resolve_error;
 		Node *node = _resolve_node(path, resolve_error);
 		if (!node) {
-			return _error("NODE_NOT_FOUND", resolve_error);
+			Dictionary failure;
+			failure["index"] = i;
+			failure["requested_path"] = path;
+			failure["error"] = _error("NODE_NOT_FOUND", resolve_error).get("error", Dictionary());
+			errors.push_back(failure);
+			continue;
 		}
 		Dictionary item;
 		String safe_path;
@@ -890,30 +782,51 @@ Dictionary SolersReflectionService::inspect_nodes(const Dictionary &p_args) {
 			item["instance_scene_path"] = instance_scene;
 			item["owned_by_instance"] = true;
 		}
-		if (include_properties) {
-			Dictionary property_args;
-			property_args["node_path"] = safe_path;
-			property_args["max_properties"] = max_properties;
-			const Dictionary property_result = _list_properties(property_args);
-			if (!(bool)property_result.get("ok", false)) {
-				return property_result;
+		if (!requested_properties.is_empty()) {
+			Dictionary values;
+			Dictionary property_errors;
+			for (int property_index = 0; property_index < requested_properties.size(); property_index++) {
+				const String property = requested_properties[property_index];
+				bool valid = false;
+				const Variant value = node->get_indexed(_property_path_subnames(property), &valid);
+				if (valid) {
+					values[property] = solers_summarize_display_value(value);
+					continue;
+				}
+				property_errors[property] = _error("INVALID_PROPERTY_PATH", vformat("Property path '%s' is not valid on %s.", property, node->get_class())).get("error", Dictionary());
 			}
-			item["properties"] = Dictionary(property_result.get("data", Dictionary())).get("properties", Array());
+			item["properties"] = values;
+			if (!property_errors.is_empty()) {
+				item["property_errors"] = property_errors;
+			}
 		}
 		if (include_connections) {
 			Dictionary connection_args;
 			connection_args["source_path"] = safe_path;
 			const Dictionary connection_result = _list_signal_connections(connection_args);
 			if (!(bool)connection_result.get("ok", false)) {
-				return connection_result;
+				Dictionary failure;
+				failure["index"] = i;
+				failure["node_path"] = safe_path;
+				failure["error"] = connection_result.get("error", Dictionary());
+				errors.push_back(failure);
+			} else {
+				item["connections"] = Dictionary(connection_result.get("data", Dictionary())).get("connections", Array());
 			}
-			item["connections"] = Dictionary(connection_result.get("data", Dictionary())).get("connections", Array());
 		}
 		nodes.push_back(item);
 	}
 	Dictionary data;
 	data["nodes"] = nodes;
 	data["count"] = nodes.size();
+	data["requested_count"] = paths.size();
+	data["errors"] = errors;
+	data["error_count"] = errors.size();
+	if (nodes.is_empty() && !errors.is_empty()) {
+		Dictionary result = _error("NODE_QUERY_FAILED", "None of the requested nodes exist in the live edited scene.");
+		result["data"] = data;
+		return result;
+	}
 	return _ok(data);
 }
 
@@ -1345,7 +1258,7 @@ Dictionary SolersReflectionService::_remove_node(const Dictionary &p_args) {
 	ERR_FAIL_NULL_V(undo_redo, _error("UNDO_REDO_UNAVAILABLE", "EditorUndoRedoManager is not available.", false));
 
 	const int original_index = node->get_index(false);
-	const Dictionary removed_object = _reflect_object_handle(node);
+	const Dictionary removed_object = solers_native_object_handle(node);
 	if (!batch_action_active) {
 		undo_redo->create_action("Solers: Remove Node", UndoRedo::MERGE_DISABLE, parent);
 	}
@@ -1372,48 +1285,6 @@ Dictionary SolersReflectionService::_remove_node(const Dictionary &p_args) {
 	data["object"] = removed_object;
 	data["parent_path"] = parent_safe_path;
 	data["original_index"] = original_index;
-	return _ok(data);
-}
-
-Dictionary SolersReflectionService::_list_properties(const Dictionary &p_args) {
-	const String node_path = p_args.get("node_path", ".");
-	const int max_properties = CLAMP((int)p_args.get("max_properties", 128), 0, 512);
-
-	String error;
-	Node *node = _resolve_node(node_path, error);
-	if (!node) {
-		return _error("NODE_NOT_FOUND", error);
-	}
-
-	List<PropertyInfo> property_list;
-	node->get_property_list(&property_list);
-	Array properties;
-	int count = 0;
-	for (const PropertyInfo &property : property_list) {
-		if (count >= max_properties) {
-			break;
-		}
-		if (!(property.usage & PROPERTY_USAGE_EDITOR) && !(property.usage & PROPERTY_USAGE_STORAGE)) {
-			continue;
-		}
-		Dictionary item;
-		item["name"] = property.name;
-		item["type"] = Variant::get_type_name(property.type);
-		item["hint"] = property.hint;
-		item["hint_string"] = property.hint_string;
-		item["usage"] = property.usage;
-		item["value"] = _reflect_displayable(node->get(property.name));
-		properties.push_back(item);
-		count++;
-	}
-
-	String safe_path;
-	_safe_node_path(node, safe_path);
-	Dictionary data;
-	data["node_path"] = safe_path;
-	data["properties"] = properties;
-	data["count"] = properties.size();
-	data["truncated"] = count >= max_properties;
 	return _ok(data);
 }
 
@@ -1468,11 +1339,12 @@ static bool _solers_batch_operation_mutates(SolersBatchOperationKind p_kind) {
 	switch (p_kind) {
 		case SolersBatchOperationKind::CREATE_NODE:
 		case SolersBatchOperationKind::INSTANTIATE_SCENE:
-		case SolersBatchOperationKind::SET_PROPERTY:
+		case SolersBatchOperationKind::UPDATE:
 		case SolersBatchOperationKind::REPARENT:
 		case SolersBatchOperationKind::CONNECT_SIGNAL:
 		case SolersBatchOperationKind::ATTACH_SCRIPT:
 		case SolersBatchOperationKind::REMOVE_NODE:
+		case SolersBatchOperationKind::BAKE_CSG:
 			return true;
 		default:
 			return false;
@@ -1486,7 +1358,6 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 	}
 	EditorNode *editor_node = EditorNode::get_singleton();
 	const bool has_scene_slot = editor_node && EditorNode::get_editor_data().get_edited_scene_count() > 0;
-	Node *initial_root = has_scene_slot ? editor_node->get_edited_scene() : nullptr;
 	bool has_mutation = false;
 	for (int i = 0; i < operations.size(); i++) {
 		if (operations[i].get_type() == Variant::DICTIONARY) {
@@ -1517,10 +1388,9 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 			error_count++;
 			break;
 		}
-		const Dictionary raw_op = operations[i];
-		const String kind = raw_op.get("op", String());
+		const Dictionary op = operations[i];
+		const String kind = op.get("op", String());
 		const SolersBatchOperationKind operation_kind = _solers_batch_operation_kind(kind);
-		const Dictionary op = _solers_normalize_batch_operation(raw_op, operation_kind);
 		Dictionary result;
 		switch (operation_kind) {
 			case SolersBatchOperationKind::CREATE_NODE:
@@ -1529,8 +1399,8 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 			case SolersBatchOperationKind::INSTANTIATE_SCENE:
 				result = instantiate_scene(op);
 				break;
-			case SolersBatchOperationKind::SET_PROPERTY:
-				result = set_property(op);
+			case SolersBatchOperationKind::UPDATE:
+				result = _update_node(op);
 				break;
 			case SolersBatchOperationKind::REPARENT:
 				result = _reparent_node(op);
@@ -1544,20 +1414,17 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 			case SolersBatchOperationKind::REMOVE_NODE:
 				result = _remove_node(op);
 				break;
+			case SolersBatchOperationKind::BAKE_CSG:
+				result = _bake_csg(op);
+				break;
 			default:
-				result = _error("UNKNOWN_OP", vformat("Unknown scene edit op '%s'. Supported: create_node, instantiate, set_property, reparent, connect_signal, attach_script, remove_node.", kind));
+				result = _error("UNKNOWN_OP", vformat("Unknown scene edit op '%s'.", kind));
 				break;
 		}
 		Dictionary entry;
 		entry["index"] = i;
 		entry["op"] = kind;
 		entry["result"] = result;
-		if (!(bool)result.get("ok", false) && op.has("property")) {
-			Dictionary error = result.get("error", Dictionary());
-			error["hint"] = "For nested resource properties, use '/' paths such as environment/ambient_light_energy.";
-			result["error"] = error;
-			entry["result"] = result;
-		}
 		results.push_back(entry);
 		if ((bool)result.get("ok", false)) {
 			ok_count++;
@@ -1589,11 +1456,6 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 	data["rolled_back"] = rolled_back;
 	data["authored_state_changed"] = has_mutation && error_count == 0;
 	if (error_count == 0) {
-		const Array affected = _spatial_digest_for_results(results);
-		if (!affected.is_empty()) {
-			data["affected_nodes"] = affected;
-		}
-		// Success: path receipts only — not a full per-op node dump.
 		Array path_receipts;
 		for (int i = 0; i < results.size(); i++) {
 			const Dictionary entry = results[i];
@@ -1603,7 +1465,22 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 			const Dictionary result_data = Dictionary(entry.get("result", Dictionary())).get("data", Dictionary());
 			const String path = result_data.get("node_path", result_data.get("path", String()));
 			if (!path.is_empty()) {
-				receipt["node_path"] = path;
+				String resolve_error;
+				Node *node = _resolve_node(path, resolve_error);
+				String safe_path;
+				if (node && _safe_node_path(node, safe_path)) {
+					receipt["node_path"] = safe_path;
+					receipt["object_id"] = String::num_int64((int64_t)node->get_instance_id());
+					receipt["class_name"] = node->get_class();
+				} else {
+					receipt["node_path"] = path;
+				}
+			}
+			if (result_data.has("native_facts")) {
+				receipt["native_facts"] = result_data["native_facts"];
+			}
+			if (result_data.has("properties")) {
+				receipt["properties"] = result_data["properties"];
 			}
 			path_receipts.push_back(receipt);
 		}
@@ -1636,37 +1513,6 @@ static real_t _solers_axis_max(const AABB &p_bounds, int p_axis) {
 	return p_bounds.position[p_axis] + p_bounds.size[p_axis];
 }
 
-static int _solers_axis_index(const String &p_axis) {
-	if (p_axis == "x") {
-		return Vector3::AXIS_X;
-	}
-	if (p_axis == "y") {
-		return Vector3::AXIS_Y;
-	}
-	if (p_axis == "z") {
-		return Vector3::AXIS_Z;
-	}
-	return -1;
-}
-
-static real_t _solers_axis_anchor(const AABB &p_bounds, int p_axis, const String &p_anchor) {
-	if (p_anchor == "min") {
-		return _solers_axis_min(p_bounds, p_axis);
-	}
-	if (p_anchor == "max") {
-		return _solers_axis_max(p_bounds, p_axis);
-	}
-	return (_solers_axis_min(p_bounds, p_axis) + _solers_axis_max(p_bounds, p_axis)) * 0.5;
-}
-
-real_t SolersReflectionService::get_aabb_max_gap(const AABB &p_a, const AABB &p_b) {
-	real_t max_gap = 0.0;
-	for (int axis = 0; axis < 3; axis++) {
-		max_gap = MAX(max_gap, MAX(MAX(_solers_axis_min(p_a, axis) - _solers_axis_max(p_b, axis), _solers_axis_min(p_b, axis) - _solers_axis_max(p_a, axis)), (real_t)0.0));
-	}
-	return max_gap;
-}
-
 static Dictionary _solers_aabb_data(const AABB &p_bounds) {
 	Dictionary data;
 	data["position"] = _solers_vector3_array(p_bounds.position);
@@ -1674,175 +1520,65 @@ static Dictionary _solers_aabb_data(const AABB &p_bounds) {
 	return data;
 }
 
-Dictionary SolersReflectionService::validate_spatial_relations(const Dictionary &p_args) const {
+Dictionary SolersReflectionService::measure_spatial_relations(const Dictionary &p_args) const {
 	const Array relations = p_args.get("relations", Array());
 	if (relations.is_empty()) {
-		return _error("INVALID_ARGUMENT", "relations must contain at least one spatial contract.");
+		return _error("INVALID_ARGUMENT", "relations must contain at least one node pair.");
 	}
 
 	Array results;
-	int failure_count = 0;
+	int error_count = 0;
 	for (int i = 0; i < relations.size(); i++) {
-		if (relations[i].get_type() != Variant::DICTIONARY) {
-			return _error("INVALID_ARGUMENT", vformat("relations[%d] must be an object.", i));
-		}
-		const Dictionary relation = relations[i];
+		const Dictionary relation = relations[i].get_type() == Variant::DICTIONARY ? Dictionary(relations[i]) : Dictionary();
 		const String a_path = String(relation.get("a", String())).strip_edges();
 		const String b_path = String(relation.get("b", String())).strip_edges();
-		const String kind = String(relation.get("kind", String())).strip_edges();
-		if (a_path.is_empty() || b_path.is_empty() || (kind != "max_gap" && kind != "contains" && kind != "align" && kind != "no_overlap")) {
-			return _error("INVALID_ARGUMENT", vformat("relations[%d] requires a, b, and kind=max_gap|contains|align|no_overlap.", i));
-		}
-		if (!relation.has("tolerance") || (relation["tolerance"].get_type() != Variant::FLOAT && relation["tolerance"].get_type() != Variant::INT)) {
-			return _error("INVALID_ARGUMENT", vformat("relations[%d].tolerance must be an explicit non-negative project-unit value.", i));
-		}
-		const real_t tolerance = relation["tolerance"];
-		if (tolerance < 0.0) {
-			return _error("INVALID_ARGUMENT", vformat("relations[%d].tolerance cannot be negative.", i));
-		}
-
 		String resolve_error;
-		GeometryInstance3D *a = Object::cast_to<GeometryInstance3D>(_resolve_node(a_path, resolve_error));
-		if (!a) {
-			return _error("GEOMETRY_NODE_NOT_FOUND", resolve_error.is_empty() ? vformat("Node is not GeometryInstance3D: %s", a_path) : resolve_error);
-		}
-		GeometryInstance3D *b = Object::cast_to<GeometryInstance3D>(_resolve_node(b_path, resolve_error));
-		if (!b) {
-			return _error("GEOMETRY_NODE_NOT_FOUND", resolve_error.is_empty() ? vformat("Node is not GeometryInstance3D: %s", b_path) : resolve_error);
-		}
-		const AABB a_bounds = a->get_global_transform().xform(a->get_aabb());
-		const AABB b_bounds = b->get_global_transform().xform(b->get_aabb());
-
-		bool checked_axes[3] = { true, true, true };
-		const Array axes = relation.get("axes", Array());
-		if (!axes.is_empty()) {
-			checked_axes[0] = checked_axes[1] = checked_axes[2] = false;
-			for (int axis_index = 0; axis_index < axes.size(); axis_index++) {
-				const String axis = String(axes[axis_index]).to_lower();
-				if (axis == "x") {
-					checked_axes[0] = true;
-				} else if (axis == "y") {
-					checked_axes[1] = true;
-				} else if (axis == "z") {
-					checked_axes[2] = true;
-				} else {
-					return _error("INVALID_ARGUMENT", vformat("relations[%d].axes contains '%s'; expected x, y, or z.", i, axis));
-				}
-			}
-		}
-		String a_anchor;
-		String b_anchor;
-		if (kind == "align") {
-			const String axis_name = String(relation.get("axis", String())).to_lower();
-			const int axis = _solers_axis_index(axis_name);
-			a_anchor = String(relation.get("a_anchor", "center")).to_lower();
-			b_anchor = String(relation.get("b_anchor", "center")).to_lower();
-			const bool valid_a_anchor = a_anchor == "min" || a_anchor == "center" || a_anchor == "max";
-			const bool valid_b_anchor = b_anchor == "min" || b_anchor == "center" || b_anchor == "max";
-			if (axis < 0 || !axes.is_empty() || !valid_a_anchor || !valid_b_anchor) {
-				return _error("INVALID_ARGUMENT", vformat("relations[%d] align requires axis=x|y|z, optional min|center|max anchors, and no axes array.", i));
-			}
-			checked_axes[0] = checked_axes[1] = checked_axes[2] = false;
-			checked_axes[axis] = true;
-		}
-
-		bool passed = kind == "no_overlap" ? false : true;
-		Array measurements;
-		for (int axis = 0; axis < 3; axis++) {
-			if (!checked_axes[axis]) {
-				continue;
-			}
-			Dictionary measurement;
-			measurement["axis"] = axis == 0 ? "x" : (axis == 1 ? "y" : "z");
-			bool axis_passed = false;
-			if (kind == "max_gap") {
-				const real_t gap = MAX(MAX(_solers_axis_min(a_bounds, axis) - _solers_axis_max(b_bounds, axis), _solers_axis_min(b_bounds, axis) - _solers_axis_max(a_bounds, axis)), (real_t)0.0);
-				measurement["gap"] = gap;
-				axis_passed = gap <= tolerance;
-			} else if (kind == "contains") {
-				const real_t underflow = MAX(_solers_axis_min(a_bounds, axis) - _solers_axis_min(b_bounds, axis), (real_t)0.0);
-				const real_t overflow = MAX(_solers_axis_max(b_bounds, axis) - _solers_axis_max(a_bounds, axis), (real_t)0.0);
-				measurement["underflow"] = underflow;
-				measurement["overflow"] = overflow;
-				axis_passed = underflow <= tolerance && overflow <= tolerance;
-			} else if (kind == "align") {
-				const real_t a_value = _solers_axis_anchor(a_bounds, axis, a_anchor);
-				const real_t b_value = _solers_axis_anchor(b_bounds, axis, b_anchor);
-				const real_t delta = Math::abs(a_value - b_value);
-				measurement["a_anchor"] = a_anchor;
-				measurement["b_anchor"] = b_anchor;
-				measurement["a_value"] = a_value;
-				measurement["b_value"] = b_value;
-				measurement["delta"] = delta;
-				axis_passed = delta <= tolerance;
-			} else {
-				const real_t overlap = MIN(_solers_axis_max(a_bounds, axis), _solers_axis_max(b_bounds, axis)) - MAX(_solers_axis_min(a_bounds, axis), _solers_axis_min(b_bounds, axis));
-				measurement["overlap"] = overlap;
-				axis_passed = overlap <= tolerance;
-			}
-			measurement["passed"] = axis_passed;
-			measurements.push_back(measurement);
-			passed = kind == "no_overlap" ? passed || axis_passed : passed && axis_passed;
-		}
-
 		Dictionary result;
 		result["index"] = i;
-		result["kind"] = kind;
 		result["a"] = a_path;
 		result["b"] = b_path;
-		result["a_world_aabb"] = _solers_aabb_data(a_bounds);
-		result["b_world_aabb"] = _solers_aabb_data(b_bounds);
-		if (kind == "max_gap") {
-			result["max_gap"] = get_aabb_max_gap(a_bounds, b_bounds);
+		Node3D *a = Object::cast_to<Node3D>(_resolve_node(a_path, resolve_error));
+		Node3D *b = Object::cast_to<Node3D>(_resolve_node(b_path, resolve_error));
+		if (!a || !b) {
+			result["error"] = _error("NODE_NOT_FOUND", resolve_error.is_empty() ? "Both relation endpoints must resolve to Node3D." : resolve_error).get("error", Dictionary());
+			error_count++;
+			results.push_back(result);
+			continue;
 		}
-		result["measurements"] = measurements;
-		result["passed"] = passed;
+		for (const KeyValue<String, Node3D *> &endpoint : { KeyValue<String, Node3D *>("a_node", a), KeyValue<String, Node3D *>("b_node", b) }) {
+			Dictionary identity = _spatial_facts(endpoint.value);
+			identity["node_path"] = endpoint.value->get_path();
+			identity["object_id"] = String::num_int64((int64_t)endpoint.value->get_instance_id());
+			identity["class_name"] = endpoint.value->get_class();
+			result[endpoint.key] = identity;
+		}
+		result["position_delta"] = _solers_vector3_array(b->get_global_position() - a->get_global_position());
+		result["position_distance"] = a->get_global_position().distance_to(b->get_global_position());
+		GeometryInstance3D *a_geometry = Object::cast_to<GeometryInstance3D>(a);
+		GeometryInstance3D *b_geometry = Object::cast_to<GeometryInstance3D>(b);
+		if (a_geometry && b_geometry) {
+			const AABB a_bounds = a_geometry->get_global_transform().xform(a_geometry->get_aabb());
+			const AABB b_bounds = b_geometry->get_global_transform().xform(b_geometry->get_aabb());
+			Array axes;
+			for (int axis = 0; axis < 3; axis++) {
+				Dictionary measure;
+				measure["axis"] = axis == 0 ? "x" : (axis == 1 ? "y" : "z");
+				measure["gap"] = MAX(MAX(_solers_axis_min(a_bounds, axis) - _solers_axis_max(b_bounds, axis), _solers_axis_min(b_bounds, axis) - _solers_axis_max(a_bounds, axis)), (real_t)0.0);
+				measure["overlap"] = MAX(MIN(_solers_axis_max(a_bounds, axis), _solers_axis_max(b_bounds, axis)) - MAX(_solers_axis_min(a_bounds, axis), _solers_axis_min(b_bounds, axis)), (real_t)0.0);
+				axes.push_back(measure);
+			}
+			result["a_world_aabb"] = _solers_aabb_data(a_bounds);
+			result["b_world_aabb"] = _solers_aabb_data(b_bounds);
+			result["axes"] = axes;
+		}
 		results.push_back(result);
-		if (!passed) {
-			failure_count++;
-		}
 	}
 
 	Dictionary data;
 	data["relations"] = results;
 	data["checked_relation_count"] = results.size();
-	data["failure_count"] = failure_count;
-	if (failure_count > 0) {
-		Dictionary failure = _error("SPATIAL_VALIDATION_FAILED", vformat("%d of %d declared spatial relations failed.", failure_count, results.size()));
-		failure["data"] = data;
-		return failure;
-	}
+	data["error_count"] = error_count;
 	return _ok(data);
-}
-
-static void _solers_collect_geometry_nodes(Node *p_node, Vector<GeometryInstance3D *> &r_nodes) {
-	if (!p_node) {
-		return;
-	}
-	if (GeometryInstance3D *geometry = Object::cast_to<GeometryInstance3D>(p_node)) {
-		r_nodes.push_back(geometry);
-	}
-	for (int i = 0; i < p_node->get_child_count(); i++) {
-		_solers_collect_geometry_nodes(p_node->get_child(i), r_nodes);
-	}
-}
-
-uint64_t SolersReflectionService::get_spatial_geometry_digest() const {
-	Node *root = EditorInterface::get_singleton() ? EditorInterface::get_singleton()->get_edited_scene_root() : nullptr;
-	Vector<GeometryInstance3D *> nodes;
-	_solers_collect_geometry_nodes(root, nodes);
-	Array entries;
-	for (GeometryInstance3D *geometry : nodes) {
-		Dictionary entry;
-		String path;
-		_safe_node_path(geometry, path);
-		entry["path"] = path;
-		entry["transform"] = geometry->get_global_transform();
-		entry["aabb"] = geometry->get_aabb();
-		entry["visible"] = geometry->is_visible();
-		entries.push_back(entry);
-	}
-	return entries.hash();
 }
 
 static Variant _solers_stable_resource_value(const Variant &p_value, HashSet<ObjectID> &r_visiting) {
@@ -1927,6 +1663,24 @@ static Dictionary _solers_stable_object_properties(Object *p_object) {
 	return properties;
 }
 
+static Ref<Material> _solers_resolved_material(MeshInstance3D *p_mesh_instance, int p_surface, String *r_source = nullptr) {
+	Ref<Material> material = p_mesh_instance->get_material_override();
+	String source = "material_override";
+	if (!material.is_valid() && p_surface < p_mesh_instance->get_surface_override_material_count()) {
+		material = p_mesh_instance->get_surface_override_material(p_surface);
+		source = "surface_override";
+	}
+	if (!material.is_valid()) {
+		const Ref<Mesh> mesh = p_mesh_instance->get_mesh();
+		material = mesh.is_valid() && p_surface < mesh->get_surface_count() ? mesh->surface_get_material(p_surface) : Ref<Material>();
+		source = "mesh";
+	}
+	if (r_source) {
+		*r_source = source;
+	}
+	return material;
+}
+
 static void _solers_collect_lightmap_inputs(Node *p_node, Array &r_entries) {
 	if (!p_node) {
 		return;
@@ -1949,7 +1703,7 @@ static void _solers_collect_lightmap_inputs(Node *p_node, Array &r_entries) {
 					Dictionary surface_state;
 					surface_state["format"] = (int64_t)mesh->surface_get_format(surface);
 					surface_state["arrays_hash"] = (int64_t)mesh->surface_get_arrays(surface).hash();
-					const Variant material = mesh_instance->get_active_material(surface);
+					const Variant material = _solers_resolved_material(mesh_instance, surface);
 					surface_state["material"] = _solers_stable_resource_value(material, visiting);
 					surfaces.push_back(surface_state);
 				}
@@ -1988,86 +1742,94 @@ uint64_t SolersReflectionService::get_lightmap_input_digest() const {
 }
 
 #ifdef MODULE_CSG_ENABLED
-Dictionary SolersReflectionService::bake_csg(const Dictionary &p_args) {
-	const Array node_paths = p_args.get("node_paths", Array());
-	if (node_paths.is_empty()) {
-		return _error("INVALID_ARGUMENT", "node_paths must contain at least one CSGShape3D root.");
+Dictionary SolersReflectionService::_bake_csg(const Dictionary &p_args) {
+	const String node_path = p_args.get("node_path", String());
+	const String artifact = p_args.get("artifact", String());
+	String resolve_error;
+	CSGShape3D *source = Object::cast_to<CSGShape3D>(_resolve_node(node_path, resolve_error));
+	if (!source) {
+		return _error("CSG_NODE_NOT_FOUND", resolve_error.is_empty() ? vformat("%s is not a CSGShape3D.", node_path) : resolve_error);
 	}
-	const bool hide_sources = p_args.get("hide_sources", true);
-	Vector<CSGShape3D *> sources;
-	Vector<Ref<ArrayMesh>> meshes;
-	for (int i = 0; i < node_paths.size(); i++) {
-		String resolve_error;
-		CSGShape3D *source = Object::cast_to<CSGShape3D>(_resolve_node(String(node_paths[i]), resolve_error));
-		if (!source) {
-			return _error("CSG_NODE_NOT_FOUND", resolve_error.is_empty() ? vformat("node_paths[%d] is not a CSGShape3D.", i) : resolve_error);
-		}
-		if (!source->is_root_shape() || !source->get_parent()) {
-			return _error("INVALID_CSG_ROOT", vformat("%s must be a non-scene-root CSG root shape.", String(node_paths[i])));
-		}
-		source->call(SNAME("_update_shape"));
-		Ref<ArrayMesh> mesh = source->bake_static_mesh();
-		if (mesh.is_null() || mesh->get_surface_count() == 0) {
-			return _error("CSG_BAKE_FAILED", vformat("CSG produced no mesh: %s", String(node_paths[i])));
-		}
-		const AABB source_bounds = source->get_global_transform().xform(source->get_aabb());
-		const AABB baked_bounds = source->get_global_transform().xform(mesh->get_aabb());
-		if (!source_bounds.is_equal_approx(baked_bounds)) {
-			return _error("CSG_BAKE_MISMATCH", vformat("Baked mesh bounds do not match the source CSG: %s", String(node_paths[i])));
-		}
-		sources.push_back(source);
-		meshes.push_back(mesh);
+	if (!source->is_root_shape() || !source->get_parent()) {
+		return _error("INVALID_CSG_ROOT", vformat("%s must be a non-scene-root CSG root shape.", node_path));
 	}
-
-	const uint64_t input_digest = get_spatial_geometry_digest();
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
 	EditorInterface *editor_interface = EditorInterface::get_singleton();
-	if (!undo_redo || !editor_interface || !editor_interface->get_edited_scene_root()) {
+	if (!batch_action_active || !undo_redo || !editor_interface || !editor_interface->get_edited_scene_root()) {
 		return _error("EDITOR_CONTEXT_UNAVAILABLE", "CSG baking requires an edited scene and EditorUndoRedoManager.", false);
 	}
-	Node *owner = editor_interface->get_edited_scene_root();
-	undo_redo->create_action("Bake CSG meshes");
-	Vector<MeshInstance3D *> outputs;
-	for (int i = 0; i < sources.size(); i++) {
-		MeshInstance3D *output = memnew(MeshInstance3D);
-		output->set_name(String(sources[i]->get_name()) + "BakedMesh");
-		output->set_mesh(meshes[i]);
-		output->set_transform(sources[i]->get_transform());
-		output->set_gi_mode(GeometryInstance3D::GI_MODE_STATIC);
-		String source_path;
-		_safe_node_path(sources[i], source_path);
-		output->set_meta(SNAME("_solers_baked_from"), source_path);
-		undo_redo->add_do_method(sources[i], "add_sibling", output, true);
-		undo_redo->add_do_method(output, "set_owner", owner);
-		undo_redo->add_do_reference(output);
-		undo_redo->add_undo_method(sources[i]->get_parent(), "remove_child", output);
-		if (hide_sources) {
-			undo_redo->add_do_method(sources[i], "set_visible", false);
-			undo_redo->add_undo_method(sources[i], "set_visible", sources[i]->is_visible());
-		}
-		outputs.push_back(output);
-	}
-	undo_redo->commit_action();
 
-	Array output_paths;
-	for (MeshInstance3D *output : outputs) {
-		String path;
-		_safe_node_path(output, path);
-		output_paths.push_back(path);
+	source->update_shape();
+	Node3D *output = nullptr;
+	Dictionary native_facts;
+	if (artifact == "mesh") {
+		Ref<ArrayMesh> mesh = source->bake_static_mesh();
+		if (mesh.is_null() || mesh->get_surface_count() == 0) {
+			return _error("CSG_BAKE_FAILED", vformat("CSG produced no mesh: %s", node_path));
+		}
+		MeshInstance3D *mesh_instance = memnew(MeshInstance3D);
+		mesh_instance->set_mesh(mesh);
+		mesh_instance->set_gi_mode(GeometryInstance3D::GI_MODE_STATIC);
+		output = mesh_instance;
+		native_facts = solers_describe_mesh(mesh);
+	} else if (artifact == "collision") {
+#ifndef PHYSICS_3D_DISABLED
+		Ref<ConcavePolygonShape3D> shape = source->bake_collision_shape();
+		if (shape.is_null() || shape->get_faces().is_empty()) {
+			return _error("CSG_BAKE_FAILED", vformat("CSG produced no collision shape: %s", node_path));
+		}
+		StaticBody3D *body = memnew(StaticBody3D);
+		CollisionShape3D *collision = memnew(CollisionShape3D);
+		collision->set_shape(shape);
+		body->add_child(collision, true);
+		output = body;
+		native_facts["triangle_count"] = shape->get_faces().size() / 3;
+#else
+		return _error("PHYSICS_3D_UNAVAILABLE", "This build does not include 3D physics.", false);
+#endif
+	} else {
+		return _error("INVALID_ARGUMENT", "artifact must be mesh or collision.");
 	}
-	Dictionary artifact;
-	artifact["kind"] = "baked_mesh";
-	artifact["input_geometry_digest"] = String::num_uint64(input_digest);
-	artifact["output_geometry_digest"] = String::num_uint64(get_spatial_geometry_digest());
-	artifact["source_paths"] = node_paths;
-	artifact["output_paths"] = output_paths;
+
+	Node *owner = editor_interface->get_edited_scene_root();
+	output->set_name(String(source->get_name()) + (artifact == "mesh" ? "BakedMesh" : "BakedCollision"));
+	output->set_transform(source->get_transform());
+	output->set_meta(SNAME("_solers_baked_from"), node_path);
+	undo_redo->add_do_method(source, "add_sibling", output, true);
+	undo_redo->add_do_method(output, "set_owner", owner);
+#ifndef PHYSICS_3D_DISABLED
+	if (artifact == "collision") {
+		undo_redo->add_do_method(output->get_child(0), "set_owner", owner);
+	}
+#endif
+	undo_redo->add_do_reference(output);
+	undo_redo->add_undo_method(source->get_parent(), "remove_child", output);
+	const bool hide_source = p_args.get("hide_source", false);
+	if (hide_source) {
+		undo_redo->add_do_method(source, "set_visible", false);
+		undo_redo->add_undo_method(source, "set_visible", source->is_visible());
+	}
+	source->add_sibling(output, true);
+	output->set_owner(owner);
+#ifndef PHYSICS_3D_DISABLED
+	if (artifact == "collision") {
+		output->get_child(0)->set_owner(owner);
+	}
+#endif
+	if (hide_source) {
+		source->set_visible(false);
+	}
+	String output_path;
+	_safe_node_path(output, output_path);
 	Dictionary data;
+	data["node_path"] = output_path;
+	data["source_path"] = node_path;
 	data["artifact"] = artifact;
-	data["output_paths"] = output_paths;
+	data["native_facts"] = native_facts;
 	return _ok(data);
 }
 #else
-Dictionary SolersReflectionService::bake_csg(const Dictionary &) {
+Dictionary SolersReflectionService::_bake_csg(const Dictionary &) {
 	return _error("CSG_MODULE_UNAVAILABLE", "This build does not include the CSG module.", false);
 }
 #endif
@@ -2564,9 +2326,8 @@ Array SolersReflectionService::resolve_batch_resource_access(const Dictionary &p
 			_solers_add_scene_access(accesses, "write", "*");
 			continue;
 		}
-		const Dictionary raw_op = operations[i];
-		const SolersBatchOperationKind kind = _solers_batch_operation_kind(raw_op.get("op", String()));
-		const Dictionary op = _solers_normalize_batch_operation(raw_op, kind);
+		const Dictionary op = operations[i];
+		const SolersBatchOperationKind kind = _solers_batch_operation_kind(op.get("op", String()));
 		switch (kind) {
 			case SolersBatchOperationKind::CREATE_NODE:
 				_solers_add_scene_access(accesses, "write", op.get("parent_path", op.get("parent", ".")));
@@ -2578,9 +2339,10 @@ Array SolersReflectionService::resolve_batch_resource_access(const Dictionary &p
 				accesses.push_back(resource);
 				_solers_add_scene_access(accesses, "write", op.get("parent_path", "."));
 			} break;
-			case SolersBatchOperationKind::SET_PROPERTY:
+			case SolersBatchOperationKind::UPDATE:
 			case SolersBatchOperationKind::ATTACH_SCRIPT:
 			case SolersBatchOperationKind::REMOVE_NODE:
+			case SolersBatchOperationKind::BAKE_CSG:
 				_solers_add_scene_access(accesses, "write", op.get("node_path", "."));
 				break;
 			case SolersBatchOperationKind::REPARENT:
@@ -2632,14 +2394,6 @@ static Array _solers_color_array(const Color &p_color) {
 	return values;
 }
 
-static String _solers_resource_id(const Ref<Resource> &p_resource) {
-	if (p_resource.is_null()) {
-		return String();
-	}
-	const String path = p_resource->get_path();
-	return path.is_empty() ? p_resource->get_class() : vformat("%s (%s)", path, p_resource->get_class());
-}
-
 static Dictionary _solers_skeleton_facts(Skeleton3D *p_skeleton) {
 	Dictionary facts;
 	const Transform3D skeleton_to_world = p_skeleton->get_global_transform();
@@ -2689,7 +2443,7 @@ static Dictionary _solers_animation_facts(AnimationMixer *p_mixer) {
 		if (tree->is_state_invalid()) {
 			facts["tree_invalid_reason"] = tree->get_editor_error_message();
 		}
-		facts["tree_root"] = _solers_resource_id(tree->get_root_animation_node());
+		facts["tree_root"] = solers_summarize_display_value(tree->get_root_animation_node());
 		const Ref<AnimationNodeStateMachinePlayback> state_machine = tree->get(SNAME("parameters/playback"));
 		if (state_machine.is_valid()) {
 			facts["state_machine_playing"] = state_machine->is_playing();
@@ -2707,8 +2461,8 @@ static Dictionary _solers_particles_facts(GeometryInstance3D *p_particles) {
 		facts["amount"] = gpu->get_amount();
 		facts["lifetime"] = gpu->get_lifetime();
 		facts["local_coords"] = gpu->get_use_local_coordinates();
-		facts["process_material"] = _solers_resource_id(gpu->get_process_material());
-		facts["draw_pass_mesh"] = gpu->get_draw_passes() > 0 ? _solers_resource_id(gpu->get_draw_pass_mesh(0)) : String();
+		facts["process_material"] = solers_summarize_display_value(gpu->get_process_material());
+		facts["draw_pass_mesh"] = gpu->get_draw_passes() > 0 ? solers_summarize_display_value(gpu->get_draw_pass_mesh(0)) : solers_summarize_display_value(Ref<Mesh>());
 		facts["visibility_aabb"] = _solers_aabb_data(gpu->get_visibility_aabb());
 		// The server holds the only live answer to "did anything actually
 		// spawn, and where": a configured emitter can still draw nothing.
@@ -2721,7 +2475,7 @@ static Dictionary _solers_particles_facts(GeometryInstance3D *p_particles) {
 		facts["amount"] = cpu->get_amount();
 		facts["lifetime"] = cpu->get_lifetime();
 		facts["local_coords"] = cpu->get_use_local_coordinates();
-		facts["draw_pass_mesh"] = _solers_resource_id(cpu->get_mesh());
+		facts["draw_pass_mesh"] = solers_summarize_display_value(cpu->get_mesh());
 	}
 	return facts;
 }
@@ -2729,7 +2483,7 @@ static Dictionary _solers_particles_facts(GeometryInstance3D *p_particles) {
 static Dictionary _solers_material_facts(MeshInstance3D *p_mesh_instance) {
 	Dictionary facts;
 	const Ref<Mesh> mesh = p_mesh_instance->get_mesh();
-	facts["mesh"] = _solers_resource_id(mesh);
+	facts["mesh"] = solers_summarize_display_value(mesh);
 	if (mesh.is_null()) {
 		return facts;
 	}
@@ -2737,22 +2491,14 @@ static Dictionary _solers_material_facts(MeshInstance3D *p_mesh_instance) {
 	for (int i = 0; i < mesh->get_surface_count(); i++) {
 		Dictionary surface;
 		surface["index"] = i;
-		// get_active_material resolves Godot's own precedence, so the answer is
-		// what will actually be drawn rather than what a property dump lists.
-		const Ref<Material> active = p_mesh_instance->get_active_material(i);
-		surface["active_material"] = _solers_resource_id(active);
-		const Ref<Material> override_material = p_mesh_instance->get_material_override();
-		if (override_material.is_valid()) {
-			surface["source"] = "material_override";
-		} else if (i < p_mesh_instance->get_surface_override_material_count() && p_mesh_instance->get_surface_override_material(i).is_valid()) {
-			surface["source"] = "surface_override";
-		} else {
-			surface["source"] = "mesh";
-		}
+		String source;
+		const Ref<Material> active = _solers_resolved_material(p_mesh_instance, i, &source);
+		surface["active_material"] = solers_summarize_display_value(active);
+		surface["source"] = source;
 		if (BaseMaterial3D *base_material = Object::cast_to<BaseMaterial3D>(active.ptr())) {
 			surface["shading_mode"] = (int)base_material->get_shading_mode();
 			surface["albedo"] = _solers_color_array(base_material->get_albedo());
-			surface["albedo_texture"] = _solers_resource_id(base_material->get_texture(BaseMaterial3D::TEXTURE_ALBEDO));
+			surface["albedo_texture"] = solers_summarize_display_value(base_material->get_texture(BaseMaterial3D::TEXTURE_ALBEDO));
 			surface["metallic"] = base_material->get_metallic();
 			surface["roughness"] = base_material->get_roughness();
 			surface["transparency"] = (int)base_material->get_transparency();
@@ -2760,77 +2506,7 @@ static Dictionary _solers_material_facts(MeshInstance3D *p_mesh_instance) {
 		surfaces.push_back(surface);
 	}
 	facts["surfaces"] = surfaces;
-	facts["material_overlay"] = _solers_resource_id(p_mesh_instance->get_material_overlay());
-	return facts;
-}
-
-static Dictionary _solers_camera_attributes_facts(const Ref<CameraAttributes> &p_attributes) {
-	Dictionary facts;
-	if (p_attributes.is_null()) {
-		return facts;
-	}
-	facts["class_name"] = p_attributes->get_class();
-	facts["exposure_multiplier"] = p_attributes->get_exposure_multiplier();
-	facts["exposure_sensitivity"] = p_attributes->get_exposure_sensitivity();
-	facts["auto_exposure_enabled"] = p_attributes->is_auto_exposure_enabled();
-	if (const CameraAttributesPhysical *physical = Object::cast_to<CameraAttributesPhysical>(p_attributes.ptr())) {
-		facts["exposure_aperture"] = physical->get_aperture();
-		facts["exposure_shutter_speed"] = physical->get_shutter_speed();
-	}
-	return facts;
-}
-
-static Dictionary _solers_light_facts(Light3D *p_light) {
-	Dictionary facts;
-	const bool physical_units = GLOBAL_GET("rendering/lights_and_shadows/use_physical_light_units");
-	facts["use_physical_light_units"] = physical_units;
-	facts["light_color"] = _solers_color_array(p_light->get_color());
-	// PARAM_ENERGY is the dimensionless multiplier; PARAM_INTENSITY is lux/lumens
-	// when physical units are on. Report both ClassDB axes — never conflate them.
-	facts["light_energy"] = p_light->get_param(Light3D::PARAM_ENERGY);
-	facts["light_intensity"] = p_light->get_param(Light3D::PARAM_INTENSITY);
-	if (physical_units) {
-		if (p_light->get_light_type() == RSE::LIGHT_DIRECTIONAL) {
-			facts["light_intensity_lux"] = p_light->get_param(Light3D::PARAM_INTENSITY);
-		} else {
-			facts["light_intensity_lumens"] = p_light->get_param(Light3D::PARAM_INTENSITY);
-		}
-		facts["light_temperature"] = p_light->get_temperature();
-	}
-	facts["light_indirect_energy"] = p_light->get_param(Light3D::PARAM_INDIRECT_ENERGY);
-	facts["light_specular"] = p_light->get_param(Light3D::PARAM_SPECULAR);
-	facts["shadow_enabled"] = p_light->has_shadow();
-	facts["editor_only"] = p_light->is_editor_only();
-	facts["cull_mask"] = (int64_t)p_light->get_cull_mask();
-	facts["bake_mode"] = (int)p_light->get_bake_mode();
-	if (DirectionalLight3D *directional = Object::cast_to<DirectionalLight3D>(p_light)) {
-		facts["sky_mode"] = (int)directional->get_sky_mode();
-		facts["light_angular_distance"] = directional->get_param(Light3D::PARAM_SIZE);
-	}
-	return facts;
-}
-
-static Dictionary _solers_environment_facts(const Ref<Environment> &p_environment) {
-	Dictionary facts;
-	facts["background"] = (int)p_environment->get_background();
-	facts["background_color"] = _solers_color_array(p_environment->get_bg_color());
-	facts["background_energy"] = p_environment->get_bg_energy_multiplier();
-	facts["background_intensity"] = p_environment->get_bg_intensity();
-	facts["sky"] = _solers_resource_id(p_environment->get_sky());
-	facts["ambient_source"] = (int)p_environment->get_ambient_source();
-	facts["ambient_color"] = _solers_color_array(p_environment->get_ambient_light_color());
-	facts["ambient_energy"] = p_environment->get_ambient_light_energy();
-	facts["ambient_sky_contribution"] = p_environment->get_ambient_light_sky_contribution();
-	facts["reflection_source"] = (int)p_environment->get_reflection_source();
-	facts["tonemap_mode"] = (int)p_environment->get_tonemapper();
-	facts["tonemap_exposure"] = p_environment->get_tonemap_exposure();
-	facts["tonemap_white"] = p_environment->get_tonemap_white();
-	facts["glow_enabled"] = p_environment->is_glow_enabled();
-	facts["ssao_enabled"] = p_environment->is_ssao_enabled();
-	facts["ssil_enabled"] = p_environment->is_ssil_enabled();
-	facts["sdfgi_enabled"] = p_environment->is_sdfgi_enabled();
-	facts["sdfgi_read_sky_light"] = p_environment->is_sdfgi_reading_sky_light();
-	facts["fog_enabled"] = p_environment->is_fog_enabled();
+	facts["material_overlay"] = solers_summarize_display_value(p_mesh_instance->get_material_overlay());
 	return facts;
 }
 
@@ -2854,37 +2530,28 @@ Dictionary SolersReflectionService::_subsystem_facts(Node *p_node) const {
 	} else if (MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(p_node)) {
 		facts["material"] = _solers_material_facts(mesh_instance);
 #ifdef MODULE_CSG_ENABLED
-	} else if (Object::cast_to<CSGShape3D>(p_node)) {
+	} else if (CSGShape3D *csg = Object::cast_to<CSGShape3D>(p_node)) {
+		Dictionary csg_facts;
+		csg_facts["is_root_shape"] = csg->is_root_shape();
+		csg_facts["operation"] = (int)csg->get_operation();
+		csg_facts["autosmooth"] = csg->is_autosmooth();
+#ifndef PHYSICS_3D_DISABLED
+		csg_facts["collision_enabled"] = csg->is_using_collision();
+#endif
+		facts["csg"] = csg_facts;
 		Dictionary material;
-		const Variant csg_material = p_node->get("material");
+		const Variant csg_material = ClassDB::has_property(p_node->get_class(), SNAME("material")) ? p_node->get("material") : Variant();
 		if (csg_material.get_type() == Variant::OBJECT) {
-			material["csg_material"] = _solers_resource_id(csg_material);
+			material["csg_material"] = solers_summarize_display_value(csg_material);
 		}
 		if (GeometryInstance3D *geometry = Object::cast_to<GeometryInstance3D>(p_node)) {
-			material["material_override"] = _solers_resource_id(geometry->get_material_override());
+			material["material_override"] = solers_summarize_display_value(geometry->get_material_override());
 			const bool has_override = geometry->get_material_override().is_valid();
 			const bool has_csg = csg_material.get_type() == Variant::OBJECT && ((Ref<Resource>)csg_material).is_valid();
 			material["resolved"] = has_override ? "material_override" : (has_csg ? "csg_material" : "none");
 		}
 		facts["material"] = material;
 #endif
-	} else if (Light3D *light = Object::cast_to<Light3D>(p_node)) {
-		facts["light"] = _solers_light_facts(light);
-	} else if (Camera3D *camera = Object::cast_to<Camera3D>(p_node)) {
-		Dictionary camera_facts;
-		camera_facts["current"] = camera->is_current();
-		camera_facts["attributes"] = _solers_camera_attributes_facts(camera->get_attributes());
-		facts["camera"] = camera_facts;
-	} else if (WorldEnvironment *world_environment = Object::cast_to<WorldEnvironment>(p_node)) {
-		const Ref<Environment> environment = world_environment->get_environment();
-		if (environment.is_valid()) {
-			facts["environment"] = _solers_environment_facts(environment);
-		} else {
-			// An empty WorldEnvironment is the usual reason a scene renders
-			// against the fallback gray instead of the authored sky.
-			facts["environment_missing"] = true;
-		}
-		facts["camera_attributes"] = _solers_camera_attributes_facts(world_environment->get_camera_attributes());
 	}
 	return facts;
 }
@@ -2893,8 +2560,7 @@ Dictionary SolersReflectionService::_subsystem_facts(Node *p_node) const {
 // file a change did *not* enter: Godot writes edits below an instance root as
 // overrides in the editing scene, never back into the instanced file.
 String SolersReflectionService::_instance_scene_path(Node *p_node) const {
-	EditorInterface *editor_interface = EditorInterface::get_singleton();
-	Node *edited_root = editor_interface ? editor_interface->get_edited_scene_root() : nullptr;
+	Node *edited_root = SceneTree::get_singleton()->get_edited_scene_root();
 	for (Node *ancestor = p_node; ancestor && ancestor != edited_root; ancestor = ancestor->get_parent()) {
 		const String scene_path = ancestor->get_scene_file_path();
 		if (!scene_path.is_empty()) {
@@ -2925,35 +2591,6 @@ Array SolersReflectionService::_nested_instance_scenes(const Array &p_results) c
 		}
 	}
 	return scenes;
-}
-
-Array SolersReflectionService::_spatial_digest_for_results(const Array &p_results) const {
-	Array digest;
-	HashSet<String> seen;
-	for (int i = 0; i < p_results.size(); i++) {
-		const Dictionary result = Dictionary(p_results[i]).get("result", Dictionary());
-		if (!(bool)result.get("ok", false)) {
-			continue;
-		}
-		const Dictionary result_data = result.get("data", Dictionary());
-		const String path = result_data.has("path") ? String(result_data.get("path", String())) : String(result_data.get("node_path", String()));
-		if (path.is_empty() || seen.has(path)) {
-			continue;
-		}
-		seen.insert(path);
-		String resolve_error;
-		Node *node = _resolve_node(path, resolve_error);
-		Node3D *node_3d = node ? Object::cast_to<Node3D>(node) : nullptr;
-		const Dictionary facts = _spatial_facts(node_3d);
-		if (facts.is_empty()) {
-			continue;
-		}
-		Dictionary entry = facts;
-		entry["path"] = path;
-		entry["type"] = node_3d->get_class();
-		digest.push_back(entry);
-	}
-	return digest;
 }
 
 SolersReflectionService::SolersReflectionService() {}

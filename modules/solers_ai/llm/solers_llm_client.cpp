@@ -2,10 +2,30 @@
 /*  solers_llm_client.cpp                                                 */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                              SOLERS ENGINE                              */
-/*                        (a fork of Godot Engine)                        */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
 /**************************************************************************/
-/* Solers: AI-native game engine.                                        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
 #include "solers_llm_client.h"
@@ -17,6 +37,7 @@
 #include "core/os/os.h"
 #include "core/os/time.h"
 #include "core/templates/hash_set.h"
+
 #include "modules/solers_ai/core/solers_codex_auth.h"
 #include "modules/solers_ai/core/solers_context_manager.h"
 #include "modules/solers_ai/core/solers_trace.h"
@@ -270,15 +291,6 @@ Error SolersLLMClient::begin(const Dictionary &p_request, const Dictionary &p_pr
 	}
 	request_path = path_prefix + active_protocol->get_default_path();
 
-	String validation_code;
-	String validation_message;
-	if (!active_protocol->validate_request(p_request, validation_code, validation_message)) {
-		last_error["code"] = validation_code.is_empty() ? "PROTOCOL_REQUEST_INVALID" : validation_code;
-		last_error["message"] = validation_message.is_empty() ? "The LLM request violates the provider protocol contract." : validation_message;
-		_publish(Array(), STATE_FAILED);
-		return ERR_INVALID_DATA;
-	}
-
 	worker_request = p_request;
 	worker_protocol_id = protocol_id;
 	request_body = String();
@@ -459,6 +471,19 @@ void SolersLLMClient::_run_worker() {
 			case HTTPClient::STATUS_BODY: {
 				if (!response_checked) {
 					const int code = http->get_response_code();
+					List<String> header_list;
+					http->get_response_headers(&header_list);
+					Dictionary headers_dict;
+					for (const String &header : header_list) {
+						const int colon = header.find(":");
+						if (colon > 0) {
+							const String name = header.substr(0, colon).strip_edges();
+							headers_dict[name] = header.substr(colon + 1).strip_edges();
+							if (name.nocasecmp_to("Content-Type") == 0) {
+								last_error["response_content_type"] = headers_dict[name];
+							}
+						}
+					}
 					const bool codex_oauth = String(worker_auth.get("type", String())) == "oauth" && String(worker_profile.get("oauth_kind", String())) == "codex";
 					if (code == 401 && codex_oauth && !oauth_401_retried) {
 						oauth_401_retried = true;
@@ -477,6 +502,8 @@ void SolersLLMClient::_run_worker() {
 							capturing_error = false;
 							error_buffer = String();
 							sse_buffer = String();
+							response_bytes = 0;
+							response_prefix = String();
 							stream_state = initial_stream_state;
 							last_error.clear();
 							state = STATE_CONNECTING;
@@ -488,15 +515,6 @@ void SolersLLMClient::_run_worker() {
 					if (code < 200 || code >= 300) {
 						capturing_error = true;
 						last_error["http_status"] = code;
-						List<String> header_list;
-						http->get_response_headers(&header_list);
-						Dictionary headers_dict;
-						for (const String &h : header_list) {
-							const int hcolon = h.find(":");
-							if (hcolon > 0) {
-								headers_dict[h.substr(0, hcolon).strip_edges()] = h.substr(hcolon + 1).strip_edges();
-							}
-						}
 						last_error["headers"] = headers_dict;
 						Dictionary payload;
 						payload["status"] = code;
@@ -621,7 +639,7 @@ void SolersLLMClient::_drain_records(Array &r_events) {
 				} else if (kind == SolersLLMEventKind::ERROR) {
 					// Protocol already named the failure — don't wait for a missing
 					// finish_reason and relabel it as STREAM_ENDED_WITHOUT_FINISH.
-					_fail(String(event.get("code", "PROVIDER_STREAM_ERROR")), String(event.get("message", "Provider stream reported an error.")), false, event.get("failure_kind", String()));
+					_fail(String(event.get("code", "PROVIDER_STREAM_ERROR")), String(event.get("message", "Provider stream reported an error.")), stream_has_content && !stream_saw_finish, event.get("failure_kind", String()));
 					last_error["response_bytes"] = response_bytes;
 					if (!response_prefix.is_empty()) {
 						last_error["body_prefix"] = response_prefix.substr(0, MIN(512, response_prefix.length()));
@@ -645,8 +663,12 @@ void SolersLLMClient::_complete_stream(Array &r_batch) {
 		return;
 	}
 
-	if (stream_saw_finish || stream_has_content) {
+	if (stream_saw_finish) {
 		state = STATE_DONE;
+		return;
+	}
+	if (stream_has_content) {
+		_fail("STREAM_INTERRUPTED", "Provider stream ended before its terminal protocol event.", true);
 		return;
 	}
 
@@ -673,9 +695,12 @@ void SolersLLMClient::_complete_stream(Array &r_batch) {
 		return;
 	}
 
-	// Zero response bytes: identical retry cannot help. Bytes without a terminal
-	// finish are a truncated stream and stay retryable (pi / OpenCode).
-	_fail("STREAM_ENDED_WITHOUT_FINISH", "Provider stream ended without a terminal finish event.", response_bytes > 0);
+	const String media_type = String(last_error.get("response_content_type", String())).get_slice(";", 0).strip_edges().to_lower();
+	if (!media_type.is_empty() && media_type != "text/event-stream" && media_type != "application/json" && !media_type.ends_with("+json")) {
+		_fail("UNEXPECTED_RESPONSE_MEDIA_TYPE", vformat("Provider returned '%s' instead of a streaming protocol response.", media_type), false);
+	} else {
+		_fail("STREAM_ENDED_WITHOUT_FINISH", "Provider stream ended without a terminal protocol event.", false);
+	}
 	last_error["response_bytes"] = response_bytes;
 	if (!response_prefix.is_empty()) {
 		last_error["body_prefix"] = response_prefix.substr(0, MIN(512, response_prefix.length()));

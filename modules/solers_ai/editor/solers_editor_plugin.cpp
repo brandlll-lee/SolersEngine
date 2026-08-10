@@ -31,13 +31,43 @@
 #include "solers_editor_plugin.h"
 
 #include "core/config/project_settings.h"
+#include "core/io/compression.h"
+#include "core/io/config_file.h"
+#include "core/io/file_access_memory.h"
+#include "core/io/translation_loader_po.h"
 #include "core/object/callable_mp.h"
 #include "core/os/os.h"
+#include "core/string/translation_server.h"
 #include "editor/docks/editor_dock.h"
+#include "editor/docks/editor_dock_manager.h"
+#include "editor/editor_node.h"
+#include "editor/settings/editor_settings.h"
 
 #include "modules/solers_ai/editor/solers_agent_runtime.h"
 #include "modules/solers_ai/editor/solers_dock.h"
+#include "modules/solers_ai/editor/solers_ui_theme.h"
+#include "modules/solers_ai/generated/solers_translations.gen.h"
 
+void solers_load_editor_translation() {
+	Ref<TranslationDomain> domain = TranslationServer::get_singleton()->get_editor_domain();
+	for (const EditorTranslationList *entry = _solers_translations; entry->data; entry++) {
+		if (entry->lang != EditorSettings::get_singleton()->get_language()) {
+			continue;
+		}
+		LocalVector<uint8_t> data;
+		data.resize_uninitialized(entry->uncomp_size);
+		ERR_FAIL_COND(Compression::decompress(data.ptr(), entry->uncomp_size, entry->data, entry->comp_size, Compression::MODE_DEFLATE) == -1);
+		Ref<FileAccessMemory> file;
+		file.instantiate();
+		file->open_custom(data.ptr(), data.size());
+		Ref<Translation> translation = TranslationLoaderPO::load_translation(file);
+		if (translation.is_valid()) {
+			translation->set_locale(entry->lang);
+			domain->add_translation(translation);
+		}
+		return;
+	}
+}
 void SolersEditorPlugin::_select_session(const String &p_session_id) {
 	runtime->set_session(project_path, p_session_id);
 	dock->load_chat_history(runtime->get_timeline_entries());
@@ -47,6 +77,13 @@ void SolersEditorPlugin::_select_session(const String &p_session_id) {
 void SolersEditorPlugin::_new_session() {
 	dock->start_new_chat();
 	dock->set_session_context(project_path, runtime->get_status().get("session_id", String()));
+}
+
+void SolersEditorPlugin::_translation_changed() {
+	solers_load_editor_translation();
+	if (dock) {
+		dock->propagate_notification(NOTIFICATION_TRANSLATION_CHANGED);
+	}
 }
 
 void SolersEditorPlugin::_notification(int p_what) {
@@ -59,9 +96,12 @@ void SolersEditorPlugin::_notification(int p_what) {
 }
 
 SolersEditorPlugin::SolersEditorPlugin() {
+	solers_load_editor_translation();
+	EditorSettings::get_singleton()->connect(SNAME("_translation_changed"), callable_mp(this, &SolersEditorPlugin::_translation_changed));
 	project_path = ProjectSettings::get_singleton()->get_resource_path();
 	runtime = memnew(SolersAgentRuntime);
 	dock = memnew(SolersDock);
+	dock->set_theme(SolersUITheme::create());
 	dock->set_name("SolersChat");
 	dock->set_session_select_callback(callable_mp(this, &SolersEditorPlugin::_select_session));
 	dock->set_new_session_callback(callable_mp(this, &SolersEditorPlugin::_new_session));

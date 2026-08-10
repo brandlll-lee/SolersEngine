@@ -92,6 +92,7 @@ class SolersAgentSession : public Object {
 	String last_stop_reason;
 	Dictionary last_usage;
 	Dictionary current_plan;
+	Dictionary latest_mutation_receipt;
 	String last_outcome;
 	Dictionary active_provider; // { provider, model, base_url, api_key, features }
 	bool running = false;
@@ -102,7 +103,7 @@ class SolersAgentSession : public Object {
 	HashSet<StringName> task_deferred_tools;
 	Array cached_request_tools;
 	int cached_request_tool_tokens = 0;
-	int cached_request_deferred_count = -1;
+	uint32_t cached_request_deferred_count = 0;
 	uint64_t cached_tool_catalog_revision = 0;
 	bool cached_request_image_input_enabled = false;
 	Array turn_attachments;
@@ -156,6 +157,10 @@ class SolersAgentSession : public Object {
 	int text_delta_count = 0;
 	uint64_t last_text_delta_msec = 0;
 	Array compaction_source_messages;
+	int compaction_preserve_from = -1;
+	int tool_message_index = -1;
+	int64_t compaction_id = 0;
+	int64_t compaction_timeline_event_id = 0;
 	Dictionary retry_request;
 	Dictionary retry_profile;
 	int overflow_compaction_attempts = 0;
@@ -178,7 +183,6 @@ class SolersAgentSession : public Object {
 	Dictionary deferred_window_audit; // the single parked tool whose continuation owns the main thread between polls
 	Dictionary attributable_tool_errors; // call_id -> scoped Godot error evidence
 	uint64_t authored_revision = 0; // Session-local ordering only; native receipts carry authority.
-	uint64_t runtime_epoch = 0;
 	uint64_t observed_revision = 0;
 	uint64_t runtime_observation_cursor = 0;
 	Dictionary render_artifacts; // artifact kind -> versioned native-tool result
@@ -199,7 +203,8 @@ class SolersAgentSession : public Object {
 	String _make_session_id() const;
 	Dictionary _read_transcript_state(const String &p_project_path, const String &p_session_id) const;
 	void _stamp_transcript_event(Dictionary &r_event) const;
-	void _write_transcript_event(const String &p_type, const Dictionary &p_payload = Dictionary()) const;
+	int64_t _write_transcript_event(const String &p_type, const Dictionary &p_payload = Dictionary()) const;
+	void _write_prepared_journal_event(SolersPreparedToolCall *p_call) const;
 	void _ensure_godot_log_audit(bool p_turn_active);
 	void _release_godot_log_audit();
 	void _on_godot_log_message(const String &p_message, int p_type, int64_t p_source_thread);
@@ -220,7 +225,7 @@ class SolersAgentSession : public Object {
 	Error _dispatch_model_request(bool p_skip_compaction = false);
 	Error _dispatch_compaction_request();
 	void _commit_attachment_projection();
-	Error _begin_compaction(bool p_from_overflow);
+	Error _begin_compaction(bool p_from_overflow, int p_preserve_from = -1);
 	void _poll_compaction();
 	void _on_compaction_complete();
 	bool _is_context_overflow(const Dictionary &p_error) const;
@@ -255,7 +260,7 @@ class SolersAgentSession : public Object {
 	int64_t _write_transcript_message(const String &p_role, const String &p_content, const Array &p_mentions = Array(), const Array &p_tool_calls = Array(), const String &p_reasoning = String(), const Array &p_attachments = Array(), int64_t p_event_id = 0) const;
 	void _write_transcript_tool(const String &p_call_id, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result, const String &p_delivered_content) const;
 	void _write_transcript_plan() const;
-	void _write_transcript_compaction(const Dictionary &p_result) const;
+	int64_t _write_transcript_compaction(const String &p_phase, const Dictionary &p_payload) const;
 	Dictionary _tool_denied_result(const String &p_code, const String &p_message) const;
 	void _record(const String &p_event, const Dictionary &p_payload) const;
 	Dictionary _ok(const Variant &p_data) const;
@@ -272,11 +277,6 @@ public:
 	void set_permission_manager(SolersPermissionManager *p_permission_manager) { permission_manager = p_permission_manager; }
 
 	static Dictionary validate_plan(const Dictionary &p_args);
-	// Exactly what a tool result contributes to the conversation: the whole
-	// serialized result, or — when it exceeds the budget — an envelope naming
-	// what was elided and where the complete body lives. Always valid JSON, so
-	// no measurement the engine made reaches the model as unparsable text.
-	static String deliverable_tool_result(const String &p_call_id, const Dictionary &p_result, int p_budget);
 	Dictionary start_turn(const Dictionary &p_args); // { prompt: String }
 	// Steer the running turn: the message is queued and joins the
 	// conversation after the current tool batch, before the next model

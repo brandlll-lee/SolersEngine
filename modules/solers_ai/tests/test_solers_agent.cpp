@@ -1,0 +1,311 @@
+/**************************************************************************/
+/*  test_solers_agent.cpp                                                 */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
+#include "core/config/project_settings.h"
+#include "core/io/dir_access.h"
+#include "core/io/file_access.h"
+#include "core/io/json.h"
+#include "core/object/message_queue.h"
+#include "core/os/os.h"
+#include "scene/gui/box_container.h"
+#include "scene/gui/scroll_container.h"
+#include "scene/main/scene_tree.h"
+#include "scene/main/window.h"
+#include "tests/test_macros.h"
+#include "tests/test_tools.h"
+
+#include "modules/solers_ai/core/solers_agent_session.h"
+#include "modules/solers_ai/core/solers_context_manager.h"
+#include "modules/solers_ai/core/solers_resource_service.h"
+#include "modules/solers_ai/core/solers_tool_registry.h"
+#include "modules/solers_ai/core/solers_trace.h"
+#include "modules/solers_ai/editor/solers_chat_cells.h"
+#include "modules/solers_ai/editor/solers_dock.h"
+#include "modules/solers_ai/editor/solers_ui_theme.h"
+#include "modules/solers_ai/llm/solers_llm_message.h"
+#include "modules/solers_ai/tests/support/solers_test_state.h"
+
+TEST_FORCE_LINK(test_solers_agent)
+
+namespace TestSolersAgent {
+
+Dictionary make_user_message(const String &p_text) {
+	Dictionary message;
+	message["role"] = "user";
+	message["content"] = p_text;
+	return message;
+}
+
+Dictionary find_tool_def(const Array &p_tools, const String &p_name) {
+	for (const Variant &tool_variant : p_tools) {
+		const Dictionary tool = tool_variant;
+		if (tool.get("name", String()) == p_name) {
+			return tool;
+		}
+	}
+	return Dictionary();
+}
+
+Array make_tool_calls(const String &p_id, const String &p_name) {
+	Dictionary call;
+	call["id"] = p_id;
+	call["name"] = p_name;
+	call["arguments"] = "{}";
+	return Array({ call });
+}
+
+TEST_CASE("[SolersTrace] transcript parser skips incomplete audit records silently") {
+	Dictionary record;
+	CHECK_FALSE(solers_transcript_parse_record("", record));
+	CHECK_FALSE(solers_transcript_parse_record("{incomplete", record));
+	CHECK_FALSE(solers_transcript_parse_record("[]", record));
+	CHECK(solers_transcript_parse_record("{\"kind\":\"tool_result\",\"call_id\":\"call_1\"}", record));
+	CHECK(record.get("call_id", String()) == "call_1");
+}
+
+TEST_CASE("[SolersContextManager] compaction replaces the active prefix and preserves its tool suffix") {
+	SolersContextManager context;
+	Array history;
+	Dictionary attachment;
+	attachment["id"] = "reference";
+	attachment["content_sha256"] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+	Array attachments;
+	attachments.push_back(attachment);
+	Dictionary old_user = SolersLLMMessage::user("Inspect the scene.\n\n[Selected Solers context]\n[{\"path\":\"res://large.glb\"}]");
+	old_user["attachments"] = attachments;
+	Array mentions;
+	mentions.push_back(Dictionary());
+	old_user["mentions"] = mentions;
+	history.push_back(old_user);
+	history.push_back(SolersLLMMessage::tool_result("call_old", "object.query", String("x").repeat(40000)));
+	CHECK_FALSE(context.should_compact(SolersContextManager::DEFAULT_CONTEXT_TOKENS - SolersContextManager::DEFAULT_OUTPUT_TOKENS - 1, SolersContextManager::DEFAULT_CONTEXT_TOKENS, SolersContextManager::DEFAULT_OUTPUT_TOKENS));
+	CHECK(context.should_compact(SolersContextManager::DEFAULT_CONTEXT_TOKENS - SolersContextManager::DEFAULT_OUTPUT_TOKENS, SolersContextManager::DEFAULT_CONTEXT_TOKENS, SolersContextManager::DEFAULT_OUTPUT_TOKENS));
+	old_user["content"] = String("obsolete ").repeat(8000) + "\n\n[Selected Solers context]\n[{\"path\":\"res://large.glb\"}]";
+	history[0] = old_user;
+	history.push_back(SolersLLMMessage::user("Continue the build."));
+	const int preserve_from = history.size();
+	history.push_back(SolersLLMMessage::assistant("Capturing.", make_tool_calls("call_live", "render.capture")));
+	history.push_back(SolersLLMMessage::tool_result("call_live", "render.capture", String("exact payload ").repeat(1000)));
+	const Dictionary result = context.apply_compaction(history, "Keep building from engine evidence.", 8000, preserve_from);
+	const Array compacted = result.get("messages", Array());
+	REQUIRE(compacted.size() == 5);
+	CHECK(Array(Dictionary(compacted[0]).get("attachments", Array())).size() == 1);
+	CHECK_FALSE(String(Dictionary(compacted[0]).get("content", String())).contains("Selected Solers context"));
+	CHECK(Dictionary(compacted[1]).get("content", String()) == "Continue the build.");
+	CHECK(Dictionary(compacted[2]).get("role", String()) == SolersContextManager::MODEL_CONTEXT_ROLE);
+	const String wire = JSON::stringify(compacted);
+	CHECK(wire.contains("exact payload"));
+	CHECK_FALSE(wire.contains("obsolete"));
+	CHECK((int)result.get("tokens_after", 0) < (int)result.get("tokens_before", 0));
+}
+
+TEST_CASE("[SolersContextManager] transient request state replaces the prior request snapshot") {
+	SolersContextManager context;
+	Array persistent;
+	persistent.push_back(SolersLLMMessage::user("Persistent turn"));
+	context.record_usage(1000, persistent.size(), 300);
+	CHECK(context.get_token_count_with_pending(persistent, String(), 0, 50) == 750);
+	persistent.push_back(SolersLLMMessage::assistant("New durable content", Array()));
+	Array pending;
+	pending.push_back(persistent[1]);
+	CHECK(context.get_token_count_with_pending(persistent, String(), 0, 50) == 750 + SolersContextManager::estimate_messages_tokens(pending));
+}
+
+TEST_CASE("[SolersSession][SceneTree][Editor] journal preserves terminal compaction semantics and stays lazy when empty") {
+	const String session_id = "timeline-authority-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
+	const String project = "test://" + session_id;
+	auto write = [&](const String &p_type, int p_id, int p_turn, Dictionary p_event) {
+		p_event["event_type"] = p_type;
+		p_event["event_id"] = p_id;
+		p_event["turn_id"] = p_turn;
+		p_event["project_path"] = project;
+		p_event["session_id"] = session_id;
+		solers_transcript_write(p_event);
+	};
+	Dictionary first = make_user_message("first turn");
+	first["author"] = "human";
+	write("message", 10, 1, first);
+	Dictionary compacting;
+	compacting["compaction_id"] = 41;
+	compacting["phase"] = "started";
+	write("context_compaction", 11, 1, compacting);
+	compacting["phase"] = "cancelled";
+	write("context_compaction", 12, 1, compacting);
+	write("turn_outcome", 13, 1, Dictionary({ { "outcome", "aborted" } }));
+	for (int i = 0; i < 30; i++) {
+		Dictionary message = make_user_message("history " + itos(i));
+		message["author"] = "human";
+		write("message", 14 + i, 2 + i, message);
+	}
+	solers_transcript_flush(session_id);
+	SolersAgentSession restored;
+	restored.set_session(project, session_id);
+	const Array timeline = restored.get_timeline_entries();
+	REQUIRE(timeline.size() == 33);
+	CHECK(Dictionary(timeline[1]).get("phase", String()) == "cancelled");
+	SolersDock *dock = memnew(SolersDock);
+	dock->set_theme(SolersUITheme::create());
+	dock->set_size(Size2(640, 720));
+	SceneTree::get_singleton()->get_root()->add_child(dock);
+	dock->load_chat_history(timeline);
+	MessageQueue::get_singleton()->flush();
+	VBoxContainer *rows = Object::cast_to<VBoxContainer>(dock->find_child("ChatTimelineMessages", true, false));
+	ScrollContainer *scroll = Object::cast_to<ScrollContainer>(dock->find_child("ChatTimelineScroll", true, false));
+	REQUIRE((rows != nullptr && scroll != nullptr));
+	REQUIRE(rows->get_child_count() == timeline.size());
+	for (int i = 0; i < timeline.size(); i++) {
+		CHECK((int64_t)rows->get_child(i)->get_meta("timeline_event_id", -1) == (int64_t)Dictionary(timeline[i]).get("event_id", -1));
+	}
+	scroll->set_v_scroll((int)scroll->get_v_scroll_bar()->get_max());
+	dock->set_size(Size2(480, 720));
+	MessageQueue::get_singleton()->flush();
+	CHECK(rows->get_child_count() == timeline.size());
+	dock->queue_free();
+	MessageQueue::get_singleton()->flush();
+	restored.reset_conversation();
+	const String empty_id = restored.get_status().get("session_id", String());
+	CHECK_FALSE(FileAccess::exists(solers_session_dir().path_join("sessions").path_join(empty_id.sha256_text() + ".jsonl")));
+	restored.shutdown();
+	MessageQueue::get_singleton()->flush();
+}
+
+TEST_CASE("[SolersJournal] append repairs only an incomplete crash tail") {
+	const String session_id = "crash-tail-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
+	const String path = solers_session_dir().path_join("sessions").path_join(session_id.sha256_text() + ".jsonl");
+	SolersTestPaths cleanup;
+	cleanup.add(path);
+	solers_transcript_flush(session_id);
+	Ref<FileAccess> corrupt = FileAccess::open(path, FileAccess::WRITE);
+	REQUIRE(corrupt.is_valid());
+	Dictionary first;
+	first["session_id"] = session_id;
+	first["event_type"] = "model_retry";
+	first["event_id"] = 1;
+	corrupt->store_line(JSON::stringify(first));
+	corrupt->store_string("{\"event_type\":\"message\"");
+	corrupt.unref();
+	Dictionary second;
+	second["session_id"] = session_id;
+	second["event_type"] = "model_retry";
+	second["event_id"] = 2;
+	solers_transcript_write(second);
+	solers_transcript_flush(session_id);
+
+	Ref<FileAccess> repaired = FileAccess::open(path, FileAccess::READ);
+	int records = 0;
+	while (repaired.is_valid() && !repaired->eof_reached()) {
+		const String line = repaired->get_line();
+		if (line.strip_edges().is_empty()) {
+			continue;
+		}
+		Dictionary event;
+		CHECK(solers_transcript_parse_record(line, event));
+		records++;
+	}
+	CHECK(records == 2);
+	repaired.unref();
+}
+
+TEST_CASE("[SolersAgentSession] task completion has no Harness request budget") {
+	SolersToolRegistry registry;
+	SolersAgentSession session;
+	session.set_tool_registry(&registry);
+
+	const Array tools = registry.list_tools();
+	CHECK_FALSE(find_tool_def(tools, "update_plan").is_empty());
+	CHECK(find_tool_def(tools, "done").is_empty());
+	const Dictionary status = session.get_status();
+	CHECK_FALSE(status.has("tool_iterations"));
+	CHECK_FALSE(status.has("max_tool_iterations"));
+	CHECK_FALSE(status.has("model_request_budget"));
+	CHECK_FALSE(status.has("input_token_budget"));
+	CHECK((int)status.get("model_requests", 0) == 0);
+	CHECK(status.has("fresh_input_tokens"));
+	CHECK(status.has("cache_read_tokens"));
+	CHECK(status.has("cache_write_tokens"));
+	CHECK(status.has("wire_body_bytes"));
+}
+
+TEST_CASE("[SolersAgentSession] validates the Codex update_plan contract") {
+	Array valid_steps;
+	Dictionary first;
+	first["step"] = "Whitebox";
+	first["status"] = "completed";
+	valid_steps.push_back(first);
+	Dictionary second;
+	second["step"] = "Lighting";
+	second["status"] = "in_progress";
+	valid_steps.push_back(second);
+	Dictionary args;
+	args["plan"] = valid_steps;
+	CHECK(SolersAgentSession::validate_plan(args).get("ok", false));
+
+	Dictionary duplicate = second.duplicate();
+	duplicate["step"] = "Materials";
+	valid_steps.push_back(duplicate);
+	args["plan"] = valid_steps;
+	Dictionary invalid = SolersAgentSession::validate_plan(args);
+	CHECK_FALSE(invalid.get("ok", true));
+	CHECK(Dictionary(invalid.get("error", Dictionary())).get("code", String()) == "INVALID_PLAN");
+
+	valid_steps.resize(1);
+	first["status"] = "blocked";
+	valid_steps[0] = first;
+	args["plan"] = valid_steps;
+	CHECK_FALSE(SolersAgentSession::validate_plan(args).get("ok", true));
+
+	first["status"] = "completed";
+	valid_steps[0] = first;
+	args["plan"] = valid_steps;
+	CHECK(SolersAgentSession::validate_plan(args).get("ok", false));
+}
+
+TEST_CASE("[solers_format_plan_text] replaces its plan snapshot in place") {
+	Array first_plan;
+	Dictionary first_step;
+	first_step["step"] = "Whitebox";
+	first_step["status"] = "in_progress";
+	first_plan.push_back(first_step);
+	const String first_text = solers_format_plan_text("Starting geometry", first_plan);
+
+	Array second_plan;
+	Dictionary second_step;
+	second_step["step"] = "Whitebox";
+	second_step["status"] = "completed";
+	second_plan.push_back(second_step);
+	const String second_text = solers_format_plan_text("Geometry verified", second_plan);
+
+	CHECK(first_text.contains("Starting geometry"));
+	CHECK(second_text.contains("Geometry verified"));
+	CHECK(second_text.contains(String::utf8("✓ Whitebox")));
+	CHECK_FALSE(second_text.contains("Starting geometry"));
+}
+
+} // namespace TestSolersAgent

@@ -5,7 +5,11 @@
 <h1 align="center">Solers</h1>
 
 <p align="center">
-  <strong>AI-native game engine (Godot fork) where AI acts as a first-class native operator for collaborative game development.</strong>
+  <strong>The AI-native game engine built on Godot.</strong>
+</p>
+
+<p align="center">
+  <strong>English</strong> | <a href="README.zh-CN.md">简体中文</a>
 </p>
 
 <div align="center">
@@ -39,82 +43,67 @@
 | **Upstream** | Deterministic protocol for tracking and validating new Godot releases. | [`docs/UPSTREAM.md`](docs/UPSTREAM.md) |
 | **Tests** | Unit contracts and real editor behavior projects for Solers. | [`modules/solers_ai/tests/`](modules/solers_ai/tests/) |
 
-## AI Is Part of the Engine
+## AI-Native Engine Architecture
 
-Solers is not a chat window attached to a game engine. The agent runs inside the
-editor and operates on the same live state as the person building the game. It
-can inspect the edited scene, understand Godot classes and resources, modify the
-project, run it, observe the result, and continue from evidence without moving
-the workflow to a separate tool.
+Solers is a Godot fork built around an in-engine AI agent. The agent is a
+first-class editor operator with access to the same live project, scene,
+resource, importer, debugger, renderer, and runtime lifecycle as the developer.
 
-Solers defines the AI panel's visual language while Godot continues to provide
-the native editor lifecycle underneath it: project state, docking, input, text,
-rendering, UndoRedo, importing, debugging, and persistence.
+This creates one native development loop:
 
-## Builds and Changes Real Worlds
+**Understand → change → run → observe → verify → continue**
 
-Solers works across 2D and 3D scenes, scripts, resources, materials, assets, and
-project files. Scene changes are applied against authoritative live editor state
-instead of a second in-memory copy. Resource and file writes carry state
-preconditions so stale observations do not silently overwrite newer work.
+Human and AI work on the same authoritative Godot project. There is no shadow
+scene model competing with the editor and no external automation layer between
+the agent and the engine.
 
-The result remains a standard Godot project. You can keep editing it manually,
-open it with familiar Godot workflows, and ship it with the engine toolchain.
+## One Engine, One Source of Truth
 
-## Runs, Looks, and Keeps Going
+Solers applies changes through Godot-native systems, including live scene state,
+UndoRedo, resource loading, importing, debugging, and persistence. State
+preconditions prevent stale observations from overwriting newer work, while
+receipts and checkpoints make mutations traceable and recoverable.
 
-The agent can start or stop the running project, read debugger state, inspect
-errors, query object relationships, and capture rendered output bound to a known
-scene revision. Visual evidence is part of the work loop, not a final decorative
-screenshot: Solers can look at what the engine produced and decide what to do
-next.
+Projects remain standard Godot projects that can be edited manually, opened with
+familiar workflows, and shipped through the engine toolchain.
 
-Background asset jobs use an explicit wait-and-resume contract. The agent parks
-when engine-owned work is still running and resumes from the terminal result
-instead of polling the editor or asking the user to repeat the task.
+## Native Agent Runtime
 
-## Native, Recoverable Changes
+Solers Agent Runtime is built directly on Godot's editor state, debugger, and
+runtime lifecycle. The agent is not an external controller that leaves after
+issuing a command, but a development participant that maintains continuity of
+task, evidence, and action as engine state changes.
 
-Scene mutations use Godot's native transaction and UndoRedo path. Resource and
-file changes use validated state, atomic replacement, and recoverable
-checkpoints. Tool calls pass through a permission boundary before mutating the
-project, while receipts record the state that was observed or changed.
+Observation, modification, execution, and verification form one native loop.
+Each step is grounded in authoritative engine state, checked against permissions
+and state preconditions, and recorded in traceable, recoverable receipts.
+Verified runtime findings can continue into scene, resource, or script changes.
 
-This keeps one authoritative writer for engine state and avoids the editor,
-filesystem, and agent fighting over different versions of the same scene.
-
-## Long Tasks Stay Long
-
-Solers does not end an agent turn because it crossed a fixed tool-call count.
-The model or the user owns the end of the turn. As context fills, completed work
-is compacted into a typed continuation while active observations stay attached
-to the request that needs them. Session journals preserve the human timeline
-without replaying completed tool payloads back into every later model request.
+Tasks can continue across turns, asynchronous engine work, and context
+boundaries. Solers preserves confirmed facts and current intent instead of
+interrupting work at a tool-count or context limit.
 
 ## Bring Your Model
 
-Solers is not locked to one inference provider. The provider catalog and
-protocol layer keep model access separate from the engine tool surface.
+Model access is independent from the engine tool surface.
 
-| Connection | How it works |
-|------------|--------------|
-| **ChatGPT Codex** | Sign in with ChatGPT and use the native OAuth/Responses integration. |
-| **Provider catalog** | Choose a catalog provider using its declared endpoint, protocol, and model metadata. |
-| **OpenAI-compatible** | Connect a private, hosted, or gateway endpoint with an explicit base URL and model. |
-| **Local models** | Use a compatible local endpoint without sending project prompts to a hosted provider. |
+| Connection | Integration |
+|------------|-------------|
+| **ChatGPT Codex** | Native OAuth and Responses integration. |
+| **Provider catalog** | Declared providers, protocols, endpoints, and model metadata. |
+| **OpenAI-compatible** | Private, hosted, or gateway endpoints. |
+| **Local models** | Compatible local inference without hosted project prompts. |
 
-## Engine Tool Surface
+## Native Engine Surface
 
-The model sees focused engine capabilities rather than a second framework built
-around the model.
-
-| Domain | Native capabilities |
-|--------|---------------------|
-| **World state** | Query live scenes and resources, open scenes, and apply state-checked object transactions. |
-| **Project** | Search and read project files, edit scripts, and inspect Godot class or property contracts. |
-| **Runtime evidence** | Control playback, read errors, inspect relationships, and capture version-bound renders. |
-| **Assets** | Acquire, import, inspect, and resume asynchronous asset work through Godot's importer. |
-| **Extensions** | Load built-in skills, install inspected addons, and expose the same engine through a local MCP-compatible interface. |
+| Domain | Capabilities |
+|--------|--------------|
+| **World** | Inspect and modify live 2D/3D scenes, nodes, resources, materials, and project settings. |
+| **Runtime** | Run, pause, step, inspect the remote tree, objects, stacks, errors, performance, and rendered output. |
+| **Project** | Search files, edit scripts, and inspect native Godot class and property contracts. |
+| **Assets** | Acquire, import, inspect, and resume engine-owned asset jobs. |
+| **Safety** | Permissions, state preconditions, receipts, UndoRedo, checkpoints, and session journals. |
+| **Extensions** | Built-in skills, inspected addons, and a local MCP-compatible engine interface. |
 
 ## Build from Source
 
@@ -131,14 +120,14 @@ cd SolersEngine
 ### Windows
 
 ```powershell
-python -m SCons platform=windows target=editor dev_build=yes -j4
+.\solers_build.bat
 .\bin\solers.windows.editor.dev.x86_64.exe
 ```
 
 ### Linux/BSD
 
 ```bash
-scons platform=linuxbsd target=editor dev_build=yes -j4
+scons platform=linuxbsd target=editor dev_build=yes tests=yes debug_symbols=no num_jobs=8
 ./bin/solers.linuxbsd.editor.dev.x86_64
 ```
 
@@ -149,23 +138,23 @@ for distribution-specific dependencies.
 ### macOS
 
 ```bash
-scons platform=macos target=editor dev_build=yes -j4
+scons platform=macos target=editor dev_build=yes tests=yes debug_symbols=no num_jobs=8
 ```
 
-After the build, open or create a project and connect a model from the Solers
-setup view in the editor's left panel.
+After the build, open or create a project and connect a model from the Solers setup view in the editor's left panel.
 
 ## Test the Solers Module
 
-Build the editor with tests enabled, then run the Solers test cases:
-
 ```powershell
-python -m SCons platform=windows target=editor dev_build=yes tests=yes -j4
-.\bin\solers.windows.editor.dev.x86_64.console.exe --test --test-case="*Solers*" --no-colors --minimal
+$editor = (Resolve-Path .\bin\solers.windows.editor.dev.x86_64.console.exe).Path
+Push-Location modules/solers_ai/tests/editor_layout_project
+& $editor --headless --path . --test --test-case="*Solers*" --no-colors
+& $editor --headless --editor --path .
+Pop-Location
+python modules/solers_ai/tests/terrain3d_smoke.py $editor
 ```
 
-The editor layout behavior project lives at
-[`modules/solers_ai/tests/editor_layout_project/`](modules/solers_ai/tests/editor_layout_project/).
+These commands run the unit, real editor lifecycle, and bundled Terrain3D contracts used by CI.
 
 ## Tracking Godot
 

@@ -2,26 +2,30 @@
 /*  solers_chat_cells.h                                                   */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                              SOLERS ENGINE                              */
-/*                        (a fork of Godot Engine)                        */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
 /**************************************************************************/
-/* Solers: AI-native game engine.                                        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
 /*                                                                        */
-/* Self-drawn message cells for the Solers chat timeline. The design      */
-/* follows the streaming architectures studied in OpenCode and Codex:     */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
 /*                                                                        */
-/*  - The agent session is the event source (deltas, tool lifecycle).     */
-/*  - Each cell owns one visual unit of the conversation and is updated   */
-/*    in place as events arrive: user bubble, streaming assistant prose   */
-/*    (typewriter pacing with adaptive catch-up, like Codex's commit      */
-/*    animation), a collapsible thinking cell (shimmer header + tail of   */
-/*    the live reasoning), compact tool-call rows, and a transient        */
-/*    shimmer status row ("Thinking").                                   */
-/*  - Settled cells stop processing entirely: like the rest of the        */
-/*    Solers chat chrome, steady state costs zero CPU and zero redraws.   */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
 /*                                                                        */
-/* All text is shaped with TextParagraph (TextServer shaping, so CJK,     */
-/* BiDi and emoji behave), and every chrome pixel is custom-drawn.        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
 #pragma once
@@ -47,7 +51,6 @@ class SolersUserBubble : public Control {
 	GDCLASS(SolersUserBubble, Control);
 
 	String text;
-	Array attachments;
 	Vector<Ref<Texture2D>> attachment_textures;
 	Ref<TextParagraph> paragraph;
 	Array mention_objects;
@@ -182,7 +185,8 @@ public:
 
 private:
 	String tool_name;
-	StringName tool_glyph;
+	StringName tool_icon;
+	String tool_verb;
 	String args_summary;
 	String error_text;
 	Status status = STATUS_RUNNING;
@@ -203,10 +207,11 @@ protected:
 public:
 	virtual Size2 get_minimum_size() const override;
 
-	void start(const String &p_tool_name, const String &p_arguments_json, const StringName &p_tool_glyph);
-	void update(const String &p_tool_name, const String &p_arguments_json, const StringName &p_tool_glyph);
+	void start(const String &p_tool_name, const String &p_arguments_json, const String &p_ui_kind);
+	void update(const String &p_tool_name, const String &p_arguments_json, const String &p_ui_kind);
 	void finish(bool p_ok, const String &p_error_message, int p_duration_msec);
-	StringName get_tool_glyph() const { return tool_glyph; }
+	StringName get_tool_icon() const { return tool_icon; }
+	String get_tool_verb() const { return tool_verb; }
 	Status get_status() const { return status; }
 
 	void set_content_changed_callback(const Callable &p_cb) { content_changed = p_cb; }
@@ -269,6 +274,7 @@ public:
 	virtual Size2 get_minimum_size() const override;
 
 	void set_status(const String &p_text);
+	void set_active(bool p_active);
 
 	SolersStatusCell();
 };

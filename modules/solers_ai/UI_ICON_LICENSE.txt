@@ -1,12 +1,66 @@
 Solers AI UI Icons
 
-The Solers AI panel uses a small set of embedded SVG path icons modeled on
-Lucide's 24px outline icon style.
+The functional icons under assets/ui_icons are vendored from Tabler Icons
+v3.46.0 (commit 8ac7d81). Files are renamed to stable Solers semantic ids;
+their upstream source names are listed below. Provider logos and project
+resource previews are separate identity/content assets and are not Tabler UI
+icons.
 
-Lucide
-Copyright (c) Lucide Contributors
-License: ISC
-Source: https://lucide.dev/license
+Solers id          Tabler source
+adjustments        adjustments-horizontal
+alert              alert-circle
+calendar           calendar
+check              check
+chevron_down       chevron-down
+chevron_right      chevron-right
+chevron_up         chevron-up
+cloud              cloud
+cross              x
+file               file
+file_alert         file-alert
+folder             folder
+history            history
+more               dots-vertical
+new_chat           message-plus
+node               hierarchy-2
+panel              layout-sidebar
+plugin             puzzle
+plus               plus
+send_up             arrow-up
+shield             shield-check
+sparkle            sparkle
+stop               filled/player-stop
+tool_asset          upload
+tool_capture        photo
+tool_export         package
+tool_file           pencil
+tool_network        world
+tool_observe        eye
+tool_read           file-text
+tool_run            player-play
+tool_scene          box
+tool_search         search
+tool_shell          terminal-2
 
-The embedded SVG paths are used as local UI assets so the native editor module
-does not need to ship an npm package or runtime icon dependency.
+Tabler Icons
+Copyright (c) 2020-2026 Paweł Kuna
+License: MIT
+Source: https://github.com/tabler/tabler-icons/tree/v3.46.0
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

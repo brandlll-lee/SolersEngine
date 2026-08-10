@@ -29,7 +29,7 @@ Use for project settings, folder layout, imports, resources, editor state, addon
 **Import four-pack (mental model):** source file + `.import` + `.uid` + (optional) imported companion — move/rename with Godot/`project` tools so sidecars stay coherent.
 **Generate/acquire:** set final `target_dir`, `import_profile` (`runtime` default; `baked_static` only if lightmaps), optional `max_triangles` / `map_types` → call generate/acquire → let the job reach terminal import (do not busy-poll status).
 **Addon:** `addon.inspect` → read Contract/entry classes → install/enable only if pinned and trusted → restart if the Contract says so.
-**CSG → mesh:** whitebox in editor → `scene.bake_csg` for shipping meshes.
+**CSG:** whitebox from ClassDB → bake native mesh/collision artifacts in `object.transaction` after topology is verified.
 
 ## Traps
 | Wrong | Correct |

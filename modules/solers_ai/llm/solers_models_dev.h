@@ -2,18 +2,30 @@
 /*  solers_models_dev.h                                                   */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                              SOLERS ENGINE                              */
-/*                        (a fork of Godot Engine)                        */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
 /**************************************************************************/
-/* Solers: AI-native game engine.                                        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
 /*                                                                        */
-/* Data-driven provider/model registry, modeled on opencode's            */
-/* `ModelsDev` service: provider connection facts and per-model metadata  */
-/* (context/output limits, capabilities) come from DATA, not a hardcoded  */
-/* code catalog. The dataset is fetched at runtime from models.dev (and   */
-/* cached), with a small built-in seed for offline/first-run so the common */
-/* providers work immediately. This replaces guessing a model's context    */
-/* window with its real limit (the data half of the connection layer).    */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
 #pragma once
@@ -27,7 +39,7 @@
 #include "core/variant/dictionary.h"
 
 class SolersModelsDev {
-	// providerID -> { id, name, npm, api, env(Array), local(bool),
+	// providerID -> { id, name, api, env(Array), local(bool), protocol,
 	//                 models: { modelID -> { id, name, context, output,
 	//                 reasoning, reasoning_options, tool_call, attachment } } }
 	HashMap<StringName, Dictionary> providers;
@@ -68,13 +80,8 @@ public:
 	Dictionary get_model(const StringName &p_provider, const String &p_model) const;
 	// Returns 1 when declared, 0 when explicitly absent, and -1 when unknown.
 	static int input_modality_support(const Dictionary &p_model, const String &p_modality);
-	// Effort values declared by models.dev. Unknown/custom reasoning models keep
-	// the generic High/Extra High controls instead of losing the capability.
+	// Effort values explicitly declared by models.dev.
 	static Array reasoning_efforts(const Dictionary &p_model);
-	// Catalog entry by id, falling back to matching the endpoint URL (custom
-	// gateway profiles). Empty dictionary when the catalog has no answer.
-	Dictionary find_provider(const String &p_id, const String &p_api_url = String()) const;
-
 	SolersModelsDev();
 	~SolersModelsDev();
 };

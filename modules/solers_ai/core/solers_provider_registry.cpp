@@ -1,9 +1,31 @@
 /**************************************************************************/
-/*  solers_provider_registry.cpp                                           */
+/*  solers_provider_registry.cpp                                          */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
 /*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
 #include "solers_provider_registry.h"
@@ -11,6 +33,7 @@
 #include "core/object/class_db.h"
 #include "core/os/os.h"
 #include "core/templates/hash_set.h"
+
 #include "modules/solers_ai/llm/solers_models_dev.h"
 
 void SolersProviderRegistry::_bind_methods() {
@@ -40,18 +63,6 @@ Dictionary SolersProviderRegistry::_error(const String &p_code, const String &p_
 	return result;
 }
 
-String SolersProviderRegistry::_protocol_for_npm(const String &p_npm) {
-	if (p_npm.contains("anthropic")) {
-		return "anthropic-messages";
-	}
-	return "openai-chat";
-}
-
-bool SolersProviderRegistry::_looks_local_api(const String &p_api) {
-	const String api = p_api.to_lower();
-	return api.contains("127.0.0.1") || api.contains("localhost");
-}
-
 String SolersProviderRegistry::_default_model_for_catalog(const Dictionary &p_catalog) const {
 	const String declared = String(p_catalog.get("default_model", String())).strip_edges();
 	if (!declared.is_empty()) {
@@ -67,23 +78,22 @@ String SolersProviderRegistry::_default_model_for_catalog(const Dictionary &p_ca
 
 Dictionary SolersProviderRegistry::_profile_from_catalog(const Dictionary &p_catalog) const {
 	const String id = p_catalog.get("id", String());
+	const String protocol = p_catalog.get("protocol", String());
+	if (id.is_empty() || protocol.is_empty()) {
+		return Dictionary();
+	}
 	Dictionary profile;
 	profile["id"] = id;
 	profile["label"] = p_catalog.get("name", id);
-	profile["protocol"] = _protocol_for_npm(p_catalog.get("npm", String()));
+	profile["protocol"] = protocol;
 	profile["default_base_url"] = String(p_catalog.get("api", String())).strip_edges().trim_suffix("/");
 	profile["default_model"] = _default_model_for_catalog(p_catalog);
 	profile["catalog_provider"] = id;
-	const bool local = p_catalog.get("local", false) || _looks_local_api(profile.get("default_base_url", String()));
+	const bool local = p_catalog.get("local", false);
 	profile["local"] = local;
 	profile["auth_type"] = local ? "none" : "api_key";
-	if (profile.get("protocol", String()) == "anthropic-messages") {
-		profile["auth_header"] = "x-api-key";
-		profile["auth_prefix"] = String();
-	} else {
-		profile["auth_header"] = "Authorization";
-		profile["auth_prefix"] = "Bearer ";
-	}
+	profile["auth_header"] = p_catalog.get("auth_header", String());
+	profile["auth_prefix"] = p_catalog.get("auth_prefix", String());
 	profile["api_key_required"] = !local;
 	const Array env = p_catalog.get("env", Array());
 	profile["api_key_env"] = env.is_empty() ? String() : String(env[0]);
@@ -198,8 +208,7 @@ Dictionary SolersProviderRegistry::get_provider_profile(const String &p_provider
 			}
 		}
 	}
-	// Open extension: any unknown id is a custom OpenAI-compatible slot.
-	return _default_custom_profile(p_provider);
+	return Dictionary();
 }
 
 Dictionary SolersProviderRegistry::resolve_provider_profile(const String &p_provider, const String &p_base_url_override) const {
@@ -230,7 +239,10 @@ Array SolersProviderRegistry::list_provider_profiles() const {
 			if (id.is_empty() || seen.has(id)) {
 				continue;
 			}
-			result.push_back(_profile_from_catalog(entry));
+			const Dictionary profile = _profile_from_catalog(entry);
+			if (!profile.is_empty()) {
+				result.push_back(profile);
+			}
 			seen.insert(id);
 		}
 	}
@@ -243,20 +255,6 @@ Array SolersProviderRegistry::list_popular_provider_ids() const {
 
 Array SolersProviderRegistry::list_overlay_provider_ids() const {
 	return overlay_order.duplicate();
-}
-
-bool SolersProviderRegistry::is_known_provider(const String &p_provider) const {
-	if (overlays.has(p_provider)) {
-		return true;
-	}
-	if (!models_dev) {
-		return false;
-	}
-	if (models_dev->has_provider(StringName(p_provider))) {
-		return true;
-	}
-	const String canonical = models_dev->canonical_provider_id(p_provider);
-	return canonical != p_provider && models_dev->has_provider(StringName(canonical));
 }
 
 bool SolersProviderRegistry::is_model_allowed(const String &p_provider, const String &p_model) const {
@@ -276,6 +274,9 @@ Dictionary SolersProviderRegistry::validate_config(const Dictionary &p_config) c
 		return _error("PROVIDER_REQUIRED", "A provider must be selected.", true);
 	}
 	const Dictionary profile = get_provider_profile(provider);
+	if (profile.is_empty()) {
+		return _error("PROVIDER_CONNECTION_UNDECLARED", "Provider connection protocol and authentication are not declared.");
+	}
 	const bool local = profile.get("local", false);
 	const bool api_key_required = profile.get("api_key_required", true);
 	String base_url = p_config.get("base_url", String());

@@ -58,14 +58,12 @@
 
 #include "modules/solers_ai/core/solers_geometry_facts.h"
 #include "modules/solers_ai/core/solers_secret_store.h"
+#include "modules/solers_ai/generated/terrain3d_lock.gen.h"
 #include "modules/solers_ai/plugins/solers_plugin.h"
 #include "modules/zip/zip_reader.h"
 
 static constexpr const char *SOLERS_PLUGIN_LOCK_PATH = "res://.solers/plugins.lock.json";
 static constexpr const char *SOLERS_TERRAIN3D_ID = "terrain3d";
-static constexpr const char *SOLERS_TERRAIN3D_VERSION = "1.0.2-stable";
-static constexpr const char *SOLERS_TERRAIN3D_SHA256 = "a071850250ec5e596aa54da61c01d75768774eb379ee997584d426a45f4884a2";
-static constexpr const char *SOLERS_TERRAIN3D_ARCHIVE = "Terrain3D_v1.0.2-stable.zip";
 
 static Dictionary _solers_terrain3d_agent_contract() {
 	Dictionary contract;
@@ -2451,33 +2449,6 @@ Dictionary SolersAssetService::start_project_import(const Dictionary &p_args) {
 			return _error("IMPORT_FAILED", err);
 		}
 	}
-	// Files Godot itself must (re)import: freshly copied sources plus any
-	// entrypoint whose queued import options change its sidecar. Every path
-	// listed here is settled exclusively by the editor's resources_reimported
-	// signal — completion is never guessed from pipeline idleness.
-	ResourceFormatImporter *format_importer = ResourceFormatImporter::get_singleton();
-	HashSet<String> forced_import;
-	for (int i = 0; i < static_lightmap_import_requests.size(); i++) {
-		forced_import.insert(String(Dictionary(static_lightmap_import_requests[i]).get("path", String())));
-	}
-	Array pending_import_files;
-	Array deferred_register_files;
-	for (int i = 0; i < imported.size(); i++) {
-		const String dst = imported[i];
-		const Ref<ResourceImporter> dst_importer = format_importer ? format_importer->get_importer_by_file(dst) : Ref<ResourceImporter>();
-		if (dst_importer.is_null()) {
-			// Files Godot does not import (.tres, .bin, ...) may reference the
-			// imported ones, so they register only after those imports settle;
-			// indexing them earlier lets previews/loads race the pipeline.
-			deferred_register_files.push_back(dst);
-			continue;
-		}
-		if (!(bool)copy_required[i] && !forced_import.has(dst) && ResourceLoader::is_import_valid(dst)) {
-			continue;
-		}
-		pending_import_files.push_back(dst);
-	}
-
 	const String new_import_id = (asset_id + target_dir + String::num_uint64(OS::get_singleton()->get_ticks_usec())).md5_text();
 	Dictionary poll_args;
 	poll_args["asset_id"] = asset_id;
@@ -2488,16 +2459,10 @@ Dictionary SolersAssetService::start_project_import(const Dictionary &p_args) {
 	state["stage"] = "queued";
 	state["files"] = imported;
 	state["entrypoints"] = entrypoints;
-	state["pending_files"] = pending_import_files;
-	state["deferred_register_files"] = deferred_register_files;
 	state["import_options"] = static_lightmap_import_requests;
-	state["import_file_count"] = pending_import_files.size();
 	state["result"] = result_data;
 	state["poll_args"] = poll_args;
 	state["transaction_key"] = transaction_key;
-	state["last_progress_msec"] = OS::get_singleton()->get_ticks_msec();
-	const int64_t stall_timeout_seconds = ProjectSettings::get_singleton()->get_setting("solers/import/stall_timeout_seconds", 300);
-	state["stall_timeout_msec"] = stall_timeout_seconds > 0 ? stall_timeout_seconds * 1000 : 0;
 	{
 		MutexLock lock(project_imports_mutex);
 		project_imports[new_import_id] = state;
@@ -2509,52 +2474,6 @@ Dictionary SolersAssetService::start_project_import(const Dictionary &p_args) {
 	pending["poll_args"] = poll_args;
 	return _ok(pending);
 }
-
-void SolersAssetService::_ensure_project_import_signals() {
-	if (project_import_signals_connected) {
-		return;
-	}
-	EditorFileSystem *filesystem = _solers_editor_filesystem();
-	if (!filesystem) {
-		return;
-	}
-	filesystem->connect(SNAME("resources_reimported"), callable_mp(this, &SolersAssetService::_on_project_resources_reimported));
-	project_import_signals_connected = true;
-}
-
-void SolersAssetService::_on_project_resources_reimported(const PackedStringArray &p_resources) {
-	// The editor emits this signal once per settled file (incremental steps,
-	// modal imports, and scans alike), so it is the single authoritative
-	// completion record for every pending import file.
-	const uint64_t now = OS::get_singleton()->get_ticks_msec();
-	HashSet<String> resources;
-	for (const String &path : p_resources) {
-		resources.insert(path);
-	}
-	MutexLock lock(project_imports_mutex);
-	for (KeyValue<String, Dictionary> &E : project_imports) {
-		Dictionary state = E.value;
-		if (String(state.get("status", String())) != "pending") {
-			continue;
-		}
-		const Array pending_files = state.get("pending_files", Array());
-		if (pending_files.is_empty()) {
-			continue;
-		}
-		Array remaining;
-		for (int i = 0; i < pending_files.size(); i++) {
-			if (!resources.has(String(pending_files[i]))) {
-				remaining.push_back(pending_files[i]);
-			}
-		}
-		if (remaining.size() != pending_files.size()) {
-			state["pending_files"] = remaining;
-			state["last_progress_msec"] = now;
-			E.value = state;
-		}
-	}
-}
-
 Dictionary SolersAssetService::poll_project_import(const Dictionary &p_args) {
 	const String import_id = String(p_args.get("_import_id", String())).strip_edges();
 	if (import_id.is_empty()) {
@@ -2593,9 +2512,6 @@ Dictionary SolersAssetService::poll_project_import(const Dictionary &p_args) {
 	data["status"] = "pending";
 	data["stage"] = state.get("stage", "queued");
 	data["file_count"] = Array(state.get("files", Array())).size();
-	const int import_file_count = state.get("import_file_count", 0);
-	data["import_file_count"] = import_file_count;
-	data["imported_count"] = import_file_count - Array(state.get("pending_files", Array())).size();
 	data["poll_args"] = state.get("poll_args", Dictionary());
 	return _ok(data);
 }
@@ -2734,7 +2650,6 @@ void SolersAssetService::_advance_project_tasks(bool p_allow_new_imports) {
 
 void SolersAssetService::poll(bool p_allow_new_imports) {
 	_advance_project_tasks(p_allow_new_imports);
-	_ensure_project_import_signals();
 	EditorFileSystem *filesystem = _solers_editor_filesystem();
 	if (!filesystem) {
 		{
@@ -2754,99 +2669,67 @@ void SolersAssetService::poll(bool p_allow_new_imports) {
 		return;
 	}
 
-	// Godot owns importing; Solers admits at most one native file reimport per
-	// frame and observes completion only through resources_reimported.
-	bool stepped = false;
-	if (!filesystem->is_scanning() && !filesystem->is_importing()) {
-		Vector<String> register_files;
-		HashSet<String> seen_register;
-		String import_path;
-		String importer;
-		HashMap<StringName, Variant> import_options;
-		{
-			MutexLock lock(project_imports_mutex);
-			const uint64_t now = OS::get_singleton()->get_ticks_msec();
-			for (KeyValue<String, Dictionary> &E : project_imports) {
-				Dictionary state = E.value;
-				if (!p_allow_new_imports || String(state.get("status", String())) != "pending" || String(state.get("stage", String())) != "queued") {
-					continue;
-				}
-				const Array files = state.get("files", Array());
-				HashSet<String> deferred;
-				const Array deferred_files = state.get("deferred_register_files", Array());
-				for (int i = 0; i < deferred_files.size(); i++) {
-					deferred.insert(String(deferred_files[i]));
-				}
-				for (int i = 0; i < files.size(); i++) {
-					const String path = files[i];
-					if (deferred.has(path)) {
-						continue; // Registers after this transaction's imports settle.
-					}
-					if (!seen_register.has(path)) {
-						seen_register.insert(path);
-						register_files.push_back(path);
-					}
-				}
-				state["stage"] = "importing";
-				state["last_progress_msec"] = now;
+	if (filesystem->is_scanning() || filesystem->is_importing()) {
+		return;
+	}
+	String import_id;
+	Dictionary import_state;
+	bool scan_requested = false;
+	{
+		MutexLock lock(project_imports_mutex);
+		for (KeyValue<String, Dictionary> &E : project_imports) {
+			Dictionary state = E.value;
+			const String stage = state.get("stage", String());
+			if (p_allow_new_imports && String(state.get("status", String())) == "pending" && stage == "queued") {
+				state["stage"] = "scanning";
 				E.value = state;
+				scan_requested = true;
+			} else if (import_id.is_empty() && String(state.get("status", String())) == "pending" && (stage == "scanning" || stage == "importing")) {
+				import_id = E.key;
+				import_state = state.duplicate(true);
 			}
-			for (const KeyValue<String, Dictionary> &E : project_imports) {
-				const Dictionary state = E.value;
-				if (String(state.get("status", String())) != "pending" || String(state.get("stage", String())) != "importing") {
-					continue;
-				}
-				const Array pending_files = state.get("pending_files", Array());
-				if (pending_files.is_empty()) {
-					continue;
-				}
-				import_path = pending_files[0];
-				const Array requests = state.get("import_options", Array());
-				for (int i = 0; i < requests.size(); i++) {
-					const Dictionary request = requests[i];
-					if (String(request.get("path", String())) != import_path) {
-						continue;
-					}
-					importer = request.get("importer", String());
-					const Dictionary options = request.get("options", Dictionary());
-					for (const Variant *key = options.next(nullptr); key; key = options.next(key)) {
-						import_options[StringName(String(*key))] = options[*key];
-					}
-					break;
-				}
-				break;
-			}
-		}
-		if (!register_files.is_empty()) {
-			filesystem->update_files(register_files);
-		}
-		if (!import_path.is_empty()) {
-			filesystem->reimport_file_with_custom_parameters(import_path, importer, import_options);
-			stepped = true;
 		}
 	}
+	if (scan_requested) {
+		filesystem->scan_changes();
+		return;
+	}
+	if (!import_id.is_empty()) {
+		Array requests = import_state.get("import_options", Array());
+		if (!requests.is_empty()) {
+			const Dictionary request = requests[0];
+			HashMap<StringName, Variant> options;
+			const Dictionary values = request.get("options", Dictionary());
+			for (const Variant *key = values.next(nullptr); key; key = values.next(key)) {
+				options[StringName(String(*key))] = values[*key];
+			}
+			const Error error = filesystem->reimport_append(request.get("path", String()), options, request.get("importer", String()), Variant());
+			requests.remove_at(0);
+			import_state["import_options"] = requests;
+			import_state["stage"] = requests.is_empty() ? "verifying" : "importing";
+			if (error != OK) {
+				import_state["status"] = "failed";
+				import_state["error"] = _error_data("IMPORT_FAILED", vformat("Godot rejected the native reimport (error %d).", error));
+			}
+		} else {
+			import_state["stage"] = "verifying";
+		}
+		MutexLock lock(project_imports_mutex);
+		project_imports[import_id] = import_state;
+	}
 
-	// Settle imports whose files the editor has all confirmed through
-	// resources_reimported. Verification loads each entrypoint once (the
-	// resource cache reuses it afterwards); one import settles per frame to
-	// bound main-thread work.
-	const bool pipeline_busy = stepped || filesystem->is_scanning() || filesystem->is_importing();
+	// Verify one native import transaction per frame.
 	String verify_id;
 	Dictionary verify_state;
 	{
 		MutexLock lock(project_imports_mutex);
-		const uint64_t now = OS::get_singleton()->get_ticks_msec();
 		for (KeyValue<String, Dictionary> &E : project_imports) {
 			Dictionary state = E.value;
 			if (String(state.get("status", String())) != "pending") {
 				continue;
 			}
 			const String stage = state.get("stage", String());
-			if (pipeline_busy || (!p_allow_new_imports && stage == "queued")) {
-				state["last_progress_msec"] = now;
-				E.value = state;
-			}
-			if (!pipeline_busy && verify_id.is_empty() && stage == "importing" && Array(state.get("pending_files", Array())).is_empty()) {
+			if (verify_id.is_empty() && stage == "verifying") {
 				verify_id = E.key;
 				verify_state = state.duplicate(true);
 			}
@@ -2855,17 +2738,6 @@ void SolersAssetService::poll(bool p_allow_new_imports) {
 	if (!verify_id.is_empty()) {
 		const Array files = verify_state.get("files", Array());
 		const Array entrypoints = verify_state.get("entrypoints", files);
-		// Every import this transaction depends on has settled; the files that
-		// reference them can now register and load without racing the pipeline.
-		const Array deferred_files = verify_state.get("deferred_register_files", Array());
-		if (!deferred_files.is_empty()) {
-			Vector<String> deferred_register;
-			for (int i = 0; i < deferred_files.size(); i++) {
-				deferred_register.push_back(String(deferred_files[i]));
-			}
-			filesystem->update_files(deferred_register);
-			verify_state.erase("deferred_register_files");
-		}
 		const Dictionary inspection = _project_import_inspection(files, entrypoints, true);
 		const Array static_lightmap_paths = Dictionary(verify_state.get("result", Dictionary())).get("static_lightmap_import_paths", Array());
 		if (!(bool)inspection.get("ready", false)) {
@@ -2894,27 +2766,6 @@ void SolersAssetService::poll(bool p_allow_new_imports) {
 		MutexLock lock(project_imports_mutex);
 		if (project_imports.has(verify_id)) {
 			project_imports[verify_id] = verify_state;
-		}
-	}
-
-	// 4. Stall backstop: a pending import whose files stop producing
-	// completion events while the pipeline sits idle (for example a modal
-	// dialog holding the import lock) eventually fails instead of hanging.
-	if (!pipeline_busy) {
-		MutexLock lock(project_imports_mutex);
-		const uint64_t now = OS::get_singleton()->get_ticks_msec();
-		for (KeyValue<String, Dictionary> &E : project_imports) {
-			Dictionary state = E.value;
-			if (String(state.get("status", String())) != "pending") {
-				continue;
-			}
-			const uint64_t stall_timeout_msec = state.get("stall_timeout_msec", 0);
-			if (stall_timeout_msec > 0 && now - (uint64_t)state.get("last_progress_msec", 0) >= stall_timeout_msec) {
-				state["status"] = "failed";
-				state["stage"] = "stalled";
-				state["error"] = _error_data("IMPORT_STALLED", "Godot's native import pipeline stopped making observable progress.");
-				E.value = state;
-			}
 		}
 	}
 	_advance_project_tasks(p_allow_new_imports);

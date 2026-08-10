@@ -2,10 +2,30 @@
 /*  solers_trace.cpp                                                      */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                              SOLERS ENGINE                              */
-/*                        (a fork of Godot Engine)                        */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
 /**************************************************************************/
-/* Solers: AI-native game engine.                                        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
 #include "solers_trace.h"
@@ -37,7 +57,7 @@ struct SolersSessionIndex {
 };
 
 static SolersSessionIndex session_index;
-static constexpr int JOURNAL_SCHEMA = 5;
+static constexpr int JOURNAL_SCHEMA = 6;
 
 String solers_session_dir() {
 	static bool ensured = false;
@@ -52,10 +72,33 @@ static String journal_path(const String &p_session_id) {
 	return solers_session_dir().path_join("sessions").path_join(p_session_id.sha256_text() + ".jsonl");
 }
 
-static Ref<FileAccess> append_file(const String &p_path) {
+static Ref<FileAccess> append_file(const String &p_path, bool p_jsonl = false) {
 	Ref<FileAccess> file = FileAccess::open(p_path, FileAccess::READ_WRITE);
 	if (file.is_null()) {
 		file = FileAccess::open(p_path, FileAccess::WRITE);
+	}
+	if (file.is_valid() && p_jsonl && file->get_length() > 0) {
+		const uint64_t length = file->get_length();
+		file->seek(length - 1);
+		const bool terminated = file->get_8() == '\n';
+		file->seek(0);
+		uint64_t tail_start = 0;
+		String tail;
+		while (file->get_position() < length) {
+			const uint64_t start = file->get_position();
+			const String line = file->get_line();
+			if (!line.strip_edges().is_empty()) {
+				tail_start = start;
+				tail = line;
+			}
+		}
+		Dictionary event;
+		if (!tail.is_empty() && !solers_transcript_parse_record(tail, event)) {
+			file->resize(tail_start);
+		} else if (!terminated) {
+			file->seek_end();
+			file->store_8('\n');
+		}
 	}
 	if (file.is_valid()) {
 		file->seek_end();
@@ -162,14 +205,14 @@ void solers_transcript_write(const Dictionary &p_event) {
 		const String id = event.get("session_id", String());
 		if (!id.is_empty()) {
 			if (journal_session_id != id) {
-				journal_file = append_file(journal_path(id));
+				journal_file = append_file(journal_path(id), true);
 				journal_session_id = id;
 			}
 			if (journal_file.is_valid()) {
 				journal_file->store_line(JSON::stringify(event, "", false, true));
 			}
 			if (solers_transcript_is_human_message(event) || String(event.get("event_type", String())) == "turn_started") {
-				Ref<FileAccess> index = append_file(solers_session_dir().path_join("sessions.index.jsonl"));
+				Ref<FileAccess> index = append_file(solers_session_dir().path_join("sessions.index.jsonl"), true);
 				if (index.is_valid()) {
 					index->store_line(JSON::stringify(index_record(event)));
 				}

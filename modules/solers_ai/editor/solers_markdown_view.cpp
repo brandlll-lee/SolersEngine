@@ -43,6 +43,9 @@
 #include "scene/theme/theme_db.h"
 #include "servers/display/display_server.h"
 
+#include "modules/solers_ai/core/solers_mention.h"
+#include "modules/solers_ai/editor/solers_chat_widgets.h"
+
 #include <thirdparty/md4c/md4c.h>
 
 /* ------------------------------------------------------------------ */
@@ -680,6 +683,37 @@ static int solers_md_text(MD_TEXTTYPE p_type, const MD_CHAR *p_text, MD_SIZE p_s
 		case MD_TEXT_NULLCHAR: {
 			s.rtl->add_text(String::chr(0xFFFD));
 		} break;
+		case MD_TEXT_NORMAL: {
+			const String text = solers_md_str(p_text, p_size);
+			int cursor = 0;
+			while (cursor < text.length()) {
+				const int path_start = text.find("res://", cursor);
+				if (path_start < 0) {
+					s.rtl->add_text(text.substr(cursor));
+					break;
+				}
+				int path_length = 0;
+				const Dictionary mention = SolersMention::resolve_project_path_at(text, path_start, path_length);
+				if (mention.is_empty()) {
+					s.rtl->add_text(text.substr(cursor, path_start + 6 - cursor));
+					cursor = path_start + 6;
+					continue;
+				}
+				s.rtl->add_text(text.substr(cursor, path_start - cursor));
+				const String path = mention.get("path", String());
+				s.rtl->push_meta(path, RichTextLabel::META_UNDERLINE_NEVER, path);
+				s.rtl->push_color(s.rtl->get_theme_color(SNAME("accent_color"), SNAME("Editor")));
+				const Ref<Texture2D> icon = solers_mention_chip_icon(mention, s.base_font_size);
+				if (icon.is_valid()) {
+					s.rtl->add_image(icon, s.base_font_size, s.base_font_size, Color(1, 1, 1), INLINE_ALIGNMENT_CENTER, Rect2(), path);
+					s.rtl->add_text(" ");
+				}
+				s.rtl->add_text(solers_mention_chip_label(mention));
+				s.rtl->pop();
+				s.rtl->pop();
+				cursor = path_start + path_length;
+			}
+		} break;
 		default: {
 			s.rtl->add_text(solers_md_str(p_text, p_size));
 		} break;
@@ -727,6 +761,7 @@ SolersCodeBlock::SolersCodeBlock() {
 	body->set_context_menu_enabled(true);
 	body->set_autowrap_mode(TextServer::AUTOWRAP_OFF);
 	body->set_mouse_filter(MOUSE_FILTER_PASS);
+	body->set_theme_type_variation("SolersCodeText");
 	body->add_theme_style_override("normal", memnew(StyleBoxEmpty));
 	body->add_theme_style_override("focus", memnew(StyleBoxEmpty));
 	body->add_theme_color_override("default_color", SOLERS_SYN_DEFAULT);
@@ -766,10 +801,6 @@ void SolersCodeBlock::_render_body() {
 	rendered_caret = caret;
 
 	const float ed = EDSCALE;
-	Ref<Font> mono = get_theme_font(SNAME("source"), SNAME("EditorFonts"));
-	if (mono.is_valid()) {
-		body->add_theme_font_override("normal_font", mono);
-	}
 	body->add_theme_font_size_override("normal_font_size", int(12 * ed));
 
 	body->clear();
@@ -866,7 +897,7 @@ void SolersCodeBlock::_notification(int p_what) {
 			const float header_h = SOLERS_CODE_HEADER_H * ed;
 			draw_rect(Rect2(bw, header_h, get_size().x - bw * 2.0f, MAX(1.0f, ed)), edge);
 
-			const Ref<Font> mono = get_theme_font(SNAME("source"), SNAME("EditorFonts"));
+			const Ref<Font> mono = get_theme_font(SceneStringName(font), SNAME("SolersMono"));
 			if (mono.is_valid()) {
 				const int font_size = int(11 * ed);
 				const float baseline = (header_h - mono->get_height(font_size)) * 0.5f + mono->get_ascent(font_size);
@@ -1028,10 +1059,6 @@ RichTextLabel *SolersMarkdownView::_make_paragraph_label() {
 	rtl->add_theme_font_size_override("italics_font_size", int(14 * ed));
 	rtl->add_theme_font_size_override("bold_italics_font_size", int(14 * ed));
 	rtl->add_theme_font_size_override("mono_font_size", int(13 * ed));
-	const Ref<Font> mono = get_theme_font(SNAME("source"), SNAME("EditorFonts"));
-	if (mono.is_valid()) {
-		rtl->add_theme_font_override("mono_font", mono);
-	}
 	rtl->connect(SNAME("meta_clicked"), callable_mp(this, &SolersMarkdownView::_on_meta_clicked));
 	add_child(rtl);
 	return rtl;

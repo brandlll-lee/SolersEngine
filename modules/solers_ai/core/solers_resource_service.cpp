@@ -40,24 +40,14 @@
 #include "core/io/resource_uid.h"
 #include "core/object/class_db.h"
 #include "core/os/os.h"
-#include "editor/file_system/editor_file_system.h"
 #include "editor/export/editor_export.h"
-#include "modules/solers_ai/core/solers_geometry_facts.h"
+#include "editor/file_system/editor_file_system.h"
 #include "scene/main/node.h"
 #include "scene/resources/packed_scene.h"
 
+#include "modules/solers_ai/core/solers_geometry_facts.h"
+
 void SolersResourceService::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("get_resource_info", "args"), &SolersResourceService::get_resource_info);
-	ClassDB::bind_method(D_METHOD("inspect_resource", "args"), &SolersResourceService::inspect_resource);
-	ClassDB::bind_method(D_METHOD("edit_resource", "args"), &SolersResourceService::edit_resource);
-	ClassDB::bind_method(D_METHOD("create_resource", "args"), &SolersResourceService::create_resource);
-	ClassDB::bind_method(D_METHOD("get_resource_property", "args"), &SolersResourceService::get_resource_property);
-	ClassDB::bind_method(D_METHOD("set_resource_property", "args"), &SolersResourceService::set_resource_property);
-	ClassDB::bind_method(D_METHOD("native_list_properties", "args"), &SolersResourceService::native_list_properties);
-	ClassDB::bind_method(D_METHOD("native_get", "args"), &SolersResourceService::native_get);
-	ClassDB::bind_method(D_METHOD("list_export_presets", "args"), &SolersResourceService::list_export_presets);
-	ClassDB::bind_method(D_METHOD("validate_export_presets", "args"), &SolersResourceService::validate_export_presets);
-	ClassDB::bind_method(D_METHOD("run_export_preset", "args"), &SolersResourceService::run_export_preset);
 }
 
 // --- Actionable error candidates -------------------------------------------
@@ -207,7 +197,7 @@ bool SolersResourceService::_resolve_native_object(const Variant &p_object_id, O
 	return _solers_resolve_object_handle(p_object_id, r_object, r_error);
 }
 
-Dictionary SolersResourceService::_native_object_handle(Object *p_object) const {
+Dictionary solers_native_object_handle(Object *p_object) {
 	Dictionary data;
 	data["kind"] = "godot_object";
 	if (!p_object) {
@@ -236,13 +226,42 @@ Dictionary SolersResourceService::_native_object_handle(Object *p_object) const 
 	return data;
 }
 
-// Type-driven observation bound: bulk payload types (packed arrays, long
-// strings, huge containers) summarize to a compact descriptor instead of
-// serializing element-by-element into the model context. The classification
-// is the Variant type itself, never a property name. Callers that need the
-// raw data read it through the dedicated typed tools.
 Variant solers_summarize_display_value(const Variant &p_value) {
 	switch (p_value.get_type()) {
+		case Variant::NIL:
+		case Variant::BOOL:
+		case Variant::INT:
+		case Variant::FLOAT:
+			return p_value;
+		case Variant::STRING_NAME:
+		case Variant::NODE_PATH:
+			return String(p_value);
+		case Variant::OBJECT: {
+			Object *object = p_value;
+			return solers_native_object_handle(object);
+		}
+		case Variant::ARRAY: {
+			const Array values = p_value;
+			if (values.size() > 64) {
+				return vformat("<Array size=%d>", values.size());
+			}
+			Array out;
+			for (int i = 0; i < values.size(); i++) {
+				out.push_back(solers_summarize_display_value(values[i]));
+			}
+			return out;
+		}
+		case Variant::DICTIONARY: {
+			const Dictionary values = p_value;
+			if (values.size() > 64) {
+				return vformat("<Dictionary size=%d>", values.size());
+			}
+			Dictionary out;
+			for (const Variant *key = values.next(nullptr); key; key = values.next(key)) {
+				out[String(*key)] = solers_summarize_display_value(values[*key]);
+			}
+			return out;
+		}
 		case Variant::PACKED_BYTE_ARRAY:
 		case Variant::PACKED_INT32_ARRAY:
 		case Variant::PACKED_INT64_ARRAY:
@@ -257,7 +276,12 @@ Variant solers_summarize_display_value(const Variant &p_value) {
 			if (element_count > 16) {
 				return vformat("<%s size=%d>", Variant::get_type_name(p_value.get_type()), element_count);
 			}
-			return p_value;
+			Array out;
+			const Array values = p_value;
+			for (int i = 0; i < values.size(); i++) {
+				out.push_back(solers_summarize_display_value(values[i]));
+			}
+			return out;
 		}
 		case Variant::STRING: {
 			const String text = p_value;
@@ -266,40 +290,23 @@ Variant solers_summarize_display_value(const Variant &p_value) {
 			}
 			return p_value;
 		}
-		default:
-			return p_value;
-	}
-}
-
-Variant SolersResourceService::_displayable(const Variant &p_value) const {
-	if (p_value.get_type() == Variant::OBJECT) {
-		Object *object = p_value;
-		return _native_object_handle(object);
-	}
-	if (p_value.get_type() == Variant::ARRAY) {
-		Array in = p_value;
-		if (in.size() > 64) {
-			return vformat("<Array size=%d>", in.size());
+		default: {
+			List<StringName> members;
+			Variant::get_member_list(p_value.get_type(), &members);
+			if (members.is_empty()) {
+				return String(p_value);
+			}
+			Dictionary out;
+			for (const StringName &member : members) {
+				bool valid = false;
+				const Variant value = p_value.get_named(member, valid);
+				if (valid) {
+					out[String(member)] = solers_summarize_display_value(value);
+				}
+			}
+			return out;
 		}
-		Array out;
-		for (int i = 0; i < in.size(); i++) {
-			out.push_back(_displayable(in[i]));
-		}
-		return out;
 	}
-	if (p_value.get_type() == Variant::DICTIONARY) {
-		Dictionary in = p_value;
-		Array keys = in.keys();
-		if (keys.size() > 64) {
-			return vformat("<Dictionary size=%d>", keys.size());
-		}
-		Dictionary out;
-		for (int i = 0; i < keys.size(); i++) {
-			out[keys[i]] = _displayable(in[keys[i]]);
-		}
-		return out;
-	}
-	return solers_summarize_display_value(p_value);
 }
 
 static bool _solers_find_property(Object *p_object, const StringName &p_property, PropertyInfo &r_info) {
@@ -401,6 +408,9 @@ static bool _solers_construct_variant_value(Variant::Type p_type, const Variant 
 		return _solers_construct_variant(p_type, one_arg, r_out);
 	}
 	if (p_value.get_type() != Variant::DICTIONARY) {
+		if (Variant::get_member_count(p_type) > 0) {
+			return false;
+		}
 		Array one_arg;
 		one_arg.push_back(p_value);
 		return _solers_construct_variant(p_type, one_arg, r_out);
@@ -659,7 +669,7 @@ Dictionary SolersResourceService::get_resource_info(const Dictionary &p_args) co
 		}
 	}
 
-	if (include_dependencies) {
+	if (include_dependencies && (bool)data["exists"]) {
 		List<String> dependencies;
 		ResourceLoader::get_dependencies(path, &dependencies, true);
 		Array dependency_items;
@@ -687,23 +697,29 @@ Dictionary SolersResourceService::inspect_resource(const Dictionary &p_args) con
 	Dictionary data = info_result.get("data", Dictionary());
 	const Array requested = p_args.get("properties", Array());
 	if (!requested.is_empty()) {
+		Error load_error = OK;
+		const Ref<Resource> resource = ResourceLoader::load(data.get("path", String()), p_args.get("type_hint", String()), ResourceFormatLoader::CACHE_MODE_REUSE, &load_error);
+		if (resource.is_null() || load_error != OK) {
+			return _error("RESOURCE_LOAD_FAILED", vformat("Failed to load resource '%s' (error %d).", String(data.get("path", String())), (int)load_error));
+		}
 		Dictionary values;
+		Dictionary errors;
 		for (const Variant &value : requested) {
-			Dictionary property_args;
-			property_args["path"] = p_args.get("path", String());
-			property_args["property"] = String(value);
-			property_args["type_hint"] = p_args.get("type_hint", String());
-			const Dictionary property_result = get_resource_property(property_args);
-			if (!(bool)property_result.get("ok", false)) {
-				return property_result;
+			const StringName property = StringName(String(value));
+			PropertyInfo property_info;
+			if (!_solers_find_property(resource.ptr(), property, property_info)) {
+				errors[String(value)] = _error("UNKNOWN_PROPERTY", vformat("Property '%s' is not exposed by %s.%s", String(value), resource->get_class(), solers_property_suggestions(resource.ptr(), String(value)))).get("error", Dictionary());
+				continue;
 			}
-			const Dictionary property_data = property_result.get("data", Dictionary());
 			Dictionary item;
-			item["type"] = property_data.get("type", String());
-			item["value"] = property_data.get("value", Variant());
+			item["type"] = Variant::get_type_name(property_info.type);
+			item["value"] = solers_summarize_display_value(resource->get(property));
 			values[String(value)] = item;
 		}
 		data["properties"] = values;
+		if (!errors.is_empty()) {
+			data["property_errors"] = errors;
+		}
 	}
 	return _ok(data);
 }
@@ -815,57 +831,13 @@ Dictionary SolersResourceService::create_resource(const Dictionary &p_args) cons
 	return _ok(data);
 }
 
-Dictionary SolersResourceService::get_resource_property(const Dictionary &p_args) const {
-	const String path_arg = p_args.get("path", String());
-	const String property = String(p_args.get("property", String())).strip_edges();
-	const String type_hint = p_args.get("type_hint", String());
-	if (property.is_empty()) {
-		return _error("INVALID_ARGUMENT", "property is required.");
-	}
-
-	String path;
-	String path_error;
-	if (!_normalize_project_path(path_arg, path, path_error)) {
-		return _error("INVALID_PATH", path_error);
-	}
-	Error load_error = OK;
-	Ref<Resource> resource = ResourceLoader::load(path, type_hint, ResourceFormatLoader::CACHE_MODE_REUSE, &load_error);
-	if (resource.is_null() || load_error != OK) {
-		return _error("RESOURCE_LOAD_FAILED", vformat("Failed to load resource '%s' (error %d).", path, (int)load_error));
-	}
-
-	const StringName property_sn = StringName(property);
-	PropertyInfo info;
-	if (!_solers_find_property(resource.ptr(), property_sn, info)) {
-		return _error("UNKNOWN_PROPERTY", vformat("Property '%s' is not exposed by %s.%s", property, resource->get_class(), solers_property_suggestions(resource.ptr(), property)));
-	}
-
-	Dictionary data = _solers_resource_data(resource, path);
-	data["property"] = property;
-	data["type"] = Variant::get_type_name(info.type);
-	data["value"] = _displayable(resource->get(property_sn));
-	return _ok(data);
-}
-
 Dictionary SolersResourceService::set_resource_property(const Dictionary &p_args) const {
 	const String path_arg = p_args.get("path", String());
 	const String type_hint = p_args.get("type_hint", String());
-	Dictionary properties;
-	if (p_args.has("properties")) {
-		if (p_args["properties"].get_type() != Variant::DICTIONARY || Dictionary(p_args["properties"]).is_empty()) {
-			return _error("INVALID_ARGUMENT", "properties must be a non-empty object.");
-		}
-		if (p_args.has("property") || p_args.has("value")) {
-			return _error("INVALID_ARGUMENT", "Use properties or property/value, not both.");
-		}
-		properties = p_args["properties"];
-	} else {
-		const String property = String(p_args.get("property", String())).strip_edges();
-		if (property.is_empty() || !p_args.has("value")) {
-			return _error("INVALID_ARGUMENT", "Provide a non-empty properties object or property and value.");
-		}
-		properties[property] = p_args["value"];
+	if (p_args.get("properties", Variant()).get_type() != Variant::DICTIONARY || Dictionary(p_args["properties"]).is_empty()) {
+		return _error("INVALID_ARGUMENT", "properties must be a non-empty object.");
 	}
+	const Dictionary properties = p_args["properties"];
 
 	String path;
 	String path_error;
@@ -917,14 +889,10 @@ Dictionary SolersResourceService::set_resource_property(const Dictionary &p_args
 	Dictionary data = _solers_resource_data(resource, path);
 	Dictionary updated;
 	for (int i = 0; i < names.size(); i++) {
-		updated[names[i]] = _displayable(resource->get(StringName(names[i])));
+		updated[names[i]] = solers_summarize_display_value(resource->get(StringName(names[i])));
 	}
 	data["properties"] = updated;
 	data["updated_property_count"] = names.size();
-	if (names.size() == 1) {
-		data["property"] = names[0];
-		data["value"] = updated[names[0]];
-	}
 	return _ok(data);
 }
 
@@ -947,7 +915,7 @@ Dictionary SolersResourceService::native_list_properties(const Dictionary &p_arg
 		out.push_back(item);
 	}
 	Dictionary data;
-	data["object"] = _native_object_handle(object);
+	data["object"] = solers_native_object_handle(object);
 	data["properties"] = out;
 	return _ok(data);
 }
@@ -969,10 +937,10 @@ Dictionary SolersResourceService::native_get(const Dictionary &p_args) const {
 	}
 
 	Dictionary data;
-	data["object"] = _native_object_handle(object);
+	data["object"] = solers_native_object_handle(object);
 	data["property"] = property;
 	data["type"] = Variant::get_type_name(info.type);
-	data["value"] = _displayable(object->get(property_sn));
+	data["value"] = solers_summarize_display_value(object->get(property_sn));
 	return _ok(data);
 }
 

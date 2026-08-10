@@ -36,6 +36,7 @@
 #include "core/templates/hash_set.h"
 #include "core/templates/list.h"
 #include "editor/settings/editor_settings.h"
+
 #include "modules/solers_ai/core/solers_codex_auth.h"
 #include "modules/solers_ai/core/solers_provider_registry.h"
 #include "modules/solers_ai/core/solers_secret_store.h"
@@ -99,15 +100,15 @@ void SolersSettingsService::_migrate_provider_settings() {
 
 	String provider = settings->has_setting(_setting_path("provider")) ? String(settings->get_setting(_setting_path("provider"))) : String();
 	const String previous_provider = provider;
-	if (provider == "openai_responses") {
+	if (version < 5 && provider == "openai_responses") {
 		provider = "openai";
-	} else if (provider == "anthropic") {
+	} else if (version < 5 && provider == "anthropic") {
 		provider = "anthropic_messages";
-	} else if (provider == "custom_openai_responses" || (!provider.is_empty() && provider_registry && provider_registry->get_provider_profile(provider).is_empty())) {
+	} else if (provider == "custom_openai_responses" || (version < 6 && !provider.is_empty() && provider_registry && provider_registry->get_provider_profile(provider).is_empty())) {
 		provider = "custom_openai_compatible";
 	}
 	if (version >= 2 && !previous_provider.is_empty() && previous_provider != provider) {
-		static const char *PROVIDER_KEYS[] = { "configured", "model", "base_url", "api_key", "oauth", "send_session_id_header", "image_input_mode" };
+		static const char *PROVIDER_KEYS[] = { "configured", "model", "reasoning_effort", "base_url", "api_key", "oauth", "send_session_id_header", "image_input_mode" };
 		for (const char *key : PROVIDER_KEYS) {
 			const String old_path = _provider_setting_path(previous_provider, key);
 			if (settings->has_setting(old_path)) {
@@ -175,6 +176,9 @@ void SolersSettingsService::_migrate_provider_settings() {
 				}
 			}
 		}
+	}
+	if (settings->has_setting(_setting_path("custom_provider_ids"))) {
+		settings->erase(_setting_path("custom_provider_ids"));
 	}
 	settings->set_manually(_setting_path("settings_version"), SOLERS_PROVIDER_SETTINGS_VERSION);
 	EditorSettings::save();
@@ -371,6 +375,9 @@ Dictionary SolersSettingsService::set_provider_config(const Dictionary &p_args) 
 		return _error("MODEL_NOT_ALLOWED", "The selected model is not available through this provider connection.");
 	}
 	const Dictionary profile = provider_registry->get_provider_profile(provider);
+	if (profile.is_empty()) {
+		return _error("PROVIDER_CONNECTION_UNDECLARED", "Choose a catalog provider or the Custom OpenAI-compatible connection.");
+	}
 	const bool was_connected = _get_provider_config(provider, false).get("connected", false);
 	settings->set_manually(_setting_path("provider"), provider);
 	settings->set_manually(_provider_setting_path(provider, "configured"), true);
@@ -404,16 +411,6 @@ Dictionary SolersSettingsService::set_provider_config(const Dictionary &p_args) 
 	}
 	if (p_args.has("api_key") && !String(p_args["api_key"]).is_empty()) {
 		settings->set_manually(_provider_setting_path(provider, "api_key"), SolersSecretStore::protect(String(p_args["api_key"])));
-	}
-	if (!provider_registry->is_known_provider(provider) || provider == "custom_openai_compatible" || String(profile.get("source_kind", String())) == "custom") {
-		Array custom_ids;
-		if (settings->has_setting(_setting_path("custom_provider_ids"))) {
-			custom_ids = settings->get_setting(_setting_path("custom_provider_ids"));
-		}
-		if (!custom_ids.has(provider)) {
-			custom_ids.push_back(provider);
-			settings->set_manually(_setting_path("custom_provider_ids"), custom_ids);
-		}
 	}
 	Dictionary data = _get_provider_config(provider, false);
 	if (!was_connected && data.get("connected", false) && !profile.get("local", false) && get_local_models_only()) {
@@ -460,16 +457,6 @@ Dictionary SolersSettingsService::disconnect_provider(const String &p_provider) 
 	Dictionary data;
 	data["provider"] = p_provider;
 	data["disconnected"] = true;
-	EditorSettings *settings_after = EditorSettings::get_singleton();
-	if (settings_after && settings_after->has_setting(_setting_path("custom_provider_ids"))) {
-		Array custom_ids = settings_after->get_setting(_setting_path("custom_provider_ids"));
-		const int idx = custom_ids.find(p_provider);
-		if (idx >= 0) {
-			custom_ids.remove_at(idx);
-			settings_after->set_manually(_setting_path("custom_provider_ids"), custom_ids);
-			EditorSettings::save();
-		}
-	}
 	return _ok(data);
 }
 
@@ -504,11 +491,6 @@ Dictionary SolersSettingsService::list_connected_provider_configs() const {
 	}
 	EditorSettings *settings = EditorSettings::get_singleton();
 	if (settings) {
-		if (settings->has_setting(_setting_path("custom_provider_ids"))) {
-			for (const Variant &id_v : Array(settings->get_setting(_setting_path("custom_provider_ids")))) {
-				push_candidate(id_v);
-			}
-		}
 		if (settings->has_setting(_setting_path("provider"))) {
 			push_candidate(String(settings->get_setting(_setting_path("provider"))));
 		}

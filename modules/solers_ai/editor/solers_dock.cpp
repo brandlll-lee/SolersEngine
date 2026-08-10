@@ -31,7 +31,7 @@
 #include "solers_dock.h"
 
 #include "solers_pm_ai_view.h"
-#include "solers_pm_theme.h"
+#include "solers_ui_theme.h"
 
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
@@ -46,16 +46,17 @@
 #include "core/os/time.h"
 #include "core/templates/hash_set.h"
 #include "core/version.h"
-#include "editor/editor_node.h"
+#include "editor/docks/filesystem_dock.h"
 #include "editor/editor_string_names.h"
 #include "editor/file_system/editor_file_system.h"
-#include "editor/gui/editor_file_dialog.h"
 #include "editor/inspector/editor_resource_preview.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
+#include "main/app_icon.gen.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
 #include "scene/gui/dialogs.h"
+#include "scene/gui/item_list.h"
 #include "scene/gui/label.h"
 #include "scene/gui/line_edit.h"
 #include "scene/gui/margin_container.h"
@@ -95,6 +96,9 @@ constexpr float SOLERS_COMPOSER_TEXT_MAX_HEIGHT = 220.0f;
 constexpr float SOLERS_COMPOSER_TOOLBAR_HEIGHT = 30.0f;
 // Top/bottom composer padding. Keep the toolbar visually attached to the prompt.
 constexpr float SOLERS_COMPOSER_VERTICAL_CHROME = 20.0f;
+constexpr int SOLERS_MENTION_VISIBLE_ROWS = 4;
+static Ref<StyleBoxFlat> solers_row_styles[7];
+static real_t solers_row_style_scale = 0;
 
 // Codex-calibrated surface palette.
 static const Color SOLERS_BG = Color(0.030, 0.030, 0.023);
@@ -185,26 +189,21 @@ static void solers_style_model_popup_row(Button *p_row, bool p_selected = false)
 	p_row->add_theme_color_override("font_hover_color", SOLERS_TEXT_PRIMARY);
 	p_row->add_theme_color_override("font_pressed_color", SOLERS_TEXT_PRIMARY);
 	p_row->add_theme_color_override("font_hover_pressed_color", SOLERS_TEXT_PRIMARY);
-	// Shared StyleBoxes — avoid 5× memnew per row on large catalogs.
-	static Ref<StyleBoxFlat> s_normal;
-	static Ref<StyleBoxFlat> s_hover;
-	static Ref<StyleBoxFlat> s_pressed;
-	static Ref<StyleBoxFlat> s_hover_pressed;
-	static Ref<StyleBoxFlat> s_focus;
-	static real_t s_ed = 0;
-	if (s_normal.is_null() || !Math::is_equal_approx(s_ed, EDSCALE)) {
-		s_ed = EDSCALE;
-		s_normal = solers_make_stylebox_margins(Color(0, 0, 0, 0), 5, 8, 3, 8, 3);
-		s_hover = solers_make_stylebox_margins(Color(1, 1, 1, 0.060), 5, 8, 3, 8, 3);
-		s_pressed = solers_make_stylebox_margins(Color(1, 1, 1, 0.045), 5, 8, 3, 8, 3);
-		s_hover_pressed = solers_make_stylebox_margins(Color(1, 1, 1, 0.070), 5, 8, 3, 8, 3);
-		s_focus = solers_make_stylebox_margins(Color(0, 0, 0, 0), 5, 8, 3, 8, 3);
+	if (solers_row_styles[0].is_null() || !Math::is_equal_approx(solers_row_style_scale, EDSCALE)) {
+		solers_row_style_scale = EDSCALE;
+		solers_row_styles[0] = solers_make_stylebox_margins(Color(0, 0, 0, 0), 5, 8, 3, 8, 3);
+		solers_row_styles[1] = solers_make_stylebox_margins(Color(1, 1, 1, 0.060), 5, 8, 3, 8, 3);
+		solers_row_styles[2] = solers_make_stylebox_margins(Color(1, 1, 1, 0.045), 5, 8, 3, 8, 3);
+		solers_row_styles[3] = solers_make_stylebox_margins(Color(1, 1, 1, 0.070), 5, 8, 3, 8, 3);
+		solers_row_styles[4] = solers_make_stylebox_margins(Color(0, 0, 0, 0), 5, 8, 3, 8, 3);
+		solers_row_styles[5] = solers_make_stylebox_margins(Color(1, 1, 1, 0.045), 7, 10, 5, 10, 5);
+		solers_row_styles[6] = solers_make_stylebox_margins(Color(1, 1, 1, 0.085), 7, 10, 5, 10, 5);
 	}
-	p_row->add_theme_style_override("normal", s_normal);
-	p_row->add_theme_style_override("hover", s_hover);
-	p_row->add_theme_style_override("pressed", s_pressed);
-	p_row->add_theme_style_override("hover_pressed", s_hover_pressed);
-	p_row->add_theme_style_override("focus", s_focus);
+	p_row->add_theme_style_override("normal", solers_row_styles[0]);
+	p_row->add_theme_style_override("hover", solers_row_styles[1]);
+	p_row->add_theme_style_override("pressed", solers_row_styles[2]);
+	p_row->add_theme_style_override("hover_pressed", solers_row_styles[3]);
+	p_row->add_theme_style_override("focus", solers_row_styles[4]);
 }
 
 static void solers_style_session_button(Button *p_button, bool p_session_row) {
@@ -213,11 +212,9 @@ static void solers_style_session_button(Button *p_button, bool p_session_row) {
 	p_button->set_toggle_mode(p_session_row);
 	p_button->set_custom_minimum_size(Size2(0, (p_session_row ? 60 : 38) * EDSCALE));
 	p_button->add_theme_constant_override("h_separation", int(9 * EDSCALE));
-	static Ref<StyleBoxFlat> hover = solers_make_stylebox_margins(Color(1, 1, 1, 0.045), 7, 10, 5, 10, 5);
-	static Ref<StyleBoxFlat> selected = solers_make_stylebox_margins(Color(1, 1, 1, 0.085), 7, 10, 5, 10, 5);
-	p_button->add_theme_style_override("hover", hover);
-	p_button->add_theme_style_override("pressed", selected);
-	p_button->add_theme_style_override("hover_pressed", selected);
+	p_button->add_theme_style_override("hover", solers_row_styles[5]);
+	p_button->add_theme_style_override("pressed", solers_row_styles[6]);
+	p_button->add_theme_style_override("hover_pressed", solers_row_styles[6]);
 }
 
 static Button *solers_make_model_popup_group(const String &p_title, const Ref<Texture2D> &p_icon = Ref<Texture2D>()) {
@@ -243,11 +240,12 @@ static Button *solers_make_model_popup_group(const String &p_title, const Ref<Te
 
 static Button *solers_make_model_popup_row(const String &p_label, const String &p_model_id, bool p_selected) {
 	Button *row = memnew(Button);
+	row->set_auto_translate_mode(Node::AUTO_TRANSLATE_MODE_DISABLED);
 	solers_style_model_popup_row(row, p_selected);
 	row->set_text(p_label.is_empty() ? p_model_id : p_label);
 	row->set_tooltip_text(p_label == p_model_id || p_model_id.is_empty() ? String() : p_model_id);
 	if (p_selected) {
-		row->set_button_icon(SolersChatGlyphs::get(SNAME("check"), int(Math::round(12.0f * EDSCALE)), 2.0f));
+		row->set_button_icon(SolersIcons::get(SNAME("check"), int(Math::round(12.0f * EDSCALE))));
 		row->set_icon_alignment(HORIZONTAL_ALIGNMENT_RIGHT);
 	}
 	return row;
@@ -284,6 +282,7 @@ static Button *solers_make_model_menu_parent_row(const Ref<Texture2D> &p_icon, c
 	box->add_child(name);
 
 	Label *value = memnew(Label(p_value));
+	value->set_auto_translate_mode(Node::AUTO_TRANSLATE_MODE_DISABLED);
 	value->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	value->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
 	value->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_RIGHT);
@@ -293,7 +292,7 @@ static Button *solers_make_model_menu_parent_row(const Ref<Texture2D> &p_icon, c
 	box->add_child(value);
 
 	TextureRect *chevron = memnew(TextureRect);
-	chevron->set_texture(SolersChatGlyphs::get(SNAME("chevron_right"), int(Math::round(10.0f * EDSCALE)), 2.2f));
+	chevron->set_texture(SolersIcons::get(SNAME("chevron_right"), int(Math::round(10.0f * EDSCALE))));
 	chevron->set_stretch_mode(TextureRect::STRETCH_KEEP_CENTERED);
 	chevron->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
 	chevron->set_self_modulate(Color(0.50, 0.51, 0.55));
@@ -348,42 +347,11 @@ static String solers_resolve_model_display(SolersSettingsService *p_settings, co
 }
 
 static String solers_reasoning_effort_label(const String &p_effort) {
-	if (p_effort.is_empty()) {
-		return TTR("Default");
-	}
-	if (p_effort == "xhigh") {
-		return TTR("Extra High");
-	}
-	return p_effort.replace("_", " ").capitalize();
-}
-
-static bool solers_is_supported_image_path(const String &p_path) {
-	const String ext = p_path.get_extension().to_lower();
-	return ext == "png" || ext == "jpg" || ext == "jpeg";
+	return p_effort.is_empty() ? String("Default") : p_effort.capitalize();
 }
 
 static String solers_attachment_dir() {
 	return solers_session_dir().path_join("attachments");
-}
-
-static String solers_attachment_display_name(const Dictionary &p_attachment) {
-	const String filename = String(p_attachment.get("filename", String())).strip_edges();
-	return filename.is_empty() ? String(p_attachment.get("id", "image")) : filename;
-}
-
-static Ref<Texture2D> solers_load_attachment_texture(const Dictionary &p_attachment) {
-	const String path = String(p_attachment.get("local_path", String())).strip_edges();
-	if (path.is_empty()) {
-		return Ref<Texture2D>();
-	}
-	if (!FileAccess::exists(path)) {
-		return Ref<Texture2D>();
-	}
-	Ref<Image> image = Image::load_from_file(path);
-	if (image.is_null() || image->is_empty()) {
-		return Ref<Texture2D>();
-	}
-	return ImageTexture::create_from_image(image);
 }
 
 class SolersAttachmentThumb : public Control {
@@ -441,13 +409,14 @@ public:
 		set_mouse_filter(MOUSE_FILTER_STOP);
 		set_clip_contents(true);
 		set_custom_minimum_size(Size2(58 * ed, 58 * ed));
-		set_tooltip_text(solers_attachment_display_name(p_attachment));
+		const String filename = String(p_attachment.get("filename", String())).strip_edges();
+		set_tooltip_text(filename.is_empty() ? String(p_attachment.get("id", "image")) : filename);
 
 		image_rect = memnew(TextureRect);
 		image_rect->set_mouse_filter(MOUSE_FILTER_IGNORE);
 		image_rect->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
 		image_rect->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_COVERED);
-		image_rect->set_texture(solers_load_attachment_texture(p_attachment));
+		image_rect->set_texture(solers_attachment_texture(p_attachment));
 		add_child(image_rect);
 
 		remove_button = memnew(SolersGlyphButton);
@@ -462,59 +431,9 @@ public:
 	}
 };
 
-static StringName solers_tool_glyph_for_metadata(const Dictionary &p_tool) {
-	const String exposure = String(p_tool.get("exposure", String())).strip_edges();
-	if (exposure == "hidden") {
-		return SNAME("shield");
-	}
-
-	const StringName from_kind = solers_tool_glyph_for_ui_kind(String(p_tool.get("ui_kind", "default")).strip_edges());
-	if (from_kind != StringName()) {
-		return from_kind;
-	}
-
-	const String permission = String(p_tool.get("permission", "observe"));
-	if (permission == "observe") {
-		return exposure == "deferred" ? SNAME("sparkle") : SNAME("tool_observe");
-	}
-	if (permission == "edit_scene") {
-		return SNAME("tool_scene");
-	}
-	if (permission == "edit_files") {
-		return SNAME("tool_file");
-	}
-	if (permission == "install_plugin") {
-		return SNAME("shield");
-	}
-	if (permission == "run_project") {
-		return SNAME("tool_run");
-	}
-	if (permission == "export_build") {
-		return SNAME("tool_export");
-	}
-	if (permission == "network") {
-		return SNAME("tool_network");
-	}
-	if (permission == "shell") {
-		return SNAME("tool_shell");
-	}
-
-	const String mutation = String(p_tool.get("mutation_policy", "read_only"));
-	if (mutation != "read_only") {
-		return mutation == "editor_undo" || mutation == "file_checkpoint" ? SNAME("tool_scene") : SNAME("alert");
-	}
-	return SNAME("sparkle");
-}
-
-static StringName solers_tool_glyph_for_name(const SolersToolRegistry *p_registry, const String &p_name) {
-	if (p_name.is_empty()) {
-		return StringName();
-	}
-	if (!p_registry) {
-		return SNAME("sparkle");
-	}
-	const Dictionary tool = p_registry->get_tool_definition(StringName(p_name));
-	return tool.is_empty() ? SNAME("sparkle") : solers_tool_glyph_for_metadata(tool);
+static String solers_tool_ui_kind_for_name(const SolersToolRegistry *p_registry, const String &p_name) {
+	const Dictionary tool = p_registry && !p_name.is_empty() ? p_registry->get_tool_definition(StringName(p_name)) : Dictionary();
+	return tool.get("ui_kind", String());
 }
 
 PanelContainer *SolersDock::_create_panel_card(const Color &p_color, const Color &p_border_color, int p_radius, int p_padding) const {
@@ -529,7 +448,19 @@ Control *SolersDock::_create_empty_state() const {
 	state->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	state->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
 	state->set_alignment(BoxContainer::ALIGNMENT_CENTER);
-	state->add_theme_constant_override("separation", 0);
+	state->add_theme_constant_override("separation", 10 * EDSCALE);
+
+	Ref<Image> logo_image = memnew(Image(app_icon_png));
+	TextureRect *logo = memnew(TextureRect);
+	logo->set_name("SolersBrandMark");
+	logo->set_texture(ImageTexture::create_from_image(logo_image));
+	logo->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
+	logo->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+	logo->set_custom_minimum_size(Size2(36, 36) * EDSCALE);
+	logo->set_h_size_flags(Control::SIZE_SHRINK_CENTER);
+	logo->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
+	logo->set_accessibility_name(TTR("Solers"));
+	state->add_child(logo);
 
 	Label *title = memnew(Label(TTR("What should we build?")));
 	title->set_h_size_flags(Control::SIZE_SHRINK_CENTER);
@@ -598,7 +529,7 @@ void SolersDock::_refresh_model_chip() {
 
 	const Dictionary chip_profile = provider_data.get("profile", Dictionary());
 	const String catalog_id = chip_profile.get("catalog_provider", provider);
-	model_chip->set_leading_texture(SolersChatGlyphs::provider_logo(catalog_id, int(Math::round(12.0f * EDSCALE))));
+	model_chip->set_leading_texture(SolersIcons::provider_logo(catalog_id, int(Math::round(12.0f * EDSCALE))));
 
 	if (!available) {
 		model_chip->set_texts(solers_compact_label(solers_resolve_model_display(settings_service, provider_data, model)), TTR("Local only"));
@@ -700,7 +631,7 @@ Control *SolersDock::_append_user_message(const String &p_message, const Array &
 		bubble->set_tooltip_text(TTR("Right-click for conversation actions"));
 	}
 
-	if (!timeline_rendering) {
+	if (!history_mount) {
 		callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
 	}
 	return bubble;
@@ -752,9 +683,9 @@ void SolersDock::_on_message_menu_id_pressed(int p_id) {
 		_append_error_row(String(Dictionary(result.get("error", Dictionary())).get("message", TTR("Conversation action failed."))));
 		return;
 	}
-	const Dictionary data = result.get("data", Dictionary());
-	_reload_branched_session(data);
-	const String prompt = SolersMention::strip_prompt_block(data.get("prompt", String()));
+	const Dictionary result_data = result.get("data", Dictionary());
+	_reload_branched_session(result_data);
+	const String prompt = SolersMention::strip_prompt_block(result_data.get("prompt", String()));
 	if (p_id == 0) {
 		_submit_chat_prompt(prompt);
 	} else {
@@ -879,10 +810,6 @@ void SolersDock::_clear_chat_view(bool p_show_empty) {
 	tool_cells_by_id.clear();
 	last_started_tool_cell = nullptr;
 	timeline_messages.clear();
-	timeline_start = 0;
-	timeline_rendering = false;
-	timeline_rows_sorted = false;
-	timeline_anchor_event_id = -1;
 	if (plan_capsule) {
 		plan_capsule->clear_plan();
 	}
@@ -961,9 +888,7 @@ void SolersDock::_toggle_session_sidebar() {
 	}
 	const bool show = !session_sidebar->is_visible();
 	session_sidebar->set_visible(show);
-	if (session_button) {
-		session_button->set_accent(show ? solers_accent() : Color(0, 0, 0, 0));
-	}
+	_sync_session_button();
 	if (EditorSettings::get_singleton()) {
 		EditorSettings::get_singleton()->set_project_metadata("solers", "session_sidebar_visible", show);
 	}
@@ -973,6 +898,14 @@ void SolersDock::_toggle_session_sidebar() {
 		_request_session_list_refresh();
 	}
 	_sync_layout_widths();
+}
+
+void SolersDock::_sync_session_button() {
+	if (!session_button) {
+		return;
+	}
+	const bool active = session_sidebar && session_sidebar->is_visible();
+	session_button->set_accent(active ? session_button->get_theme_color(SNAME("accent_color"), EditorStringName(Editor)) : Color());
 }
 
 void SolersDock::_request_session_list_refresh() {
@@ -1071,7 +1004,6 @@ void SolersDock::_refresh_session_list() {
 
 	const int64_t now = (int64_t)Time::get_singleton()->get_unix_time_from_system();
 	const int64_t time_zone_offset = (int64_t)Time::get_singleton()->get_time_zone_from_system().get("bias", 0) * 60;
-	static Ref<StyleBoxEmpty> session_title_style = memnew(StyleBoxEmpty);
 	String last_group;
 	for (const SolersSessionInfo &session : sessions) {
 		const String group = _solers_session_group_label(session.wall, now, time_zone_offset);
@@ -1107,9 +1039,7 @@ void SolersDock::_refresh_session_list() {
 		Label *title_label = memnew(Label(title));
 		title_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 		title_label->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
-		title_label->add_theme_style_override("normal", session_title_style);
-		title_label->add_theme_font_size_override(SceneStringName(font_size), int(13 * EDSCALE));
-		title_label->add_theme_color_override(SceneStringName(font_color), SOLERS_TEXT_BODY);
+		title_label->set_theme_type_variation("SolersSessionTitle");
 		content->add_child(title_label);
 		HBoxContainer *time_row = memnew(HBoxContainer);
 		time_row->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
@@ -1118,7 +1048,7 @@ void SolersDock::_refresh_session_list() {
 		TextureRect *calendar = memnew(TextureRect);
 		calendar->set_name("SessionCalendar");
 		calendar->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
-		calendar->set_texture(SolersChatGlyphs::get(SNAME("calendar"), int(Math::round(12.0f * EDSCALE)), 2.0f));
+		calendar->set_texture(SolersIcons::get(SNAME("calendar"), int(Math::round(12.0f * EDSCALE))));
 		calendar->set_stretch_mode(TextureRect::STRETCH_KEEP_CENTERED);
 		calendar->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
 		calendar->set_self_modulate(SOLERS_TEXT_META);
@@ -1127,8 +1057,7 @@ void SolersDock::_refresh_session_list() {
 		time_label->set_name("SessionTime");
 		time_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 		time_label->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
-		time_label->add_theme_font_size_override(SceneStringName(font_size), int(11 * EDSCALE));
-		time_label->add_theme_color_override(SceneStringName(font_color), SOLERS_TEXT_META);
+		time_label->set_theme_type_variation("SolersSessionMeta");
 		time_row->add_child(time_label);
 	}
 	if (sessions.is_empty()) {
@@ -1208,7 +1137,7 @@ void SolersDock::_on_model_chip_pressed() {
 	const String active_catalog_id = active_profile.get("catalog_provider", active_provider);
 
 	model_menu_model_row = solers_make_model_menu_parent_row(
-			active_provider.is_empty() ? Ref<Texture2D>() : SolersChatGlyphs::provider_logo(active_catalog_id, int(Math::round(14.0f * EDSCALE))),
+			active_provider.is_empty() ? Ref<Texture2D>() : SolersIcons::provider_logo(active_catalog_id, int(Math::round(14.0f * EDSCALE))),
 			TTR("Model"),
 			active_model.is_empty() ? TTR("None") : solers_compact_label(solers_resolve_model_display(settings_service, provider_data, active_model)));
 	model_menu_model_row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_open_model_submenu).bind(SOLERS_SUBMENU_MODEL));
@@ -1364,7 +1293,7 @@ void SolersDock::_open_model_submenu(int p_kind) {
 		const Dictionary active_model_info = models_dev ? models_dev->get_model(StringName(active_catalog_id), active_model) : Dictionary();
 		const Array efforts = SolersModelsDev::reasoning_efforts(active_model_info);
 
-		Button *default_effort = solers_make_model_popup_row(TTR("Default"), String(), active_effort.is_empty());
+		Button *default_effort = solers_make_model_popup_row("Default", String(), active_effort.is_empty());
 		default_effort->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_set_reasoning_effort_from_popup).bind(String()));
 		model_submenu_list->add_child(default_effort);
 		for (const Variant &effort_value : efforts) {
@@ -1409,7 +1338,7 @@ void SolersDock::_rebuild_model_submenu_list(const String &p_filter) {
 				if (g.get("kind", String()) == "group" && String(g.get("provider", String())) == provider) {
 					model_submenu_list->add_child(solers_make_model_popup_group(
 							g.get("label", provider),
-							SolersChatGlyphs::provider_logo(g.get("catalog_id", provider), int(Math::round(13.0f * EDSCALE)))));
+							SolersIcons::provider_logo(g.get("catalog_id", provider), int(Math::round(13.0f * EDSCALE)))));
 					emitted_groups.insert(provider);
 					break;
 				}
@@ -1581,12 +1510,10 @@ void SolersDock::start_new_chat() {
 	notify_sessions_changed();
 }
 
-static constexpr int SOLERS_TIMELINE_WINDOW = 24;
-
 void SolersDock::load_chat_history(const Array &p_messages) {
 	_clear_chat_view(false);
 	timeline_messages = p_messages.duplicate(true);
-	_render_timeline(MAX(0, timeline_messages.size() - SOLERS_TIMELINE_WINDOW));
+	_render_timeline();
 	callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
 }
 
@@ -1604,23 +1531,58 @@ static Control *_solers_timeline_row(VBoxContainer *p_list, int64_t p_id) {
 	return nullptr;
 }
 
-void SolersDock::_render_timeline(int p_start) {
-	if (!message_list || timeline_rendering) {
+void SolersDock::_bind_layout_splits() {
+	const Callable started = callable_mp(this, &SolersDock::_set_layout_dragging).bind(true);
+	const Callable ended = callable_mp(this, &SolersDock::_set_layout_dragging).bind(false);
+	for (Node *ancestor = get_parent(); ancestor; ancestor = ancestor->get_parent()) {
+		SplitContainer *split = Object::cast_to<SplitContainer>(ancestor);
+		if (split && !split->is_connected(SNAME("drag_started"), started)) {
+			split->connect(SNAME("drag_started"), started);
+			split->connect(SNAME("drag_ended"), ended);
+		}
+	}
+}
+
+void SolersDock::_set_layout_dragging(bool p_active) {
+	if (p_active) {
+		if (layout_drag_depth++ > 0 || !timeline_inset || !chat_scroll || !chat_scroll->is_visible()) {
+			return;
+		}
+		const float width = timeline_inset->get_size().x;
+		if (width <= 0.0f) {
+			return;
+		}
+		Size2 minimum = timeline_inset->get_custom_minimum_size();
+		Size2 maximum = timeline_inset->get_custom_maximum_size();
+		minimum.x = maximum.x = width;
+		timeline_inset->set_custom_minimum_size(minimum);
+		timeline_inset->set_custom_maximum_size(maximum);
+	} else {
+		layout_drag_depth = MAX(0, layout_drag_depth - 1);
+		if (layout_drag_depth != 0 || !timeline_inset || timeline_inset->get_custom_maximum_size().x < 0) {
+			return;
+		}
+		Size2 minimum = timeline_inset->get_custom_minimum_size();
+		Size2 maximum = timeline_inset->get_custom_maximum_size();
+		minimum.x = 0;
+		maximum.x = -1;
+		timeline_inset->set_custom_maximum_size(maximum);
+		timeline_inset->set_custom_minimum_size(minimum);
+	}
+}
+
+void SolersDock::_render_timeline() {
+	if (!message_list) {
 		return;
 	}
-	timeline_rendering = true;
-	timeline_rows_sorted = false;
 	_clear_empty_state();
-	const int next_start = CLAMP(p_start, 0, MAX(0, timeline_messages.size() - SOLERS_TIMELINE_WINDOW));
-	const int next_end = MIN(timeline_messages.size(), next_start + SOLERS_TIMELINE_WINDOW);
 	if (timeline_messages.is_empty()) {
 		_show_empty_state();
-		timeline_rendering = false;
 		return;
 	}
 	HashSet<int64_t> desired;
 	HashMap<int64_t, Control *> mounted;
-	for (int index = next_start; index < next_end; index++) {
+	for (int index = 0; index < timeline_messages.size(); index++) {
 		desired.insert(Dictionary(timeline_messages[index]).get("event_id", -1));
 	}
 	for (int i = 0; i < message_list->get_child_count(); i++) {
@@ -1630,16 +1592,6 @@ void SolersDock::_render_timeline(int p_start) {
 			mounted[id] = row;
 		}
 	}
-	Control *anchor = nullptr;
-	for (int index = next_start; index < next_end && !anchor; index++) {
-		Control **row = mounted.getptr(Dictionary(timeline_messages[index]).get("event_id", -1));
-		anchor = row ? *row : nullptr;
-	}
-	if (anchor) {
-		timeline_anchor_event_id = anchor->get_meta("timeline_event_id", -1);
-		timeline_anchor_screen_y = anchor->get_global_position().y;
-	}
-	bool layout_pending = false;
 	for (int i = message_list->get_child_count() - 1; i >= 0; i--) {
 		Control *row = Object::cast_to<Control>(message_list->get_child(i));
 		const int64_t id = row ? (int64_t)row->get_meta("timeline_event_id", -1) : -1;
@@ -1649,10 +1601,9 @@ void SolersDock::_render_timeline(int p_start) {
 			mounted.erase(id);
 			message_list->remove_child(row);
 			row->queue_free();
-			layout_pending = true;
 		}
 	}
-	for (int index = next_start; index < next_end; index++) {
+	for (int index = 0; index < timeline_messages.size(); index++) {
 		const int64_t id = Dictionary(timeline_messages[index]).get("event_id", -1);
 		Control **found = mounted.getptr(id);
 		Control *row = found ? *found : nullptr;
@@ -1661,39 +1612,13 @@ void SolersDock::_render_timeline(int p_start) {
 			if (row) {
 				row->set_meta("timeline_row", true);
 				row->set_meta("timeline_event_id", id);
-				layout_pending = true;
+				mounted[id] = row;
 			}
 		}
-		if (row && row->get_index() != index - next_start) {
-			layout_pending = true;
-			message_list->move_child(row, index - next_start);
+		if (row && row->get_index() != index) {
+			message_list->move_child(row, index);
 		}
 	}
-	timeline_start = next_start;
-	if (!anchor || !layout_pending) {
-		timeline_rendering = false;
-	}
-}
-
-void SolersDock::_queue_timeline_layout_commit() {
-	if (!timeline_rendering || timeline_anchor_event_id < 0 || !chat_scroll) {
-		return;
-	}
-	timeline_rows_sorted = true;
-	chat_scroll->call(SNAME("queue_sort"));
-}
-
-void SolersDock::_commit_timeline_layout() {
-	if (!timeline_rendering || !timeline_rows_sorted || timeline_anchor_event_id < 0) {
-		return;
-	}
-	Control *anchor = _solers_timeline_row(message_list, timeline_anchor_event_id);
-	if (anchor) {
-		chat_scroll->set_v_scroll(chat_scroll->get_v_scroll() + Math::round(anchor->get_global_position().y - timeline_anchor_screen_y));
-	}
-	timeline_anchor_event_id = -1;
-	timeline_rendering = false;
-	timeline_rows_sorted = false;
 }
 
 Control *SolersDock::_create_history_entry(const Dictionary &p_message) {
@@ -1736,7 +1661,7 @@ void SolersDock::_append_history_message(const Dictionary &p_message) {
 		for (const Variant &item : calls) {
 			const Dictionary call = item;
 			const String id = call.get("id", String());
-			const String name = call.get("name", String());
+			const String name = call.get("canonical_name", call.get("name", String()));
 			_on_agent_tool_started(id, name, call.get("arguments", String("{}")));
 			if ((bool)call.get("finished", false)) {
 				Dictionary result;
@@ -1747,19 +1672,16 @@ void SolersDock::_append_history_message(const Dictionary &p_message) {
 				_on_agent_tool_finished(id, name, result, call.get("duration_msec", 0));
 			}
 		}
-	}
-}
-
-void SolersDock::_on_timeline_scrolled() {
-	if (timeline_rendering || !chat_scroll) {
-		return;
-	}
-	VScrollBar *bar = chat_scroll->get_v_scroll_bar();
-	const double p_value = bar->get_value();
-	if (timeline_start > 0 && Math::is_equal_approx(p_value, bar->get_min())) {
-		_render_timeline(MAX(0, timeline_start - SOLERS_TIMELINE_WINDOW / 2));
-	} else if (timeline_start + SOLERS_TIMELINE_WINDOW < timeline_messages.size() && Math::is_equal_approx(p_value, bar->get_max() - bar->get_page())) {
-		_render_timeline(MIN(timeline_messages.size() - SOLERS_TIMELINE_WINDOW, timeline_start + SOLERS_TIMELINE_WINDOW / 2));
+	} else if (role == "context_compaction") {
+		SolersStatusCell *cell = memnew(SolersStatusCell);
+		const String phase = p_message.get("phase", "completed");
+		cell->set_status(phase == "started" ? TTR("Context automatically compacting") : phase == "failed" ? TTR("Context compaction failed")
+						: phase == "cancelled"															  ? TTR("Context compaction cancelled")
+																										  : TTR("Context automatically compacted"));
+		cell->set_active(phase == "started");
+		_chat_mount()->add_child(cell);
+	} else if (role == "turn_outcome") {
+		_append_error_row(content);
 	}
 }
 
@@ -1843,11 +1765,12 @@ void SolersDock::_on_chat_input_gui_input(const Ref<InputEvent> &p_event) {
 	}
 
 	const Key keycode = key->get_keycode();
-	if (keycode == Key::BACKSPACE && _try_delete_mention_span(-1)) {
+	const bool search_focused = plugin_mention_search && plugin_mention_search->has_focus();
+	if (!search_focused && keycode == Key::BACKSPACE && _try_delete_mention_span(-1)) {
 		chat_input->accept_event();
 		return;
 	}
-	if (keycode == Key::KEY_DELETE && _try_delete_mention_span(1)) {
+	if (!search_focused && keycode == Key::KEY_DELETE && _try_delete_mention_span(1)) {
 		chat_input->accept_event();
 		return;
 	}
@@ -1859,6 +1782,9 @@ void SolersDock::_on_chat_input_gui_input(const Ref<InputEvent> &p_event) {
 				_refresh_mention_popup();
 			} else {
 				_hide_mention_popup();
+				if (search_focused) {
+					chat_input->grab_focus();
+				}
 			}
 			chat_input->accept_event();
 			return;
@@ -1873,6 +1799,9 @@ void SolersDock::_on_chat_input_gui_input(const Ref<InputEvent> &p_event) {
 			chat_input->accept_event();
 			return;
 		}
+	}
+	if (search_focused) {
+		return;
 	}
 	if ((key->is_command_or_control_pressed() || key->is_meta_pressed()) && keycode == Key::V && _add_image_attachment_from_clipboard()) {
 		chat_input->accept_event();
@@ -1905,46 +1834,37 @@ void SolersDock::_on_chat_input_text_changed() {
 	_refresh_mention_popup();
 }
 
-static Ref<Texture2D> solers_mention_section_icon(const String &p_section_id) {
+static Ref<Texture2D> solers_mention_section_icon(Control *p_owner, const String &p_section_id) {
 	const int size = int(Math::round(13.0f * EDSCALE));
 	if (p_section_id == "solers") {
-		return SolersChatGlyphs::get(SNAME("tool_export"), size, 2.0f);
+		return SolersIcons::get(SNAME("tool_export"), size);
 	}
 	if (p_section_id == "addons") {
-		if (EditorNode *editor = EditorNode::get_singleton()) {
-			return editor->get_editor_theme()->get_icon(SNAME("PluginScript"), EditorStringName(EditorIcons));
-		}
+		return SolersIcons::get(SNAME("plugin"), size);
 	}
 	if (p_section_id == "files") {
-		return SolersChatGlyphs::get(SNAME("tool_file"), size, 2.0f);
+		return p_owner->get_theme_icon(SNAME("File"), EditorStringName(EditorIcons));
 	}
 	if (p_section_id == "folders") {
-		if (EditorNode *editor = EditorNode::get_singleton()) {
-			return editor->get_editor_theme()->get_icon(SNAME("Folder"), EditorStringName(EditorIcons));
-		}
+		return p_owner->get_theme_icon(SNAME("folder"), SNAME("FileDialog"));
 	}
 	if (p_section_id == "scenes") {
-		return SolersChatGlyphs::get(SNAME("tool_scene"), size, 2.0f);
+		return p_owner->get_theme_icon(SNAME("PackedScene"), EditorStringName(EditorIcons));
 	}
 	if (p_section_id == "selection") {
-		return SolersChatGlyphs::get(SNAME("tool_observe"), size, 2.0f);
+		return SolersIcons::get(SNAME("tool_observe"), size);
 	}
-	return SolersChatGlyphs::get(SNAME("plus"), size, 2.0f);
+	return SolersIcons::get(SNAME("plus"), size);
 }
 
-// Same authority chain as FileSystem dock / Quick Open: preview cache, then
-// EditorFileSystem type + class icon. No extension-name tables.
-static Ref<Texture2D> solers_mention_path_icon(const String &p_path) {
-	EditorNode *editor = EditorNode::get_singleton();
-	if (!editor) {
-		return Ref<Texture2D>();
-	}
-	String path = ResourceUID::ensure_path(p_path.strip_edges());
+static Ref<Texture2D> solers_mention_path_icon(Control *p_owner, const Dictionary &p_mention) {
+	const String source = String(p_mention.get("source", String())).strip_edges().to_lower();
+	String path = ResourceUID::ensure_path(String(p_mention.get("path", p_mention.get("id", String()))).strip_edges());
 	if (path.is_empty()) {
 		return Ref<Texture2D>();
 	}
-	if (path.ends_with("/")) {
-		return editor->get_editor_theme()->get_icon(SNAME("Folder"), EditorStringName(EditorIcons));
+	if (source == "folder" || path.ends_with("/")) {
+		return p_owner->get_theme_icon(SNAME("folder"), SNAME("FileDialog"));
 	}
 
 	if (EditorResourcePreview *previewer = EditorResourcePreview::get_singleton()) {
@@ -1957,25 +1877,16 @@ static Ref<Texture2D> solers_mention_path_icon(const String &p_path) {
 		}
 	}
 
-	String type;
-	String icon_path;
-	bool import_ok = true;
-	if (EditorFileSystem *efs = EditorFileSystem::get_singleton()) {
+	String type = p_mention.get("resource_type", String());
+	String icon_path = p_mention.get("icon_path", String());
+	bool import_ok = p_mention.get("import_valid", true);
+	if (type.is_empty() && EditorFileSystem::get_singleton()) {
 		int idx = -1;
-		if (EditorFileSystemDirectory *dir = efs->find_file(path, &idx)) {
+		if (EditorFileSystemDirectory *dir = EditorFileSystem::get_singleton()->find_file(path, &idx)) {
 			type = dir->get_file_type(idx);
 			icon_path = dir->get_file_icon_path(idx);
 			import_ok = dir->get_file_import_is_valid(idx);
 		}
-		if (type.is_empty()) {
-			type = efs->get_file_type(path);
-		}
-	}
-	if (type.is_empty()) {
-		type = ResourceLoader::get_resource_type(path);
-	}
-	if (!import_ok) {
-		return editor->get_editor_theme()->get_icon(SNAME("ImportFail"), EditorStringName(EditorIcons));
 	}
 	if (!icon_path.is_empty()) {
 		const Ref<Texture2D> custom = ResourceLoader::load(icon_path);
@@ -1983,140 +1894,37 @@ static Ref<Texture2D> solers_mention_path_icon(const String &p_path) {
 			return custom;
 		}
 	}
-	if (!type.is_empty()) {
-		const Ref<Texture2D> icon = editor->get_class_icon(type, "File");
-		if (icon.is_valid()) {
-			return icon;
-		}
+	if (!import_ok) {
+		return p_owner->get_theme_icon(SNAME("ImportFail"), EditorStringName(EditorIcons));
 	}
-	return editor->get_class_icon("File");
+	const StringName type_name(type);
+	return p_owner->has_theme_icon(type_name, EditorStringName(EditorIcons)) ? p_owner->get_theme_icon(type_name, EditorStringName(EditorIcons)) : p_owner->get_theme_icon(SNAME("File"), EditorStringName(EditorIcons));
 }
 
-static Ref<Texture2D> solers_mention_row_icon(const Dictionary &p_mention, int p_px) {
+static Ref<Texture2D> solers_mention_row_icon(Control *p_owner, const Dictionary &p_mention, int p_px) {
 	const String source = String(p_mention.get("source", "plugin")).strip_edges().to_lower();
 	if (source == "plugin") {
 		const String id = String(p_mention.get("id", String())).strip_edges().to_lower();
-		const Ref<Texture2D> color = SolersChatGlyphs::provider_logo_color(id, p_px);
-		return color.is_valid() ? color : SolersChatGlyphs::provider_logo(id, p_px);
+		const Ref<Texture2D> color = SolersIcons::provider_logo_color(id, p_px);
+		return color.is_valid() ? color : SolersIcons::provider_logo(id, p_px);
 	}
 	if (source == "addon") {
-		if (EditorNode *editor = EditorNode::get_singleton()) {
-			return editor->get_editor_theme()->get_icon(SNAME("PluginScript"), EditorStringName(EditorIcons));
-		}
-		return Ref<Texture2D>();
+		return SolersIcons::get(SNAME("plugin"), p_px);
 	}
 	if (source == "node") {
-		if (EditorNode *editor = EditorNode::get_singleton()) {
-			const String type = String(p_mention.get("type", "Node")).strip_edges();
-			return editor->get_class_icon(type.is_empty() ? String("Node") : type, "Node");
-		}
-		return Ref<Texture2D>();
+		return SolersIcons::get(SNAME("node"), p_px);
 	}
-	return solers_mention_path_icon(String(p_mention.get("path", p_mention.get("id", String()))));
+	return solers_mention_path_icon(p_owner, p_mention);
 }
 
-static void solers_set_mention_row_selected(Button *p_row, bool p_selected) {
-	solers_style_model_popup_row(p_row, p_selected);
-	if (p_row->get_child_count() == 0) {
-		return;
-	}
-	// Unified row: HBox [icon?][name][path?]. Recolor name only.
-	HBoxContainer *box = Object::cast_to<HBoxContainer>(p_row->get_child(0));
-	if (!box) {
-		return;
-	}
-	const bool path_like = bool(p_row->get_meta("mention_path_like", false));
-	for (int i = 0; i < box->get_child_count(); i++) {
-		if (Label *name = Object::cast_to<Label>(box->get_child(i))) {
-			if (String(name->get_meta("mention_slot", String())) == "name") {
-				name->add_theme_color_override(SceneStringName(font_color),
-						(p_selected || path_like) ? SOLERS_TEXT_PRIMARY : SOLERS_TEXT_BODY);
-			}
-			break;
-		}
-	}
-}
-
-static void solers_style_mention_item_row(Button *p_row, const Dictionary &p_mention, bool p_selected = false) {
-	solers_style_model_popup_row(p_row, p_selected);
-	p_row->set_text(String());
-
+static String solers_mention_item_label(const Dictionary &p_mention) {
 	const String source = String(p_mention.get("source", "plugin")).strip_edges().to_lower();
 	const String id = String(p_mention.get("id", String())).strip_edges();
 	const String label = String(p_mention.get("label", id)).strip_edges();
-	const String path = String(p_mention.get("path", id)).strip_edges();
-	const bool path_like = source == "file" || source == "scene" || source == "node" || source == "addon";
-	p_row->set_meta("mention_path_like", path_like);
-
-	String name_text;
-	String secondary;
 	if (source == "plugin") {
-		name_text = "@" + id;
-		if (!label.is_empty() && label != id) {
-			secondary = label;
-		}
-	} else if (source == "addon") {
-		name_text = label.is_empty() ? path.get_base_dir().get_file() : label;
-		secondary = bool(p_mention.get("enabled", false)) ? "Enabled" : "Disabled";
-	} else {
-		name_text = label.is_empty() ? id.get_file() : label;
-		if (source == "node") {
-			secondary = path;
-		} else if (!path.is_empty()) {
-			secondary = path.get_base_dir();
-		}
+		return "@" + id;
 	}
-
-	const int icon_px = int(Math::round(14.0f * EDSCALE));
-	const Ref<Texture2D> icon_tex = solers_mention_row_icon(p_mention, icon_px);
-
-	HBoxContainer *box = memnew(HBoxContainer);
-	box->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
-	box->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
-	box->set_offset(SIDE_LEFT, 8 * EDSCALE);
-	box->set_offset(SIDE_RIGHT, -8 * EDSCALE);
-	box->add_theme_constant_override("separation", int(6 * EDSCALE));
-	p_row->add_child(box);
-
-	if (icon_tex.is_valid()) {
-		TextureRect *icon = memnew(TextureRect);
-		icon->set_texture(icon_tex);
-		icon->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
-		icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
-		icon->set_custom_minimum_size(Size2(icon_px, icon_px));
-		icon->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
-		icon->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
-		box->add_child(icon);
-	}
-
-	Label *name = memnew(Label(name_text));
-	name->set_meta("mention_slot", "name");
-	name->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
-	// Do NOT enable text overrun on the name label. Label::get_minimum_size
-	// collapses width to 1px when overrun is on; an EXPAND sibling then steals
-	// the row and the basename disappears (only base_dir remains visible).
-	name->add_theme_font_size_override(SceneStringName(font_size), int(13 * EDSCALE));
-	name->add_theme_color_override(SceneStringName(font_color),
-			(p_selected || path_like) ? SOLERS_TEXT_PRIMARY : SOLERS_TEXT_BODY);
-	name->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
-	box->add_child(name);
-
-	if (!secondary.is_empty()) {
-		Label *sub = memnew(Label(secondary));
-		sub->set_meta("mention_slot", "path");
-		sub->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
-		sub->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		sub->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
-		sub->add_theme_font_size_override(SceneStringName(font_size), int(11 * EDSCALE));
-		sub->add_theme_color_override(SceneStringName(font_color), SOLERS_TEXT_DIM);
-		sub->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
-		if (!path.is_empty() && path_like) {
-			sub->set_tooltip_text(path);
-		}
-		box->add_child(sub);
-	} else {
-		name->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	}
+	return label.is_empty() ? id.get_file() : label;
 }
 
 Array SolersDock::_mention_inline_parse(const String &p_line_text) {
@@ -2124,7 +1932,7 @@ Array SolersDock::_mention_inline_parse(const String &p_line_text) {
 	if (!chat_input) {
 		return objects;
 	}
-	const Ref<Font> font = chat_input->get_theme_font(SceneStringName(font), SNAME("TextEdit"));
+	const Ref<Font> font = chat_input->get_theme_default_font();
 	const int font_size = chat_input->get_theme_font_size(SceneStringName(font_size), SNAME("TextEdit"));
 	// width_ratio is relative to the TextEdit line font height (object box height).
 	const float line_font_h = font.is_valid() ? font->get_height(font_size) : float(MAX(1, font_size));
@@ -2138,7 +1946,7 @@ Array SolersDock::_mention_inline_parse(const String &p_line_text) {
 		if (label.is_empty()) {
 			continue;
 		}
-		const Ref<Texture2D> icon = solers_mention_row_icon(mention, icon_px);
+		const Ref<Texture2D> icon = solers_mention_row_icon(chat_input, mention, icon_px);
 		const float chip_w = solers_mention_chip_width(label, font, font_size, icon.is_valid());
 
 		Dictionary info = span.duplicate();
@@ -2162,14 +1970,14 @@ void SolersDock::_mention_inline_draw(const Dictionary &p_info, const Rect2 &p_r
 	const RID ci = chat_input->get_text_canvas_item();
 	const int icon_px = int(Math::round(13.0f * EDSCALE));
 	const Rect2 pill = p_rect.grow_individual(-1.0f * EDSCALE, -2.0f * EDSCALE, -1.0f * EDSCALE, -2.0f * EDSCALE);
-	const Ref<Font> font = chat_input->get_theme_font(SceneStringName(font), SNAME("TextEdit"));
+	const Ref<Font> font = chat_input->get_theme_default_font();
 	const int font_size = chat_input->get_theme_font_size(SceneStringName(font_size), SNAME("TextEdit"));
 	// Prefer richer path preview when available; fall back to shared chip icon.
-	Ref<Texture2D> icon = solers_mention_row_icon(mention, icon_px);
+	Ref<Texture2D> icon = solers_mention_row_icon(chat_input, mention, icon_px);
 	if (icon.is_null()) {
 		icon = solers_mention_chip_icon(mention, icon_px);
 	}
-	solers_draw_mention_chip(ci, pill, label, font, font_size, icon);
+	solers_draw_mention_chip(ci, pill, label, font, font_size, icon, chat_input->get_theme_color(SNAME("accent_color"), EditorStringName(Editor)));
 }
 
 void SolersDock::_mention_inline_click(const Dictionary &p_info, const Rect2 &p_rect) {
@@ -2225,10 +2033,10 @@ void SolersDock::_refresh_mention_popup() {
 		return;
 	}
 
-	const int line = chat_input->get_caret_line();
+	const int line = mention_picker_explicit ? plugin_mention_line : chat_input->get_caret_line();
 	const int column = chat_input->get_caret_column();
-	int mention_start = -1;
-	const String at_query = SolersMention::query_at(chat_input->get_line(line), column, mention_start);
+	int mention_start = mention_picker_explicit ? plugin_mention_start_column : -1;
+	const String at_query = mention_picker_explicit ? String() : SolersMention::query_at(chat_input->get_line(line), column, mention_start);
 	if (mention_start < 0) {
 		_hide_mention_popup();
 		return;
@@ -2249,88 +2057,102 @@ void SolersDock::_refresh_mention_popup() {
 		filter = at_query;
 	}
 
-	solers_clear_children(plugin_mention_list);
-	plugin_mention_rows.clear();
+	plugin_mention_list->clear();
+	mention_generation++;
+	Array entries;
 
 	if (!mention_section.is_empty()) {
-		// Escape returns to root sections (no Back chrome).
-		const Array items = SolersMention::collect_section_items(mention_section, observation_service, filter);
-		for (int i = 0; i < items.size(); i++) {
-			const Dictionary mention = items[i];
-			Button *row = memnew(Button);
-			solers_style_mention_item_row(row, mention);
-			row->set_meta("mention_kind", "item");
-			row->set_meta("mention", mention);
-			row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_select_mention).bind(mention));
-			plugin_mention_list->add_child(row);
-			plugin_mention_rows.push_back(row);
-		}
+		entries = SolersMention::collect_section_items(mention_section, observation_service, filter);
 	} else if (!filter.is_empty()) {
-		const Array items = SolersMention::collect_section_items(String(), observation_service, filter, SolersMention::COLLECT_LIMIT);
-		String last_source;
-		for (int i = 0; i < items.size(); i++) {
-			const Dictionary mention = items[i];
-			const String source = String(mention.get("source", "plugin"));
-			if (source != last_source) {
-				last_source = source;
-				plugin_mention_list->add_child(solers_make_model_popup_group(source.capitalize()));
-			}
-			Button *row = memnew(Button);
-			solers_style_mention_item_row(row, mention);
-			row->set_meta("mention_kind", "item");
-			row->set_meta("mention", mention);
-			row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_select_mention).bind(mention));
-			plugin_mention_list->add_child(row);
-			plugin_mention_rows.push_back(row);
-		}
+		entries = SolersMention::collect_section_items(String(), observation_service, filter, SolersMention::COLLECT_LIMIT);
 	} else {
-		const Array sections = SolersMention::collect_root_sections(observation_service, String());
-		for (int i = 0; i < sections.size(); i++) {
-			const Dictionary section = sections[i];
-			const String section_id = String(section.get("id", String()));
-			const String label = String(section.get("label", section_id));
-			const int count = (int)section.get("count", 0);
-			const bool truncated = (bool)section.get("truncated", false);
-			const String badge = truncated ? itos(count) + "+" : itos(count);
-			Button *row = solers_make_model_menu_parent_row(solers_mention_section_icon(section_id), label, badge);
-			row->set_meta("mention_kind", "section");
-			row->set_meta("section_id", section_id);
-			row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_open_mention_section).bind(section_id));
-			plugin_mention_list->add_child(row);
-			plugin_mention_rows.push_back(row);
+		entries = SolersMention::collect_root_sections();
+	}
+
+	const int icon_px = int(Math::round(14.0f * EDSCALE));
+	for (int i = 0; i < entries.size(); i++) {
+		const Dictionary value = entries[i];
+		const bool section = value.has("id") && !value.has("source");
+		Dictionary item_data;
+		Ref<Texture2D> icon;
+		String label;
+		if (section) {
+			const String id = value.get("id", String());
+			item_data["kind"] = "section";
+			item_data["section_id"] = id;
+			label = value.get("label", id);
+			icon = solers_mention_section_icon(plugin_mention_list, id);
+		} else {
+			item_data["kind"] = "item";
+			item_data["mention"] = value;
+			label = solers_mention_item_label(value);
+			icon = solers_mention_row_icon(plugin_mention_list, value, icon_px);
+		}
+		const int index = plugin_mention_list->add_item(label, icon);
+		plugin_mention_list->set_item_metadata(index, item_data);
+		const String path = value.get("path", String());
+		if (!path.is_empty()) {
+			plugin_mention_list->set_item_tooltip(index, path);
+		}
+		const String source = value.get("source", String());
+		if (source == "folder") {
+			const Color fallback = plugin_mention_list->get_theme_color(SNAME("folder_icon_color"), SNAME("FileDialog"));
+			plugin_mention_list->set_item_icon_modulate(index, FileSystemDock::get_dir_icon_color(path, fallback));
+		} else if ((source == "file" || source == "scene") && value.get("import_valid", true) && EditorResourcePreview::get_singleton()) {
+			EditorResourcePreview::get_singleton()->queue_resource_preview(path, callable_mp(this, &SolersDock::_on_mention_preview_ready).bind(mention_generation, index));
 		}
 	}
 
-	if (plugin_mention_rows.is_empty()) {
+	if (plugin_mention_list->get_item_count() == 0) {
 		_hide_mention_popup();
 		return;
 	}
 
 	plugin_mention_line = line;
 	plugin_mention_start_column = mention_start;
-	plugin_mention_selected = 0;
-	solers_set_mention_row_selected(plugin_mention_rows[0], true);
+	plugin_mention_list->select(0);
+	plugin_mention_list->set_current(0);
 
 	const Rect2 input_rect = chat_input->get_global_rect();
 	const Rect2 dock_rect = get_global_rect();
 	const float width = MIN(360.0f * EDSCALE, MAX(220.0f * EDSCALE, input_rect.size.x));
-	const float search_h = (plugin_mention_search ? plugin_mention_search->get_combined_minimum_size().y + 4.0f * EDSCALE : 0.0f);
-	const float estimated = (plugin_mention_list->get_child_count() * 30.0f + 12.0f) * EDSCALE + search_h;
-	const float measured = plugin_mention_list->get_combined_minimum_size().y + 12.0f * EDSCALE + search_h;
-	const float content_height = MAX(estimated, measured);
 	const float max_height = MIN(320.0f * EDSCALE, MAX(120.0f * EDSCALE, get_size().y * 0.45f));
-	const float height = MIN(max_height, MAX(72.0f * EDSCALE, content_height));
+	plugin_mention_popup->set_size(Size2(width, max_height));
+	plugin_mention_list->set_custom_minimum_size(Size2(0, max_height));
+	plugin_mention_list->force_update_list_size();
+	const int last_visible = MIN(SOLERS_MENTION_VISIBLE_ROWS, plugin_mention_list->get_item_count()) - 1;
+	plugin_mention_list->set_custom_minimum_size(Size2(0, plugin_mention_list->get_item_rect(last_visible).get_end().y));
+	const float height = MIN(max_height, plugin_mention_popup->get_combined_minimum_size().y);
 	const float x = CLAMP(input_rect.position.x, dock_rect.position.x + 6.0f * EDSCALE, MAX(dock_rect.position.x + 6.0f * EDSCALE, dock_rect.position.x + dock_rect.size.x - width - 6.0f * EDSCALE));
 	const float y = MAX(dock_rect.position.y + 6.0f * EDSCALE, input_rect.position.y - height - 6.0f * EDSCALE);
 	plugin_mention_popup->set_size(Size2(width, height));
 	plugin_mention_popup->set_global_position(Point2(x, y));
 	plugin_mention_popup->show();
 	plugin_mention_popup->move_to_front();
+	plugin_mention_list->ensure_current_is_visible();
 }
 
 void SolersDock::_on_mention_search_changed(const String &) {
 	if (plugin_mention_popup && plugin_mention_popup->is_visible()) {
 		_refresh_mention_popup();
+	}
+}
+
+void SolersDock::_on_mention_item_clicked(int p_index, const Vector2 &, MouseButton p_button) {
+	if (p_button == MouseButton::LEFT) {
+		plugin_mention_list->set_current(p_index);
+		_activate_mention_selection();
+	}
+}
+
+void SolersDock::_on_mention_preview_ready(const String &p_path, const Ref<Texture2D> &p_preview, const Ref<Texture2D> &p_small_preview, uint64_t p_generation, int p_index) {
+	if (p_generation != mention_generation || !plugin_mention_list || p_index < 0 || p_index >= plugin_mention_list->get_item_count()) {
+		return;
+	}
+	const Dictionary item_data = plugin_mention_list->get_item_metadata(p_index);
+	const Dictionary mention = item_data.get("mention", Dictionary());
+	if (String(mention.get("path", String())) == p_path && (p_small_preview.is_valid() || p_preview.is_valid())) {
+		plugin_mention_list->set_item_icon(p_index, p_small_preview.is_valid() ? p_small_preview : p_preview);
 	}
 }
 
@@ -2342,18 +2164,13 @@ void SolersDock::_hide_mention_popup() {
 		plugin_mention_search->set_text(String());
 	}
 	if (plugin_mention_list) {
-		solers_clear_children(plugin_mention_list);
+		plugin_mention_list->clear();
 	}
-	plugin_mention_rows.clear();
+	mention_generation++;
 	plugin_mention_line = -1;
 	plugin_mention_start_column = -1;
-	plugin_mention_selected = 0;
+	mention_picker_explicit = false;
 	mention_section = String();
-}
-
-void SolersDock::_open_mention_section(const String &p_section_id) {
-	mention_section = p_section_id;
-	_refresh_mention_popup();
 }
 
 void SolersDock::_select_mention(const Dictionary &p_mention) {
@@ -2375,96 +2192,40 @@ void SolersDock::_select_mention(const Dictionary &p_mention) {
 }
 
 void SolersDock::_activate_mention_selection() {
-	if (plugin_mention_rows.is_empty() || plugin_mention_selected < 0 || plugin_mention_selected >= plugin_mention_rows.size()) {
+	const int selected = plugin_mention_list ? plugin_mention_list->get_current() : -1;
+	if (selected < 0 || selected >= plugin_mention_list->get_item_count()) {
 		return;
 	}
-	Button *row = plugin_mention_rows[plugin_mention_selected];
-	const String kind = String(row->get_meta("mention_kind", String()));
+	const Dictionary item_data = plugin_mention_list->get_item_metadata(selected);
+	const String kind = item_data.get("kind", String());
 	if (kind == "section") {
-		_open_mention_section(String(row->get_meta("section_id", String())));
+		mention_section = item_data.get("section_id", String());
+		_refresh_mention_popup();
 		return;
 	}
 	if (kind == "item") {
-		_select_mention(row->get_meta("mention", Dictionary()));
+		_select_mention(item_data.get("mention", Dictionary()));
 	}
 }
 
 void SolersDock::_move_mention_selection(int p_delta) {
-	if (plugin_mention_rows.is_empty()) {
+	const int count = plugin_mention_list ? plugin_mention_list->get_item_count() : 0;
+	if (count == 0) {
 		return;
 	}
-	plugin_mention_selected = (plugin_mention_selected + p_delta + plugin_mention_rows.size()) % plugin_mention_rows.size();
-	for (int i = 0; i < plugin_mention_rows.size(); i++) {
-		solers_set_mention_row_selected(plugin_mention_rows[i], i == plugin_mention_selected);
-	}
-	if (plugin_mention_scroll) {
-		plugin_mention_scroll->ensure_control_visible(plugin_mention_rows[plugin_mention_selected]);
-	}
+	const int selected = (plugin_mention_list->get_current() + p_delta + count) % count;
+	plugin_mention_list->select(selected);
+	plugin_mention_list->set_current(selected);
+	plugin_mention_list->ensure_current_is_visible();
 }
 
 void SolersDock::_on_add_context_pressed() {
-	if (attachment_file_dialog) {
-		attachment_file_dialog->popup_file_dialog();
-	}
-}
-
-void SolersDock::_on_attachment_file_selected(const String &p_file) {
-	if (!_add_image_attachment_from_path(p_file)) {
-		_append_error_row(TTR("Attach up to 4 PNG or JPG images."));
-	}
-}
-
-bool SolersDock::_add_image_attachment_from_path(const String &p_path) {
-	if (pending_attachments.size() >= 4 || !solers_is_supported_image_path(p_path)) {
-		return false;
-	}
-	Error read_error = OK;
-	const PackedByteArray bytes = FileAccess::get_file_as_bytes(p_path, &read_error);
-	if (read_error != OK || bytes.is_empty()) {
-		return false;
-	}
-	Ref<Image> image;
-	image.instantiate();
-	Error err = image->load_png_from_buffer(bytes);
-	if (err != OK) {
-		err = image->load_jpg_from_buffer(bytes);
-	}
-	if (err != OK || image->is_empty()) {
-		return false;
-	}
-
-	Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_RESOURCES);
-	if (dir.is_null() || dir->make_dir_recursive(solers_attachment_dir()) != OK) {
-		return false;
-	}
-	const String id = vformat("img_%s_%d", itos((int64_t)Time::get_singleton()->get_ticks_usec()), pending_attachments.size() + 1);
-	const String ext = p_path.get_extension().to_lower() == "png" ? "png" : "jpg";
-	const String stored_path = solers_attachment_dir().path_join(id + "." + ext);
-	Ref<FileAccess> file = FileAccess::open(stored_path, FileAccess::WRITE);
-	if (file.is_null()) {
-		return false;
-	}
-	file->store_buffer(bytes);
-	file->close();
-	const String sha256 = FileAccess::get_sha256(stored_path);
-	const String content_path = solers_attachment_dir().path_join(sha256 + "." + ext);
-	if (FileAccess::exists(content_path)) {
-		DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(stored_path));
-	} else if (DirAccess::rename_absolute(ProjectSettings::get_singleton()->globalize_path(stored_path), ProjectSettings::get_singleton()->globalize_path(content_path)) != OK) {
-		return false;
-	}
-
-	Dictionary attachment;
-	attachment["id"] = sha256;
-	attachment["type"] = "image";
-	attachment["mime_type"] = ext == "png" ? "image/png" : "image/jpeg";
-	attachment["filename"] = p_path.get_file();
-	attachment["local_path"] = content_path;
-	attachment["content_sha256"] = sha256;
-	pending_attachments.push_back(attachment);
-	_refresh_attachment_bar();
-	_update_send_enabled();
-	return true;
+	_hide_mention_popup();
+	plugin_mention_line = chat_input->get_caret_line();
+	plugin_mention_start_column = chat_input->get_caret_column();
+	mention_picker_explicit = true;
+	_refresh_mention_popup();
+	plugin_mention_search->grab_focus();
 }
 
 bool SolersDock::_add_image_attachment_from_clipboard() {
@@ -2714,6 +2475,7 @@ void SolersDock::_on_auto_approve_chip_pressed() {
 void SolersDock::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_ENTER_TREE: {
+			_bind_layout_splits();
 			_sync_layout_widths();
 			_update_chat_input_height();
 			_update_send_enabled();
@@ -2725,12 +2487,16 @@ void SolersDock::_notification(int p_what) {
 		case NOTIFICATION_THEME_CHANGED: {
 			_update_chat_input_height();
 			_refresh_model_chip();
+			_sync_session_button();
+			SolersUITheme::configure_settings_host(provider_settings_dialog, get_theme());
 		} break;
 		case EditorSettings::NOTIFICATION_EDITOR_SETTINGS_CHANGED: {
 			_refresh_status();
+			_sync_session_button();
 		} break;
 		case NOTIFICATION_TRANSLATION_CHANGED: {
 			_refresh_status();
+			_refresh_session_list();
 		} break;
 	}
 }
@@ -2757,7 +2523,7 @@ void SolersDock::make_visible() {
 	if (session_sidebar && EditorSettings::get_singleton()) {
 		const bool show = EditorSettings::get_singleton()->get_project_metadata("solers", "session_sidebar_visible", false);
 		session_sidebar->set_visible(show);
-		session_button->set_accent(show ? solers_accent() : Color(0, 0, 0, 0));
+		_sync_session_button();
 		if (show) {
 			_request_session_list_refresh();
 		}
@@ -2767,8 +2533,6 @@ void SolersDock::make_visible() {
 SolersDock::SolersDock() {
 	set_h_size_flags(Control::SIZE_FILL);
 	set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	// Cursor-flat shell: fill only — no inset card border. Pane edges come from
-	// apply_chrome_edges (HSplit hairline) + EditorTitleBar, same as session_sidebar.
 	add_theme_style_override("panel", solers_make_stylebox(SOLERS_BG, Color(0, 0, 0, 0), 0, 0));
 
 	message_menu = memnew(PopupMenu);
@@ -2785,13 +2549,13 @@ SolersDock::SolersDock() {
 	root_box->add_theme_constant_override("separation", 0);
 	add_child(root_box);
 
-	// Full-height split so the session hairline runs edge-to-edge (topbar lives
-	// inside chat_column only — never above both panes).
 	body_split = memnew(HSplitContainer);
+	body_split->set_name("ConversationSplit");
 	body_split->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	body_split->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	// Hairline comes from SolersPMTheme::apply_chrome_edges on the ambient theme.
 	body_split->set_dragger_visibility(SplitContainer::DRAGGER_HIDDEN);
+	body_split->connect(SNAME("drag_started"), callable_mp(this, &SolersDock::_set_layout_dragging).bind(true));
+	body_split->connect(SNAME("drag_ended"), callable_mp(this, &SolersDock::_set_layout_dragging).bind(false));
 	root_box->add_child(body_split);
 
 	session_sidebar = memnew(PanelContainer);
@@ -2824,8 +2588,8 @@ SolersDock::SolersDock() {
 
 	Button *new_chat = memnew(Button);
 	new_chat->set_name("NewChat");
-	new_chat->set_text(TTR("New chat"));
-	new_chat->set_button_icon(SolersChatGlyphs::get(SNAME("new_chat"), int(Math::round(16.0f * EDSCALE)), 2.0f));
+	new_chat->set_text("New chat");
+	new_chat->set_button_icon(SolersIcons::get(SNAME("new_chat"), int(Math::round(16.0f * EDSCALE))));
 	new_chat->set_icon_alignment(HORIZONTAL_ALIGNMENT_LEFT);
 	solers_style_session_button(new_chat, false);
 	new_chat->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_on_new_chat_pressed));
@@ -2884,21 +2648,20 @@ SolersDock::SolersDock() {
 	/* Conversation timeline. */
 
 	chat_scroll = memnew(ScrollContainer);
+	chat_scroll->set_name("ChatTimelineScroll");
 	chat_scroll->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	chat_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	chat_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
-	chat_scroll->get_v_scroll_bar()->connect(SNAME("scrolling"), callable_mp(this, &SolersDock::_on_timeline_scrolled));
-	chat_scroll->connect(SceneStringName(sort_children), callable_mp(this, &SolersDock::_commit_timeline_layout), CONNECT_DEFERRED);
+	chat_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_SHOW_NEVER);
 	chat_scroll->hide();
 	chat_column->add_child(chat_scroll);
 
 	message_list = memnew(VBoxContainer);
+	message_list->set_name("ChatTimelineMessages");
 	message_list->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	message_list->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	message_list->add_theme_constant_override("separation", 14 * EDSCALE);
-	message_list->connect(SceneStringName(sort_children), callable_mp(this, &SolersDock::_queue_timeline_layout_commit));
-
-	MarginContainer *timeline_inset = memnew(MarginContainer);
+	timeline_inset = memnew(MarginContainer);
+	timeline_inset->set_name("TimelineInset");
 	timeline_inset->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	timeline_inset->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	timeline_inset->add_theme_constant_override("margin_left", 20 * EDSCALE);
@@ -3002,6 +2765,7 @@ SolersDock::SolersDock() {
 	composer_card->add_child(composer);
 
 	chat_input = memnew(TextEdit);
+	chat_input->set_name("ComposerInput");
 	chat_input->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	chat_input->set_custom_minimum_size(Size2(0, SOLERS_COMPOSER_TEXT_MIN_HEIGHT * EDSCALE));
 	chat_input->set_line_wrapping_mode(TextEdit::LINE_WRAPPING_BOUNDARY);
@@ -3046,14 +2810,14 @@ SolersDock::SolersDock() {
 	composer->add_child(composer_toolbar);
 
 	add_context_button = memnew(SolersGlyphButton);
-	add_context_button->configure(SNAME("plus"), SolersGlyphButton::SKIN_GHOST, TTR("Attach image"), 15);
+	add_context_button->set_name("AddContextButton");
+	add_context_button->configure(SNAME("plus"), SolersGlyphButton::SKIN_GHOST, TTR("Add context"), 15);
 	add_context_button->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
 	add_context_button->set_pressed_callback(callable_mp(this, &SolersDock::_on_add_context_pressed));
 	composer_toolbar->add_child(add_context_button);
 
 	approval_mode_chip = memnew(SolersSelectChip);
 	approval_mode_chip->configure(SNAME("shield"), TTR("Manual"), String(), TTR("Ask before mutating tool calls."));
-	approval_mode_chip->set_filled(true);
 	approval_mode_chip->set_pressed_callback(callable_mp(this, &SolersDock::_on_auto_approve_chip_pressed));
 	composer_toolbar->add_child(approval_mode_chip);
 
@@ -3074,6 +2838,7 @@ SolersDock::SolersDock() {
 	composer_toolbar->add_child(send_chat_button);
 
 	plugin_mention_popup = memnew(PanelContainer);
+	plugin_mention_popup->set_name("MentionPopup");
 	plugin_mention_popup->set_mouse_filter(Control::MOUSE_FILTER_STOP);
 	// Escape PanelContainer's SORT_CHILDREN fit_child_in_rect — otherwise the
 	// mention sheet is stretched to the entire SolersDock on every layout pass.
@@ -3082,37 +2847,36 @@ SolersDock::SolersDock() {
 	plugin_mention_popup->hide();
 	add_child(plugin_mention_popup);
 
-	MarginContainer *plugin_mention_margin = memnew(MarginContainer);
-	plugin_mention_margin->add_theme_constant_override("margin_left", 6 * EDSCALE);
-	plugin_mention_margin->add_theme_constant_override("margin_right", 6 * EDSCALE);
-	plugin_mention_margin->add_theme_constant_override("margin_top", 6 * EDSCALE);
-	plugin_mention_margin->add_theme_constant_override("margin_bottom", 6 * EDSCALE);
-	plugin_mention_popup->add_child(plugin_mention_margin);
-
 	plugin_mention_box = memnew(VBoxContainer);
 	plugin_mention_box->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	plugin_mention_box->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	plugin_mention_box->add_theme_constant_override("separation", 4 * EDSCALE);
-	plugin_mention_margin->add_child(plugin_mention_box);
+	plugin_mention_popup->add_child(plugin_mention_box);
 
 	plugin_mention_search = memnew(LineEdit);
+	plugin_mention_search->set_name("MentionSearch");
 	plugin_mention_search->set_placeholder(TTR("Search..."));
 	plugin_mention_search->set_clear_button_enabled(true);
 	solers_style_bare_search_line_edit(plugin_mention_search);
 	plugin_mention_search->connect(SceneStringName(text_changed), callable_mp(this, &SolersDock::_on_mention_search_changed));
+	plugin_mention_search->connect(SceneStringName(gui_input), callable_mp(this, &SolersDock::_on_chat_input_gui_input));
 	plugin_mention_box->add_child(plugin_mention_search);
 
-	plugin_mention_scroll = memnew(ScrollContainer);
-	plugin_mention_scroll->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	plugin_mention_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	plugin_mention_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
-	plugin_mention_scroll->set_vertical_scroll_mode(ScrollContainer::SCROLL_MODE_AUTO);
-	plugin_mention_scroll->add_theme_style_override(SceneStringName(panel), memnew(StyleBoxEmpty));
-	plugin_mention_box->add_child(plugin_mention_scroll);
-	plugin_mention_list = memnew(VBoxContainer);
+	plugin_mention_list = memnew(ItemList);
+	plugin_mention_list->set_name("MentionList");
 	plugin_mention_list->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	plugin_mention_list->add_theme_constant_override("separation", 2 * EDSCALE);
-	plugin_mention_scroll->add_child(plugin_mention_list);
+	plugin_mention_list->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	plugin_mention_list->set_icon_mode(ItemList::ICON_MODE_LEFT);
+	plugin_mention_list->set_max_columns(1);
+	plugin_mention_list->set_max_text_lines(1);
+	plugin_mention_list->set_fixed_icon_size(Size2i(int(16 * EDSCALE), int(16 * EDSCALE)));
+	plugin_mention_list->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+	plugin_mention_list->set_allow_search(false);
+	plugin_mention_list->add_theme_font_size_override(SceneStringName(font_size), int(13 * EDSCALE));
+	plugin_mention_list->add_theme_color_override(SceneStringName(font_color), SOLERS_TEXT_BODY);
+	plugin_mention_list->add_theme_style_override(SceneStringName(panel), memnew(StyleBoxEmpty));
+	plugin_mention_list->connect(SNAME("item_clicked"), callable_mp(this, &SolersDock::_on_mention_item_clicked));
+	plugin_mention_box->add_child(plugin_mention_list);
 
 	model_popup_overlay = memnew(Control);
 	model_popup_overlay->set_mouse_filter(Control::MOUSE_FILTER_STOP);
@@ -3122,17 +2886,9 @@ SolersDock::SolersDock() {
 	model_popup_overlay->hide();
 	add_child(model_popup_overlay);
 
-	attachment_file_dialog = memnew(EditorFileDialog);
-	attachment_file_dialog->set_access(EditorFileDialog::ACCESS_FILESYSTEM);
-	attachment_file_dialog->set_file_mode(EditorFileDialog::FILE_MODE_OPEN_FILE);
-	attachment_file_dialog->add_filter("*.png, *.jpg, *.jpeg", TTRC("Images"));
-	attachment_file_dialog->connect("file_selected", callable_mp(this, &SolersDock::_on_attachment_file_selected));
-	add_child(attachment_file_dialog);
-
 	provider_settings_dialog = memnew(AcceptDialog);
 	provider_settings_dialog->set_title(TTR("Settings"));
 	provider_settings_dialog->set_min_size(Size2(980, 640) * EDSCALE);
-	SolersPMTheme::configure_settings_host(provider_settings_dialog);
 	add_child(provider_settings_dialog);
 
 	provider_settings_view = memnew(SolersPMAIView);
@@ -3203,7 +2959,10 @@ SolersDock::SolersDock() {
 SolersDock::~SolersDock() {
 	// The dock is the sole consumer of the glyph cache; release the textures
 	// with it so nothing lives past renderer teardown.
-	SolersChatGlyphs::clear_cache();
+	SolersIcons::clear_cache();
+	for (Ref<StyleBoxFlat> &style : solers_row_styles) {
+		style.unref();
+	}
 }
 
 void SolersDock::set_agent_session(SolersAgentSession *p_agent_session) {
@@ -3242,6 +3001,15 @@ void SolersDock::_on_agent_timeline_entry_committed(int64_t p_event_id, const St
 		} else {
 			pending_assistant_event_id = p_event_id;
 		}
+		return;
+	}
+	if (p_role == "context_compaction") {
+		Control *row = _solers_timeline_row(message_list, p_event_id);
+		if (row) {
+			message_list->remove_child(row);
+			row->queue_free();
+		}
+		_render_timeline();
 		return;
 	}
 	if (!message_list) {
@@ -3314,7 +3082,7 @@ void SolersDock::_on_agent_tool_started(const String &p_id, const String &p_name
 	if (!p_id.is_empty()) {
 		SolersToolCell **found = tool_cells_by_id.getptr(p_id);
 		if (found && *found) {
-			(*found)->update(p_name, p_arguments, solers_tool_glyph_for_name(tool_registry, p_name));
+			(*found)->update(p_name, p_arguments, solers_tool_ui_kind_for_name(tool_registry, p_name));
 			last_started_tool_cell = *found;
 			_on_cell_content_changed();
 			return;
@@ -3333,7 +3101,7 @@ void SolersDock::_on_agent_tool_started(const String &p_id, const String &p_name
 		mount->add_child(active_tool_group);
 	}
 	SolersToolCell *cell = active_tool_group->add_tool();
-	cell->start(p_name, p_arguments, solers_tool_glyph_for_name(tool_registry, p_name));
+	cell->start(p_name, p_arguments, solers_tool_ui_kind_for_name(tool_registry, p_name));
 	if (!p_id.is_empty()) {
 		tool_cells_by_id.insert(p_id, cell);
 	}
@@ -3345,7 +3113,7 @@ void SolersDock::_on_agent_tool_updated(const String &p_id, const String &p_name
 	if (!p_id.is_empty()) {
 		SolersToolCell **found = tool_cells_by_id.getptr(p_id);
 		if (found && *found) {
-			(*found)->update(p_name, p_arguments, solers_tool_glyph_for_name(tool_registry, p_name));
+			(*found)->update(p_name, p_arguments, solers_tool_ui_kind_for_name(tool_registry, p_name));
 			_on_cell_content_changed();
 			return;
 		}
@@ -3400,16 +3168,15 @@ void SolersDock::_on_agent_tool_finished(const String &p_id, const String &p_nam
 	_on_cell_content_changed();
 }
 
-void SolersDock::_on_agent_turn_completed(const Dictionary &p_result) {
+void SolersDock::_on_agent_turn_completed(const Dictionary &) {
 	const bool follow_tail = _is_scroll_pinned();
 	_finish_turn_cells();
-	if (String(p_result.get("outcome", String())) == "aborted") {
-		const String message = String(p_result.get("text", String())).strip_edges();
-		_append_error_row(message.is_empty() ? TTR("Turn aborted.") : message);
-	}
 	if (agent_session) {
 		timeline_messages = agent_session->get_timeline_entries();
-		_render_timeline(follow_tail ? MAX(0, timeline_messages.size() - SOLERS_TIMELINE_WINDOW) : timeline_start);
+		_render_timeline();
+		if (follow_tail) {
+			callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
+		}
 		const Dictionary plan = agent_session->get_plan();
 		_on_agent_plan_updated(plan.get("explanation", String()), plan.get("plan", Array()));
 	}
@@ -3418,13 +3185,12 @@ void SolersDock::_on_agent_turn_completed(const Dictionary &p_result) {
 	notify_sessions_changed();
 }
 
-void SolersDock::_on_agent_turn_failed(const Dictionary &p_error) {
+void SolersDock::_on_agent_turn_failed(const Dictionary &) {
 	_finish_turn_cells();
 	if (agent_session) {
 		timeline_messages = agent_session->get_timeline_entries();
-		_render_timeline(timeline_start);
+		_render_timeline();
 	}
-	_append_error_row(String::utf8("\u26a0 ") + String(p_error.get("message", "Agent turn failed.")));
 	_refresh_status();
 	_update_send_enabled();
 }

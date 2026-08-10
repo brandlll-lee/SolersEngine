@@ -38,6 +38,7 @@
 #include "core/object/class_db.h"
 #include "core/os/time.h"
 #include "editor/file_system/editor_file_system.h"
+
 #include "modules/solers_ai/core/solers_action_timeline.h"
 
 void SolersFileCheckpoint::_bind_methods() {
@@ -135,7 +136,7 @@ Dictionary SolersFileCheckpoint::create_checkpoint(const String &p_path, const S
 	}
 
 	const String timestamp = Time::get_singleton()->get_datetime_string_from_system(false, true).replace_char(' ', '_').replace_char(':', '-');
-	const String checkpoint_file = vformat("%s_%s_%s", timestamp, res_path.md5_text(), res_path.get_file());
+	const String checkpoint_file = vformat("%s_%s_%s_%s", timestamp, String::num_uint64(Time::get_singleton()->get_ticks_usec()), res_path.md5_text(), res_path.get_file());
 	const String checkpoint_path = checkpoint_root.path_join(checkpoint_file);
 
 	Error write_err = OK;

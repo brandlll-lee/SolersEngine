@@ -1,13 +1,17 @@
 name: 🔗 GHA
-on: [push, pull_request, merge_group, workflow_dispatch]
+on:
+  push:
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 18 * * *"
 
 concurrency:
-  group: ${{ github.workflow }}|${{ github.ref_name }}
+  group: ${{ github.workflow }}|${{ github.event_name }}|${{ github.ref_name }}
   cancel-in-progress: true
 
 jobs:
-  # First stage: Only static checks, fast and prevent expensive builds from running.
-
   static-checks:
     if: ${{ !vars.DISABLE_GODOT_CI || github.run_attempt > 1 || github.event_name == 'workflow_dispatch' }}
     name: 📊 Static checks
@@ -16,6 +20,7 @@ jobs:
   solers-build-check:
     name: 🧠 Solers module build
     needs: static-checks
+    if: needs.static-checks.outputs.solers-changed == 'true' || needs.static-checks.outputs.engine-changed == 'true' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
@@ -30,15 +35,13 @@ jobs:
         uses: ./.github/actions/godot-deps
       - name: Compile Solers module
         run: >-
-          scons platform=linuxbsd target=editor dev_build=yes accesskit=no
-          use_llvm=yes linker=lld modules/libmodule_solers_ai.linuxbsd.editor.dev.x86_64.llvm.a -j4
-
-  # Second stage: Run all the builds and some of the tests.
+          scons platform=linuxbsd target=editor dev_mode=yes accesskit=no
+          use_llvm=yes linker=lld solers_ai_compile -j8
 
   android-build:
     name: 🤖 Android
     needs: [static-checks, solers-build-check]
-    if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
+    if: needs.static-checks.outputs.engine-changed == 'true' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || startsWith(github.ref, 'refs/tags/')
     uses: ./.github/workflows/android_builds.yml
     secrets:
       SERVICE_ACCOUNT_KEY: ${{ secrets.SERVICE_ACCOUNT_KEY }}
@@ -46,13 +49,13 @@ jobs:
   ios-build:
     name: 🍏 iOS
     needs: [static-checks, solers-build-check]
-    if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
+    if: needs.static-checks.outputs.engine-changed == 'true' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || startsWith(github.ref, 'refs/tags/')
     uses: ./.github/workflows/ios_builds.yml
 
   linux-build:
     name: 🐧 Linux
     needs: [static-checks, solers-build-check]
-    if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
+    if: needs.static-checks.outputs.engine-changed == 'true' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || startsWith(github.ref, 'refs/tags/')
     uses: ./.github/workflows/linux_builds.yml
     with:
       changed-files: ${{ needs.static-checks.outputs.changed-files }}
@@ -60,17 +63,17 @@ jobs:
   macos-build:
     name: 🍎 macOS
     needs: [static-checks, solers-build-check]
-    if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
+    if: needs.static-checks.outputs.engine-changed == 'true' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || startsWith(github.ref, 'refs/tags/')
     uses: ./.github/workflows/macos_builds.yml
 
   windows-build:
     name: 🏁 Windows
     needs: [static-checks, solers-build-check]
-    if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
+    if: needs.static-checks.outputs.engine-changed == 'true' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || startsWith(github.ref, 'refs/tags/')
     uses: ./.github/workflows/windows_builds.yml
 
   web-build:
     name: 🌐 Web
     needs: [static-checks, solers-build-check]
-    if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
+    if: needs.static-checks.outputs.engine-changed == 'true' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || startsWith(github.ref, 'refs/tags/')
     uses: ./.github/workflows/web_builds.yml
