@@ -80,6 +80,7 @@
 static constexpr uint64_t SOLERS_CAPTURE_TIMEOUT_MSEC = 10000;
 static constexpr uint64_t SOLERS_RUNTIME_QUERY_TIMEOUT_MSEC = 3000;
 static constexpr int SOLERS_RUNTIME_EVENT_LIMIT = 512;
+static constexpr int SOLERS_RUNTIME_PROPERTY_LIMIT = 64;
 // Keep encoded captures small enough for model requests without losing layout
 // readability.
 static constexpr int SOLERS_CAPTURE_MAX_DIMENSION = 1280;
@@ -2094,11 +2095,13 @@ void SolersObservationService::_runtime_debug_data(const String &p_message, cons
 		return;
 	}
 #ifdef DEBUG_ENABLED
-	if (p_message == "scene:inspect_objects" && runtime_query.get("target", String()) == "objects") {
+	if (p_message == "scene:inspect_objects" && runtime_query.get("target", String()) == "scene" && runtime_query.get("stage", String()) == "objects") {
 		const Array requested_ids = runtime_query.get("object_ids", Array());
 		const Array requested_properties = runtime_query.get("properties", Array());
-		const int max_properties = CLAMP((int)runtime_query.get("max_results", 64), 1, 256);
-		Array objects;
+		const Dictionary handles = runtime_query.get("handles", Dictionary());
+		Array nodes;
+		Array errors = runtime_query.get("errors", Array());
+		Dictionary found;
 		for (int i = 0; i < p_data.size(); i++) {
 			SceneDebuggerObject object;
 			object.deserialize(p_data[i]);
@@ -2106,38 +2109,99 @@ void SolersObservationService::_runtime_debug_data(const String &p_message, cons
 			if (!requested_ids.has(object_id)) {
 				continue;
 			}
+			const String key = String::num_uint64(object.id);
+			Dictionary entry = handles.get(key, Dictionary());
+			if (entry.is_empty()) {
+				continue;
+			}
 			Dictionary projected;
 			Dictionary exact;
 			for (const SceneDebuggerObject::SceneDebuggerProperty &property : object.properties) {
 				const StringName name = property.first.name;
-				if (!requested_properties.is_empty() && !requested_properties.has(name)) {
+				if (!requested_properties.is_empty() && !requested_properties.has(String(name))) {
 					continue;
 				}
 				exact[name] = property.second;
-				if (projected.size() < max_properties) {
+				if (projected.size() < SOLERS_RUNTIME_PROPERTY_LIMIT) {
 					projected[name] = _solers_bounded_runtime_value(property.second);
 				}
 			}
-			runtime_object_cache[String::num_uint64(object.id)] = exact;
-			Dictionary entry;
-			entry["object_id"] = object_id;
-			entry["class_name"] = object.class_name;
+			Dictionary cached;
+			cached["runtime_epoch"] = (int64_t)runtime_epoch;
+			cached["node_path"] = entry.get("node_path", String());
+			cached["properties"] = exact;
+			runtime_object_cache[key] = cached;
 			entry["properties"] = projected;
-			objects.push_back(entry);
+			nodes.push_back(entry);
+			found[key] = true;
+			for (int property_index = 0; property_index < requested_properties.size(); property_index++) {
+				const StringName property = requested_properties[property_index];
+				if (!exact.has(property)) {
+					Dictionary error;
+					error["node_path"] = entry.get("node_path", String());
+					error["object_id"] = object_id;
+					error["property"] = property;
+					error["reason"] = "property_not_returned";
+					errors.push_back(error);
+				}
+			}
 		}
-		if (objects.size() != requested_ids.size()) {
-			return;
+		for (int i = 0; i < requested_ids.size(); i++) {
+			const String key = String::num_uint64((uint64_t)(int64_t)requested_ids[i]);
+			if (!found.has(key)) {
+				const Dictionary handle = handles.get(key, Dictionary());
+				Dictionary error;
+				error["node_path"] = handle.get("node_path", String());
+				error["object_id"] = requested_ids[i];
+				error["reason"] = "object_not_returned";
+				errors.push_back(error);
+			}
 		}
 		Dictionary result;
-		result["objects"] = objects;
+		result["available"] = true;
+		result["nodes"] = nodes;
+		result["errors"] = errors;
 		_finish_runtime_query(result);
 	}
 #endif
 }
 
+#ifdef DEBUG_ENABLED
+Array SolersObservationService::project_runtime_tree(const SceneDebuggerTree &p_tree, uint64_t p_epoch) {
+	Array nodes;
+	LocalVector<String> parent_paths;
+	LocalVector<int> parent_children;
+	for (const SceneDebuggerTree::RemoteNode &node : p_tree.nodes) {
+		String parent_path;
+		if (!parent_paths.is_empty()) {
+			const uint32_t parent = parent_paths.size() - 1;
+			parent_path = parent_paths[parent];
+			if (--parent_children[parent] == 0) {
+				parent_paths.resize(parent);
+				parent_children.resize(parent);
+			}
+		}
+		Dictionary entry;
+		entry["runtime_epoch"] = (int64_t)p_epoch;
+		entry["node_path"] = parent_path + "/" + node.name;
+		entry["name"] = node.name;
+		entry["class_name"] = node.type_name;
+		entry["object_id"] = (int64_t)(uint64_t)node.id;
+		entry["child_count"] = node.child_count;
+		entry["scene_file_path"] = node.scene_file_path;
+		nodes.push_back(entry);
+		if (node.child_count > 0) {
+			parent_paths.push_back(entry["node_path"]);
+			parent_children.push_back(node.child_count);
+		}
+	}
+	return nodes;
+}
+#endif
+
 void SolersObservationService::_runtime_tree_updated() {
 #ifdef DEBUG_ENABLED
-	if (runtime_query.get("target", String()) != "tree") {
+	if (runtime_query.get("target", String()) != "scene" || runtime_query.get("stage", String()) != "tree") {
 		return;
 	}
 	EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
@@ -2145,25 +2209,58 @@ void SolersObservationService::_runtime_tree_updated() {
 	const SceneDebuggerTree *tree = debugger ? debugger->get_remote_tree() : nullptr;
 	Dictionary result;
 	Array nodes;
+	Dictionary handles;
+	Array errors;
 	if (tree) {
+		const Array requested_paths = runtime_query.get("node_paths", Array());
 		const int max_nodes = CLAMP((int)runtime_query.get("max_results", 128), 1, 512);
-		for (const SceneDebuggerTree::RemoteNode &node : tree->nodes) {
-			if (nodes.size() >= max_nodes) {
-				break;
+		const Array projected = project_runtime_tree(*tree, runtime_epoch);
+		Dictionary found_paths;
+		for (int i = 0; i < projected.size(); i++) {
+			const Dictionary entry = projected[i];
+			const String node_path = entry.get("node_path", String());
+			if (requested_paths.is_empty()) {
+				if (nodes.size() < max_nodes) {
+					nodes.push_back(entry);
+				}
+			} else if (requested_paths.has(node_path)) {
+				nodes.push_back(entry);
+				handles[String::num_uint64((uint64_t)(int64_t)entry.get("object_id", 0))] = entry;
+				found_paths[node_path] = true;
 			}
-			Dictionary entry;
-			entry["name"] = node.name;
-			entry["class_name"] = node.type_name;
-			entry["object_id"] = (int64_t)(uint64_t)node.id;
-			entry["child_count"] = node.child_count;
-			entry["scene_file_path"] = node.scene_file_path;
-			nodes.push_back(entry);
 		}
-		result["truncated"] = nodes.size() < tree->nodes.size();
+		if (requested_paths.is_empty()) {
+			result["truncated"] = nodes.size() < projected.size();
+		} else {
+			for (int i = 0; i < requested_paths.size(); i++) {
+				if (!found_paths.has(requested_paths[i])) {
+					Dictionary error;
+					error["node_path"] = requested_paths[i];
+					error["reason"] = "node_not_found";
+					errors.push_back(error);
+				}
+			}
+		}
 	}
 	result["available"] = tree != nullptr;
 	result["nodes"] = nodes;
-	_finish_runtime_query(result);
+	result["errors"] = errors;
+	if (!tree || Array(runtime_query.get("node_paths", Array())).is_empty() || nodes.is_empty()) {
+		_finish_runtime_query(result);
+		return;
+	}
+	runtime_query["stage"] = "objects";
+	runtime_query["handles"] = handles;
+	runtime_query["errors"] = errors;
+	Array object_ids;
+	TypedArray<uint64_t> ids;
+	for (int i = 0; i < nodes.size(); i++) {
+		const uint64_t object_id = (int64_t)Dictionary(nodes[i]).get("object_id", 0);
+		object_ids.push_back((int64_t)object_id);
+		ids.push_back(object_id);
+	}
+	runtime_query["object_ids"] = object_ids;
+	debugger->request_remote_objects(ids, false);
 #endif
 }
 
@@ -2256,7 +2353,7 @@ Dictionary SolersObservationService::observe_runtime(const Dictionary &p_args) {
 		}
 		return result;
 	}
-	if (target == "tree" || target == "objects") {
+	if (target == "scene") {
 		EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
 		ScriptEditorDebugger *debugger = debugger_node ? debugger_node->get_current_debugger() : nullptr;
 		auto unavailable = [this, &target](const String &p_reason) {
@@ -2293,23 +2390,11 @@ Dictionary SolersObservationService::observe_runtime(const Dictionary &p_args) {
 		}
 		runtime_query = p_args.duplicate(true);
 		runtime_query["target"] = target;
+		runtime_query["stage"] = "tree";
 		runtime_query["_runtime_request"] = (int64_t)++runtime_query_sequence;
 		runtime_query["_runtime_epoch"] = (int64_t)runtime_epoch;
 		runtime_query["deadline_msec"] = (int64_t)(OS::get_singleton()->get_ticks_msec() + SOLERS_RUNTIME_QUERY_TIMEOUT_MSEC);
-		if (target == "tree") {
-			debugger->request_remote_tree();
-		} else {
-			const Array object_ids = p_args.get("object_ids", Array());
-			if (object_ids.is_empty()) {
-				runtime_query.clear();
-				return unavailable("object_ids_required");
-			}
-			TypedArray<uint64_t> ids;
-			for (int i = 0; i < object_ids.size(); i++) {
-				ids.push_back((uint64_t)(int64_t)object_ids[i]);
-			}
-			debugger->request_remote_objects(ids, false);
-		}
+		debugger->request_remote_tree();
 		Dictionary pending;
 		pending["target"] = target;
 		pending["status"] = "pending";
@@ -2317,7 +2402,7 @@ Dictionary SolersObservationService::observe_runtime(const Dictionary &p_args) {
 		return pending;
 	}
 
-	const uint64_t since_cursor = (int64_t)p_args.get("since_cursor", 0);
+	const uint64_t since_cursor = p_args.has("since_cursor") ? (int64_t)p_args["since_cursor"] : (target == "performance" ? runtime_cursor : 0);
 	const bool include_events = (bool)p_args.get("include_events", false);
 	const int max_events = CLAMP((int)p_args.get("max_events", include_events ? 32 : 0), 0, 256);
 	Array events;
@@ -2332,6 +2417,10 @@ Dictionary SolersObservationService::observe_runtime(const Dictionary &p_args) {
 		const uint64_t event_epoch = (int64_t)event.get("runtime_epoch", 0);
 		if (event_cursor <= since_cursor) {
 			continue;
+		}
+		if (include_events && max_events > 0 && events.size() >= max_events) {
+			truncated = true;
+			break;
 		}
 		if (event_epoch != runtime_epoch) {
 			consumed_cursor = event_cursor;
@@ -2353,11 +2442,7 @@ Dictionary SolersObservationService::observe_runtime(const Dictionary &p_args) {
 		}
 
 		if (include_events && max_events > 0) {
-			if (events.size() >= max_events) {
-				truncated = true;
-			} else {
-				events.push_back(event);
-			}
+			events.push_back(event);
 		}
 	}
 
@@ -2377,6 +2462,7 @@ Dictionary SolersObservationService::observe_runtime(const Dictionary &p_args) {
 			result["performance_unavailable"] = "runtime_not_connected";
 		} else {
 			Dictionary poll_args = p_args.duplicate(true);
+			poll_args["since_cursor"] = (int64_t)since_cursor;
 			const uint64_t deadline = (int64_t)p_args.get("deadline_msec", 0);
 			if (deadline == 0) {
 				poll_args["deadline_msec"] = (int64_t)(OS::get_singleton()->get_ticks_msec() + 3000);
@@ -2400,9 +2486,10 @@ Dictionary SolersObservationService::observe_runtime(const Dictionary &p_args) {
 	return result;
 }
 
-bool SolersObservationService::get_runtime_property(uint64_t p_epoch, ObjectID p_object_id, const StringName &p_property, Variant &r_value) const {
-	const Dictionary properties = runtime_object_cache.get(String::num_uint64(p_object_id), Dictionary());
-	if (p_epoch != runtime_epoch || !properties.has(p_property)) {
+bool SolersObservationService::get_runtime_property(uint64_t p_epoch, const NodePath &p_node_path, ObjectID p_object_id, const StringName &p_property, Variant &r_value) const {
+	const Dictionary cached = runtime_object_cache.get(String::num_uint64(p_object_id), Dictionary());
+	const Dictionary properties = cached.get("properties", Dictionary());
+	if (p_epoch != runtime_epoch || p_epoch != (uint64_t)(int64_t)cached.get("runtime_epoch", 0) || NodePath(cached.get("node_path", String())) != p_node_path || !properties.has(p_property)) {
 		return false;
 	}
 	r_value = properties[p_property];

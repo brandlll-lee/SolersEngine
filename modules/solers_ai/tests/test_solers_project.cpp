@@ -44,6 +44,9 @@
 #include "scene/3d/light_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/node_3d.h"
+#include "scene/3d/skeleton_3d.h"
+#include "scene/animation/animation_tree.h"
+#include "scene/gui/control.h"
 #include "scene/main/scene_tree.h"
 #include "scene/main/viewport.h"
 #include "scene/main/window.h"
@@ -54,6 +57,9 @@
 #include "scene/resources/resource_format_text.h"
 #include "scene/resources/shader.h"
 #include "scene/resources/sky.h"
+#ifdef DEBUG_ENABLED
+#include "scene/debugger/scene_debugger_object.h"
+#endif
 #include "tests/test_macros.h"
 #include "tests/test_tools.h"
 #include "tests/test_utils.h"
@@ -364,19 +370,61 @@ TEST_CASE("[SolersObservationService] runtime views require native debugger auth
 	CHECK(runtime.has("error_digest"));
 	const Dictionary status = observation_service.get_runtime_status();
 	CHECK_FALSE((bool)status.get("capture_ready", true));
-	for (const char *target : { "tree", "objects", "stack" }) {
+	for (const char *target : { "scene", "stack" }) {
 		Dictionary args;
 		args["target"] = target;
-		if (String(target) == "objects") {
-			args["object_ids"] = Array{ 1 };
-		}
 		const Dictionary observed = observation_service.observe_runtime(args);
 		CHECK_FALSE((bool)observed.get("available", false));
 	}
 	Variant value;
 	const ObjectID object_id((uint64_t)1);
-	CHECK_FALSE(observation_service.get_runtime_property(0, object_id, SNAME("position"), value));
+	CHECK_FALSE(observation_service.get_runtime_property(0, NodePath("/root/Player"), object_id, SNAME("position"), value));
 }
+
+#ifdef DEBUG_ENABLED
+TEST_CASE("[SolersObservationService] remote tree projects one canonical runtime identity") {
+	Node3D *root = memnew(Node3D);
+	root->set_name("root");
+	Node3D *player = memnew(Node3D);
+	player->set_name("Player");
+	root->add_child(player);
+	Skeleton3D *skeleton = memnew(Skeleton3D);
+	skeleton->set_name("Rig");
+	skeleton->add_bone("Head");
+	skeleton->set_bone_pose_position(0, Vector3(0.0, 1.7, 0.0));
+	player->add_child(skeleton);
+	Camera3D *camera = memnew(Camera3D);
+	camera->set_name("Camera");
+	camera->set_fov(73.0);
+	skeleton->add_child(camera);
+	AnimationTree *animation_tree = memnew(AnimationTree);
+	animation_tree->set_name("Locomotion");
+	animation_tree->set_active(false);
+	player->add_child(animation_tree);
+	Control *hud = memnew(Control);
+	hud->set_name("HUD");
+	root->add_child(hud);
+	SceneDebuggerTree tree(root);
+
+	const Array nodes = SolersObservationService::project_runtime_tree(tree, 17);
+	REQUIRE(nodes.size() == 6);
+	CHECK(Dictionary(nodes[0]).get("node_path", String()) == "/root");
+	CHECK(Dictionary(nodes[2]).get("class_name", String()) == "Skeleton3D");
+	CHECK(Dictionary(nodes[3]).get("node_path", String()) == "/root/Player/Rig/Camera");
+	CHECK(Dictionary(nodes[3]).get("class_name", String()) == "Camera3D");
+	CHECK((int64_t)Dictionary(nodes[3]).get("object_id", 0) == (int64_t)(uint64_t)camera->get_instance_id());
+	CHECK(Dictionary(nodes[4]).get("node_path", String()) == "/root/Player/Locomotion");
+	CHECK(Dictionary(nodes[4]).get("class_name", String()) == "AnimationTree");
+	CHECK(Dictionary(nodes[5]).get("node_path", String()) == "/root/HUD");
+	CHECK((int64_t)Dictionary(nodes[4]).get("runtime_epoch", 0) == 17);
+	CHECK(camera->get_fov() == doctest::Approx(73.0));
+	CHECK(skeleton->get_bone_count() == 1);
+	CHECK(skeleton->get_bone_name(0) == "Head");
+	CHECK(skeleton->get_bone_pose_position(0) == Vector3(0.0, 1.7, 0.0));
+	CHECK_FALSE(animation_tree->is_active());
+	memdelete(root);
+}
+#endif
 
 TEST_CASE("[SolersScriptService] script.edit reports persisted file identity") {
 	const String path = "res://solers_root_script_fact_contract.gd";

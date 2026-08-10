@@ -968,6 +968,29 @@ TEST_CASE("[SolersToolRegistry] scene.open is a thin EditorInterface open surfac
 	CHECK((missing_code == "SCENE_NOT_FOUND" || missing_code == "EDITOR_UNAVAILABLE"));
 }
 
+TEST_CASE("[SolersToolRegistry] runtime tools expose one canonical debugger handle") {
+	SolersObservationService observation;
+	SolersToolRegistry registry;
+	registry.set_observation_service(&observation);
+	registry.register_default_tools();
+
+	const Dictionary observe = registry.get_tool_definition(SNAME("runtime.observe"));
+	const Dictionary observe_schema = observe.get("input_schema", Dictionary());
+	const Dictionary observe_properties = observe_schema.get("properties", Dictionary());
+	CHECK(observe_properties.has("node_paths"));
+	CHECK(observe_properties.has("properties"));
+	CHECK_FALSE(observe_properties.has("object_ids"));
+	CHECK_FALSE(observe_properties.has("since_cursor"));
+	const Dictionary target = observe_properties.get("target", Dictionary());
+	CHECK(Array(target.get("enum", Array())) == Array({ "scene", "stack", "performance" }));
+
+	const Dictionary control = registry.get_tool_definition(SNAME("runtime.control"));
+	const Dictionary control_properties = Dictionary(control.get("input_schema", Dictionary())).get("properties", Dictionary());
+	CHECK(control_properties.has("runtime_epoch"));
+	CHECK(control_properties.has("node_path"));
+	CHECK(control_properties.has("object_id"));
+}
+
 TEST_CASE("[SolersToolRegistry] project.search rejects incomplete requests before execution") {
 	SolersObservationService observation_service;
 	SolersPermissionManager permissions;

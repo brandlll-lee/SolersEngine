@@ -39,6 +39,7 @@
 
 class Image;
 class ScriptEditorDebugger;
+class SceneDebuggerTree;
 class Camera3D;
 class Viewport;
 
@@ -103,6 +104,9 @@ protected:
 	static void _bind_methods();
 
 public:
+#ifdef DEBUG_ENABLED
+	static Array project_runtime_tree(const SceneDebuggerTree &p_tree, uint64_t p_epoch);
+#endif
 	static int get_capture_settle_frame_count(bool p_sdfgi_enabled, int p_convergence_setting);
 	static String render_state_fingerprint(const Dictionary &p_state);
 	Dictionary describe_render_state(Viewport *p_viewport, Camera3D *p_camera = nullptr, Node *p_scene_root = nullptr) const;
@@ -124,7 +128,7 @@ public:
 	Dictionary observe_runtime(const Dictionary &p_args);
 	bool is_runtime_observation_ready(const Dictionary &p_args) const;
 	bool has_runtime_query() const { return !runtime_query.is_empty(); }
-	bool get_runtime_property(uint64_t p_epoch, ObjectID p_object_id, const StringName &p_property, Variant &r_value) const;
+	bool get_runtime_property(uint64_t p_epoch, const NodePath &p_node_path, ObjectID p_object_id, const StringName &p_property, Variant &r_value) const;
 	Dictionary get_editor_logs(int p_max_messages = 200) const;
 	Dictionary capture_viewport(const Dictionary &p_args);
 	Dictionary poll_viewport_capture(const Dictionary &p_args);

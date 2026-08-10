@@ -1390,21 +1390,25 @@ Dictionary SolersToolRegistry::_run_control(const Dictionary &p_args) const {
 			return _error("RUNTIME_QUERY_BUSY", "Wait for the active native runtime observation before changing runtime state.");
 		}
 		const uint64_t epoch = (int64_t)p_args.get("runtime_epoch", 0);
+		const NodePath node_path = NodePath(p_args.get("node_path", String()));
 		const ObjectID object_id = ObjectID((uint64_t)(int64_t)p_args.get("object_id", 0));
 		const StringName property = p_args.get("property", String());
+		if (node_path.is_empty() || !node_path.is_absolute() || object_id.is_null() || property.is_empty() || !p_args.has("expected_value") || !p_args.has("value")) {
+			return _error("INVALID_ARGUMENT", "set_property requires the canonical runtime_epoch, absolute node_path, object_id, property, expected_value, and value returned by runtime.observe.");
+		}
 		Variant before;
-		if (!observation_service->get_runtime_property(epoch, object_id, property, before)) {
-			return _error("STALE_RUNTIME_OBSERVATION", "Observe this object property in the current runtime epoch before changing it.");
+		if (!observation_service->get_runtime_property(epoch, node_path, object_id, property, before)) {
+			return _error("STALE_RUNTIME_OBSERVATION", "Observe this exact runtime node property in the current epoch before changing it.");
 		}
 		if (before != p_args.get("expected_value", Variant())) {
 			return _error("RUNTIME_PRECONDITION_FAILED", "The runtime property no longer matches expected_value.");
 		}
 		debugger->update_remote_object(object_id, property, p_args.get("value", Variant()));
 		Dictionary query_args;
-		query_args["target"] = "objects";
-		Array object_ids;
-		object_ids.push_back((int64_t)(uint64_t)object_id);
-		query_args["object_ids"] = object_ids;
+		query_args["target"] = "scene";
+		Array node_paths;
+		node_paths.push_back(String(node_path));
+		query_args["node_paths"] = node_paths;
 		Array properties;
 		properties.push_back(property);
 		query_args["properties"] = properties;
@@ -1414,8 +1418,13 @@ Dictionary SolersToolRegistry::_run_control(const Dictionary &p_args) const {
 		}
 		Dictionary poll_args = pending.get("poll_args", Dictionary());
 		poll_args["action"] = action;
+		poll_args["runtime_epoch"] = (int64_t)epoch;
+		poll_args["node_path"] = String(node_path);
+		poll_args["object_id"] = (int64_t)(uint64_t)object_id;
+		poll_args["property"] = property;
 		poll_args["before"] = before;
 		poll_args["value"] = p_args.get("value", Variant());
+		poll_args["write_deadline_msec"] = poll_args.get("deadline_msec", 0);
 		pending["poll_args"] = poll_args;
 		return _ok(pending);
 	}
@@ -1495,26 +1504,58 @@ Dictionary SolersToolRegistry::_poll_runtime_control(const Dictionary &p_args) c
 		if (observed.get("status", String()) == "pending") {
 			return _ok(observed);
 		}
-		const Array objects = observed.get("objects", Array());
-		if (objects.is_empty()) {
-			return _error("RUNTIME_OBJECT_DISAPPEARED", "The runtime object disappeared before verification.");
-		}
-		const Dictionary object = objects[0];
+		const Array nodes = observed.get("nodes", Array());
+		const uint64_t deadline = (int64_t)p_args.get("write_deadline_msec", 0);
+		const String node_path = p_args.get("node_path", String());
 		const StringName property = p_args.get("property", String());
-		const Dictionary properties = object.get("properties", Dictionary());
+		Dictionary node;
+		for (int i = 0; i < nodes.size(); i++) {
+			const Dictionary candidate = nodes[i];
+			if (String(candidate.get("node_path", String())) == node_path && (int64_t)candidate.get("object_id", 0) == (int64_t)p_args.get("object_id", 0)) {
+				node = candidate;
+				break;
+			}
+		}
+		const Dictionary properties = node.get("properties", Dictionary());
 		const Variant after = properties.get(property, Variant());
-		if (!properties.has(property) || after != p_args.get("value", Variant())) {
-			return _error("RUNTIME_WRITE_NOT_CONFIRMED", "The native debugger did not confirm the requested runtime value.");
+		if ((!properties.has(property) || after != p_args.get("value", Variant())) && OS::get_singleton()->get_ticks_msec() < deadline && (int64_t)observation_service->get_runtime_status().get("runtime_epoch", 0) == (int64_t)p_args.get("runtime_epoch", 0)) {
+			Dictionary query_args;
+			query_args["target"] = "scene";
+			Array node_paths;
+			node_paths.push_back(node_path);
+			query_args["node_paths"] = node_paths;
+			Array requested_properties;
+			requested_properties.push_back(property);
+			query_args["properties"] = requested_properties;
+			Dictionary pending = observation_service->observe_runtime(query_args);
+			if (pending.get("status", String()) == "pending") {
+				Dictionary poll_args = pending.get("poll_args", Dictionary());
+				poll_args["deadline_msec"] = MIN((uint64_t)(int64_t)poll_args.get("deadline_msec", 0), deadline);
+				poll_args["write_deadline_msec"] = (int64_t)deadline;
+				poll_args["action"] = action;
+				poll_args["runtime_epoch"] = p_args.get("runtime_epoch", 0);
+				poll_args["node_path"] = node_path;
+				poll_args["object_id"] = p_args.get("object_id", 0);
+				poll_args["property"] = property;
+				poll_args["before"] = p_args.get("before", Variant());
+				poll_args["value"] = p_args.get("value", Variant());
+				pending["poll_args"] = poll_args;
+				return _ok(pending);
+			}
+		}
+		if (node.is_empty()) {
+			return _error("RUNTIME_OBJECT_DISAPPEARED", "The canonical runtime node disappeared before verification.");
 		}
 		Dictionary data;
 		data["action"] = action;
 		data["runtime_only"] = true;
 		data["runtime_epoch"] = observed.get("runtime_epoch", 0);
-		data["object_id"] = object.get("object_id", 0);
+		data["node_path"] = node_path;
+		data["object_id"] = node.get("object_id", 0);
 		data["property"] = property;
 		data["before"] = p_args.get("before", Variant());
 		data["after"] = after;
-		data["target_state_confirmed"] = true;
+		data["target_state_confirmed"] = properties.has(property) && after == p_args.get("value", Variant());
 		return _ok(data);
 	}
 	return _error("RUNTIME_CONTINUATION_INVALID", "Only runtime property verification has a continuation.", false);
@@ -1546,7 +1587,7 @@ void SolersToolRegistry::_register_observation_tools() {
 					return result;
 				}
 				return _ok(file); }, _access_by_arg("read", "project:", "path"), {}, {}, SolersToolUiKind::READ);
-	_add_observe("runtime.observe", "Observe the running game through Godot's native debugger. Query lifecycle events, the remote SceneTree, selected object properties, paused stack frames, or one performance sample.", R"({"type":"object","properties":{"target":{"type":"string","enum":["events","tree","objects","stack","performance"]},"since_cursor":{"type":"integer","minimum":0},"include_events":{"type":"boolean"},"max_events":{"type":"integer","minimum":0,"maximum":256},"object_ids":{"type":"array","items":{"type":"integer","minimum":1},"minItems":1,"maxItems":16,"uniqueItems":true},"properties":{"type":"array","items":{"type":"string","minLength":1},"maxItems":64,"uniqueItems":true},"max_results":{"type":"integer","minimum":1,"maximum":512}},"additionalProperties":false})", [this, obs](const SolersToolContext &, const Dictionary &a) { return _ok(obs->observe_runtime(a)); }, {}, [this, obs](const SolersToolContext &, const Dictionary &a) { return _ok(obs->observe_runtime(a)); }, [obs](const SolersToolContext &, const Dictionary &a) { return obs->is_runtime_observation_ready(a); });
+	_add_observe("runtime.observe", "Observe one canonical snapshot of the running game through Godot's native debugger. A scene snapshot returns epoch-bound NodePath, ObjectID, class, and requested properties together; stack and performance expose their native debugger facts.", R"({"type":"object","properties":{"target":{"type":"string","enum":["scene","stack","performance"]},"node_paths":{"type":"array","items":{"type":"string","pattern":"^/"},"maxItems":16,"uniqueItems":true},"properties":{"type":"array","items":{"type":"string","minLength":1},"maxItems":64,"uniqueItems":true},"max_results":{"type":"integer","minimum":1,"maximum":512}},"required":["target"],"additionalProperties":false})", [this, obs](const SolersToolContext &, const Dictionary &a) { return _ok(obs->observe_runtime(a)); }, {}, [this, obs](const SolersToolContext &, const Dictionary &a) { return _ok(obs->observe_runtime(a)); }, [obs](const SolersToolContext &, const Dictionary &a) { return obs->is_runtime_observation_ready(a); });
 	_add_observe_exposed("render.capture", "Capture content-addressed visual evidence from an explicit native state. Edited-scene captures require the history/version returned by object.query or object.transaction; the receipt binds the image to the exact World3D render-state fingerprint. debug_draw uses Godot's Viewport enum; inspect it with engine.describe.", R"({"type":"object","properties":{"target":{"type":"string","enum":["editor","camera","top_down","orthographic","runtime"]},"source_state":{"type":"object","properties":{"history_id":{"type":"integer"},"version":{"type":"integer","minimum":0},"root_object_id":{"type":"integer"}},"required":["history_id","version"],"additionalProperties":true},"node_path":{"type":"string"},"axis":{"type":"string","enum":["x","y","z"]},"direction":{"type":"string","enum":["positive","negative"]},"focus_paths":{"type":"array","items":{"type":"string"}},"section_position":{"type":"number"},"debug_draw":{"type":"integer","minimum":0}},"required":["target"],"additionalProperties":false})", SolersToolExposure::DIRECT, [obs](const SolersToolContext &, const Dictionary &a) { return obs->capture_viewport(a); }, {}, false, [obs](const SolersToolContext &, const Dictionary &a) { return obs->poll_viewport_capture(a); }, [obs](const SolersToolContext &, const Dictionary &a) { return obs->is_viewport_capture_ready(a); }, SolersToolUiKind::CAPTURE);
 
 	if (resource_service) {
@@ -1603,7 +1644,7 @@ void SolersToolRegistry::_register_script_tools() {
 
 void SolersToolRegistry::_register_runtime_tools() {
 	const SolersPermissionManager::Permission run_project = SolersPermissionManager::PERMISSION_RUN_PROJECT;
-	_add("runtime.control", "Control Godot's active debugger or make one preconditioned, runtime-only property change. Persist verified changes separately through object.transaction.", R"({"type":"object","properties":{"action":{"type":"string","enum":["play_current_scene","stop","suspend","resume","next_frame","debug_break","debug_continue","debug_step","debug_next","debug_out","set_property"]},"runtime_epoch":{"type":"integer","minimum":0},"object_id":{"type":"integer","minimum":1},"property":{"type":"string","minLength":1},"expected_value":{},"value":{}},"required":["action"],"additionalProperties":false})", run_project, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DIRECT, [this](const SolersToolContext &, const Dictionary &a) { return _run_control(a); }, SolersToolExecution::MAIN_THREAD, [](const Dictionary &) {
+	_add("runtime.control", "Control Godot's active debugger or make one preconditioned, runtime-only property change using the complete canonical handle returned by runtime.observe. Persist verified changes separately through object.transaction.", R"({"type":"object","properties":{"action":{"type":"string","enum":["play_current_scene","stop","suspend","resume","next_frame","debug_break","debug_continue","debug_step","debug_next","debug_out","set_property"]},"runtime_epoch":{"type":"integer","minimum":0},"node_path":{"type":"string","pattern":"^/"},"object_id":{"type":"integer","minimum":1},"property":{"type":"string","minLength":1},"expected_value":{},"value":{}},"required":["action"],"additionalProperties":false})", run_project, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DIRECT, [this](const SolersToolContext &, const Dictionary &a) { return _run_control(a); }, SolersToolExecution::MAIN_THREAD, [](const Dictionary &) {
 				Array accesses;
 				Dictionary access;
 				access["mode"] = "write";
