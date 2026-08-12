@@ -30,13 +30,14 @@
 
 #include "solers_context_manager.h"
 
+#include "core/io/json.h"
 #include "core/templates/hash_map.h"
 
 #include "modules/solers_ai/core/solers_mention.h"
 #include "modules/solers_ai/llm/solers_llm_message.h"
 
 const char *SolersContextManager::COMPACTION_SUMMARY_PREFIX =
-		"Typed continuation: this note preserves only the user's goal, constraints, and unresolved decisions. Current engine state, receipts, diagnostics, and pending tool work are supplied separately by Solers and remain authoritative.";
+		"Task continuation: preserve the user's goal, durable constraints, decisions, and precise next action. The structured checkpoint below is authoritative for completed engine work and failed operations.";
 const char *SolersContextManager::CANCELLED_TOOL_RESULT =
 		"{\"ok\":false,\"error\":{\"code\":\"TOOL_CANCELLED\",\"message\":\"This call never produced a result: the turn ended before it finished. Re-run it if its output is still needed.\",\"recoverable\":true}}";
 const char *SolersContextManager::MODEL_CONTEXT_ROLE = "model_context";
@@ -113,33 +114,63 @@ Array SolersContextManager::repair_tool_pairing(const Array &p_messages) {
 }
 
 Array SolersContextManager::project_completed_turns(const Array &p_messages) {
-	Array projected;
-	int latest_attachment = -1;
-	for (int i = p_messages.size() - 1; i >= 0; i--) {
-		const Dictionary message = p_messages[i];
-		if (String(message.get("role", String())) == SolersLLMRole::USER && !Array(message.get("attachments", Array())).is_empty()) {
-			latest_attachment = i;
-			break;
-		}
-	}
+	Dictionary latest_summary, facts, failures;
 	for (int i = 0; i < p_messages.size(); i++) {
 		const Dictionary message = p_messages[i];
 		const String role = message.get("role", String());
-		if ((bool)message.get("ephemeral", false) || String(message.get("origin", String())) == "turn_checkpoint" || role == String(SolersLLMRole::TOOL)) {
+		const String origin = message.get("origin", String());
+		if ((bool)message.get("ephemeral", false)) {
 			continue;
 		}
-		if (role == String(SolersLLMRole::ASSISTANT) && !Array(message.get("tool_calls", Array())).is_empty()) {
+		if (origin == "compaction_summary") {
+			latest_summary = message;
 			continue;
 		}
-		Dictionary kept = message;
-		if (role == String(SolersLLMRole::USER) && message.has("mentions")) {
-			kept = message.duplicate(true);
-			kept["content"] = SolersMention::strip_prompt_block(message.get("content", String()));
+		if (origin == "turn_checkpoint") {
+			Ref<JSON> json;
+			json.instantiate();
+			if (json->parse(message.get("content", String())) == OK && json->get_data().get_type() == Variant::DICTIONARY) {
+				const Dictionary checkpoint = json->get_data();
+				facts.merge(checkpoint.get("facts", Dictionary()), true);
+				failures.merge(checkpoint.get("failures", Dictionary()), true);
+			}
+			continue;
 		}
-		if (i != latest_attachment && kept.has("attachments")) {
-			kept.erase("attachments");
+		if (role != String(SolersLLMRole::TOOL)) {
+			continue;
 		}
-		projected.push_back(kept);
+		Ref<JSON> json;
+		json.instantiate();
+		if (json->parse(message.get("content", String())) != OK || json->get_data().get_type() != Variant::DICTIONARY) {
+			continue;
+		}
+		const Dictionary result = json->get_data();
+		const String tool = message.get("name", String());
+		if (!(bool)result.get("ok", false)) {
+			failures[tool] = result.get("error", Dictionary());
+			continue;
+		}
+		failures.erase(tool);
+		const Dictionary receipt = Dictionary(Dictionary(result.get("data", Dictionary())).get("mutation", Dictionary())).get("receipt", Dictionary());
+		const Dictionary scene = receipt.get("scene_after", Dictionary());
+		if (!scene.is_empty()) {
+			facts["scene"] = scene;
+		}
+		const Array resources = receipt.get("resources_after", Array());
+		for (int resource_index = 0; resource_index < resources.size(); resource_index++) {
+			const Dictionary resource = resources[resource_index];
+			const String path = resource.get("path", String());
+			if (!path.is_empty()) {
+				facts[path] = resource;
+			}
+		}
+	}
+	Array projected;
+	if (!latest_summary.is_empty()) {
+		projected.push_back(latest_summary);
+	}
+	if (!facts.is_empty() || !failures.is_empty()) {
+		projected.push_back(Dictionary({ { "role", MODEL_CONTEXT_ROLE }, { "origin", "turn_checkpoint" }, { "content", JSON::stringify(Dictionary({ { "facts", facts }, { "failures", failures } }), "", false, true) } }));
 	}
 	return projected;
 }
@@ -195,42 +226,14 @@ Dictionary SolersContextManager::apply_compaction(const Array &p_messages, const
 	summary_message["role"] = MODEL_CONTEXT_ROLE;
 	summary_message["content"] = context_summary;
 	summary_message["origin"] = "compaction_summary";
-	int remaining = MAX(0, p_token_budget - _estimate_message_tokens(summary_message) - estimate_messages_tokens(suffix));
-	Array recent_users;
-	int latest_attachment = -1;
-	for (int i = preserve_from - 1; i >= 0; i--) {
-		const Dictionary message = p_messages[i];
-		if (String(message.get("role", String())) == SolersLLMRole::USER && !Array(message.get("attachments", Array())).is_empty()) {
-			latest_attachment = i;
-			break;
-		}
-	}
-	for (int i = preserve_from - 1; i >= 0; i--) {
-		Dictionary message = p_messages[i];
-		if (String(message.get("role", String())) != SolersLLMRole::USER || (bool)message.get("ephemeral", false)) {
-			continue;
-		}
-		if (message.has("mentions")) {
-			message = message.duplicate(true);
-			message["content"] = SolersMention::strip_prompt_block(message.get("content", String()));
-		}
-		int tokens = _estimate_message_tokens(message);
-		if (i == latest_attachment && tokens > remaining) {
-			message["content"] = "[Retained user attachment evidence.]";
-			tokens = _estimate_message_tokens(message);
-		}
-		if (tokens > remaining) {
-			if (latest_attachment >= 0 && i > latest_attachment) {
-				continue;
-			}
-			break;
-		}
-		recent_users.push_back(message);
-		remaining -= tokens;
-	}
+	const Array prefix_projection = project_completed_turns(p_messages.slice(0, preserve_from));
+	const int remaining = MAX(0, p_token_budget - _estimate_message_tokens(summary_message) - estimate_messages_tokens(suffix));
 	Array compacted;
-	for (int i = recent_users.size() - 1; i >= 0; i--) {
-		compacted.push_back(recent_users[i]);
+	for (int i = 0; i < prefix_projection.size(); i++) {
+		const Dictionary message = prefix_projection[i];
+		if (String(message.get("origin", String())) == "turn_checkpoint" && _estimate_message_tokens(message) <= remaining) {
+			compacted.push_back(message);
+		}
 	}
 	compacted.push_back(summary_message);
 	compacted.append_array(suffix);

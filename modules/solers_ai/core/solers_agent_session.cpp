@@ -404,8 +404,6 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 	uint64_t restored_authored_revision = 0;
 	uint64_t restored_observed_revision = 0;
 	Dictionary restored_reversal;
-	Dictionary restored_mutation_receipt;
-	Dictionary restored_tool_failure;
 	HashSet<String> restored_model_attachments;
 	if (p_project_path.is_empty() || p_session_id.is_empty()) {
 		Dictionary empty;
@@ -428,8 +426,6 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 		uint64_t *restored_observed_revision = nullptr;
 		int64_t *event_sequence = nullptr;
 		Dictionary *restored_reversal = nullptr;
-		Dictionary *restored_mutation_receipt = nullptr;
-		Dictionary *restored_tool_failure = nullptr;
 		HashSet<String> *restored_model_attachments = nullptr;
 	} restore_state;
 	restore_state.project_path = &p_project_path;
@@ -445,8 +441,6 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 	restore_state.restored_observed_revision = &restored_observed_revision;
 	restore_state.event_sequence = &transcript_event_sequence;
 	restore_state.restored_reversal = &restored_reversal;
-	restore_state.restored_mutation_receipt = &restored_mutation_receipt;
-	restore_state.restored_tool_failure = &restored_tool_failure;
 	restore_state.restored_model_attachments = &restored_model_attachments;
 	solers_transcript_foreach_session(p_session_id, &restore_state, [](void *p_userdata, const String &p_record) -> bool {
 		ScanState &scan = *static_cast<ScanState *>(p_userdata);
@@ -497,25 +491,6 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 			const String delivered = event.get("content", String());
 			if (!call_id.is_empty() && !delivered.is_empty()) {
 				scan.restored->push_back(SolersLLMMessage::tool_result(call_id, tool, delivered));
-			}
-			if (!(bool)event.get("ok", false)) {
-				(*scan.restored_tool_failure)["call_id"] = call_id;
-				(*scan.restored_tool_failure)["tool"] = tool;
-				(*scan.restored_tool_failure)["arguments"] = event.get("args_summary", event.get("args", Dictionary()));
-				(*scan.restored_tool_failure)["error"] = event.get("error", Dictionary());
-			} else {
-				if (String(scan.restored_tool_failure->get("tool", String())) == tool) {
-					scan.restored_tool_failure->clear();
-				}
-				Ref<JSON> json;
-				json.instantiate();
-				if (json->parse(delivered) == OK && json->get_data().get_type() == Variant::DICTIONARY) {
-					const Dictionary data = Dictionary(json->get_data()).get("data", Dictionary());
-					const Dictionary receipt = Dictionary(data.get("mutation", Dictionary())).get("receipt", Dictionary());
-					if (!receipt.is_empty()) {
-						*scan.restored_mutation_receipt = receipt.duplicate(true);
-					}
-				}
 			}
 			return true;
 		}
@@ -618,8 +593,6 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 	}
 	state["delivered_model_attachments"] = delivered_attachments;
 	state["reversal"] = restored_reversal;
-	state["latest_mutation_receipt"] = restored_mutation_receipt;
-	state["latest_tool_failure"] = restored_tool_failure;
 	return state;
 }
 
@@ -1025,9 +998,24 @@ Dictionary SolersAgentSession::_take_godot_diagnostics() {
 }
 
 String SolersAgentSession::_readonly_cache_key(const StringName &p_name, const Dictionary &p_args) const {
-	const Dictionary normalized = tool_registry ? tool_registry->normalize_tool_args(p_name, p_args) : p_args;
-	const uint64_t revision = tool_registry && tool_registry->caches_across_revisions(p_name) ? 0 : authored_revision;
-	return String(p_name) + ":" + String::num_uint64(revision) + ":" + String::num_uint64(normalized.hash());
+	Dictionary evidence;
+	evidence["tool"] = p_name;
+	evidence["args"] = tool_registry ? tool_registry->normalize_tool_args(p_name, p_args) : p_args;
+	evidence["scene_revision"] = (int64_t)authored_revision;
+	if (tool_registry) {
+		const Array accesses = tool_registry->resolve_resource_access(p_name, p_args);
+		for (int i = 0; i < accesses.size(); i++) {
+			const String key = Dictionary(accesses[i]).get("key", String());
+			if (key.begins_with("project:")) {
+				const String path = key.trim_prefix("project:");
+				evidence[path] = FileAccess::exists(path) ? FileAccess::get_sha256(path) : String("missing");
+			}
+		}
+		if (tool_registry->observation_service) {
+			evidence["runtime_epoch"] = tool_registry->observation_service->get_runtime_status().get("runtime_epoch", 0);
+		}
+	}
+	return JSON::stringify(evidence, "", false, true).sha256_text();
 }
 
 // Enriched mentions are the audit authority (same array the model sees).
@@ -1127,7 +1115,7 @@ String SolersAgentSession::_default_system_prompt() const {
 			"- The 3D editor viewport is the live edited scene tree. Use object.transaction for visible scene construction; scripts own runtime behavior. Establish appearance only with render.capture target=editor|camera tied to the source_state receipt (runtime proves Play only). Use object.query target=relations for world-space relations; a screenshot is not a geometry measurement.\n"
 			"- Background tools return stable job ids immediately. Continue independent work; when nothing else is runnable, call job.wait once with the required ids and stop issuing tools. Solers parks this turn and resumes it with a background job delta when any requested job reaches a project-import terminal state; do not poll asset.status for progress.\n"
 			"- Tool errors carry the native cause; read it, change what it names, and retry. Repeating an identical failed call wastes a step.\n"
-			"- Before each non-trivial tool call or group of related calls, write one short sentence saying what you are about to do and why. Group related actions under one preamble; skip it for trivial reads. This narration is how the user follows your progress.\n"
+			"- Keep progress narration to changed decisions or new evidence. Do not repeat what you will inspect before routine tool calls; the tool timeline already shows execution.\n"
 			"- Use update_plan only as a concise optional progress display. Text without tool calls ends the task, so keep progress notes attached to tool-calling turns and finish with a clear final summary.";
 	if (tool_registry) {
 		const String skill_catalog = tool_registry->get_skill_catalog_prompt();
@@ -1187,30 +1175,6 @@ Dictionary SolersAgentSession::_environment_context_message() {
 		turn_diagnostics["warnings"] = godot_log_warning_count;
 	}
 	context["turn_diagnostics"] = turn_diagnostics;
-	if (!latest_mutation_receipt.is_empty()) {
-		bool current = true;
-		const Dictionary scene = latest_mutation_receipt.get("scene_after", Dictionary());
-		if (!scene.is_empty()) {
-			const int history_id = EditorNode::get_editor_data().get_current_edited_scene_history_id();
-			EditorUndoRedoManager *manager = EditorUndoRedoManager::get_singleton();
-			UndoRedo *history = manager ? manager->get_history_undo_redo(history_id) : nullptr;
-			current = edited_root && (int64_t)edited_root->get_instance_id() == (int64_t)scene.get("root_object_id", 0) && history_id == (int)scene.get("history_id", -1) && history && (int64_t)history->get_version() == (int64_t)scene.get("version", -1);
-		}
-		const Array resources = latest_mutation_receipt.get("resources_after", Array());
-		for (int i = 0; current && i < resources.size(); i++) {
-			const Dictionary resource = resources[i];
-			const String path = resource.get("path", String());
-			current = FileAccess::exists(path) == (bool)resource.get("exists", false) && (!resource.has("sha256") || FileAccess::get_sha256(path) == String(resource["sha256"]));
-		}
-		if (current) {
-			context["latest_mutation_receipt"] = latest_mutation_receipt;
-		} else {
-			latest_mutation_receipt.clear();
-		}
-	}
-	if (!latest_tool_failure.is_empty()) {
-		context["latest_tool_failure"] = latest_tool_failure;
-	}
 	Dictionary message = SolersLLMMessage::user(
 			"Current engine context (authoritative, bounded, and refreshed for this request):\n" + JSON::stringify(context, "", false, true));
 	message["origin"] = "solers_state";
@@ -1496,20 +1460,24 @@ Error SolersAgentSession::_dispatch_compaction_request() {
 	const String base_url = active_provider.get("base_url", String());
 	const Dictionary profile = settings_service->resolve_provider_profile(provider_id, base_url);
 
-	const String compaction_system_prompt = "Update the task continuation from the supplied user intent. Preserve goals, constraints, unresolved choices, and remaining intent only. Never invent engine state or completion claims. Return text only.";
+	const String compaction_system_prompt = "Update the task continuation from the conversation and its authoritative checkpoint. Preserve the user's goal, durable constraints, decisions, unresolved work, and precise next action. Never invent engine state or completion claims. Return text only.";
 	const int prefix_end = compaction_preserve_from < 0 ? compaction_source_messages.size() : compaction_preserve_from;
 	Array history;
 	for (int i = 0; i < prefix_end; i++) {
 		Dictionary message = compaction_source_messages[i];
 		const String role = message.get("role", String());
 		const String origin = message.get("origin", String());
-		const bool previous_continuation = role == SolersContextManager::MODEL_CONTEXT_ROLE && origin == "compaction_summary";
-		if ((role != SolersLLMRole::USER && !previous_continuation) || (bool)message.get("ephemeral", false) || origin == "solers_state") {
+		const bool continuation = role == SolersContextManager::MODEL_CONTEXT_ROLE && (origin == "compaction_summary" || origin == "turn_checkpoint");
+		if ((role != SolersLLMRole::USER && !continuation) || (bool)message.get("ephemeral", false) || origin == "solers_state") {
 			continue;
 		}
 		message = message.duplicate(true);
-		message["role"] = SolersLLMRole::USER;
-		message["content"] = SolersMention::strip_prompt_block(message.get("content", String()));
+		if (continuation) {
+			message["role"] = SolersLLMRole::USER;
+			message["content"] = (origin == "turn_checkpoint" ? "Authoritative completed-work checkpoint:\n" : "Previous continuation:\n") + String(message.get("content", String()));
+		} else if (role == SolersLLMRole::USER) {
+			message["content"] = SolersMention::strip_prompt_block(message.get("content", String()));
+		}
 		message.erase("attachments");
 		message.erase("mentions");
 		message.erase("origin");
@@ -1518,7 +1486,7 @@ Error SolersAgentSession::_dispatch_compaction_request() {
 	ERR_FAIL_COND_V(history.is_empty(), ERR_INVALID_DATA);
 	const int intent_tokens = SolersContextManager::estimate_messages_tokens(history);
 	history.push_back(SolersLLMMessage::user(
-			"Write a concise typed continuation containing only the user's goal, durable constraints, unresolved choices, and remaining intent. Do not copy engine state, paths, object identities, hashes, tool results, receipts, diagnostics, attachments, or claims of completion; Solers supplies those facts separately from its journal, current engine snapshot, and active tool suffix. Respond with text only and do not call tools."));
+			"Write a concise continuation containing the user's goal, durable constraints, decisions already made, unresolved work, and the exact next action. Treat the structured checkpoint as authoritative: do not rewrite its engine identities, hashes, receipts, diagnostics, or attachments into prose. Respond with text only and do not call tools."));
 	Dictionary request = _build_request(history, compaction_system_prompt, Array());
 	const int projection_budget = MAX(1, context_window - max_output_tokens - SolersContextManager::estimate_tokens(compaction_system_prompt));
 	const int continuation_budget = MAX(1, MIN(intent_tokens, projection_budget - SolersContextManager::estimate_messages_tokens(compaction_source_messages.slice(prefix_end))));
@@ -1859,6 +1827,10 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 	turn_cache_write_tokens = 0;
 	turn_output_tokens = 0;
 	turn_wire_body_bytes = 0;
+	turn_tool_calls = 0;
+	turn_duplicate_observations = 0;
+	turn_successful_mutations = 0;
+	turn_evidence_advances = 0;
 	_ensure_godot_log_audit(true);
 
 	Dictionary turn_started;
@@ -2190,6 +2162,9 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	usage["cache_write_tokens"] = turn_cache_write_tokens;
 	usage["output_tokens"] = turn_output_tokens;
 	usage["wire_body_bytes"] = turn_wire_body_bytes;
+	usage["effective_mutations"] = turn_successful_mutations;
+	usage["evidence_advances"] = turn_evidence_advances;
+	usage["duplicate_observation_rate"] = turn_tool_calls > 0 ? double(turn_duplicate_observations) / turn_tool_calls : 0.0;
 	data["turn_usage"] = usage;
 
 	Dictionary transcript;
@@ -2368,6 +2343,7 @@ void SolersAgentSession::_poll_tool_queue() {
 		return;
 	}
 	tool_started_msec = OS::get_singleton()->get_ticks_msec();
+	turn_tool_calls++;
 	Dictionary audit;
 	audit["call_id"] = id;
 	audit["tool"] = canonical_name;
@@ -2385,6 +2361,7 @@ void SolersAgentSession::_poll_tool_queue() {
 		const String cache_key = _readonly_cache_key(StringName(canonical_name), parsed_args);
 		const Dictionary *cached = readonly_cache.getptr(cache_key);
 		if (cached) {
+			turn_duplicate_observations++;
 			Dictionary result;
 			result["ok"] = cached->get("ok", false);
 			Dictionary data;
@@ -2795,11 +2772,15 @@ void SolersAgentSession::_poll_tool_executing() {
 	const bool tool_succeeded = (bool)result.get("ok", false);
 	Dictionary data = result.get("data", Dictionary());
 	if (tool_succeeded) {
+		if (tool_registry && !tool_registry->is_read_only(StringName(canonical_name), args)) {
+			readonly_cache.clear();
+		}
 		if ((bool)data.get("authored_state_changed", false)) {
 			authored_revision++;
+			turn_successful_mutations++;
+			turn_evidence_advances++;
 			const Dictionary mutation = data.get("mutation", Dictionary());
 			const Dictionary receipt = mutation.get("receipt", Dictionary());
-			latest_mutation_receipt = receipt.duplicate(true);
 			if (receipt.has("scene_after")) {
 				render_artifacts.clear();
 			}
@@ -2831,6 +2812,7 @@ void SolersAgentSession::_poll_tool_executing() {
 	const bool cacheable = canonical_name != "render.capture" && !result.has("attachments") && !Dictionary(result.get("data", Dictionary())).has("poll_args");
 	if (tool_succeeded && cacheable && tool_registry && tool_registry->is_read_only(StringName(canonical_name), args)) {
 		readonly_cache[_readonly_cache_key(StringName(canonical_name), args)] = result.duplicate(true);
+		turn_evidence_advances++;
 	}
 
 	const int queue_index = deferred_queue_index;
@@ -2920,10 +2902,6 @@ void SolersAgentSession::_deliver_tool_result(const String &p_id, const String &
 
 	if (!(bool)result.get("ok", false)) {
 		const Dictionary error = result.get("error", Dictionary());
-		latest_tool_failure["call_id"] = p_id;
-		latest_tool_failure["tool"] = p_canonical_name;
-		latest_tool_failure["arguments"] = tool_registry ? tool_registry->summarize_tool_args_for_audit(StringName(p_canonical_name), p_args) : p_args;
-		latest_tool_failure["error"] = error;
 		if (String(error.get("code", String())) != "SKIPPED_AFTER_FAILURE" && tool_registry) {
 			const Array accesses = tool_registry->resolve_resource_access(StringName(p_canonical_name), p_args);
 			for (int i = 0; i < accesses.size(); i++) {
@@ -2935,8 +2913,6 @@ void SolersAgentSession::_deliver_tool_result(const String &p_id, const String &
 				}
 			}
 		}
-	} else if (String(latest_tool_failure.get("tool", String())) == p_canonical_name) {
-		latest_tool_failure.clear();
 	}
 }
 
@@ -3018,8 +2994,6 @@ void SolersAgentSession::shutdown() {
 void SolersAgentSession::_reset_session_derived_state() {
 	runtime_observation_cursor = 0;
 	render_artifacts.clear();
-	latest_mutation_receipt.clear();
-	latest_tool_failure.clear();
 	MutexLock lock(godot_log_mutex);
 	pending_godot_diagnostics.clear();
 	pending_godot_diagnostic_index.clear();
@@ -3099,8 +3073,6 @@ void SolersAgentSession::set_session(const String &p_project_path, const String 
 	if (tool_registry) {
 		tool_registry->restore_session_reversal(session_id, state.get("reversal", Dictionary()));
 	}
-	latest_mutation_receipt = state.get("latest_mutation_receipt", Dictionary());
-	latest_tool_failure = state.get("latest_tool_failure", Dictionary());
 	pending_background_assets = state.get("background_assets", Array());
 	background_resume_suppressed = false;
 	delivered_background_assets.clear();

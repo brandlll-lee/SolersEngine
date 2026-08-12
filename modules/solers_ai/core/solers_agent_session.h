@@ -92,8 +92,6 @@ class SolersAgentSession : public Object {
 	String last_stop_reason;
 	Dictionary last_usage;
 	Dictionary current_plan;
-	Dictionary latest_mutation_receipt;
-	Dictionary latest_tool_failure;
 	String last_outcome;
 	Dictionary active_provider; // { provider, model, base_url, api_key, features }
 	bool running = false;
@@ -152,6 +150,10 @@ class SolersAgentSession : public Object {
 	int64_t turn_cache_write_tokens = 0;
 	int64_t turn_output_tokens = 0;
 	int64_t turn_wire_body_bytes = 0;
+	int turn_tool_calls = 0;
+	int turn_duplicate_observations = 0;
+	int turn_successful_mutations = 0;
+	int turn_evidence_advances = 0;
 	int request_transient_tokens = 0;
 	uint64_t retry_resume_msec = 0;
 	int text_delta_count = 0;

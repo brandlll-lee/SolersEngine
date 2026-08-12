@@ -63,16 +63,6 @@ Dictionary make_user_message(const String &p_text) {
 	return message;
 }
 
-Dictionary find_tool_def(const Array &p_tools, const String &p_name) {
-	for (const Variant &tool_variant : p_tools) {
-		const Dictionary tool = tool_variant;
-		if (tool.get("name", String()) == p_name) {
-			return tool;
-		}
-	}
-	return Dictionary();
-}
-
 Array make_tool_calls(const String &p_id, const String &p_name) {
 	Dictionary call;
 	call["id"] = p_id;
@@ -93,33 +83,20 @@ TEST_CASE("[SolersTrace] transcript parser skips incomplete audit records silent
 TEST_CASE("[SolersContextManager] compaction replaces the active prefix and preserves its tool suffix") {
 	SolersContextManager context;
 	Array history;
-	Dictionary attachment;
-	attachment["id"] = "reference";
-	attachment["content_sha256"] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-	Array attachments;
-	attachments.push_back(attachment);
-	Dictionary old_user = SolersLLMMessage::user("Inspect the scene.\n\n[Selected Solers context]\n[{\"path\":\"res://large.glb\"}]");
-	old_user["attachments"] = attachments;
-	Array mentions;
-	mentions.push_back(Dictionary());
-	old_user["mentions"] = mentions;
-	history.push_back(old_user);
-	history.push_back(SolersLLMMessage::tool_result("call_old", "object.query", String("x").repeat(40000)));
 	CHECK_FALSE(context.should_compact(SolersContextManager::DEFAULT_CONTEXT_TOKENS - SolersContextManager::DEFAULT_OUTPUT_TOKENS - 1, SolersContextManager::DEFAULT_CONTEXT_TOKENS, SolersContextManager::DEFAULT_OUTPUT_TOKENS));
 	CHECK(context.should_compact(SolersContextManager::DEFAULT_CONTEXT_TOKENS - SolersContextManager::DEFAULT_OUTPUT_TOKENS, SolersContextManager::DEFAULT_CONTEXT_TOKENS, SolersContextManager::DEFAULT_OUTPUT_TOKENS));
-	old_user["content"] = String("obsolete ").repeat(8000) + "\n\n[Selected Solers context]\n[{\"path\":\"res://large.glb\"}]";
-	history[0] = old_user;
+	history.push_back(SolersLLMMessage::user(String("obsolete ").repeat(8000)));
+	history.push_back(SolersLLMMessage::tool_result("call_old", "object.transaction", R"({"ok":true,"data":{"mutation":{"receipt":{"scene_after":{"root_object_id":42,"version":7}}}}})"));
 	history.push_back(SolersLLMMessage::user("Continue the build."));
 	const int preserve_from = history.size();
 	history.push_back(SolersLLMMessage::assistant("Capturing.", make_tool_calls("call_live", "render.capture")));
 	history.push_back(SolersLLMMessage::tool_result("call_live", "render.capture", String("exact payload ").repeat(1000)));
 	const Dictionary result = context.apply_compaction(history, "Keep building from engine evidence.", 8000, preserve_from);
 	const Array compacted = result.get("messages", Array());
-	REQUIRE(compacted.size() == 5);
-	CHECK(Array(Dictionary(compacted[0]).get("attachments", Array())).size() == 1);
-	CHECK_FALSE(String(Dictionary(compacted[0]).get("content", String())).contains("Selected Solers context"));
-	CHECK(Dictionary(compacted[1]).get("content", String()) == "Continue the build.");
-	CHECK(Dictionary(compacted[2]).get("role", String()) == SolersContextManager::MODEL_CONTEXT_ROLE);
+	REQUIRE(compacted.size() == 4);
+	CHECK(Dictionary(compacted[0]).get("origin", String()) == "turn_checkpoint");
+	CHECK(String(Dictionary(compacted[0]).get("content", String())).contains("root_object_id"));
+	CHECK(Dictionary(compacted[1]).get("origin", String()) == "compaction_summary");
 	const String wire = JSON::stringify(compacted);
 	CHECK(wire.contains("exact payload"));
 	CHECK_FALSE(wire.contains("obsolete"));
@@ -231,26 +208,6 @@ TEST_CASE("[SolersJournal] append repairs only an incomplete crash tail") {
 	}
 	CHECK(records == 2);
 	repaired.unref();
-}
-
-TEST_CASE("[SolersAgentSession] task completion has no Harness request budget") {
-	SolersToolRegistry registry;
-	SolersAgentSession session;
-	session.set_tool_registry(&registry);
-
-	const Array tools = registry.list_tools();
-	CHECK_FALSE(find_tool_def(tools, "update_plan").is_empty());
-	CHECK(find_tool_def(tools, "done").is_empty());
-	const Dictionary status = session.get_status();
-	CHECK_FALSE(status.has("tool_iterations"));
-	CHECK_FALSE(status.has("max_tool_iterations"));
-	CHECK_FALSE(status.has("model_request_budget"));
-	CHECK_FALSE(status.has("input_token_budget"));
-	CHECK((int)status.get("model_requests", 0) == 0);
-	CHECK(status.has("fresh_input_tokens"));
-	CHECK(status.has("cache_read_tokens"));
-	CHECK(status.has("cache_write_tokens"));
-	CHECK(status.has("wire_body_bytes"));
 }
 
 TEST_CASE("[SolersAgentSession] validates the Codex update_plan contract") {
