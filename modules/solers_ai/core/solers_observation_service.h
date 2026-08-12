@@ -58,6 +58,7 @@ class SolersObservationService : public Object {
 	uint64_t runtime_epoch = 0;
 	Vector<Dictionary> runtime_events;
 	uint64_t runtime_query_sequence = 0;
+	int runtime_result_token_budget = INT32_MAX;
 	Dictionary runtime_query;
 	Dictionary runtime_object_cache;
 	Array runtime_stack_frames;
@@ -66,15 +67,8 @@ class SolersObservationService : public Object {
 	Array performance_monitor_names;
 	Array performance_monitor_types;
 
-	// Serialization stops at the same token budget the transport can carry, so
-	// a dense scene is reported as whole nodes plus an elided count instead of
-	// being cut open somewhere downstream.
-	Dictionary _serialize_node(Node *p_node, Node *p_edited_root, int p_depth, int p_max_depth, int p_max_children_per_node, int &r_token_budget, int &r_elided_nodes) const;
-	Array _serialize_node_array(const TypedArray<Node> &p_nodes, Node *p_edited_root, int p_max_depth, int p_max_children_per_node) const;
 	bool _normalize_project_path(const String &p_path, String &r_res_path, String &r_error) const;
-	bool _collect_project_folders_indexed(const String &p_query, int p_max_folders, Array &r_folders, int &r_scanned_count, bool &r_truncated) const;
 	void _refresh_project_files();
-	Dictionary _search_project_paths(const String &p_query, int p_max_files) const;
 	void _render_frame_post_draw();
 	Dictionary _capture_error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
 	Dictionary _runtime_capture_unavailable() const;
@@ -113,19 +107,18 @@ public:
 	Dictionary get_project_info() const;
 	Dictionary get_project_settings_summary() const;
 	Dictionary list_project_files(int p_max_files = 512) const;
-	Dictionary list_project_folders(int p_max_folders = 512, const String &p_query = String()) const;
-	Dictionary search_project(const Dictionary &p_args) const;
+	Dictionary search_project(const Dictionary &p_args, int p_token_budget = INT32_MAX) const;
 	// Front door: bounded digest for any res:// selection (directory / Resource / file).
 	// Kind comes from DirAccess + ResourceLoader / EditorFileSystem — not mention token names.
 	Dictionary observe_path(const String &p_path) const;
 	Dictionary digest_packed_scene(const String &p_path, int p_max_nodes = 96) const;
 	// PackedScene source text is denied by default; returns observe_path digest + SCENE_TEXT_DENIED.
-	Dictionary read_project_file(const String &p_path, int p_max_bytes = 262144, bool p_raw = false) const;
-	Dictionary get_open_scenes(int p_max_depth = 1, int p_max_children_per_node = 16) const;
-	Dictionary get_selection(int p_max_depth = 1, int p_max_children_per_node = 16) const;
-	Dictionary get_scene_tree(const Array &p_node_paths, int p_max_depth, int p_max_children_per_node, int p_token_budget) const;
+	Dictionary read_project_file(const String &p_path, int p_line_start = 1, int p_line_count = 200, bool p_raw = false, int p_token_budget = INT32_MAX) const;
+	Dictionary get_open_scenes() const;
+	Dictionary get_selection() const;
+	Dictionary query_scene_nodes(const Dictionary &p_args, int p_token_budget) const;
 	Dictionary get_runtime_status() const;
-	Dictionary observe_runtime(const Dictionary &p_args);
+	Dictionary observe_runtime(const Dictionary &p_args, int p_token_budget = INT32_MAX);
 	bool is_runtime_observation_ready(const Dictionary &p_args) const;
 	bool has_runtime_query() const { return !runtime_query.is_empty(); }
 	bool get_runtime_property(uint64_t p_epoch, const NodePath &p_node_path, ObjectID p_object_id, const StringName &p_property, Variant &r_value) const;

@@ -32,6 +32,7 @@
 
 #include "core/io/json.h"
 #include "core/object/class_db.h"
+
 #include "modules/solers_ai/core/solers_action_timeline.h"
 #include "modules/solers_ai/core/solers_observation_service.h"
 #include "modules/solers_ai/core/solers_tool_registry.h"
@@ -230,8 +231,8 @@ Dictionary SolersMCPAdapter::read_resource(const Dictionary &p_params) const {
 		if (observation_service) {
 			snapshot["project"] = observation_service->get_project_info();
 			snapshot["project_settings"] = observation_service->get_project_settings_summary();
-			snapshot["open_scenes"] = observation_service->get_open_scenes(1, 64);
-			snapshot["selection"] = observation_service->get_selection(1, 64);
+			snapshot["open_scenes"] = observation_service->get_open_scenes();
+			snapshot["selection"] = observation_service->get_selection();
 			snapshot["runtime"] = observation_service->get_runtime_status();
 			snapshot["editor_log"] = observation_service->get_editor_logs(40);
 		}

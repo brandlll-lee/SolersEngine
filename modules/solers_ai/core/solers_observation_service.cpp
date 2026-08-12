@@ -374,15 +374,15 @@ void SolersObservationService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_project_info"), &SolersObservationService::get_project_info);
 	ClassDB::bind_method(D_METHOD("get_project_settings_summary"), &SolersObservationService::get_project_settings_summary);
 	ClassDB::bind_method(D_METHOD("list_project_files", "max_files"), &SolersObservationService::list_project_files, DEFVAL(512));
-	ClassDB::bind_method(D_METHOD("search_project", "args"), &SolersObservationService::search_project);
+	ClassDB::bind_method(D_METHOD("search_project", "args", "token_budget"), &SolersObservationService::search_project, DEFVAL(INT32_MAX));
 	ClassDB::bind_method(D_METHOD("observe_path", "path"), &SolersObservationService::observe_path);
 	ClassDB::bind_method(D_METHOD("digest_packed_scene", "path", "max_nodes"), &SolersObservationService::digest_packed_scene, DEFVAL(96));
-	ClassDB::bind_method(D_METHOD("read_project_file", "path", "max_bytes", "raw"), &SolersObservationService::read_project_file, DEFVAL(262144), DEFVAL(false));
-	ClassDB::bind_method(D_METHOD("get_open_scenes", "max_depth", "max_children_per_node"), &SolersObservationService::get_open_scenes, DEFVAL(1), DEFVAL(16));
-	ClassDB::bind_method(D_METHOD("get_selection", "max_depth", "max_children_per_node"), &SolersObservationService::get_selection, DEFVAL(1), DEFVAL(16));
-	ClassDB::bind_method(D_METHOD("get_scene_tree", "max_depth", "max_children_per_node", "token_budget"), &SolersObservationService::get_scene_tree);
+	ClassDB::bind_method(D_METHOD("read_project_file", "path", "line_start", "line_count", "raw", "token_budget"), &SolersObservationService::read_project_file, DEFVAL(1), DEFVAL(200), DEFVAL(false), DEFVAL(INT32_MAX));
+	ClassDB::bind_method(D_METHOD("get_open_scenes"), &SolersObservationService::get_open_scenes);
+	ClassDB::bind_method(D_METHOD("get_selection"), &SolersObservationService::get_selection);
+	ClassDB::bind_method(D_METHOD("query_scene_nodes", "args", "token_budget"), &SolersObservationService::query_scene_nodes);
 	ClassDB::bind_method(D_METHOD("get_runtime_status"), &SolersObservationService::get_runtime_status);
-	ClassDB::bind_method(D_METHOD("observe_runtime", "args"), &SolersObservationService::observe_runtime);
+	ClassDB::bind_method(D_METHOD("observe_runtime", "args", "token_budget"), &SolersObservationService::observe_runtime, DEFVAL(INT32_MAX));
 	ClassDB::bind_method(D_METHOD("get_editor_logs", "max_messages"), &SolersObservationService::get_editor_logs, DEFVAL(200));
 	ClassDB::bind_method(D_METHOD("capture_viewport", "args"), &SolersObservationService::capture_viewport);
 }
@@ -1085,40 +1085,6 @@ bool SolersObservationService::_normalize_project_path(const String &p_path, Str
 	return true;
 }
 
-bool SolersObservationService::_collect_project_folders_indexed(const String &p_query, int p_max_folders, Array &r_folders, int &r_scanned_count, bool &r_truncated) const {
-	if (!Engine::get_singleton()->is_editor_hint()) {
-		return false;
-	}
-	EditorFileSystem *efs = EditorFileSystem::get_singleton();
-	if (!efs || !efs->get_filesystem() || efs->is_scanning()) {
-		return false;
-	}
-	EditorFileSystemDirectory *root = efs->get_filesystem();
-	LocalVector<EditorFileSystemDirectory *> stack;
-	stack.push_back(root);
-	while (!stack.is_empty()) {
-		EditorFileSystemDirectory *dir = stack[stack.size() - 1];
-		stack.remove_at(stack.size() - 1);
-		for (int i = 0; i < dir->get_subdir_count(); i++) {
-			EditorFileSystemDirectory *sub = dir->get_subdir(i);
-			if (!sub) {
-				continue;
-			}
-			r_scanned_count++;
-			const String path = sub->get_path();
-			if (p_query.is_empty() || path.findn(p_query) != -1) {
-				if (r_folders.size() >= p_max_folders) {
-					r_truncated = true;
-					return true;
-				}
-				r_folders.push_back(path);
-			}
-			stack.push_back(sub);
-		}
-	}
-	return true;
-}
-
 void SolersObservationService::_refresh_project_files() {
 	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
 	if (!filesystem || filesystem->is_scanning() || filesystem->is_importing() || !filesystem->get_filesystem()) {
@@ -1142,139 +1108,19 @@ void SolersObservationService::_refresh_project_files() {
 	project_files_ready = true;
 }
 
-// Nodes a subtree contributes, so an elided branch reports how much of the
-// scene the model is not seeing rather than only its immediate child count.
-static int _solers_subtree_node_count(Node *p_node) {
-	if (!p_node) {
-		return 0;
-	}
-	int total = 1;
-	for (int i = 0; i < p_node->get_child_count(); i++) {
-		total += _solers_subtree_node_count(p_node->get_child(i));
-	}
-	return total;
-}
-
-Dictionary SolersObservationService::_serialize_node(Node *p_node, Node *p_edited_root, int p_depth, int p_max_depth, int p_max_children_per_node, int &r_token_budget, int &r_elided_nodes) const {
-	Dictionary node_data;
-	if (!p_node) {
-		node_data["valid"] = false;
-		return node_data;
-	}
-
-	node_data["valid"] = true;
-	node_data["name"] = p_node->get_name();
-	node_data["type"] = p_node->get_class();
-	node_data["path"] = p_edited_root && p_node != p_edited_root ? String(p_edited_root->get_path_to(p_node)) : String(".");
-	node_data["scene_file_path"] = p_node->get_scene_file_path();
-	node_data["child_count"] = p_node->get_child_count();
+static Dictionary _solers_node_identity(Node *p_node, Node *p_root) {
+	Dictionary identity;
+	identity["node_path"] = p_node == p_root ? String(".") : String(p_root->get_path_to(p_node));
+	identity["object_id"] = String::num_uint64(p_node->get_instance_id());
+	identity["name"] = p_node->get_name();
+	identity["class_name"] = p_node->get_class();
+	identity["child_count"] = p_node->get_child_count();
+	identity["scene_file_path"] = p_node->get_scene_file_path();
 	const Ref<Script> script = p_node->get_script();
 	if (script.is_valid()) {
-		node_data["script_path"] = script->get_path();
+		identity["script_path"] = script->get_path();
 	}
-	if (Node3D *node_3d = Object::cast_to<Node3D>(p_node)) {
-		Dictionary transform;
-		transform["position"] = _solers_vector3_array(node_3d->get_position());
-		transform["global_position"] = _solers_vector3_array(node_3d->get_global_position());
-		transform["rotation_degrees"] = _solers_vector3_array(node_3d->get_rotation_degrees());
-		transform["global_rotation_degrees"] = _solers_vector3_array(node_3d->get_global_rotation_degrees());
-		transform["scale"] = _solers_vector3_array(node_3d->get_scale());
-		transform["visible"] = node_3d->is_visible();
-		node_data["transform"] = transform;
-	}
-	if (GeometryInstance3D *geometry = Object::cast_to<GeometryInstance3D>(p_node)) {
-		const AABB bounds = geometry->get_global_transform().xform(geometry->get_aabb());
-		Dictionary global_aabb;
-		global_aabb["position"] = _solers_vector3_array(bounds.position);
-		global_aabb["size"] = _solers_vector3_array(bounds.size);
-		node_data["global_aabb"] = global_aabb;
-	}
-	if (Camera3D *camera = Object::cast_to<Camera3D>(p_node)) {
-		const Vector3 origin = camera->get_global_position();
-		const Vector3 forward = -camera->get_global_transform().basis.get_column(2).normalized();
-		node_data["camera_forward"] = _solers_vector3_array(forward);
-		if (p_edited_root) {
-			real_t hit_distance = -1;
-			String hit_path;
-			_solers_collect_ray_hit(p_edited_root, p_edited_root, origin, forward, hit_distance, hit_path);
-			if (hit_distance > 0) {
-				node_data["camera_forward_hit_node"] = hit_path;
-				node_data["camera_forward_hit_distance"] = hit_distance;
-			}
-		}
-	}
-	Dictionary resource_properties;
-	List<PropertyInfo> properties;
-	p_node->get_property_list(&properties);
-	for (const PropertyInfo &property : properties) {
-		if (property.type != Variant::OBJECT || !(property.usage & PROPERTY_USAGE_STORAGE) || property.name == SNAME("script")) {
-			continue;
-		}
-		Resource *resource = Object::cast_to<Resource>(p_node->get(property.name));
-		if (!resource) {
-			continue;
-		}
-		Dictionary reference;
-		reference["class_name"] = resource->get_class();
-		reference["path"] = resource->get_path();
-		resource_properties[property.name] = reference;
-	}
-	if (!resource_properties.is_empty()) {
-		node_data["resource_properties"] = resource_properties;
-	}
-
-	Node *owner = p_node->get_owner();
-	if (owner) {
-		node_data["owner_path"] = p_edited_root && owner == p_edited_root ? String(".") : p_edited_root && p_edited_root->is_ancestor_of(owner) ? String(p_edited_root->get_path_to(owner))
-																																				: String(owner->get_name());
-	}
-
-	// This node's own payload is charged before descending, so the budget is
-	// spent on nodes that are actually reported in full.
-	r_token_budget -= SolersContextManager::estimate_tokens(JSON::stringify(node_data, "", false, true));
-
-	if (p_depth >= p_max_depth) {
-		node_data["children_truncated_by_depth"] = p_node->get_child_count() > 0;
-		return node_data;
-	}
-
-	Array children;
-	const int child_count = p_node->get_child_count();
-	const int max_children = MAX(0, p_max_children_per_node);
-	const int child_limit = MIN(child_count, max_children);
-	int serialized_children = 0;
-	for (int i = 0; i < child_limit; i++) {
-		if (r_token_budget <= 0) {
-			break;
-		}
-		children.push_back(_serialize_node(p_node->get_child(i), p_edited_root, p_depth + 1, p_max_depth, p_max_children_per_node, r_token_budget, r_elided_nodes));
-		serialized_children++;
-	}
-	node_data["children"] = children;
-	if (child_count > serialized_children) {
-		node_data["children_truncated_count"] = child_count - serialized_children;
-		if (serialized_children < child_limit) {
-			node_data["children_truncated_by_budget"] = true;
-			for (int i = serialized_children; i < child_limit; i++) {
-				r_elided_nodes += _solers_subtree_node_count(p_node->get_child(i));
-			}
-		}
-	}
-
-	return node_data;
-}
-
-Array SolersObservationService::_serialize_node_array(const TypedArray<Node> &p_nodes, Node *p_edited_root, int p_max_depth, int p_max_children_per_node) const {
-	Array serialized;
-	int token_budget = INT32_MAX;
-	int elided_nodes = 0;
-	for (int i = 0; i < p_nodes.size(); i++) {
-		Node *node = Object::cast_to<Node>(p_nodes[i]);
-		if (node) {
-			serialized.push_back(_serialize_node(node, p_edited_root, 0, p_max_depth, p_max_children_per_node, token_budget, elided_nodes));
-		}
-	}
-	return serialized;
+	return identity;
 }
 
 Dictionary SolersObservationService::get_project_info() const {
@@ -1338,60 +1184,6 @@ Dictionary SolersObservationService::list_project_files(int p_max_files) const {
 	return result;
 }
 
-Dictionary SolersObservationService::list_project_folders(int p_max_folders, const String &p_query) const {
-	Dictionary result;
-	Array folders;
-	int scanned_count = 0;
-	bool truncated = false;
-	const int max_folders = CLAMP(p_max_folders, 1, SOLERS_FILE_LIST_HARD_CAP);
-	const bool indexed = _collect_project_folders_indexed(p_query.strip_edges(), max_folders, folders, scanned_count, truncated);
-	result["folders"] = folders;
-	result["count"] = folders.size();
-	result["scanned_count"] = scanned_count;
-	result["truncated"] = truncated;
-	result["source"] = indexed ? "editor_index" : "unavailable";
-	return result;
-}
-
-Dictionary SolersObservationService::_search_project_paths(const String &p_query, int p_max_files) const {
-	Dictionary result;
-	const String query = p_query.strip_edges();
-	if (query.is_empty()) {
-		result = list_project_files(p_max_files);
-		result["ok"] = true;
-		result["query"] = String();
-		result["mode"] = "list_all";
-		return result;
-	}
-
-	const int max_files = CLAMP(p_max_files, 1, SOLERS_FILE_LIST_HARD_CAP);
-	PackedStringArray indexed_files;
-	bool available;
-	{
-		MutexLock lock(project_files_mutex);
-		indexed_files = project_files;
-		available = project_files_ready;
-	}
-	Array files;
-	for (int i = 0; i < indexed_files.size() && files.size() < max_files; i++) {
-		if (String(indexed_files[i]).findn(query) != -1) {
-			files.push_back(indexed_files[i]);
-		}
-	}
-	result["available"] = available;
-	if (!available) {
-		result["code"] = "EDITOR_INDEX_UPDATING";
-	}
-	result["ok"] = true;
-	result["query"] = query;
-	result["files"] = files;
-	result["count"] = files.size();
-	result["scanned_count"] = indexed_files.size();
-	result["truncated"] = files.size() == max_files;
-	result["source"] = "editor_index";
-	return result;
-}
-
 static bool _solers_text_search_extension(const String &p_extension) {
 	return p_extension == "gd" || p_extension == "cs" || p_extension == "shader" || p_extension == "gdshader" ||
 			p_extension == "tscn" || p_extension == "tres" || p_extension == "cfg" || p_extension == "json" ||
@@ -1428,6 +1220,16 @@ static Dictionary _solers_project_result(const String &p_path) {
 	Dictionary result;
 	result["path"] = p_path;
 	return result;
+}
+
+static bool _solers_append_bounded(Array &r_results, const Dictionary &p_entry, int p_max_results, int p_token_budget, int &r_tokens) {
+	const int tokens = SolersContextManager::estimate_tokens(JSON::stringify(p_entry));
+	if (r_results.size() >= p_max_results || (!r_results.is_empty() && r_tokens + tokens > MAX(1, p_token_budget))) {
+		return false;
+	}
+	r_results.push_back(p_entry);
+	r_tokens += tokens;
+	return true;
 }
 
 static bool _solers_is_packed_scene_type(const String &p_resource_type) {
@@ -1731,24 +1533,35 @@ Dictionary SolersObservationService::digest_packed_scene(const String &p_path, i
 	return result;
 }
 
-Dictionary SolersObservationService::search_project(const Dictionary &p_args) const {
+Dictionary SolersObservationService::search_project(const Dictionary &p_args, int p_token_budget) const {
 	const String type = String(p_args.get("type", "path")).to_lower();
 	const String query = String(p_args.get("query", String())).strip_edges();
-	const int max_results = CLAMP((int)p_args.get("max_results", 64), 1, 256);
+	const int max_results = p_args.has("max_results") ? MAX(1, (int)p_args["max_results"]) : INT32_MAX;
+	const int cursor = MAX(0, (int)p_args.get("cursor", 0));
 	Array results;
+	int result_tokens = 0;
 	int scanned = 0;
 	bool truncated = false;
 	bool available = true;
 
 	if (type == "path") {
-		const Dictionary paths = _search_project_paths(query, max_results);
-		available = paths.get("available", false);
-		const Array files = paths.get("files", Array());
-		for (int i = 0; i < files.size(); i++) {
-			results.push_back(_solers_project_result(files[i]));
+		PackedStringArray files;
+		{
+			MutexLock lock(project_files_mutex);
+			files = project_files;
+			available = project_files_ready;
 		}
-		scanned = paths.get("scanned_count", 0);
-		truncated = paths.get("truncated", false);
+		int match_index = 0;
+		for (int i = 0; i < files.size(); i++) {
+			scanned++;
+			if (String(files[i]).findn(query) < 0 || match_index++ < cursor) {
+				continue;
+			}
+			if (!_solers_append_bounded(results, _solers_project_result(files[i]), max_results, p_token_budget, result_tokens)) {
+				truncated = true;
+				break;
+			}
+		}
 	} else {
 		PackedStringArray files;
 		{
@@ -1757,35 +1570,41 @@ Dictionary SolersObservationService::search_project(const Dictionary &p_args) co
 			available = project_files_ready;
 		}
 		if (type == "text" || type == "symbol") {
+			int match_index = 0;
 			for (int i = 0; i < files.size(); i++) {
 				const String path = files[i];
 				if (!_solers_text_search_extension(path.get_extension().to_lower())) {
 					continue;
 				}
 				scanned++;
-				// Internal index scan may read PackedScene source; tool-facing
-				// project.read_file still requires raw=true for scenes.
-				const Dictionary file = read_project_file(path, 1048576, true);
-				if (!(bool)file.get("ok", false)) {
+				Error open_error = OK;
+				Ref<FileAccess> file = FileAccess::open(path, FileAccess::READ, &open_error);
+				if (file.is_null() || open_error != OK) {
 					continue;
 				}
-				const PackedStringArray lines = String(file.get("content", String())).split("\n", true);
-				for (int line_index = 0; line_index < lines.size(); line_index++) {
-					const int column = _solers_find_text(lines[line_index], query, type == "symbol");
+				int line_index = 0;
+				while (!file->eof_reached()) {
+					const String line = file->get_line();
+					const int column = _solers_find_text(line, query, type == "symbol");
 					if (column < 0) {
+						line_index++;
+						continue;
+					}
+					if (match_index++ < cursor) {
+						line_index++;
 						continue;
 					}
 					Dictionary match = _solers_project_result(path);
 					match["line"] = line_index + 1;
 					match["column"] = column + 1;
-					match["preview"] = lines[line_index].strip_edges().left(240);
-					results.push_back(match);
-					if (results.size() >= max_results) {
+					match["preview"] = line.strip_edges().left(240);
+					if (!_solers_append_bounded(results, match, max_results, p_token_budget, result_tokens)) {
 						truncated = true;
 						break;
 					}
+					line_index++;
 				}
-				if (results.size() >= max_results) {
+				if (truncated) {
 					break;
 				}
 			}
@@ -1801,12 +1620,16 @@ Dictionary SolersObservationService::search_project(const Dictionary &p_args) co
 	result["query"] = query;
 	result["results"] = results;
 	result["count"] = results.size();
+	result["cursor"] = cursor;
+	if (truncated) {
+		result["next_cursor"] = cursor + results.size();
+	}
 	result["scanned_count"] = scanned;
 	result["truncated"] = truncated;
 	return result;
 }
 
-Dictionary SolersObservationService::read_project_file(const String &p_path, int p_max_bytes, bool p_raw) const {
+Dictionary SolersObservationService::read_project_file(const String &p_path, int p_line_start, int p_line_count, bool p_raw, int p_token_budget) const {
 	Dictionary result;
 	String res_path;
 	String path_error;
@@ -1848,18 +1671,40 @@ Dictionary SolersObservationService::read_project_file(const String &p_path, int
 	}
 
 	const int64_t length = file->get_length();
-	const int max_bytes = CLAMP(p_max_bytes, 0, 1048576);
+	const int line_start = MAX(1, p_line_start);
+	const int line_count = MAX(1, p_line_count);
+	int line = 1;
+	while (line < line_start && !file->eof_reached()) {
+		static_cast<void>(file->get_line());
+		line++;
+	}
+	String content;
+	int returned = 0;
+	while (returned < line_count && !file->eof_reached()) {
+		const String next = file->get_line();
+		const String candidate = content + (content.is_empty() ? String() : "\n") + next;
+		if (!content.is_empty() && SolersContextManager::estimate_tokens(candidate) > MAX(1, p_token_budget)) {
+			break;
+		}
+		content = candidate;
+		returned++;
+		line++;
+	}
 	result["ok"] = true;
 	result["path"] = res_path;
 	result["size_bytes"] = length;
 	result["sha256"] = FileAccess::get_sha256(res_path);
-	result["truncated"] = length > max_bytes;
-	Vector<uint8_t> bytes = file->get_buffer(MIN((int64_t)max_bytes, length));
-	result["content"] = bytes.is_empty() ? String() : String::utf8((const char *)bytes.ptr(), bytes.size());
+	result["line_start"] = line_start;
+	result["line_end"] = line - 1;
+	result["content"] = content;
+	result["truncated"] = !file->eof_reached();
+	if (!file->eof_reached()) {
+		result["next_line"] = line;
+	}
 	return result;
 }
 
-Dictionary SolersObservationService::get_open_scenes(int p_max_depth, int p_max_children_per_node) const {
+Dictionary SolersObservationService::get_open_scenes() const {
 	Dictionary result;
 	EditorInterface *editor_interface = EditorInterface::get_singleton();
 	ERR_FAIL_NULL_V(editor_interface, result);
@@ -1875,12 +1720,19 @@ Dictionary SolersObservationService::get_open_scenes(int p_max_depth, int p_max_
 
 	result["count"] = roots.size();
 	result["paths"] = path_array;
-	result["roots"] = _serialize_node_array(roots, edited_root, p_max_depth, p_max_children_per_node);
+	Array identities;
+	for (int i = 0; i < roots.size(); i++) {
+		Node *root = Object::cast_to<Node>(roots[i]);
+		if (root) {
+			identities.push_back(_solers_node_identity(root, root));
+		}
+	}
+	result["roots"] = identities;
 	result["current_scene_path"] = edited_root ? edited_root->get_scene_file_path() : String();
 	return result;
 }
 
-Dictionary SolersObservationService::get_selection(int p_max_depth, int p_max_children_per_node) const {
+Dictionary SolersObservationService::get_selection() const {
 	Dictionary result;
 	EditorInterface *editor_interface = EditorInterface::get_singleton();
 	ERR_FAIL_NULL_V(editor_interface, result);
@@ -1895,45 +1747,81 @@ Dictionary SolersObservationService::get_selection(int p_max_depth, int p_max_ch
 	TypedArray<Node> selected_nodes = selection->get_selected_nodes();
 	Node *edited_root = editor_interface->get_edited_scene_root();
 	result["count"] = selected_nodes.size();
-	result["nodes"] = _serialize_node_array(selected_nodes, edited_root, p_max_depth, p_max_children_per_node);
+	Array identities;
+	for (int i = 0; edited_root && i < selected_nodes.size(); i++) {
+		Node *node = Object::cast_to<Node>(selected_nodes[i]);
+		if (node) {
+			identities.push_back(_solers_node_identity(node, edited_root));
+		}
+	}
+	result["nodes"] = identities;
 	return result;
 }
 
-Dictionary SolersObservationService::get_scene_tree(const Array &p_node_paths, int p_max_depth, int p_max_children_per_node, int p_token_budget) const {
+Dictionary SolersObservationService::query_scene_nodes(const Dictionary &p_args, int p_token_budget) const {
 	Dictionary result;
 	Node *edited_root = SceneTree::get_singleton()->get_edited_scene_root();
 	ERR_FAIL_NULL_V(edited_root, result);
 
-	Array roots;
+	const Array requested_paths = p_args.get("node_paths", Array());
+	const String path_prefix = p_args.get("path_prefix", String());
+	const String name_contains = p_args.get("name_contains", String());
+	const String class_name = p_args.get("class_name", String());
+	const String script_path = p_args.get("script_path", String());
+	const int cursor = MAX(0, (int)p_args.get("cursor", 0));
+	const int max_results = p_args.has("max_results") ? MAX(1, (int)p_args["max_results"]) : INT32_MAX;
+	Vector<Node *> pending;
 	Array errors;
-	if (p_node_paths.is_empty()) {
-		roots.push_back(edited_root);
+	if (requested_paths.is_empty()) {
+		pending.push_back(edited_root);
 	} else {
-		for (int i = 0; i < p_node_paths.size(); i++) {
-			const String path = p_node_paths[i];
+		for (int i = requested_paths.size() - 1; i >= 0; i--) {
+			const String path = requested_paths[i];
 			Node *node = edited_root->get_node_or_null(NodePath(path));
 			if (node) {
-				roots.push_back(node);
+				pending.push_back(node);
 			} else {
 				errors.push_back(Dictionary({ { "index", i }, { "requested_path", path }, { "code", "NODE_NOT_FOUND" } }));
 			}
 		}
 	}
 
-	const int token_budget_start = MAX(1, p_token_budget);
-	int token_budget = token_budget_start;
-	int elided_nodes = 0;
-	Array serialized;
-	for (int i = 0; i < roots.size() && token_budget > 0; i++) {
-		serialized.push_back(_serialize_node(Object::cast_to<Node>(roots[i]), edited_root, 0, p_max_depth, p_max_children_per_node, token_budget, elided_nodes));
+	Array nodes;
+	int matched = 0;
+	int tokens = 0;
+	bool has_more = false;
+	while (!pending.is_empty()) {
+		Node *node = pending[pending.size() - 1];
+		pending.resize(pending.size() - 1);
+		if (requested_paths.is_empty()) {
+			for (int child = node->get_child_count() - 1; child >= 0; child--) {
+				pending.push_back(node->get_child(child));
+			}
+		}
+		const String node_path = node == edited_root ? "." : String(edited_root->get_path_to(node));
+		Ref<Script> script = node->get_script();
+		const String node_script_path = script.is_valid() ? script->get_path() : String();
+		if ((!path_prefix.is_empty() && node_path != path_prefix && !node_path.begins_with(path_prefix.trim_suffix("/") + "/")) ||
+				(!name_contains.is_empty() && String(node->get_name()).findn(name_contains) < 0) ||
+				(!class_name.is_empty() && !node->is_class(class_name)) ||
+				(!script_path.is_empty() && node_script_path != script_path)) {
+			continue;
+		}
+		if (matched++ < cursor) {
+			continue;
+		}
+		Dictionary entry = _solers_node_identity(node, edited_root);
+		if (!_solers_append_bounded(nodes, entry, max_results, p_token_budget, tokens)) {
+			has_more = true;
+			break;
+		}
 	}
-	result["roots"] = serialized;
+	result["nodes"] = nodes;
 	result["errors"] = errors;
-	result["max_depth"] = p_max_depth;
-	if (elided_nodes > 0) {
-		result["elided_nodes"] = elided_nodes;
-		result["token_budget"] = token_budget_start;
-		result["recovery"] = "This tree filled the per-result token budget. Pass node_paths for the nodes that matter, or lower max_depth/max_children, instead of re-reading the whole tree.";
+	result["cursor"] = cursor;
+	result["count"] = nodes.size();
+	if (has_more) {
+		result["next_cursor"] = cursor + nodes.size();
 	}
 	return result;
 }
@@ -2213,25 +2101,38 @@ void SolersObservationService::_runtime_tree_updated() {
 	Array errors;
 	if (tree) {
 		const Array requested_paths = runtime_query.get("node_paths", Array());
-		const int max_nodes = CLAMP((int)runtime_query.get("max_results", 128), 1, 512);
+		const String path_prefix = runtime_query.get("path_prefix", String());
+		const String name_contains = runtime_query.get("name_contains", String());
+		const String class_name = runtime_query.get("class_name", String());
+		const int cursor = MAX(0, (int)runtime_query.get("cursor", 0));
+		const int max_results = runtime_query.has("max_results") ? MAX(1, (int)runtime_query["max_results"]) : INT32_MAX;
+		const int token_budget = MAX(1, runtime_result_token_budget);
 		const Array projected = project_runtime_tree(*tree, runtime_epoch);
 		Dictionary found_paths;
+		int matched = 0;
+		int tokens = 0;
+		bool has_more = false;
 		for (int i = 0; i < projected.size(); i++) {
 			const Dictionary entry = projected[i];
 			const String node_path = entry.get("node_path", String());
-			if (requested_paths.is_empty()) {
-				if (nodes.size() < max_nodes) {
-					nodes.push_back(entry);
-				}
-			} else if (requested_paths.has(node_path)) {
-				nodes.push_back(entry);
-				handles[String::num_uint64((uint64_t)(int64_t)entry.get("object_id", 0))] = entry;
-				found_paths[node_path] = true;
+			const bool selected = requested_paths.is_empty() ? (path_prefix.is_empty() || node_path == path_prefix || node_path.begins_with(path_prefix.trim_suffix("/") + "/")) &&
+							(name_contains.is_empty() || String(entry.get("name", String())).findn(name_contains) >= 0) &&
+							(class_name.is_empty() || String(entry.get("class_name", String())) == class_name)
+															 : requested_paths.has(node_path);
+			if (!selected) {
+				continue;
 			}
+			found_paths[node_path] = true;
+			if (matched++ < cursor) {
+				continue;
+			}
+			if (!_solers_append_bounded(nodes, entry, max_results, token_budget, tokens)) {
+				has_more = true;
+				break;
+			}
+			handles[String::num_uint64((uint64_t)(int64_t)entry.get("object_id", 0))] = entry;
 		}
-		if (requested_paths.is_empty()) {
-			result["truncated"] = nodes.size() < projected.size();
-		} else {
+		if (!requested_paths.is_empty()) {
 			for (int i = 0; i < requested_paths.size(); i++) {
 				if (!found_paths.has(requested_paths[i])) {
 					Dictionary error;
@@ -2241,11 +2142,15 @@ void SolersObservationService::_runtime_tree_updated() {
 				}
 			}
 		}
+		result["cursor"] = cursor;
+		if (has_more) {
+			result["next_cursor"] = cursor + nodes.size();
+		}
 	}
 	result["available"] = tree != nullptr;
 	result["nodes"] = nodes;
 	result["errors"] = errors;
-	if (!tree || Array(runtime_query.get("node_paths", Array())).is_empty() || nodes.is_empty()) {
+	if (!tree || nodes.is_empty() || Array(runtime_query.get("properties", Array())).is_empty()) {
 		_finish_runtime_query(result);
 		return;
 	}
@@ -2339,7 +2244,7 @@ bool SolersObservationService::is_runtime_observation_ready(const Dictionary &p_
 	return !debugger || !debugger->is_session_active() || OS::get_singleton()->get_ticks_msec() >= (uint64_t)(int64_t)p_args.get("deadline_msec", 0);
 }
 
-Dictionary SolersObservationService::observe_runtime(const Dictionary &p_args) {
+Dictionary SolersObservationService::observe_runtime(const Dictionary &p_args, int p_token_budget) {
 	const String target = p_args.get("target", "events");
 	if (target == "stack") {
 		const Dictionary status = get_runtime_status();
@@ -2394,6 +2299,7 @@ Dictionary SolersObservationService::observe_runtime(const Dictionary &p_args) {
 		runtime_query["_runtime_request"] = (int64_t)++runtime_query_sequence;
 		runtime_query["_runtime_epoch"] = (int64_t)runtime_epoch;
 		runtime_query["deadline_msec"] = (int64_t)(OS::get_singleton()->get_ticks_msec() + SOLERS_RUNTIME_QUERY_TIMEOUT_MSEC);
+		runtime_result_token_budget = MAX(1, p_token_budget);
 		debugger->request_remote_tree();
 		Dictionary pending;
 		pending["target"] = target;

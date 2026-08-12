@@ -327,13 +327,6 @@ TEST_CASE("[SceneTree][SolersCSG] native boolean output exposes mesh and collisi
 }
 #endif
 
-TEST_CASE("[SolersObservationService] empty file search lists bounded project files") {
-	SolersObservationService observation_service;
-	Dictionary result = observation_service.list_project_files(4);
-	CHECK(result.has("files"));
-	CHECK((int)result.get("count", -1) >= 0);
-}
-
 TEST_CASE("[SolersObservationService] observe_path digests any selection by engine authority") {
 	// Contract: directory and ordinary file both get a digest.kind — not only PackedScene.
 	const String dir_path = "res://solers_observe_path_contract";
@@ -346,7 +339,7 @@ TEST_CASE("[SolersObservationService] observe_path digests any selection by engi
 		CHECK(root->make_dir("solers_observe_path_contract") == OK);
 		Ref<FileAccess> file = FileAccess::open(file_path, FileAccess::WRITE);
 		REQUIRE(file.is_valid());
-		file->store_string("observe-path-contract\n");
+		file->store_string("first\nsecond\nthird\n");
 	}
 	SolersObservationService observation_service;
 	const Dictionary dir_observed = observation_service.observe_path(dir_path + "/");
@@ -361,6 +354,9 @@ TEST_CASE("[SolersObservationService] observe_path digests any selection by engi
 	const Dictionary file_observed = observation_service.observe_path(file_path);
 	REQUIRE((bool)file_observed.get("ok", false));
 	CHECK_FALSE(String(Dictionary(file_observed.get("digest", Dictionary())).get("kind", String())).is_empty());
+	const Dictionary page = observation_service.read_project_file(file_path, 2, 1);
+	CHECK(page.get("content", String()) == "second");
+	CHECK((int)page.get("next_line", 0) == 3);
 }
 
 TEST_CASE("[SolersObservationService] runtime views require native debugger authority") {

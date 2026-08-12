@@ -277,7 +277,7 @@ static Array _collect_scenes(SolersObservationService *p_observation, const Stri
 	Array items;
 	HashSet<String> seen;
 	if (p_observation) {
-		const Dictionary open = p_observation->get_open_scenes(0, 0);
+		const Dictionary open = p_observation->get_open_scenes();
 		const Array paths = open.get("paths", Array());
 		for (int i = 0; i < paths.size() && items.size() < COLLECT_LIMIT; i++) {
 			const String path = String(paths[i]).strip_edges();
@@ -330,7 +330,7 @@ static Array _collect_selection(SolersObservationService *p_observation, const S
 		return items;
 	}
 	HashSet<String> seen;
-	const Dictionary selection = p_observation->get_selection(0, 0);
+	const Dictionary selection = p_observation->get_selection();
 	const Array nodes = selection.get("nodes", Array());
 	for (int i = 0; i < nodes.size() && items.size() < COLLECT_LIMIT; i++) {
 		const Dictionary node = nodes[i];
