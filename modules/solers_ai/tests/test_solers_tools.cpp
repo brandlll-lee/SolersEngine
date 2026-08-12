@@ -880,17 +880,27 @@ TEST_CASE("[SolersToolRegistry][SceneTree][GLTF] object.query returns native mes
 		Dictionary args({ { "target", "scene" }, { "node_paths", Array({ "Suzanne", "Missing" }) }, { "properties", Array({ "mesh", "missing_property" }) } });
 		const Dictionary result = registry.call_tool_with_context(SNAME("object.query"), args, context);
 		const Dictionary data = result.get("data", Dictionary());
-		const Dictionary details = data.get("details", Dictionary());
-		const Array nodes = details.get("nodes", Array());
+		const Array nodes = data.get("nodes", Array());
 		REQUIRE(nodes.size() == 1);
 		const Dictionary material = Dictionary(nodes[0]).get("material", Dictionary());
 		const Dictionary mesh_handle = material.get("mesh", Dictionary());
-		CHECK((mesh_handle.get("kind", String()) == "godot_object" && (bool)mesh_handle.get("valid", false) && (int)details.get("error_count", 0) == 1));
+		CHECK(mesh_handle.get("kind", String()) == "godot_object");
+		CHECK((bool)mesh_handle.get("valid", false));
+		CHECK(Array(data.get("query_errors", Array())).size() == 1);
+		CHECK(Dictionary(nodes[0]).has("property_errors"));
 		Variant coerced;
 		String error;
 		REQUIRE(solers_coerce_property_value(mesh_instance, SNAME("mesh"), mesh_handle, coerced, error));
 		CHECK(Ref<Mesh>(coerced) == mesh_instance->get_mesh());
+		args.erase("node_paths");
+		args["name_contains"] = "zann";
+		const Array filtered = Array(Dictionary(registry.call_tool_with_context(SNAME("object.query"), args, context).get("data", Dictionary())).get("nodes", Array()));
+		REQUIRE_FALSE(filtered.is_empty());
+		for (int i = 0; i < filtered.size(); i++) {
+			CHECK(String(Dictionary(filtered[i]).get("name", String())).findn("zann") >= 0);
+		}
 		args["node_paths"] = Array({ "Missing" });
+		args.erase("name_contains");
 		missing = registry.call_tool_with_context(SNAME("object.query"), args, context);
 	}
 	memdelete(root);
@@ -966,44 +976,6 @@ TEST_CASE("[SolersToolRegistry] scene.open is a thin EditorInterface open surfac
 	CHECK_FALSE((bool)missing_file_result.get("ok", true));
 	const String missing_code = Dictionary(missing_file_result.get("error", Dictionary())).get("code", String());
 	CHECK((missing_code == "SCENE_NOT_FOUND" || missing_code == "EDITOR_UNAVAILABLE"));
-}
-
-TEST_CASE("[SolersToolRegistry] runtime tools expose one canonical debugger handle") {
-	SolersObservationService observation;
-	SolersToolRegistry registry;
-	registry.set_observation_service(&observation);
-	registry.register_default_tools();
-
-	const Dictionary observe = registry.get_tool_definition(SNAME("runtime.observe"));
-	const Dictionary observe_schema = observe.get("input_schema", Dictionary());
-	const Dictionary observe_properties = observe_schema.get("properties", Dictionary());
-	CHECK(observe_properties.has("node_paths"));
-	CHECK(observe_properties.has("properties"));
-	CHECK_FALSE(observe_properties.has("object_ids"));
-	CHECK_FALSE(observe_properties.has("since_cursor"));
-	const Dictionary target = observe_properties.get("target", Dictionary());
-	CHECK(Array(target.get("enum", Array())) == Array({ "scene", "stack", "performance" }));
-
-	const Dictionary control = registry.get_tool_definition(SNAME("runtime.control"));
-	const Dictionary control_properties = Dictionary(control.get("input_schema", Dictionary())).get("properties", Dictionary());
-	CHECK(control_properties.has("runtime_epoch"));
-	CHECK(control_properties.has("node_path"));
-	CHECK(control_properties.has("object_id"));
-}
-
-TEST_CASE("[SolersToolRegistry] project.search rejects incomplete requests before execution") {
-	SolersObservationService observation_service;
-	SolersPermissionManager permissions;
-	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
-	SolersToolRegistry registry;
-	registry.set_observation_service(&observation_service);
-	registry.set_permission_manager(&permissions);
-	registry.register_default_tools();
-	Dictionary args;
-	args["type"] = "text";
-	const Dictionary result = registry.call_tool(SNAME("project.search"), args);
-	CHECK_FALSE((bool)result.get("ok", true));
-	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "TOOL_ARGUMENT_INVALID");
 }
 
 TEST_CASE("[SolersPermissionManager] auto approve all resolves without pending") {

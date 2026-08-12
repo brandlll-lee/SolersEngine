@@ -23,6 +23,7 @@
 #include "core/templates/safe_refcount.h"
 #include "core/templates/vector.h"
 #include "core/variant/dictionary.h"
+
 #include "modules/solers_ai/core/solers_context_manager.h"
 #include "modules/solers_ai/core/solers_permission_manager.h"
 
@@ -87,9 +88,6 @@ struct SolersToolCapability {
 	// Resolve the reversal policy for a domain tool whose validated operations
 	// use different native persistence mechanisms.
 	std::function<SolersToolMutationPolicy(const Dictionary &)> mutation_policy_resolver;
-	// When true, identical read-only calls reuse the session cache across
-	// authored revision bumps (ClassDB/catalog facts do not change with edits).
-	bool cache_across_revisions = false;
 	// Godot/editor APIs stay on the main thread. Handlers opt into a worker
 	// only when they are explicitly thread-safe.
 	SolersToolExecution execution = SolersToolExecution::MAIN_THREAD;

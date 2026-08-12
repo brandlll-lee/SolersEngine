@@ -91,7 +91,6 @@ class SolersToolRegistry : public Object {
 			SolersToolExposure p_exposure, SolersFunctionTool::Handler p_handler,
 			SolersToolExecution p_execution = SolersToolExecution::MAIN_THREAD,
 			std::function<Array(const Dictionary &)> p_resource_access = {},
-			bool p_cache_across_revisions = false,
 			SolersFunctionTool::PollHandler p_poll_handler = {},
 			SolersFunctionTool::ReadyHandler p_ready_handler = {},
 			SolersFunctionTool::CompletionHandler p_completion_handler = {},
@@ -101,7 +100,6 @@ class SolersToolRegistry : public Object {
 	void _add_observe_exposed(const char *p_name, const char *p_description, const char *p_schema_json,
 			SolersToolExposure p_exposure, SolersFunctionTool::Handler p_handler,
 			std::function<Array(const Dictionary &)> p_resource_access = {},
-			bool p_cache_across_revisions = false,
 			SolersFunctionTool::PollHandler p_poll_handler = {},
 			SolersFunctionTool::ReadyHandler p_ready_handler = {},
 			SolersToolUiKind p_ui_kind = SolersToolUiKind::OBSERVE,
@@ -163,7 +161,6 @@ public:
 	String get_skill_catalog_prompt() const;
 	String get_model_tool_name(const StringName &p_name) const;
 	StringName resolve_model_tool_name(const String &p_model_name) const;
-	bool caches_across_revisions(const StringName &p_name) const;
 	bool affects_scene_state(const StringName &p_name, const Dictionary &p_args = Dictionary()) const;
 	bool is_read_only(const StringName &p_name, const Dictionary &p_args = Dictionary()) const;
 	Array resolve_resource_access(const StringName &p_name, const Dictionary &p_args) const;
