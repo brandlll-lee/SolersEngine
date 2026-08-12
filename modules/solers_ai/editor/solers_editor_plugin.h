@@ -34,6 +34,7 @@
 
 class SolersAgentRuntime;
 class SolersDock;
+class EditorDock;
 
 void solers_load_editor_translation();
 
@@ -42,6 +43,7 @@ class SolersEditorPlugin : public EditorPlugin {
 
 	SolersAgentRuntime *runtime = nullptr;
 	SolersDock *dock = nullptr;
+	EditorDock *dock_host = nullptr;
 	String project_path;
 
 	void _select_session(const String &p_session_id);
@@ -53,8 +55,6 @@ protected:
 
 public:
 	String get_plugin_name() const override { return "Solers"; }
-	void set_window_layout(Ref<ConfigFile> p_layout) override;
-	void get_window_layout(Ref<ConfigFile> p_layout) override;
 
 	SolersEditorPlugin();
 	~SolersEditorPlugin();

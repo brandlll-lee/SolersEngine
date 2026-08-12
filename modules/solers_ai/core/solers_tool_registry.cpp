@@ -1108,32 +1108,28 @@ Dictionary SolersToolRegistry::_finalize_prepared_result(SolersPreparedToolCall 
 	mutation["receipt"] = receipt;
 	const String session_key = r_call.context.session_id.is_empty() ? String("direct") : r_call.context.session_id;
 	if (r_call.mutation_policy == SolersToolMutationPolicy::EDITOR_UNDO || r_call.mutation_policy == SolersToolMutationPolicy::FILE_CHECKPOINT) {
-		const String *previous_id = latest_reversal_by_session.getptr(session_key);
-		if (previous_id) {
-			const Dictionary *previous = reversals.getptr(*previous_id);
-			if (previous) {
-				_discard_reversal(*previous);
-			}
-			reversals.erase(*previous_id);
-		}
 		const String reversal_id = (session_key + ":" + r_call.context.call_id + ":" + String::num_uint64(r_call.context.authored_revision + 1) + ":" + String::num_int64(reversals.size() + 1)).sha256_text();
 		record["id"] = reversal_id;
 		record["session_id"] = session_key;
 		record["session_revision"] = (int64_t)(r_call.context.authored_revision + 1);
 		reversals[reversal_id] = record;
+		reversal_stack_by_session[session_key].push_back(reversal_id);
 		latest_reversal_by_session[session_key] = reversal_id;
 		mutation["reversal_id"] = reversal_id;
 		r_call.journal_event["event_type"] = "checkpoint_created";
 		r_call.journal_event["checkpoint"] = record;
 		r_call.journal_event["note"] = "Protective checkpoint for history.revert; not a rollback of your edit.";
 	} else {
-		const String *previous_id = latest_reversal_by_session.getptr(session_key);
-		if (previous_id) {
-			const Dictionary *previous = reversals.getptr(*previous_id);
-			if (previous) {
-				_discard_reversal(*previous);
+		Vector<String> *stack = reversal_stack_by_session.getptr(session_key);
+		if (stack) {
+			for (const String &id : *stack) {
+				const Dictionary *previous = reversals.getptr(id);
+				if (previous) {
+					_discard_reversal(*previous);
+				}
+				reversals.erase(id);
 			}
-			reversals.erase(*previous_id);
+			reversal_stack_by_session.erase(session_key);
 			latest_reversal_by_session.erase(session_key);
 			r_call.journal_event["event_type"] = "checkpoint_cleared";
 		}
@@ -1191,10 +1187,20 @@ Dictionary SolersToolRegistry::_revert_latest(const SolersToolContext &p_context
 	_discard_reversal(record);
 
 	reversals.erase(reversal_id);
-	latest_reversal_by_session.erase(session_key);
+	Vector<String> *stack = reversal_stack_by_session.getptr(session_key);
+	if (stack && !stack->is_empty() && (*stack)[stack->size() - 1] == reversal_id) {
+		stack->remove_at(stack->size() - 1);
+	}
+	if (stack && !stack->is_empty()) {
+		latest_reversal_by_session[session_key] = (*stack)[stack->size() - 1];
+	} else {
+		reversal_stack_by_session.erase(session_key);
+		latest_reversal_by_session.erase(session_key);
+	}
 	Dictionary data;
 	data["reversal_id"] = reversal_id;
 	data["reverted_session_revision"] = record.get("session_revision", 0);
+	data["checkpoint"] = record.duplicate(true);
 	data["checkpoint_consumed"] = true;
 	data["authored_state_changed"] = true;
 	return _ok(data);
@@ -2620,21 +2626,90 @@ void SolersToolRegistry::clear_task_state(const String &p_session_id) {
 	}
 }
 
-void SolersToolRegistry::restore_session_reversal(const String &p_session_id, const Dictionary &p_record) {
+void SolersToolRegistry::restore_session_reversals(const String &p_session_id, const Array &p_records) {
 	if (p_session_id.is_empty()) {
 		return;
 	}
-	const String *existing_id = latest_reversal_by_session.getptr(p_session_id);
-	if (existing_id) {
-		reversals.erase(*existing_id);
-		latest_reversal_by_session.erase(p_session_id);
+	Vector<String> *existing = reversal_stack_by_session.getptr(p_session_id);
+	if (existing) {
+		for (const String &id : *existing) {
+			reversals.erase(id);
+		}
 	}
-	const String reversal_id = p_record.get("id", String());
-	if (reversal_id.is_empty() || String(p_record.get("session_id", String())) != p_session_id) {
-		return;
+	reversal_stack_by_session.erase(p_session_id);
+	latest_reversal_by_session.erase(p_session_id);
+	for (int i = 0; i < p_records.size(); i++) {
+		const Dictionary record = p_records[i];
+		const String reversal_id = record.get("id", String());
+		if (reversal_id.is_empty() || String(record.get("session_id", String())) != p_session_id) {
+			continue;
+		}
+		reversals[reversal_id] = record.duplicate(true);
+		reversal_stack_by_session[p_session_id].push_back(reversal_id);
+		latest_reversal_by_session[p_session_id] = reversal_id;
 	}
-	reversals[reversal_id] = p_record.duplicate(true);
-	latest_reversal_by_session[p_session_id] = reversal_id;
+}
+
+Dictionary SolersToolRegistry::rewind_session_to_revision(const String &p_project_path, const String &p_session_id, uint64_t p_revision) {
+	Vector<String> *stack = reversal_stack_by_session.getptr(p_session_id);
+	if (!stack) {
+		return _ok(Dictionary());
+	}
+	// Preflight the whole suffix before changing anything. This prevents a
+	// half-rewind when a user edited a scene or file after an Agent action.
+	uint64_t expected_scene_version = UINT64_MAX;
+	bool newest_record = true;
+	for (int i = stack->size() - 1; i >= 0; i--) {
+		const Dictionary *record = reversals.getptr((*stack)[i]);
+		if (!record || (uint64_t)(int64_t)record->get("session_revision", 0) <= p_revision) {
+			break;
+		}
+		const String policy = record->get("policy", String());
+		if (policy == "editor_undo") {
+			const int history_id = record->get("history_id", EditorUndoRedoManager::INVALID_HISTORY);
+			UndoRedo *undo_redo = EditorUndoRedoManager::get_singleton() ? EditorUndoRedoManager::get_singleton()->get_history_undo_redo(history_id) : nullptr;
+			const uint64_t after = (int64_t)record->get("version_after", 0);
+			if (!undo_redo || (expected_scene_version == UINT64_MAX ? undo_redo->get_version() : expected_scene_version) != after) {
+				return _error("REWIND_CONFLICT", "The scene UndoRedo history changed after an Agent edit.");
+			}
+			expected_scene_version = (int64_t)record->get("version_before", 0);
+		} else if (policy == "file_checkpoint" && newest_record) {
+			const Array checkpoints = record->get("checkpoints", Array());
+			for (int j = 0; j < checkpoints.size(); j++) {
+				const Dictionary checkpoint = checkpoints[j];
+				const String path = checkpoint.get("path", String());
+				const bool exists = FileAccess::exists(path);
+				if (exists != (bool)checkpoint.get("exists_after", false) || (exists && FileAccess::get_sha256(path) != String(checkpoint.get("sha256_after", String())))) {
+					return _error("REWIND_CONFLICT", vformat("File changed after the Agent edit: %s", path));
+				}
+			}
+		}
+		newest_record = false;
+	}
+	int count = 0;
+	Array consumed_checkpoints;
+	while ((stack = reversal_stack_by_session.getptr(p_session_id)) && !stack->is_empty()) {
+		const Dictionary *record = reversals.getptr((*stack)[stack->size() - 1]);
+		if (!record || (uint64_t)(int64_t)record->get("session_revision", 0) <= p_revision) {
+			break;
+		}
+		SolersToolContext context;
+		context.project_path = p_project_path;
+		context.session_id = p_session_id;
+		context.authored_revision = (int64_t)record->get("session_revision", 1) - 1;
+		Dictionary args;
+		args["reversal_id"] = (*stack)[stack->size() - 1];
+		const Dictionary reverted = _revert_latest(context, args);
+		if (!(bool)reverted.get("ok", false)) {
+			return reverted;
+		}
+		consumed_checkpoints.push_back(Dictionary(reverted.get("data", Dictionary())).get("checkpoint", Dictionary()));
+		count++;
+	}
+	Dictionary data;
+	data["reverted_count"] = count;
+	data["consumed_checkpoints"] = consumed_checkpoints;
+	return _ok(data);
 }
 
 int SolersToolRegistry::get_tool_count() const {
@@ -2647,5 +2722,6 @@ SolersToolRegistry::~SolersToolRegistry() {
 	_clear_tools();
 	reversals.clear();
 	latest_reversal_by_session.clear();
+	reversal_stack_by_session.clear();
 	delivered_addon_contracts.clear();
 }

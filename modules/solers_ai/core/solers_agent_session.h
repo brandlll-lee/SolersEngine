@@ -104,6 +104,7 @@ class SolersAgentSession : public Object {
 	int cached_request_tool_tokens = 0;
 	uint32_t cached_request_deferred_count = 0;
 	uint64_t cached_tool_catalog_revision = 0;
+	bool cached_request_image_input_enabled = false;
 	Array turn_attachments;
 	HashSet<String> delivered_model_attachments;
 	HashSet<String> pending_model_attachments;
@@ -220,6 +221,7 @@ class SolersAgentSession : public Object {
 	Array _collect_tools();
 	bool _refresh_active_model_limits();
 	int _active_model_input_support(const String &p_modality) const;
+	bool _image_input_enabled() const;
 	Dictionary _build_request(const Array &p_messages, const String &p_request_system_prompt, const Array &p_tools) const;
 	Dictionary _provider_dispatch_error() const;
 	Error _begin_provider_request(const Dictionary &p_request, const Dictionary &p_profile);
@@ -283,6 +285,12 @@ public:
 	// conversation after the current tool batch, before the next model
 	// dispatch. Fails with AGENT_IDLE when no turn is running.
 	Dictionary queue_user_message(const Dictionary &p_args);
+	// Preserve the original audit log and create a new conversation whose
+	// history ends immediately before the selected user message.
+	Dictionary branch_from_event(int64_t p_event_id);
+	// Atomically restore reversible project mutations after the selected
+	// message's revision, then create the same conversation branch.
+	Dictionary rewind_to_event(int64_t p_event_id);
 	void poll();
 	void shutdown();
 	void abort();

@@ -133,6 +133,8 @@ static Dictionary _update_plan_schema() {
 void SolersAgentSession::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("start_turn", "args"), &SolersAgentSession::start_turn);
 	ClassDB::bind_method(D_METHOD("queue_user_message", "args"), &SolersAgentSession::queue_user_message);
+	ClassDB::bind_method(D_METHOD("branch_from_event", "event_id"), &SolersAgentSession::branch_from_event);
+	ClassDB::bind_method(D_METHOD("rewind_to_event", "event_id"), &SolersAgentSession::rewind_to_event);
 	ClassDB::bind_method(D_METHOD("poll"), &SolersAgentSession::poll);
 	ClassDB::bind_method(D_METHOD("abort"), &SolersAgentSession::abort);
 	ClassDB::bind_method(D_METHOD("reset_conversation"), &SolersAgentSession::reset_conversation);
@@ -159,6 +161,108 @@ Dictionary SolersAgentSession::_ok(const Variant &p_data) const {
 	result["ok"] = true;
 	result["data"] = p_data;
 	return result;
+}
+
+Dictionary SolersAgentSession::branch_from_event(int64_t p_event_id) {
+	if (running) {
+		return _error("AGENT_BUSY", "Stop the current turn before branching the conversation.");
+	}
+	struct BranchScan {
+		String project_path;
+		int64_t target_id = 0;
+		Array prefix;
+		Dictionary target;
+	} scan;
+	scan.project_path = project_path;
+	scan.target_id = p_event_id;
+	solers_transcript_foreach_session(session_id, &scan, [](void *p_userdata, const String &p_record) -> bool {
+		BranchScan &state = *static_cast<BranchScan *>(p_userdata);
+		Dictionary event;
+		if (!solers_transcript_parse_record(p_record.strip_edges(), event) || String(event.get("project_path", String())) != state.project_path) {
+			return true;
+		}
+		const int64_t id = event.get("event_id", 0);
+		if (id == state.target_id) {
+			state.target = event.duplicate(true);
+			return true;
+		}
+		if (id < state.target_id) {
+			const String type = event.get("event_type", String());
+			if (type != "checkpoint_created" && type != "checkpoint_consumed" && type != "checkpoint_cleared") {
+				state.prefix.push_back(event.duplicate(true));
+			}
+		}
+		return true;
+	});
+	if (scan.target.is_empty() || String(scan.target.get("event_type", String())) != "message" || String(scan.target.get("role", String())) != SolersLLMRole::USER) {
+		return _error("MESSAGE_NOT_FOUND", "The selected user message is no longer available in this session.");
+	}
+	const String source_session = session_id;
+	const String new_session = _make_session_id();
+	for (int i = 0; i < scan.prefix.size(); i++) {
+		Dictionary event = Dictionary(scan.prefix[i]).duplicate(true);
+		event["session_id"] = new_session;
+		event["branch_source_session_id"] = source_session;
+		solers_transcript_write(event);
+	}
+	solers_transcript_flush(new_session);
+	set_session(project_path, new_session);
+	Dictionary data;
+	data["session_id"] = new_session;
+	data["source_session_id"] = source_session;
+	data["prompt"] = scan.target.get("content", String());
+	data["mentions"] = scan.target.get("mentions", Array());
+	data["attachments"] = scan.target.get("attachments", Array());
+	data["target_revision"] = scan.target.get("session_revision", 0);
+	return _ok(data);
+}
+
+Dictionary SolersAgentSession::rewind_to_event(int64_t p_event_id) {
+	if (running) {
+		return _error("AGENT_BUSY", "Stop the current turn before rewinding the conversation.");
+	}
+	Dictionary selected;
+	bool irreversible_after = false;
+	struct FindScan { int64_t id; Dictionary *selected; bool *irreversible_after; } scan{ p_event_id, &selected, &irreversible_after };
+	solers_transcript_foreach_session(session_id, &scan, [](void *p_userdata, const String &p_record) -> bool {
+		FindScan &state = *static_cast<FindScan *>(p_userdata);
+		Dictionary event;
+		if (solers_transcript_parse_record(p_record.strip_edges(), event) && (int64_t)event.get("event_id", 0) == state.id) {
+			*state.selected = event.duplicate(true);
+			return true;
+		}
+		if (!state.selected->is_empty() && String(event.get("event_type", String())) == "checkpoint_cleared" && (int64_t)event.get("session_revision", 0) > (int64_t)state.selected->get("session_revision", 0)) {
+			*state.irreversible_after = true;
+		}
+		return true;
+	});
+	if (selected.is_empty() || String(selected.get("role", String())) != SolersLLMRole::USER) {
+		return _error("MESSAGE_NOT_FOUND", "The selected user message is no longer available in this session.");
+	}
+	if (irreversible_after) {
+		return _error("REWIND_IRREVERSIBLE", "A later Agent action has no reversible checkpoint. The conversation can be branched, but project changes cannot be safely rewound.");
+	}
+	if (!tool_registry) {
+		return _error("REWIND_UNAVAILABLE", "The project history service is unavailable.");
+	}
+	const uint64_t revision = (int64_t)selected.get("session_revision", 0);
+	const Dictionary reverted = tool_registry->rewind_session_to_revision(project_path, session_id, revision);
+	if (!(bool)reverted.get("ok", false)) {
+		return reverted;
+	}
+	const Array consumed_checkpoints = Dictionary(reverted.get("data", Dictionary())).get("consumed_checkpoints", Array());
+	for (int i = 0; i < consumed_checkpoints.size(); i++) {
+		Dictionary payload;
+		payload["checkpoint"] = consumed_checkpoints[i];
+		_write_transcript_event("checkpoint_consumed", payload);
+	}
+	Dictionary branched = branch_from_event(p_event_id);
+	if ((bool)branched.get("ok", false)) {
+		Dictionary data = branched.get("data", Dictionary());
+		data["reverted_count"] = Dictionary(reverted.get("data", Dictionary())).get("reverted_count", 0);
+		branched["data"] = data;
+	}
+	return branched;
 }
 
 Dictionary SolersAgentSession::_error(const String &p_code, const String &p_message) const {
@@ -403,7 +507,7 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 	int restored_turn_id = 0;
 	uint64_t restored_authored_revision = 0;
 	uint64_t restored_observed_revision = 0;
-	Dictionary restored_reversal;
+	Array restored_reversals;
 	HashSet<String> restored_model_attachments;
 	if (p_project_path.is_empty() || p_session_id.is_empty()) {
 		Dictionary empty;
@@ -425,7 +529,7 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 		uint64_t *restored_authored_revision = nullptr;
 		uint64_t *restored_observed_revision = nullptr;
 		int64_t *event_sequence = nullptr;
-		Dictionary *restored_reversal = nullptr;
+		Array *restored_reversals = nullptr;
 		HashSet<String> *restored_model_attachments = nullptr;
 	} restore_state;
 	restore_state.project_path = &p_project_path;
@@ -440,7 +544,7 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 	restore_state.restored_authored_revision = &restored_authored_revision;
 	restore_state.restored_observed_revision = &restored_observed_revision;
 	restore_state.event_sequence = &transcript_event_sequence;
-	restore_state.restored_reversal = &restored_reversal;
+	restore_state.restored_reversals = &restored_reversals;
 	restore_state.restored_model_attachments = &restored_model_attachments;
 	solers_transcript_foreach_session(p_session_id, &restore_state, [](void *p_userdata, const String &p_record) -> bool {
 		ScanState &scan = *static_cast<ScanState *>(p_userdata);
@@ -478,11 +582,21 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 		}
 		if (event_type == "checkpoint_created") {
 			Dictionary checkpoint = event.get("checkpoint", Dictionary());
-			*scan.restored_reversal = checkpoint.duplicate(true);
+			scan.restored_reversals->push_back(checkpoint.duplicate(true));
 			return true;
 		}
-		if (event_type == "checkpoint_cleared" || event_type == "checkpoint_consumed") {
-			scan.restored_reversal->clear();
+		if (event_type == "checkpoint_cleared") {
+			scan.restored_reversals->clear();
+			return true;
+		}
+		if (event_type == "checkpoint_consumed") {
+			const String consumed_id = String(Dictionary(event.get("checkpoint", Dictionary())).get("id", String()));
+			for (int i = scan.restored_reversals->size() - 1; i >= 0; i--) {
+				if (consumed_id.is_empty() || String(Dictionary((*scan.restored_reversals)[i]).get("id", String())) == consumed_id) {
+					scan.restored_reversals->remove_at(i);
+					break;
+				}
+			}
 			return true;
 		}
 		if (event_type == "tool_result") {
@@ -592,7 +706,7 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 		delivered_attachments.push_back(identity);
 	}
 	state["delivered_model_attachments"] = delivered_attachments;
-	state["reversal"] = restored_reversal;
+	state["reversals"] = restored_reversals;
 	return state;
 }
 
@@ -1112,11 +1226,12 @@ String SolersAgentSession::_default_system_prompt() const {
 			"- Inspect unfamiliar classes with engine.describe; ClassDB property metadata and native documentation are the authority for names, types, units, and usage.\n"
 			"- Read live state with object.query. Edit scenes/resources with object.transaction and its native state/hash preconditions. Use script.compute for isolated bulk generation with declared file outputs.\n"
 			"- Scene transactions are one EditorUndoRedo action and Solers persists successful live-scene changes. Resource transactions are file-checkpointed. Tool results carry native state receipts and persisted file hashes; do not issue a separate save.\n"
-			"- The 3D editor viewport is the live edited scene tree. Use object.transaction for visible scene construction; scripts own runtime behavior. Establish appearance only with render.capture target=editor|camera tied to the source_state receipt (runtime proves Play only). Use object.query target=relations for world-space relations; a screenshot is not a geometry measurement.\n"
+			"- The 3D editor viewport is the live edited scene tree. Use object.transaction for visible scene construction; scripts own runtime behavior. Use object.query target=relations for world-space relations; a screenshot is not a geometry measurement.\n"
 			"- Background tools return stable job ids immediately. Continue independent work; when nothing else is runnable, call job.wait once with the required ids and stop issuing tools. Solers parks this turn and resumes it with a background job delta when any requested job reaches a project-import terminal state; do not poll asset.status for progress.\n"
 			"- Tool errors carry the native cause; read it, change what it names, and retry. Repeating an identical failed call wastes a step.\n"
 			"- Keep progress narration to changed decisions or new evidence. Do not repeat what you will inspect before routine tool calls; the tool timeline already shows execution.\n"
 			"- Use update_plan only as a concise optional progress display. Text without tool calls ends the task, so keep progress notes attached to tool-calling turns and finish with a clear final summary.";
+	prompt += "\n- When render.capture is available, establish appearance with target=editor|camera tied to the source_state receipt (runtime proves Play only). When it is absent, verify with text tools and disclose that visual verification was skipped.";
 	if (tool_registry) {
 		const String skill_catalog = tool_registry->get_skill_catalog_prompt();
 		if (!skill_catalog.is_empty()) {
@@ -1187,7 +1302,8 @@ Array SolersAgentSession::_collect_tools() {
 		return out;
 	}
 	const uint64_t catalog_revision = tool_registry->get_tool_catalog_revision();
-	if (cached_tool_catalog_revision == catalog_revision && cached_request_deferred_count == task_deferred_tools.size()) {
+	const bool image_input_enabled = _image_input_enabled();
+	if (cached_tool_catalog_revision == catalog_revision && cached_request_deferred_count == task_deferred_tools.size() && cached_request_image_input_enabled == image_input_enabled) {
 		return cached_request_tools;
 	}
 	const Array defs = tool_registry->list_tools();
@@ -1195,6 +1311,9 @@ Array SolersAgentSession::_collect_tools() {
 		const Dictionary def = defs[i];
 		const String exposure = def.get("exposure", "direct");
 		const StringName canonical_name = StringName(def.get("name", String()));
+		if (canonical_name == SNAME("render.capture") && !image_input_enabled) {
+			continue;
+		}
 		if (exposure == "hidden" || (exposure == "deferred" && !task_deferred_tools.has(canonical_name))) {
 			continue;
 		}
@@ -1209,6 +1328,7 @@ Array SolersAgentSession::_collect_tools() {
 	cached_request_tool_tokens = SolersContextManager::estimate_tokens(JSON::stringify(out, "", false, true));
 	cached_request_deferred_count = task_deferred_tools.size();
 	cached_tool_catalog_revision = catalog_revision;
+	cached_request_image_input_enabled = image_input_enabled;
 	return cached_request_tools;
 }
 
@@ -1277,6 +1397,20 @@ int SolersAgentSession::_active_model_input_support(const String &p_modality) co
 	return SolersModelsDev::input_modality_support(models_dev->get_model(catalog_provider, active_provider.get("model", String())), p_modality);
 }
 
+bool SolersAgentSession::_image_input_enabled() const {
+	const String mode = String(active_provider.get("image_input_mode", "auto")).strip_edges().to_lower();
+	if (mode == "enabled") {
+		return true;
+	}
+	if (mode == "disabled") {
+		return false;
+	}
+	// Auto mode is capability-forward: only an explicit catalog denial blocks images.
+	// Compatible gateways with incomplete metadata may still accept multimodal input;
+	// users can select Disabled when a particular endpoint does not.
+	return _active_model_input_support("image") != 0;
+}
+
 Dictionary SolersAgentSession::_build_request(const Array &p_messages, const String &p_request_system_prompt, const Array &p_tools) const {
 	Dictionary request;
 	request["model"] = active_provider.get("model", String());
@@ -1307,6 +1441,8 @@ Dictionary SolersAgentSession::_build_request(const Array &p_messages, const Str
 		request["max_tokens"] = max_output_tokens;
 	}
 	request["session_id"] = session_id;
+	request["send_session_id_header"] = active_provider.get("send_session_id_header", true);
+	request["image_input_enabled"] = _image_input_enabled();
 	return request;
 }
 
@@ -1774,7 +1910,7 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 		emit_signal(SNAME("turn_failed"), e.get("error", Dictionary()));
 		return e;
 	}
-	if (!turn_attachments.is_empty() && _active_model_input_support("image") == 0) {
+	if (!turn_attachments.is_empty() && !_image_input_enabled()) {
 		Dictionary e = _error("VISION_CAPABILITY_REQUIRED", "The selected model does not support image input. Choose a vision-capable model before sending image references.");
 		emit_signal(SNAME("turn_failed"), e.get("error", Dictionary()));
 		return e;
@@ -2595,7 +2731,7 @@ void SolersAgentSession::_execute_deferred_tool(uint64_t p_token) {
 		return;
 	}
 	if (deferred_canonical_name == "render.capture") {
-		if (_active_model_input_support("image") == 0) {
+		if (!_image_input_enabled()) {
 			deferred_result = _tool_denied_result("VISION_CAPABILITY_REQUIRED", "The selected model does not support image input, so viewport captures cannot be returned to it.");
 			deferred_done = true;
 			return;
@@ -3024,7 +3160,7 @@ void SolersAgentSession::reset_conversation() {
 		context_manager->reset();
 	}
 	if (tool_registry) {
-		tool_registry->restore_session_reversal(session_id, Dictionary());
+		tool_registry->restore_session_reversals(session_id, Array());
 	}
 	session_id = _make_session_id();
 	authored_revision = 0;
@@ -3052,7 +3188,7 @@ void SolersAgentSession::set_session(const String &p_project_path, const String 
 		session_id = p_session_id;
 	}
 	if (tool_registry && previous_session_id != session_id) {
-		tool_registry->restore_session_reversal(previous_session_id, Dictionary());
+		tool_registry->restore_session_reversals(previous_session_id, Array());
 	}
 	transcript_event_sequence = 0;
 	const Dictionary state = _read_transcript_state(project_path, session_id);
@@ -3071,7 +3207,7 @@ void SolersAgentSession::set_session(const String &p_project_path, const String 
 		delivered_model_attachments.insert(delivered_attachments[i]);
 	}
 	if (tool_registry) {
-		tool_registry->restore_session_reversal(session_id, state.get("reversal", Dictionary()));
+		tool_registry->restore_session_reversals(session_id, state.get("reversals", Array()));
 	}
 	pending_background_assets = state.get("background_assets", Array());
 	background_resume_suppressed = false;

@@ -243,7 +243,7 @@ Dictionary SolersAnthropicMessagesProtocol::build_request_body(const Dictionary 
 	return body;
 }
 
-void SolersAnthropicMessagesProtocol::augment_headers(Dictionary &r_headers, const Dictionary &p_request) const {
+void SolersAnthropicMessagesProtocol::augment_protocol_headers(Dictionary &r_headers, const Dictionary &p_request) const {
 	r_headers["anthropic-version"] = "2023-06-01";
 }
 

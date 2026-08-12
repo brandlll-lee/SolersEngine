@@ -68,6 +68,7 @@ class SolersToolRegistry : public Object {
 	uint64_t tool_catalog_revision = 0;
 	HashMap<String, Dictionary> reversals;
 	HashMap<String, String> latest_reversal_by_session;
+	HashMap<String, Vector<String>> reversal_stack_by_session;
 	HashSet<String> delivered_addon_contracts;
 
 	SolersObservationService *observation_service = nullptr;
@@ -172,7 +173,8 @@ public:
 	Dictionary call_tool(const StringName &p_name, const Dictionary &p_args);
 	Dictionary call_tool_with_context(const StringName &p_name, const Dictionary &p_args, const SolersToolContext &p_context);
 	void clear_task_state(const String &p_session_id);
-	void restore_session_reversal(const String &p_session_id, const Dictionary &p_record);
+	void restore_session_reversals(const String &p_session_id, const Array &p_records);
+	Dictionary rewind_session_to_revision(const String &p_project_path, const String &p_session_id, uint64_t p_revision);
 	int get_tool_count() const;
 
 	SolersToolRegistry();

@@ -79,6 +79,10 @@ class SolersPMAIView : public HBoxContainer {
 	Label *api_key_label = nullptr;
 	LineEdit *api_key_edit = nullptr;
 	Button *api_key_reveal = nullptr;
+	HBoxContainer *session_id_header_row = nullptr;
+	CheckBox *session_id_header_check = nullptr;
+	HBoxContainer *image_input_row = nullptr;
+	OptionButton *image_input_option = nullptr;
 	Label *env_hint = nullptr;
 	VBoxContainer *oauth_box = nullptr;
 	Label *oauth_status = nullptr;
@@ -138,6 +142,8 @@ class SolersPMAIView : public HBoxContainer {
 	void _refresh_status();
 	void _add_status_row(const String &p_text, const Color &p_dot_color);
 	void _on_field_changed(const String &p_ignored = String());
+	void _on_session_id_header_toggled(bool p_pressed);
+	void _on_image_input_selected(int p_index);
 	void _on_local_models_only_toggled(bool p_pressed);
 	void _on_reveal_toggled(bool p_pressed);
 	void _on_codex_connect();

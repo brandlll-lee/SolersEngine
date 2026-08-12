@@ -39,6 +39,7 @@
 | **Solers AI** | Agent loop, context, tools, providers, permissions, editor UI, and MCP-compatible surface. | [`modules/solers_ai/`](modules/solers_ai/) |
 | **Engine** | The Godot 4.7.1 editor and runtime maintained as the Solers fork. | [`/`](.) |
 | **Architecture** | Runtime boundaries, native write contracts, and development guidance. | [`docs/SOLERS_ARCHITECTURE.md`](docs/SOLERS_ARCHITECTURE.md) |
+| **AI-assisted design** | Human/AI workflow, design theory, verification, safety, and delivery roadmap. | [`docs/AI_ASSISTED_GAME_DESIGN.md`](docs/AI_ASSISTED_GAME_DESIGN.md) |
 | **Upstream** | Deterministic protocol for tracking and validating new Godot releases. | [`docs/UPSTREAM.md`](docs/UPSTREAM.md) |
 | **Tests** | Unit contracts and real editor behavior projects for Solers. | [`modules/solers_ai/tests/`](modules/solers_ai/tests/) |
 

@@ -66,6 +66,7 @@ tests/data/crypto/out*
 *.ox
 *.Plo
 *.so
+/.solers
 # Binutils tmp linker output of the form "stXXXXXX" where "X" is alphanumeric
 st[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]
 

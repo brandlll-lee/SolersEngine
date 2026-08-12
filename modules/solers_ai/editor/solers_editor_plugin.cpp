@@ -38,6 +38,7 @@
 #include "core/object/callable_mp.h"
 #include "core/os/os.h"
 #include "core/string/translation_server.h"
+#include "editor/docks/editor_dock.h"
 #include "editor/docks/editor_dock_manager.h"
 #include "editor/editor_node.h"
 #include "editor/settings/editor_settings.h"
@@ -46,8 +47,6 @@
 #include "modules/solers_ai/editor/solers_dock.h"
 #include "modules/solers_ai/editor/solers_ui_theme.h"
 #include "modules/solers_ai/generated/solers_translations.gen.h"
-
-static constexpr int SOLERS_WORKSPACE_LAYOUT_VERSION = 1;
 
 void solers_load_editor_translation() {
 	Ref<TranslationDomain> domain = TranslationServer::get_singleton()->get_editor_domain();
@@ -69,7 +68,6 @@ void solers_load_editor_translation() {
 		return;
 	}
 }
-
 void SolersEditorPlugin::_select_session(const String &p_session_id) {
 	runtime->set_session(project_path, p_session_id);
 	dock->load_chat_history(runtime->get_timeline_entries());
@@ -97,17 +95,6 @@ void SolersEditorPlugin::_notification(int p_what) {
 	}
 }
 
-void SolersEditorPlugin::set_window_layout(Ref<ConfigFile> p_layout) {
-	if ((int)p_layout->get_value("Solers", "workspace_layout_version", 0) < SOLERS_WORKSPACE_LAYOUT_VERSION) {
-		EditorDockManager::get_singleton()->consolidate_vertical_docks(EditorDock::DOCK_SLOT_RIGHT_UL);
-		EditorNode::get_singleton()->save_editor_layout_delayed();
-	}
-}
-
-void SolersEditorPlugin::get_window_layout(Ref<ConfigFile> p_layout) {
-	p_layout->set_value("Solers", "workspace_layout_version", SOLERS_WORKSPACE_LAYOUT_VERSION);
-}
-
 SolersEditorPlugin::SolersEditorPlugin() {
 	solers_load_editor_translation();
 	EditorSettings::get_singleton()->connect(SNAME("_translation_changed"), callable_mp(this, &SolersEditorPlugin::_translation_changed));
@@ -119,7 +106,13 @@ SolersEditorPlugin::SolersEditorPlugin() {
 	dock->set_session_select_callback(callable_mp(this, &SolersEditorPlugin::_select_session));
 	dock->set_new_session_callback(callable_mp(this, &SolersEditorPlugin::_new_session));
 	runtime->bind_dock(dock);
-	add_control_to_container(CONTAINER_EDITOR_SIDE_LEFT, dock);
+	dock_host = memnew(EditorDock);
+	dock_host->set_title(TTR("Solers"));
+	dock_host->set_layout_key("SolersChat");
+	dock_host->set_default_slot(EditorDock::DOCK_SLOT_LEFT_UL);
+	dock_host->set_available_layouts(EditorDock::DOCK_LAYOUT_ALL);
+	dock_host->add_child(dock);
+	add_dock(dock_host);
 
 	const String session_id = OS::get_singleton()->get_environment("SOLERS_SESSION_ID");
 	if (session_id.is_empty()) {
@@ -136,8 +129,12 @@ SolersEditorPlugin::SolersEditorPlugin() {
 
 SolersEditorPlugin::~SolersEditorPlugin() {
 	memdelete(runtime);
-	if (dock && dock->get_parent()) {
-		remove_control_from_container(CONTAINER_EDITOR_SIDE_LEFT, dock);
+	if (dock_host) {
+		remove_dock(dock_host);
+		if (dock && dock->get_parent() == dock_host) {
+			dock_host->remove_child(dock);
+		}
+		memdelete(dock_host);
 	}
 	memdelete(dock);
 }
