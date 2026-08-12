@@ -149,7 +149,7 @@ class SolersDock : public PanelContainer {
 	String session_project_path;
 	String session_current_id;
 	Array timeline_messages;
-	int layout_drag_depth = 0;
+	bool timeline_window_updating = false;
 
 	SolersObservationService *observation_service = nullptr;
 	SolersToolRegistry *tool_registry = nullptr;
@@ -173,11 +173,15 @@ class SolersDock : public PanelContainer {
 	void _request_session_list_refresh();
 	void _sync_session_selection();
 	void _on_session_row_pressed(const String &p_session_id);
-	Control *_create_history_entry(const Dictionary &p_message);
 	void _append_history_message(const Dictionary &p_message);
 	void _render_timeline();
-	void _bind_layout_splits();
-	void _set_layout_dragging(bool p_active);
+	// A fit_content RichTextLabel reshapes all of its text inside
+	// get_minimum_size(), so every live row costs a full re-wrap on each width
+	// change. Rows stay in the tree 1:1 with the transcript, but only those near
+	// the viewport carry cells; the rest pin their measured height.
+	void _update_timeline_window();
+	void _hydrate_timeline_row(Control *p_row, const Variant &p_entry);
+	void _park_timeline_row(Control *p_row);
 	VBoxContainer *_chat_mount() const;
 	void _on_new_chat_pressed();
 	void _on_model_chip_pressed();

@@ -94,6 +94,10 @@
 // (fit_content_height + custom_maximum_size, engine-owned).
 constexpr float SOLERS_COMPOSER_TEXT_MAX_HEIGHT = 220.0f;
 constexpr int SOLERS_MENTION_VISIBLE_ROWS = 4;
+// Space reserved for a timeline row that has never been laid out. Only the
+// scrollbar range depends on it: the measured height replaces it the first time
+// the row reaches the viewport.
+constexpr float SOLERS_TIMELINE_ROW_SEED_HEIGHT = 72.0f;
 static Ref<StyleBoxFlat> solers_row_styles[7];
 static real_t solers_row_style_scale = 0;
 
@@ -654,6 +658,7 @@ void SolersDock::_ensure_status_cell(const String &p_status) {
 	_clear_empty_state();
 	if (!status_cell) {
 		status_cell = memnew(SolersStatusCell);
+		status_cell->set_meta("timeline_pending", true);
 		mount->add_child(status_cell);
 	}
 	// The status row always trails the latest content.
@@ -689,6 +694,7 @@ VBoxContainer *SolersDock::_ensure_assistant_row() {
 	if (!active_assistant_row && mount) {
 		active_assistant_row = memnew(VBoxContainer);
 		active_assistant_row->set_meta("timeline_row", true);
+		active_assistant_row->set_meta("timeline_pending", true);
 		if (pending_assistant_event_id > 0) {
 			active_assistant_row->set_meta("timeline_event_id", pending_assistant_event_id);
 			pending_assistant_event_id = -1;
@@ -715,6 +721,9 @@ SolersAssistantCell *SolersDock::_ensure_text_cell() {
 }
 
 void SolersDock::_finish_turn_cells() {
+	if (active_assistant_row) {
+		active_assistant_row->remove_meta("timeline_pending");
+	}
 	_settle_thinking_cell();
 	_settle_tool_group();
 	if (active_text_cell) {
@@ -1458,46 +1467,6 @@ static Control *_solers_timeline_row(VBoxContainer *p_list, int64_t p_id) {
 	return nullptr;
 }
 
-void SolersDock::_bind_layout_splits() {
-	const Callable started = callable_mp(this, &SolersDock::_set_layout_dragging).bind(true);
-	const Callable ended = callable_mp(this, &SolersDock::_set_layout_dragging).bind(false);
-	for (Node *ancestor = get_parent(); ancestor; ancestor = ancestor->get_parent()) {
-		SplitContainer *split = Object::cast_to<SplitContainer>(ancestor);
-		if (split && !split->is_connected(SNAME("drag_started"), started)) {
-			split->connect(SNAME("drag_started"), started);
-			split->connect(SNAME("drag_ended"), ended);
-		}
-	}
-}
-
-void SolersDock::_set_layout_dragging(bool p_active) {
-	if (p_active) {
-		if (layout_drag_depth++ > 0 || !timeline_inset || !chat_scroll || !chat_scroll->is_visible()) {
-			return;
-		}
-		const float width = timeline_inset->get_size().x;
-		if (width <= 0.0f) {
-			return;
-		}
-		Size2 minimum = timeline_inset->get_custom_minimum_size();
-		Size2 maximum = timeline_inset->get_custom_maximum_size();
-		minimum.x = maximum.x = width;
-		timeline_inset->set_custom_minimum_size(minimum);
-		timeline_inset->set_custom_maximum_size(maximum);
-	} else {
-		layout_drag_depth = MAX(0, layout_drag_depth - 1);
-		if (layout_drag_depth != 0 || !timeline_inset || timeline_inset->get_custom_maximum_size().x < 0) {
-			return;
-		}
-		Size2 minimum = timeline_inset->get_custom_minimum_size();
-		Size2 maximum = timeline_inset->get_custom_maximum_size();
-		minimum.x = 0;
-		maximum.x = -1;
-		timeline_inset->set_custom_maximum_size(maximum);
-		timeline_inset->set_custom_minimum_size(minimum);
-	}
-}
-
 void SolersDock::_render_timeline() {
 	if (!message_list) {
 		return;
@@ -1535,32 +1504,113 @@ void SolersDock::_render_timeline() {
 		Control **found = mounted.getptr(id);
 		Control *row = found ? *found : nullptr;
 		if (!row && timeline_messages[index].get_type() == Variant::DICTIONARY) {
-			row = _create_history_entry(timeline_messages[index]);
-			if (row) {
-				row->set_meta("timeline_row", true);
-				row->set_meta("timeline_event_id", id);
-				mounted[id] = row;
-			}
+			// Rows land empty and only reserve space; _update_timeline_window
+			// builds the cells of the ones that reach the viewport.
+			row = memnew(VBoxContainer);
+			row->set_custom_minimum_size(Size2(0, SOLERS_TIMELINE_ROW_SEED_HEIGHT * EDSCALE));
+			row->set_meta("timeline_row", true);
+			row->set_meta("timeline_event_id", id);
+			message_list->add_child(row);
+			mounted[id] = row;
 		}
 		if (row && row->get_index() != index) {
 			message_list->move_child(row, index);
 		}
 	}
+	// Row positions are only meaningful after the pending sort.
+	callable_mp(this, &SolersDock::_update_timeline_window).call_deferred();
 }
 
-Control *SolersDock::_create_history_entry(const Dictionary &p_message) {
-	VBoxContainer *entry = memnew(VBoxContainer);
-	message_list->add_child(entry);
-	history_mount = entry;
-	_append_history_message(p_message);
-	_finish_turn_cells();
-	history_mount = nullptr;
-	if (entry->get_child_count() == 0) {
-		memdelete(entry);
-		return nullptr;
+void SolersDock::_hydrate_timeline_row(Control *p_row, const Variant &p_entry) {
+	if (p_row->get_child_count() == 0) {
+		// Replay must not clobber the live turn's cell builder: scrolling a
+		// long session can first-fill a history row while the agent is streaming.
+		history_mount = Object::cast_to<VBoxContainer>(p_row);
+		if (history_mount && p_entry.get_type() == Variant::DICTIONARY) {
+			SolersThinkingCell *thinking = active_thinking_cell;
+			SolersAssistantCell *text = active_text_cell;
+			VBoxContainer *row = active_assistant_row;
+			const int64_t pending_id = pending_assistant_event_id;
+			SolersToolGroupCell *group = active_tool_group;
+			HashMap<String, SolersToolCell *> tools(tool_cells_by_id);
+			SolersToolCell *last_tool = last_started_tool_cell;
+			SolersStatusCell *status = status_cell;
+			active_thinking_cell = nullptr;
+			active_text_cell = nullptr;
+			active_assistant_row = nullptr;
+			pending_assistant_event_id = -1;
+			active_tool_group = nullptr;
+			tool_cells_by_id.clear();
+			last_started_tool_cell = nullptr;
+			status_cell = nullptr;
+			_append_history_message(p_entry);
+			_settle_thinking_cell();
+			_settle_tool_group();
+			if (active_text_cell) {
+				active_text_cell->finalize(String());
+			}
+			active_thinking_cell = thinking;
+			active_text_cell = text;
+			active_assistant_row = row;
+			pending_assistant_event_id = pending_id;
+			active_tool_group = group;
+			tool_cells_by_id = tools;
+			last_started_tool_cell = last_tool;
+			status_cell = status;
+		}
+		history_mount = nullptr;
+	} else {
+		for (int i = 0; i < p_row->get_child_count(); i++) {
+			Control *cell = Object::cast_to<Control>(p_row->get_child(i));
+			if (cell) {
+				cell->set_visible(true);
+			}
+		}
 	}
-	entry->set_meta("timeline_event_id", p_message.get("event_id", -1));
-	return entry;
+	p_row->set_custom_minimum_size(Size2());
+}
+
+void SolersDock::_park_timeline_row(Control *p_row) {
+	Control *first = p_row->get_child_count() > 0 ? Object::cast_to<Control>(p_row->get_child(0)) : nullptr;
+	if (!first || !first->is_visible()) {
+		return; // Never built, or already parked.
+	}
+	// The height measured while the cells were live is exact; pin it so hiding
+	// the content leaves everything below the row in place.
+	p_row->set_custom_minimum_size(Size2(0, p_row->get_size().y));
+	for (int i = 0; i < p_row->get_child_count(); i++) {
+		Control *cell = Object::cast_to<Control>(p_row->get_child(i));
+		if (cell) {
+			cell->set_visible(false);
+		}
+	}
+}
+
+void SolersDock::_update_timeline_window() {
+	if (!chat_scroll || !message_list || timeline_window_updating || !chat_scroll->is_visible()) {
+		return;
+	}
+	// Hydrating a row moves the rows below it, which re-emits value_changed and
+	// resized; one pass per notification is enough because each pass re-arms
+	// the next until the window settles.
+	timeline_window_updating = true;
+	const float view_height = chat_scroll->get_size().y;
+	const float keep_top = chat_scroll->get_v_scroll() - view_height;
+	const float keep_bottom = chat_scroll->get_v_scroll() + view_height * 2.0f;
+	for (int i = 0; i < message_list->get_child_count(); i++) {
+		Control *row = Object::cast_to<Control>(message_list->get_child(i));
+		// Rows past the transcript, and live turn rows, stay live.
+		if (!row || i >= timeline_messages.size() || (bool)row->get_meta("timeline_pending", false)) {
+			continue;
+		}
+		const float row_top = row->get_position().y;
+		if (row_top + row->get_size().y >= keep_top && row_top <= keep_bottom) {
+			_hydrate_timeline_row(row, timeline_messages[i]);
+		} else {
+			_park_timeline_row(row);
+		}
+	}
+	timeline_window_updating = false;
 }
 
 void SolersDock::_append_history_message(const Dictionary &p_message) {
@@ -2369,7 +2419,6 @@ void SolersDock::_on_auto_approve_chip_pressed() {
 void SolersDock::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_ENTER_TREE: {
-			_bind_layout_splits();
 			_sync_layout_widths();
 			_update_send_enabled();
 			_refresh_status();
@@ -2438,8 +2487,6 @@ SolersDock::SolersDock() {
 	body_split->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	body_split->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	body_split->set_dragger_visibility(SplitContainer::DRAGGER_HIDDEN);
-	body_split->connect(SNAME("drag_started"), callable_mp(this, &SolersDock::_set_layout_dragging).bind(true));
-	body_split->connect(SNAME("drag_ended"), callable_mp(this, &SolersDock::_set_layout_dragging).bind(false));
 	root_box->add_child(body_split);
 
 	session_sidebar = memnew(PanelContainer);
@@ -2554,6 +2601,8 @@ SolersDock::SolersDock() {
 	timeline_inset->add_theme_constant_override("margin_bottom", 12 * EDSCALE);
 	timeline_inset->add_child(message_list);
 	chat_scroll->add_child(timeline_inset);
+	chat_scroll->get_v_scroll_bar()->connect(SNAME("value_changed"), callable_mp(this, &SolersDock::_update_timeline_window).unbind(1));
+	chat_scroll->connect(SNAME("resized"), callable_mp(this, &SolersDock::_update_timeline_window));
 
 	/* Approval prompt — shown inline above the composer when a tool is blocked. */
 
@@ -2895,12 +2944,9 @@ void SolersDock::_on_agent_timeline_entry_committed(int64_t p_event_id, const St
 	if (!message_list) {
 		return;
 	}
-	for (int i = 0; i < message_list->get_child_count(); i++) {
-		Control *row = Object::cast_to<Control>(message_list->get_child(i));
-		if (row && (int64_t)row->get_meta("timeline_event_id", -1) == p_event_id) {
-			row->remove_meta("timeline_pending");
-			return;
-		}
+	Control *row = _solers_timeline_row(message_list, p_event_id);
+	if (row) {
+		row->remove_meta("timeline_pending");
 	}
 }
 
