@@ -90,11 +90,9 @@
 #include "modules/solers_ai/protocol/solers_mcp_adapter.h"
 #include "modules/solers_ai/protocol/solers_rpc_server.h"
 
-constexpr float SOLERS_COMPOSER_TEXT_MIN_HEIGHT = 48.0f;
+// Composer growth cap; past this TextEdit shows its own scrollbar
+// (fit_content_height + custom_maximum_size, engine-owned).
 constexpr float SOLERS_COMPOSER_TEXT_MAX_HEIGHT = 220.0f;
-constexpr float SOLERS_COMPOSER_TOOLBAR_HEIGHT = 30.0f;
-// Top/bottom composer padding. Keep the toolbar visually attached to the prompt.
-constexpr float SOLERS_COMPOSER_VERTICAL_CHROME = 20.0f;
 constexpr int SOLERS_MENTION_VISIBLE_ROWS = 4;
 static Ref<StyleBoxFlat> solers_row_styles[7];
 static real_t solers_row_style_scale = 0;
@@ -577,7 +575,6 @@ void SolersDock::_show_empty_state() {
 	}
 	empty_home->show();
 	_sync_layout_widths();
-	_update_chat_input_height();
 }
 
 void SolersDock::_scroll_chat_to_bottom() {
@@ -776,7 +773,6 @@ void SolersDock::_on_send_chat_pressed() {
 		const Array attachments = pending_attachments.duplicate(true);
 		chat_input->set_text("");
 		_clear_attachments();
-		_update_chat_input_height();
 		_update_send_enabled();
 		_submit_steering(prompt, attachments);
 		return;
@@ -791,7 +787,6 @@ void SolersDock::_on_send_chat_pressed() {
 	const Array attachments = pending_attachments.duplicate(true);
 	chat_input->set_text("");
 	_clear_attachments();
-	_update_chat_input_height();
 	_update_send_enabled();
 	_refresh_model_chip();
 	_submit_chat_prompt(prompt, attachments);
@@ -1435,7 +1430,6 @@ void SolersDock::start_new_chat() {
 	if (chat_input) {
 		_hide_mention_popup();
 		chat_input->set_text("");
-		_update_chat_input_height();
 		_update_send_enabled();
 		chat_input->grab_focus();
 	}
@@ -1739,7 +1733,6 @@ void SolersDock::_on_chat_input_gui_input(const Ref<InputEvent> &p_event) {
 
 	if (key->is_shift_pressed()) {
 		chat_input->insert_text_at_caret("\n");
-		_update_chat_input_height();
 		chat_input->accept_event();
 		return;
 	}
@@ -1754,7 +1747,6 @@ void SolersDock::_on_chat_input_gui_input(const Ref<InputEvent> &p_event) {
 }
 
 void SolersDock::_on_chat_input_text_changed() {
-	_update_chat_input_height();
 	_update_send_enabled();
 	_refresh_mention_popup();
 }
@@ -1945,7 +1937,6 @@ bool SolersDock::_try_delete_mention_span(int p_direction) {
 		}
 		chat_input->select(line, start, line, extent);
 		chat_input->delete_selection();
-		_update_chat_input_height();
 		_update_send_enabled();
 		_refresh_mention_popup();
 		return true;
@@ -2112,7 +2103,6 @@ void SolersDock::_select_mention(const Dictionary &p_mention) {
 	chat_input->insert_text_at_caret(token + " ");
 	_hide_mention_popup();
 	chat_input->grab_focus();
-	_update_chat_input_height();
 	_update_send_enabled();
 }
 
@@ -2253,27 +2243,6 @@ void SolersDock::_update_send_enabled() {
 	}
 }
 
-void SolersDock::_update_chat_input_height() {
-	if (!chat_input || !chat_input->is_inside_tree()) {
-		return;
-	}
-
-	const int line_height = MAX(1, chat_input->get_line_height());
-	const int visible_rows = MAX(1, chat_input->get_total_visible_line_count());
-	const float text_height = CLAMP(float(visible_rows * line_height) + 20.0f * EDSCALE, SOLERS_COMPOSER_TEXT_MIN_HEIGHT * EDSCALE, SOLERS_COMPOSER_TEXT_MAX_HEIGHT * EDSCALE);
-	chat_input->set_custom_minimum_size(Size2(0, text_height));
-
-	Control *composer_card = Object::cast_to<Control>(chat_input->get_parent() ? chat_input->get_parent()->get_parent() : nullptr);
-	if (composer_card) {
-		composer_card->set_custom_minimum_size(Size2(0, text_height + SOLERS_COMPOSER_TOOLBAR_HEIGHT * EDSCALE + SOLERS_COMPOSER_VERTICAL_CHROME * EDSCALE));
-	}
-
-	const int max_visible_rows = MAX(1, int((SOLERS_COMPOSER_TEXT_MAX_HEIGHT * EDSCALE) / line_height));
-	if (visible_rows > max_visible_rows) {
-		chat_input->set_v_scroll(MAX(0, chat_input->get_total_visible_line_count() - chat_input->get_visible_line_count()));
-	}
-}
-
 void SolersDock::_sync_approval_panel() {
 	if (!approval_overlay_inset) {
 		return;
@@ -2402,7 +2371,6 @@ void SolersDock::_notification(int p_what) {
 		case NOTIFICATION_ENTER_TREE: {
 			_bind_layout_splits();
 			_sync_layout_widths();
-			_update_chat_input_height();
 			_update_send_enabled();
 			_refresh_status();
 		} break;
@@ -2410,7 +2378,6 @@ void SolersDock::_notification(int p_what) {
 			_sync_layout_widths();
 		} break;
 		case NOTIFICATION_THEME_CHANGED: {
-			_update_chat_input_height();
 			_refresh_model_chip();
 			_sync_session_button();
 			SolersUITheme::configure_settings_host(provider_settings_dialog, get_theme());
@@ -2673,7 +2640,6 @@ SolersDock::SolersDock() {
 	SolersSurface *composer_card = memnew(SolersSurface);
 	composer_card->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	composer_card->configure(SOLERS_COMPOSER_BG, SOLERS_COMPOSER_BORDER, 19, 14, true);
-	composer_card->set_custom_minimum_size(Size2(0, (SOLERS_COMPOSER_TEXT_MIN_HEIGHT + SOLERS_COMPOSER_TOOLBAR_HEIGHT + SOLERS_COMPOSER_VERTICAL_CHROME) * EDSCALE));
 	composer_stack->add_child(composer_card);
 
 	VBoxContainer *composer = memnew(VBoxContainer);
@@ -2684,12 +2650,12 @@ SolersDock::SolersDock() {
 	chat_input = memnew(TextEdit);
 	chat_input->set_name("ComposerInput");
 	chat_input->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	chat_input->set_custom_minimum_size(Size2(0, SOLERS_COMPOSER_TEXT_MIN_HEIGHT * EDSCALE));
+	chat_input->set_custom_maximum_size(Size2(-1, SOLERS_COMPOSER_TEXT_MAX_HEIGHT * EDSCALE));
 	chat_input->set_line_wrapping_mode(TextEdit::LINE_WRAPPING_BOUNDARY);
 	chat_input->set_placeholder(TTR("Ask Solers to create..."));
 	chat_input->set_smooth_scroll_enabled(true);
 	chat_input->set_scroll_past_end_of_file_enabled(false);
-	chat_input->set_fit_content_height_enabled(false);
+	chat_input->set_fit_content_height_enabled(true);
 	chat_input->set_indent_wrapped_lines(false);
 	chat_input->set_highlight_current_line(false);
 	chat_input->set_draw_minimap(false);
@@ -2721,7 +2687,6 @@ SolersDock::SolersDock() {
 
 	HBoxContainer *composer_toolbar = memnew(HBoxContainer);
 	composer_toolbar->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	composer_toolbar->set_custom_minimum_size(Size2(0, SOLERS_COMPOSER_TOOLBAR_HEIGHT * EDSCALE));
 	composer_toolbar->set_alignment(BoxContainer::ALIGNMENT_BEGIN);
 	composer_toolbar->add_theme_constant_override("separation", 6 * EDSCALE);
 	composer->add_child(composer_toolbar);
@@ -2869,8 +2834,6 @@ SolersDock::SolersDock() {
 	model_submenu_list->add_theme_constant_override("separation", 2 * EDSCALE);
 	model_submenu_scroll->add_child(model_submenu_list);
 	model_submenu_box->add_child(model_submenu_scroll);
-
-	_update_chat_input_height();
 }
 
 SolersDock::~SolersDock() {

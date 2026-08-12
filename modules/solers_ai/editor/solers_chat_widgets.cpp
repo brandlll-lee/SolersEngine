@@ -506,32 +506,6 @@ void SolersSelectChip::_notification(int p_what) {
 }
 
 /* ------------------------------------------------------------------ */
-/* SolersToolbarDivider                                                */
-/* ------------------------------------------------------------------ */
-
-SolersToolbarDivider::SolersToolbarDivider() {
-	set_mouse_filter(MOUSE_FILTER_IGNORE);
-	set_v_size_flags(SIZE_SHRINK_CENTER);
-}
-
-Size2 SolersToolbarDivider::get_minimum_size() const {
-	const float ed = EDSCALE;
-	return Size2(11.0f * ed, 16.0f * ed);
-}
-
-void SolersToolbarDivider::_notification(int p_what) {
-	if (p_what != NOTIFICATION_DRAW) {
-		return;
-	}
-	const float ed = EDSCALE;
-	const Rect2 r(Point2(), get_size());
-	const float line_h = 15.0f * ed;
-	const float x = Math::floor(r.size.x * 0.5f);
-	const float y0 = (r.size.y - line_h) * 0.5f;
-	draw_line(Point2(x, y0), Point2(x, y0 + line_h), Color(1, 1, 1, 0.12f), MAX(1.0f, ed), true);
-}
-
-/* ------------------------------------------------------------------ */
 /* SolersSurface                                                       */
 /* ------------------------------------------------------------------ */
 

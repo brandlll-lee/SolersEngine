@@ -233,7 +233,6 @@ class SolersDock : public PanelContainer {
 	void _refresh_attachment_bar();
 	void _remove_attachment(int p_index);
 	void _clear_attachments();
-	void _update_chat_input_height();
 	void _update_send_enabled();
 	bool _is_scroll_pinned() const;
 	void _on_cell_content_changed();

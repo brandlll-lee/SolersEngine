@@ -174,19 +174,6 @@ public:
 	SolersPlanCapsule();
 };
 
-// Self-drawn 1px hairline vertical divider used between composer toolbar groups.
-class SolersToolbarDivider : public Control {
-	GDCLASS(SolersToolbarDivider, Control);
-
-protected:
-	void _notification(int p_what);
-	static void _bind_methods() {}
-
-public:
-	virtual Size2 get_minimum_size() const override;
-	SolersToolbarDivider();
-};
-
 // Self-drawn rounded surface (background + crisp hairline border + optional
 // soft shadow). The border is rendered with the "two stacked fills" technique
 // (opaque outer fill, inset background fill) so the corners stay perfectly
