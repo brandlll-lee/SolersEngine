@@ -2,27 +2,30 @@
 /*  solers_markdown_view.h                                                */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                              SOLERS ENGINE                              */
-/*                        (a fork of Godot Engine)                        */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
 /**************************************************************************/
-/* Solers: AI-native game engine.                                        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
 /*                                                                        */
-/* Markdown rendering for the Solers chat timeline, built for streaming:  */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
 /*                                                                        */
-/*  - The message source is split into top-level segments (prose chunks   */
-/*    separated by blank lines, plus fenced code blocks). Each segment    */
-/*    renders into its own child control. Settled segments are never      */
-/*    re-parsed; only the trailing "open" segment re-renders as deltas    */
-/*    arrive, so cost stays proportional to the active block, not the     */
-/*    whole message.                                                      */
-/*  - Prose segments are parsed by md4c (thirdparty, CommonMark + GFM     */
-/*    tables/strikethrough/task lists) and rendered straight through      */
-/*    RichTextLabel's push_* API - no intermediate BBCode string, no      */
-/*    escaping pitfalls.                                                  */
-/*  - Fenced code becomes SolersCodeBlock: a dark panel with language     */
-/*    tag, copy button, and lightweight syntax highlighting.              */
-/*  - Links go through meta_clicked: res:// paths open in the editor     */
-/*    (scripts jump to line), http(s) opens the browser.                  */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
 #pragma once

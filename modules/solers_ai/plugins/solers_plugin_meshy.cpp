@@ -2,8 +2,30 @@
 /*  solers_plugin_meshy.cpp                                               */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                              SOLERS ENGINE                              */
-/*                        (a fork of Godot Engine)                        */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
 #include "solers_plugin_meshy.h"
@@ -26,8 +48,8 @@ static Dictionary _operation_def(const String &p_operation_id) {
 	Dictionary op;
 	op["operation_id"] = p_operation_id;
 	op["agent_supported"] = true;
-	Dictionary requires;
-	requires["kind"] = "3d";
+	Dictionary requirement;
+	requirement["kind"] = "3d";
 	Dictionary schema;
 	Dictionary properties;
 	Array required;
@@ -39,11 +61,11 @@ static Dictionary _operation_def(const String &p_operation_id) {
 		op["category"] = "Model";
 		op["provider_operation_id"] = "meshy.openapi.v2.text-to-3d.refine";
 		op["endpoint"] = "/openapi/v2/text-to-3d";
-		requires["status"] = "draft";
+		requirement["status"] = "draft";
 		Array task_id_fields;
 		task_id_fields.push_back("preview_task_id");
 		task_id_fields.push_back("provider_task_id");
-		requires["task_id_fields"] = task_id_fields;
+		requirement["task_id_fields"] = task_id_fields;
 		result_traits["model_state"] = "static_model";
 	} else if (p_operation_id == "remesh") {
 		op["label"] = "Optimize";
@@ -51,11 +73,11 @@ static Dictionary _operation_def(const String &p_operation_id) {
 		op["category"] = "Geometry";
 		op["provider_operation_id"] = "meshy.openapi.v1.remesh";
 		op["endpoint"] = "/openapi/v1/remesh";
-		requires["status"] = "ready";
-		requires["model_state"] = "static_model";
+		requirement["status"] = "ready";
+		requirement["model_state"] = "static_model";
 		Array task_id_fields;
 		task_id_fields.push_back("provider_task_id");
-		requires["task_id_fields"] = task_id_fields;
+		requirement["task_id_fields"] = task_id_fields;
 		Array topology;
 		topology.push_back("triangle");
 		topology.push_back("quad");
@@ -80,11 +102,11 @@ static Dictionary _operation_def(const String &p_operation_id) {
 		op["category"] = "Material";
 		op["provider_operation_id"] = "meshy.openapi.v1.retexture";
 		op["endpoint"] = "/openapi/v1/retexture";
-		requires["status"] = "ready";
-		requires["model_state"] = "static_model";
+		requirement["status"] = "ready";
+		requirement["model_state"] = "static_model";
 		Array task_id_fields;
 		task_id_fields.push_back("provider_task_id");
-		requires["task_id_fields"] = task_id_fields;
+		requirement["task_id_fields"] = task_id_fields;
 		properties["text_style_prompt"] = _option_schema("string", "Style Prompt");
 		required.push_back("text_style_prompt");
 		result_traits["model_state"] = "static_model";
@@ -94,11 +116,11 @@ static Dictionary _operation_def(const String &p_operation_id) {
 		op["category"] = "Character";
 		op["provider_operation_id"] = "meshy.openapi.v1.rigging";
 		op["endpoint"] = "/openapi/v1/rigging";
-		requires["status"] = "ready";
-		requires["model_state"] = "static_model";
+		requirement["status"] = "ready";
+		requirement["model_state"] = "static_model";
 		Array task_id_fields;
 		task_id_fields.push_back("provider_task_id");
-		requires["task_id_fields"] = task_id_fields;
+		requirement["task_id_fields"] = task_id_fields;
 		properties["humanoid_confirmed"] = _option_schema("boolean", "This is a humanoid character");
 		required.push_back("humanoid_confirmed");
 		result_traits["model_state"] = "rigged_model";
@@ -109,12 +131,12 @@ static Dictionary _operation_def(const String &p_operation_id) {
 		op["category"] = "Character";
 		op["provider_operation_id"] = "meshy.openapi.v1.animations";
 		op["endpoint"] = "/openapi/v1/animations";
-		requires["status"] = "ready";
-		requires["rig"] = "humanoid";
+		requirement["status"] = "ready";
+		requirement["rig"] = "humanoid";
 		Array task_id_fields;
 		task_id_fields.push_back("rig_task_id");
 		task_id_fields.push_back("provider_task_id");
-		requires["task_id_fields"] = task_id_fields;
+		requirement["task_id_fields"] = task_id_fields;
 		Dictionary action_option = _option_schema("integer", "Action ID");
 		action_option["description"] = "Meshy official Animation Library action_id. Use animation_actions from asset.capabilities; do not guess.";
 		properties["action_id"] = action_option;
@@ -128,11 +150,11 @@ static Dictionary _operation_def(const String &p_operation_id) {
 		op["category"] = "Model";
 		op["provider_operation_id"] = "meshy.openapi.v1.convert";
 		op["endpoint"] = "/openapi/v1/convert";
-		requires["status"] = "ready";
-		requires["model_state"] = "static_model";
+		requirement["status"] = "ready";
+		requirement["model_state"] = "static_model";
 		Array task_id_fields;
 		task_id_fields.push_back("provider_task_id");
-		requires["task_id_fields"] = task_id_fields;
+		requirement["task_id_fields"] = task_id_fields;
 		Array formats;
 		formats.push_back("glb");
 		formats.push_back("fbx");
@@ -156,11 +178,11 @@ static Dictionary _operation_def(const String &p_operation_id) {
 		op["category"] = "Model";
 		op["provider_operation_id"] = "meshy.openapi.v1.resize";
 		op["endpoint"] = "/openapi/v1/resize";
-		requires["status"] = "ready";
-		requires["model_state"] = "static_model";
+		requirement["status"] = "ready";
+		requirement["model_state"] = "static_model";
 		Array task_id_fields;
 		task_id_fields.push_back("provider_task_id");
-		requires["task_id_fields"] = task_id_fields;
+		requirement["task_id_fields"] = task_id_fields;
 		Dictionary height = _option_schema("number", "Height (m)");
 		height["exclusiveMinimum"] = 0.0;
 		properties["resize_height"] = height;
@@ -198,11 +220,11 @@ static Dictionary _operation_def(const String &p_operation_id) {
 		op["category"] = "Geometry";
 		op["provider_operation_id"] = "meshy.openapi.v1.uv-unwrap";
 		op["endpoint"] = "/openapi/v1/uv-unwrap";
-		requires["status"] = "ready";
-		requires["model_state"] = "static_model";
+		requirement["status"] = "ready";
+		requirement["model_state"] = "static_model";
 		Array task_id_fields;
 		task_id_fields.push_back("provider_task_id");
-		requires["task_id_fields"] = task_id_fields;
+		requirement["task_id_fields"] = task_id_fields;
 		result_traits["model_state"] = "static_model";
 		result_traits["uv_layout"] = "unwrapped";
 		result_traits["material_state"] = "placeholder";
@@ -236,7 +258,7 @@ static Dictionary _operation_def(const String &p_operation_id) {
 	schema["properties"] = properties;
 	schema["required"] = required;
 	op["options_schema"] = schema;
-	op["requires"] = requires;
+	op["requires"] = requirement;
 	op["result_traits"] = result_traits;
 	return op;
 }
