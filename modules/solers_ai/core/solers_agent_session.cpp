@@ -1385,7 +1385,7 @@ Error SolersAgentSession::_dispatch_model_request(bool p_skip_compaction) {
 		request_transient_tokens = SolersContextManager::estimate_messages_tokens(transient);
 	}
 	if (!p_skip_compaction && context_manager && context_manager->should_compact(messages, system_prompt, cached_request_tool_tokens, context_window, max_output_tokens, request_transient_tokens)) {
-		return _begin_compaction(false, SolersContextManager::first_kept_index(messages, max_output_tokens));
+		return _begin_compaction(false);
 	}
 	Dictionary request = _build_request(request_messages, system_prompt, tools);
 	Array delivered_attachments;
@@ -1424,12 +1424,11 @@ Error SolersAgentSession::_begin_provider_request(const Dictionary &p_request, c
 	return OK;
 }
 
-Error SolersAgentSession::_begin_compaction(bool p_from_overflow, int p_preserve_from) {
+Error SolersAgentSession::_begin_compaction(bool p_from_overflow) {
 	if (!context_manager || messages.is_empty()) {
 		return ERR_UNAVAILABLE;
 	}
 	compaction_source_messages = messages.duplicate(true);
-	compaction_preserve_from = p_preserve_from;
 	current_text = String();
 	current_reasoning = String();
 	pending_tool_calls.clear();
@@ -1461,9 +1460,8 @@ Error SolersAgentSession::_dispatch_compaction_request() {
 	const Dictionary profile = settings_service->resolve_provider_profile(provider_id, base_url);
 
 	const String compaction_system_prompt = "Update the task continuation from the conversation and its authoritative checkpoint. Preserve the user's goal, durable constraints, decisions, unresolved work, and precise next action. Never invent engine state or completion claims. Return text only.";
-	const int prefix_end = compaction_preserve_from < 0 ? compaction_source_messages.size() : compaction_preserve_from;
 	Array history;
-	for (int i = 0; i < prefix_end; i++) {
+	for (int i = 0; i < compaction_source_messages.size(); i++) {
 		Dictionary message = compaction_source_messages[i];
 		const String role = message.get("role", String());
 		const String origin = message.get("origin", String());
@@ -1489,7 +1487,7 @@ Error SolersAgentSession::_dispatch_compaction_request() {
 			"Write a concise continuation containing the user's goal, durable constraints, decisions already made, unresolved work, and the exact next action. Treat the structured checkpoint as authoritative: do not rewrite its engine identities, hashes, receipts, diagnostics, or attachments into prose. Respond with text only and do not call tools."));
 	Dictionary request = _build_request(history, compaction_system_prompt, Array());
 	const int projection_budget = MAX(1, context_window - max_output_tokens - SolersContextManager::estimate_tokens(compaction_system_prompt));
-	const int continuation_budget = MAX(1, MIN(intent_tokens, projection_budget - SolersContextManager::estimate_messages_tokens(compaction_source_messages.slice(prefix_end))));
+	const int continuation_budget = MAX(1, MIN(intent_tokens, projection_budget));
 	if (request.has("max_tokens")) {
 		request["max_tokens"] = MIN((int)request["max_tokens"], continuation_budget);
 	}
@@ -1583,7 +1581,7 @@ void SolersAgentSession::_poll_compaction() {
 void SolersAgentSession::_on_compaction_complete() {
 	_commit_attachment_projection();
 	const int projection_budget = MAX(0, context_window - max_output_tokens - SolersContextManager::estimate_tokens(system_prompt) - cached_request_tool_tokens);
-	const Dictionary result = context_manager->apply_compaction(compaction_source_messages, current_text, projection_budget, compaction_preserve_from);
+	const Dictionary result = context_manager->apply_compaction(compaction_source_messages, current_text, projection_budget);
 	messages = result.get("messages", Array());
 	for (int i = 0; i < messages.size(); i++) {
 		const Array attachments = Dictionary(messages[i]).get("attachments", Array());
@@ -1595,7 +1593,6 @@ void SolersAgentSession::_on_compaction_complete() {
 	emit_signal(SNAME("timeline_entry_committed"), compaction_timeline_event_id, "context_compaction");
 
 	compaction_source_messages.clear();
-	compaction_preserve_from = -1;
 	compaction_id = 0;
 	compaction_timeline_event_id = 0;
 	retry_attempt = 0;
@@ -1955,7 +1952,7 @@ void SolersAgentSession::poll() {
 		if (_is_context_overflow(error)) {
 			overflow_compaction_attempts++;
 			if (overflow_compaction_attempts == 1) {
-				_begin_compaction(true, SolersContextManager::first_kept_index(messages, max_output_tokens));
+				_begin_compaction(true);
 				return;
 			}
 		}
@@ -2003,7 +2000,7 @@ void SolersAgentSession::_on_model_turn_complete() {
 	if (pending_tool_calls.is_empty() && current_text.is_empty() && current_reasoning.is_empty()) {
 		if (last_stop_reason == SolersLLMStopReason::MAX_TOKENS && !messages.is_empty()) {
 			overflow_compaction_attempts++;
-			if (overflow_compaction_attempts == 1 && _begin_compaction(true, SolersContextManager::first_kept_index(messages, max_output_tokens)) == OK) {
+			if (overflow_compaction_attempts == 1 && _begin_compaction(true) == OK) {
 				return;
 			}
 		}
@@ -2093,7 +2090,7 @@ void SolersAgentSession::_on_model_turn_complete() {
 		for (int i = 0; i < tool_queue.size(); i++) {
 			Dictionary call = tool_queue[i];
 			if (!call.has("preflight_result") && tool_registry->is_read_only(StringName(call.get("canonical_name", String())), call.get("parsed_args", Dictionary()))) {
-				const int share = MAX(1, remaining / observation_count);
+				const int share = CLAMP(remaining / observation_count, 1, SolersContextManager::TOOL_RESULT_MAX_TOKENS);
 				call["result_token_budget"] = share;
 				remaining = MAX(0, remaining - share);
 				observation_count--;
@@ -2207,7 +2204,6 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	retry_request.clear();
 	retry_profile.clear();
 	compaction_source_messages.clear();
-	compaction_preserve_from = -1;
 	compaction_id = 0;
 	compaction_timeline_event_id = 0;
 	overflow_compaction_attempts = 0;
@@ -2837,13 +2833,7 @@ void SolersAgentSession::_deliver_tool_result(const String &p_id, const String &
 	if (!diagnostics.is_empty()) {
 		result["diagnostics"] = diagnostics;
 	}
-	String content = JSON::stringify(result, "", false, true);
-	if (context_manager && context_window > 0 && max_output_tokens > 0) {
-		_collect_tools();
-		const int used = context_manager->get_token_count_with_pending(messages, system_prompt, cached_request_tool_tokens);
-		const int available = MAX(0, context_window - max_output_tokens - used);
-		content = SolersContextManager::clamp_to_tokens(content, MAX(1, MIN(available, max_output_tokens)));
-	}
+	const String content = SolersContextManager::clamp_to_tokens(JSON::stringify(result, "", false, true), SolersContextManager::TOOL_RESULT_MAX_TOKENS);
 	_write_transcript_tool(p_id, p_canonical_name, p_args, result, content);
 	const uint64_t duration_msec = tool_completed_msec >= tool_started_msec ? tool_completed_msec - tool_started_msec : 0;
 	if (!_is_session_tool(p_canonical_name)) {

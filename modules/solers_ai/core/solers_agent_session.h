@@ -159,7 +159,6 @@ class SolersAgentSession : public Object {
 	int text_delta_count = 0;
 	uint64_t last_text_delta_msec = 0;
 	Array compaction_source_messages;
-	int compaction_preserve_from = -1;
 	int64_t compaction_id = 0;
 	int64_t compaction_timeline_event_id = 0;
 	Dictionary retry_request;
@@ -225,7 +224,7 @@ class SolersAgentSession : public Object {
 	Error _dispatch_model_request(bool p_skip_compaction = false);
 	Error _dispatch_compaction_request();
 	void _commit_attachment_projection();
-	Error _begin_compaction(bool p_from_overflow, int p_preserve_from = -1);
+	Error _begin_compaction(bool p_from_overflow);
 	void _poll_compaction();
 	void _on_compaction_complete();
 	bool _is_context_overflow(const Dictionary &p_error) const;

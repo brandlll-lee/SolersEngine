@@ -96,23 +96,6 @@ String SolersContextManager::clamp_to_tokens(const String &p_text, int p_token_b
 	return p_text.substr(0, head) + marker + p_text.substr(p_text.length() - tail);
 }
 
-int SolersContextManager::first_kept_index(const Array &p_messages, int p_token_budget) {
-	int index = p_messages.size();
-	int used = 0;
-	while (index > 0) {
-		const int cost = _estimate_message_tokens(p_messages[index - 1]);
-		if (used > 0 && used + cost > MAX(0, p_token_budget)) {
-			break;
-		}
-		used += cost;
-		index--;
-	}
-	while (index > 0 && String(Dictionary(p_messages[index]).get("role", String())) == String(SolersLLMRole::TOOL)) {
-		index--;
-	}
-	return index;
-}
-
 Array SolersContextManager::repair_tool_pairing(const Array &p_messages) {
 	Array repaired;
 	HashMap<String, String> open_calls;
@@ -248,17 +231,34 @@ bool SolersContextManager::should_compact(const Array &p_messages, const String 
 	return should_compact(get_token_count_with_pending(p_messages, p_system_prompt, p_tool_tokens, p_transient_tokens), p_context_window, p_max_output_tokens);
 }
 
-Dictionary SolersContextManager::apply_compaction(const Array &p_messages, const String &p_summary, int p_token_budget, int p_preserve_from) {
+Dictionary SolersContextManager::apply_compaction(const Array &p_messages, const String &p_summary, int p_token_budget) {
 	const int tokens_before = estimate_messages_tokens(p_messages);
-	const int preserve_from = p_preserve_from < 0 ? p_messages.size() : CLAMP(p_preserve_from, 0, p_messages.size());
-	const Array suffix = p_messages.slice(preserve_from);
 	const String context_summary = _build_summary_text(p_summary);
 	Dictionary summary_message;
 	summary_message["role"] = MODEL_CONTEXT_ROLE;
 	summary_message["content"] = context_summary;
 	summary_message["origin"] = "compaction_summary";
+	// The verbatim tail is what the model still needs, and the budget the
+	// compacted prompt must fit into is the only thing deciding how far it reaches.
+	const int tail_budget = MAX(0, p_token_budget - _estimate_message_tokens(summary_message));
+	int preserve_from = p_messages.size();
+	int tail_tokens = 0;
+	while (preserve_from > 0) {
+		const int cost = _estimate_message_tokens(p_messages[preserve_from - 1]);
+		if (tail_tokens + cost > tail_budget) {
+			break;
+		}
+		tail_tokens += cost;
+		preserve_from--;
+	}
+	// A tool result whose call stayed in the dropped prefix is unanswerable.
+	while (preserve_from < p_messages.size() && String(Dictionary(p_messages[preserve_from]).get("role", String())) == String(SolersLLMRole::TOOL)) {
+		tail_tokens -= _estimate_message_tokens(p_messages[preserve_from]);
+		preserve_from++;
+	}
+	const Array suffix = p_messages.slice(preserve_from);
 	const Array prefix_projection = project_completed_turns(p_messages.slice(0, preserve_from));
-	const int remaining = MAX(0, p_token_budget - _estimate_message_tokens(summary_message) - estimate_messages_tokens(suffix));
+	const int remaining = MAX(0, tail_budget - tail_tokens);
 	Array compacted;
 	for (int i = 0; i < prefix_projection.size(); i++) {
 		const Dictionary message = prefix_projection[i];

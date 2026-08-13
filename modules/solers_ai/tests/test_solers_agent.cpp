@@ -88,12 +88,11 @@ TEST_CASE("[SolersContextManager] compaction replaces the active prefix and pres
 	history.push_back(SolersLLMMessage::user(String("obsolete ").repeat(8000)));
 	history.push_back(SolersLLMMessage::tool_result("call_old", "object.transaction", R"({"ok":true,"data":{"mutation":{"receipt":{"scene_after":{"root_object_id":42,"version":7}}}}})"));
 	history.push_back(SolersLLMMessage::user("Continue the build."));
-	const int preserve_from = history.size();
 	history.push_back(SolersLLMMessage::assistant("Capturing.", make_tool_calls("call_live", "render.capture")));
 	history.push_back(SolersLLMMessage::tool_result("call_live", "render.capture", String("exact payload ").repeat(1000)));
-	const Dictionary result = context.apply_compaction(history, "Keep building from engine evidence.", 8000, preserve_from);
+	const Dictionary result = context.apply_compaction(history, "Keep building from engine evidence.", 8000);
 	const Array compacted = result.get("messages", Array());
-	REQUIRE(compacted.size() == 4);
+	REQUIRE(compacted.size() == 5);
 	CHECK(Dictionary(compacted[0]).get("origin", String()) == "turn_checkpoint");
 	CHECK(String(Dictionary(compacted[0]).get("content", String())).contains("root_object_id"));
 	CHECK(Dictionary(compacted[1]).get("origin", String()) == "compaction_summary");
@@ -114,24 +113,31 @@ TEST_CASE("[SolersContextManager] envelope clamp keeps head and tail under the t
 	CHECK(SolersContextManager::clamp_to_tokens(body, 0).is_empty());
 }
 
-TEST_CASE("[SolersContextManager] first_kept_index keeps a recent tail on a tool-pair boundary") {
+TEST_CASE("[SolersContextManager] compaction never returns more than its budget") {
 	Array history;
 	history.push_back(SolersLLMMessage::user(String("obsolete ").repeat(4000)));
 	history.push_back(SolersLLMMessage::assistant("query", make_tool_calls("c1", "object.query")));
-	history.push_back(SolersLLMMessage::tool_result("c1", "object.query", "scene dump"));
+	history.push_back(SolersLLMMessage::tool_result("c1", "object.query", String("scene dump ").repeat(4000)));
 	history.push_back(SolersLLMMessage::user("place the unit"));
-	const int keep = SolersContextManager::first_kept_index(history, 80);
-	REQUIRE(keep >= 0);
-	REQUIRE(keep < history.size());
-	CHECK(String(Dictionary(history[keep]).get("role", String())) != String(SolersLLMRole::TOOL));
 	SolersContextManager context;
-	const Dictionary result = context.apply_compaction(history, "Continue from the live scene.", 8000, keep);
+	const Dictionary result = context.apply_compaction(history, "Continue from the live scene.", 2000);
 	const Array compacted = result.get("messages", Array());
+	CHECK((int)result.get("tokens_after", 0) <= 2000);
+	CHECK((int)result.get("tokens_after", 0) < (int)result.get("tokens_before", 0));
 	const String wire = JSON::stringify(compacted);
 	CHECK(wire.contains("place the unit"));
 	CHECK_FALSE(wire.contains(String("obsolete ").repeat(8)));
+	CHECK_FALSE(wire.contains(String("scene dump ").repeat(8)));
 	CHECK(context.get_token_count_with_pending(compacted, "sys", 4) == SolersContextManager::estimate_tokens("sys") + 4 + SolersContextManager::estimate_messages_tokens(compacted));
-	CHECK((int)result.get("tokens_after", 0) < (int)result.get("tokens_before", 0));
+}
+
+TEST_CASE("[SolersContextManager] one observation can never fill the window") {
+	const String dump = String("{\"node\":\"Node3D\"},").repeat(60000);
+	const String clamped = SolersContextManager::clamp_to_tokens(dump, SolersContextManager::TOOL_RESULT_MAX_TOKENS);
+	CHECK(SolersContextManager::estimate_tokens(clamped) <= SolersContextManager::TOOL_RESULT_MAX_TOKENS);
+	CHECK(SolersContextManager::TOOL_RESULT_MAX_TOKENS * 8 < SolersContextManager::DEFAULT_CONTEXT_TOKENS);
+	// Position-independent truncation is what keeps the prompt prefix cacheable.
+	CHECK(clamped == SolersContextManager::clamp_to_tokens(dump, SolersContextManager::TOOL_RESULT_MAX_TOKENS));
 }
 
 TEST_CASE("[SolersContextManager] transient request state replaces the prior request snapshot") {

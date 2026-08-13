@@ -50,6 +50,9 @@ private:
 public:
 	static constexpr int DEFAULT_CONTEXT_TOKENS = 131072;
 	static constexpr int DEFAULT_OUTPUT_TOKENS = 8192;
+	// Ceiling for one observation, independent of where it lands in the
+	// conversation so identical results stay byte-identical and cacheable.
+	static constexpr int TOOL_RESULT_MAX_TOKENS = 10000;
 	static const char *COMPACTION_SUMMARY_PREFIX;
 	static const char *CANCELLED_TOOL_RESULT;
 	static const char *MODEL_CONTEXT_ROLE;
@@ -60,13 +63,13 @@ public:
 	static int estimate_tokens(const String &p_text);
 	static int estimate_messages_tokens(const Array &p_messages);
 	static String clamp_to_tokens(const String &p_text, int p_token_budget);
-	static int first_kept_index(const Array &p_messages, int p_token_budget);
 	void record_usage(int p_input_tokens, int p_covered_message_count, int p_transient_tokens = 0);
 	int get_token_count_with_pending(const Array &p_messages, const String &p_system_prompt, int p_tool_tokens, int p_transient_tokens = 0);
 	// Reserve the provider's declared output capacity. Unknown windows never compact.
 	bool should_compact(int p_used_tokens, int p_context_window, int p_max_output_tokens) const;
 	bool should_compact(const Array &p_messages, const String &p_system_prompt, int p_tool_tokens, int p_context_window, int p_max_output_tokens, int p_transient_tokens = 0);
-	Dictionary apply_compaction(const Array &p_messages, const String &p_summary, int p_token_budget, int p_preserve_from = -1);
+	// Guarantees tokens_after <= p_token_budget, so every compaction makes progress.
+	Dictionary apply_compaction(const Array &p_messages, const String &p_summary, int p_token_budget);
 	void reset();
 
 	int get_last_estimated_tokens() const { return last_estimated_tokens; }
