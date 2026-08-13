@@ -43,7 +43,6 @@ private:
 	int covered_message_count = 0;
 	int last_estimated_tokens = 0;
 	int compaction_count = 0;
-	int last_compacted_token_count = -1;
 
 	static int _estimate_message_tokens(const Dictionary &p_message);
 	static String _build_summary_text(const String &p_summary);
@@ -60,6 +59,8 @@ public:
 
 	static int estimate_tokens(const String &p_text);
 	static int estimate_messages_tokens(const Array &p_messages);
+	static String clamp_to_tokens(const String &p_text, int p_token_budget);
+	static int first_kept_index(const Array &p_messages, int p_token_budget);
 	void record_usage(int p_input_tokens, int p_covered_message_count, int p_transient_tokens = 0);
 	int get_token_count_with_pending(const Array &p_messages, const String &p_system_prompt, int p_tool_tokens, int p_transient_tokens = 0);
 	// Reserve the provider's declared output capacity. Unknown windows never compact.

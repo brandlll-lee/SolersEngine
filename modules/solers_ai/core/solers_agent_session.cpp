@@ -1385,7 +1385,7 @@ Error SolersAgentSession::_dispatch_model_request(bool p_skip_compaction) {
 		request_transient_tokens = SolersContextManager::estimate_messages_tokens(transient);
 	}
 	if (!p_skip_compaction && context_manager && context_manager->should_compact(messages, system_prompt, cached_request_tool_tokens, context_window, max_output_tokens, request_transient_tokens)) {
-		return _begin_compaction(false);
+		return _begin_compaction(false, SolersContextManager::first_kept_index(messages, max_output_tokens));
 	}
 	Dictionary request = _build_request(request_messages, system_prompt, tools);
 	Array delivered_attachments;
@@ -1595,9 +1595,7 @@ void SolersAgentSession::_on_compaction_complete() {
 	emit_signal(SNAME("timeline_entry_committed"), compaction_timeline_event_id, "context_compaction");
 
 	compaction_source_messages.clear();
-	const bool resume_tools = compaction_preserve_from >= 0;
 	compaction_preserve_from = -1;
-	tool_message_index = -1;
 	compaction_id = 0;
 	compaction_timeline_event_id = 0;
 	retry_attempt = 0;
@@ -1605,11 +1603,7 @@ void SolersAgentSession::_on_compaction_complete() {
 	current_text = String();
 	current_reasoning = String();
 	last_stop_reason = String();
-	if (resume_tools) {
-		phase = PHASE_TOOLS;
-	} else {
-		_dispatch_model_request(true);
-	}
+	_dispatch_model_request(true);
 }
 
 Dictionary SolersAgentSession::_tool_call_from_event(const Dictionary &p_event) const {
@@ -1961,7 +1955,7 @@ void SolersAgentSession::poll() {
 		if (_is_context_overflow(error)) {
 			overflow_compaction_attempts++;
 			if (overflow_compaction_attempts == 1) {
-				_begin_compaction(true);
+				_begin_compaction(true, SolersContextManager::first_kept_index(messages, max_output_tokens));
 				return;
 			}
 		}
@@ -2009,7 +2003,7 @@ void SolersAgentSession::_on_model_turn_complete() {
 	if (pending_tool_calls.is_empty() && current_text.is_empty() && current_reasoning.is_empty()) {
 		if (last_stop_reason == SolersLLMStopReason::MAX_TOKENS && !messages.is_empty()) {
 			overflow_compaction_attempts++;
-			if (overflow_compaction_attempts == 1 && _begin_compaction(true) == OK) {
+			if (overflow_compaction_attempts == 1 && _begin_compaction(true, SolersContextManager::first_kept_index(messages, max_output_tokens)) == OK) {
 				return;
 			}
 		}
@@ -2047,7 +2041,6 @@ void SolersAgentSession::_on_model_turn_complete() {
 	}
 
 	tool_queue = pending_tool_calls.duplicate();
-	tool_message_index = messages.size() - 1;
 	const uint64_t queued_msec = OS::get_singleton()->get_ticks_msec();
 	for (int i = 0; i < tool_queue.size(); i++) {
 		Dictionary call = tool_queue[i];
@@ -2486,16 +2479,6 @@ bool SolersAgentSession::_flush_tool_results() {
 		tool_completed_msec = (uint64_t)(int64_t)entry.get("completed_msec", tool_started_msec);
 		const String canonical_name = entry.get("canonical_name", String());
 		const Dictionary result = entry.get("result", Dictionary());
-		if (tool_message_index > 0 && context_manager && context_window > 0) {
-			_collect_tools();
-			const int used = context_manager->get_token_count_with_pending(messages, system_prompt, cached_request_tool_tokens);
-			const int available = MAX(0, context_window - max_output_tokens - used);
-			Dictionary projected = result.duplicate(true);
-			projected["call_id"] = entry.get("id", String());
-			if (SolersContextManager::estimate_tokens(JSON::stringify(projected, "", false, true)) > available && _begin_compaction(false, tool_message_index) == OK) {
-				return false;
-			}
-		}
 		completed_tool_results.erase(tool_delivery_index);
 		_deliver_tool_result(entry.get("id", String()), entry.get("model_name", String()), canonical_name, entry.get("args", Dictionary()), result);
 		tool_delivery_index++;
@@ -2854,7 +2837,13 @@ void SolersAgentSession::_deliver_tool_result(const String &p_id, const String &
 	if (!diagnostics.is_empty()) {
 		result["diagnostics"] = diagnostics;
 	}
-	const String content = JSON::stringify(result, "", false, true);
+	String content = JSON::stringify(result, "", false, true);
+	if (context_manager && context_window > 0 && max_output_tokens > 0) {
+		_collect_tools();
+		const int used = context_manager->get_token_count_with_pending(messages, system_prompt, cached_request_tool_tokens);
+		const int available = MAX(0, context_window - max_output_tokens - used);
+		content = SolersContextManager::clamp_to_tokens(content, MAX(1, MIN(available, max_output_tokens)));
+	}
 	_write_transcript_tool(p_id, p_canonical_name, p_args, result, content);
 	const uint64_t duration_msec = tool_completed_msec >= tool_started_msec ? tool_completed_msec - tool_started_msec : 0;
 	if (!_is_session_tool(p_canonical_name)) {

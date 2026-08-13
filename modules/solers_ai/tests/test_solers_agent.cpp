@@ -103,6 +103,37 @@ TEST_CASE("[SolersContextManager] compaction replaces the active prefix and pres
 	CHECK((int)result.get("tokens_after", 0) < (int)result.get("tokens_before", 0));
 }
 
+TEST_CASE("[SolersContextManager] envelope clamp keeps head and tail under the token budget") {
+	const String body = String("token-text-").repeat(2000);
+	const String clamped = SolersContextManager::clamp_to_tokens(body, 64);
+	CHECK(SolersContextManager::estimate_tokens(clamped) <= 64);
+	CHECK(clamped.begins_with("token-text-"));
+	CHECK(clamped.ends_with("token-text-"));
+	CHECK(clamped.contains("[...truncated...]"));
+	CHECK(SolersContextManager::clamp_to_tokens("short", 64) == "short");
+	CHECK(SolersContextManager::clamp_to_tokens(body, 0).is_empty());
+}
+
+TEST_CASE("[SolersContextManager] first_kept_index keeps a recent tail on a tool-pair boundary") {
+	Array history;
+	history.push_back(SolersLLMMessage::user(String("obsolete ").repeat(4000)));
+	history.push_back(SolersLLMMessage::assistant("query", make_tool_calls("c1", "object.query")));
+	history.push_back(SolersLLMMessage::tool_result("c1", "object.query", "scene dump"));
+	history.push_back(SolersLLMMessage::user("place the unit"));
+	const int keep = SolersContextManager::first_kept_index(history, 80);
+	REQUIRE(keep >= 0);
+	REQUIRE(keep < history.size());
+	CHECK(String(Dictionary(history[keep]).get("role", String())) != String(SolersLLMRole::TOOL));
+	SolersContextManager context;
+	const Dictionary result = context.apply_compaction(history, "Continue from the live scene.", 8000, keep);
+	const Array compacted = result.get("messages", Array());
+	const String wire = JSON::stringify(compacted);
+	CHECK(wire.contains("place the unit"));
+	CHECK_FALSE(wire.contains(String("obsolete ").repeat(8)));
+	CHECK(context.get_token_count_with_pending(compacted, "sys", 4) == SolersContextManager::estimate_tokens("sys") + 4 + SolersContextManager::estimate_messages_tokens(compacted));
+	CHECK((int)result.get("tokens_after", 0) < (int)result.get("tokens_before", 0));
+}
+
 TEST_CASE("[SolersContextManager] transient request state replaces the prior request snapshot") {
 	SolersContextManager context;
 	Array persistent;

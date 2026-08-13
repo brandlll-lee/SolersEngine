@@ -160,7 +160,6 @@ class SolersAgentSession : public Object {
 	uint64_t last_text_delta_msec = 0;
 	Array compaction_source_messages;
 	int compaction_preserve_from = -1;
-	int tool_message_index = -1;
 	int64_t compaction_id = 0;
 	int64_t compaction_timeline_event_id = 0;
 	Dictionary retry_request;

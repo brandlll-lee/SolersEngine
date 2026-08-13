@@ -79,6 +79,40 @@ int SolersContextManager::estimate_messages_tokens(const Array &p_messages) {
 	return total;
 }
 
+String SolersContextManager::clamp_to_tokens(const String &p_text, int p_token_budget) {
+	if (p_token_budget <= 0) {
+		return String();
+	}
+	if (estimate_tokens(p_text) <= p_token_budget) {
+		return p_text;
+	}
+	const String marker = "\n[...truncated...]\n";
+	const int keep_chars = MAX(0, (p_token_budget - estimate_tokens(marker)) * 4);
+	const int head = keep_chars / 2;
+	const int tail = keep_chars - head;
+	if (head + tail >= p_text.length()) {
+		return p_text;
+	}
+	return p_text.substr(0, head) + marker + p_text.substr(p_text.length() - tail);
+}
+
+int SolersContextManager::first_kept_index(const Array &p_messages, int p_token_budget) {
+	int index = p_messages.size();
+	int used = 0;
+	while (index > 0) {
+		const int cost = _estimate_message_tokens(p_messages[index - 1]);
+		if (used > 0 && used + cost > MAX(0, p_token_budget)) {
+			break;
+		}
+		used += cost;
+		index--;
+	}
+	while (index > 0 && String(Dictionary(p_messages[index]).get("role", String())) == String(SolersLLMRole::TOOL)) {
+		index--;
+	}
+	return index;
+}
+
 Array SolersContextManager::repair_tool_pairing(const Array &p_messages) {
 	Array repaired;
 	HashMap<String, String> open_calls;
@@ -207,9 +241,6 @@ bool SolersContextManager::should_compact(int p_used_tokens, int p_context_windo
 	if (p_context_window <= 0 || p_max_output_tokens <= 0) {
 		return false;
 	}
-	if (last_compacted_token_count >= 0 && p_used_tokens <= last_compacted_token_count) {
-		return false;
-	}
 	return p_used_tokens + p_max_output_tokens >= p_context_window;
 }
 
@@ -238,10 +269,11 @@ Dictionary SolersContextManager::apply_compaction(const Array &p_messages, const
 	compacted.push_back(summary_message);
 	compacted.append_array(suffix);
 	const int tokens_after = estimate_messages_tokens(compacted);
-	authoritative_tokens = tokens_after;
-	covered_message_count = compacted.size();
+	// Provider usage is the only authoritative prompt size.
+	// Until the next record_usage, recount from compacted messages.
+	authoritative_tokens = 0;
+	covered_message_count = 0;
 	last_estimated_tokens = tokens_after;
-	last_compacted_token_count = tokens_after;
 	compaction_count++;
 
 	Dictionary result;
@@ -256,5 +288,4 @@ void SolersContextManager::reset() {
 	covered_message_count = 0;
 	last_estimated_tokens = 0;
 	compaction_count = 0;
-	last_compacted_token_count = -1;
 }
