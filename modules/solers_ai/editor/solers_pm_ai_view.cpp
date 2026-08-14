@@ -52,6 +52,7 @@
 #include "scene/gui/option_button.h"
 #include "scene/gui/scroll_container.h"
 #include "scene/gui/separator.h"
+#include "scene/gui/spin_box.h"
 #include "scene/resources/style_box_flat.h"
 
 #include "modules/modules_enabled.gen.h"
@@ -581,6 +582,8 @@ void SolersPMAIView::_refresh_form(bool p_load_stored) {
 	model_edit->set_placeholder(default_model.is_empty() ? TTR("Model id (e.g. gpt-5)") : default_model);
 	base_url_edit->set_text(configured && p_load_stored ? String(config.get("base_url", String())) : String());
 	base_url_edit->set_placeholder(default_base_url.is_empty() ? TTR("https://your-gateway.example/v1") : default_base_url);
+	context_window_edit->set_value(configured && p_load_stored ? (int)config.get("context_window", 0) : 0);
+	max_tokens_edit->set_value(configured && p_load_stored ? (int)config.get("max_tokens", 0) : 0);
 	api_key_edit->set_text(String());
 	if (local) {
 		api_key_edit->set_placeholder(TTR("Not required for local runtimes"));
@@ -728,6 +731,8 @@ void SolersPMAIView::_save() {
 	const String model = model_edit->get_text().strip_edges();
 	config["model"] = model.is_empty() ? String(profile.get("default_model", String())) : model;
 	config["base_url"] = base_url_edit->get_text().strip_edges();
+	config["context_window"] = (int)context_window_edit->get_value();
+	config["max_tokens"] = (int)max_tokens_edit->get_value();
 	const String new_key = api_key_edit->get_text().strip_edges();
 	if (!new_key.is_empty()) {
 		config["api_key"] = new_key;
@@ -1192,6 +1197,22 @@ SolersPMAIView::SolersPMAIView() {
 	base_url_edit->set_accessibility_name(TTR("Base URL"));
 	base_url_edit->connect(SceneStringName(text_changed), callable_mp(this, &SolersPMAIView::_on_field_changed));
 	connection_grid->add_child(base_url_edit);
+
+	auto add_token_limit = [&](const String &p_label, const String &p_tooltip) -> SpinBox * {
+		add_form_label(p_label);
+		SpinBox *input = memnew(SpinBox);
+		input->set_min(0);
+		input->set_max(INT32_MAX);
+		input->set_allow_greater(true);
+		input->set_step(1024);
+		input->set_h_size_flags(SIZE_EXPAND_FILL);
+		input->set_tooltip_text(p_tooltip);
+		input->get_line_edit()->connect(SceneStringName(text_changed), callable_mp(this, &SolersPMAIView::_on_field_changed));
+		connection_grid->add_child(input);
+		return input;
+	};
+	context_window_edit = add_token_limit(TTR("Context window"), TTR("Use 0 for the provider catalog, or unknown on custom endpoints."));
+	max_tokens_edit = add_token_limit(TTR("Maximum output"), TTR("Use 0 for the provider or Solers request default."));
 
 	api_key_label = add_form_label(TTR("API Key"));
 	{

@@ -56,10 +56,13 @@ TEST_FORCE_LINK(test_solers_agent)
 
 namespace TestSolersAgent {
 
-Dictionary make_user_message(const String &p_text) {
+Dictionary make_user_message(const String &p_text, int p_turn_id = 0) {
 	Dictionary message;
 	message["role"] = "user";
 	message["content"] = p_text;
+	if (p_turn_id > 0) {
+		message["turn_id"] = p_turn_id;
+	}
 	return message;
 }
 
@@ -83,22 +86,30 @@ TEST_CASE("[SolersTrace] transcript parser skips incomplete audit records silent
 TEST_CASE("[SolersContextManager] compaction replaces the active prefix and preserves its tool suffix") {
 	SolersContextManager context;
 	Array history;
-	CHECK_FALSE(context.should_compact(SolersContextManager::DEFAULT_CONTEXT_TOKENS - SolersContextManager::DEFAULT_OUTPUT_TOKENS - 1, SolersContextManager::DEFAULT_CONTEXT_TOKENS, SolersContextManager::DEFAULT_OUTPUT_TOKENS));
-	CHECK(context.should_compact(SolersContextManager::DEFAULT_CONTEXT_TOKENS - SolersContextManager::DEFAULT_OUTPUT_TOKENS, SolersContextManager::DEFAULT_CONTEXT_TOKENS, SolersContextManager::DEFAULT_OUTPUT_TOKENS));
-	history.push_back(SolersLLMMessage::user(String("obsolete ").repeat(8000)));
+	CHECK_FALSE(context.should_compact(899, 1000, 100));
+	CHECK(context.should_compact(900, 1000, 100));
+	CHECK_FALSE(context.should_compact(900, 0, 100));
+	Dictionary old_summary = make_user_message("superseded continuation");
+	old_summary["role"] = SolersContextManager::MODEL_CONTEXT_ROLE;
+	old_summary["origin"] = "compaction_summary";
+	history.push_back(old_summary);
+	history.push_back(make_user_message(String("obsolete ").repeat(8000), 1));
 	history.push_back(SolersLLMMessage::tool_result("call_old", "object.transaction", R"({"ok":true,"data":{"mutation":{"receipt":{"scene_after":{"root_object_id":42,"version":7}}}}})"));
-	history.push_back(SolersLLMMessage::user("Continue the build."));
+	history.push_back(make_user_message("Continue the current build exactly.", 2));
 	history.push_back(SolersLLMMessage::assistant("Capturing.", make_tool_calls("call_live", "render.capture")));
 	history.push_back(SolersLLMMessage::tool_result("call_live", "render.capture", String("exact payload ").repeat(1000)));
 	const Dictionary result = context.apply_compaction(history, "Keep building from engine evidence.", 8000);
+	CHECK(result.get("accepted", false));
 	const Array compacted = result.get("messages", Array());
 	REQUIRE(compacted.size() == 5);
-	CHECK(Dictionary(compacted[0]).get("origin", String()) == "turn_checkpoint");
-	CHECK(String(Dictionary(compacted[0]).get("content", String())).contains("root_object_id"));
-	CHECK(Dictionary(compacted[1]).get("origin", String()) == "compaction_summary");
+	CHECK(Dictionary(compacted[0]).get("origin", String()) == "compaction_summary");
+	CHECK(Dictionary(compacted[1]).get("origin", String()) == "turn_checkpoint");
+	CHECK(String(Dictionary(compacted[1]).get("content", String())).contains("root_object_id"));
 	const String wire = JSON::stringify(compacted);
 	CHECK(wire.contains("exact payload"));
+	CHECK(wire.contains("Continue the current build exactly."));
 	CHECK_FALSE(wire.contains("obsolete"));
+	CHECK_FALSE(wire.contains("superseded continuation"));
 	CHECK((int)result.get("tokens_after", 0) < (int)result.get("tokens_before", 0));
 }
 
@@ -115,12 +126,13 @@ TEST_CASE("[SolersContextManager] envelope clamp keeps head and tail under the t
 
 TEST_CASE("[SolersContextManager] compaction never returns more than its budget") {
 	Array history;
-	history.push_back(SolersLLMMessage::user(String("obsolete ").repeat(4000)));
+	history.push_back(make_user_message(String("obsolete ").repeat(4000), 1));
 	history.push_back(SolersLLMMessage::assistant("query", make_tool_calls("c1", "object.query")));
 	history.push_back(SolersLLMMessage::tool_result("c1", "object.query", String("scene dump ").repeat(4000)));
-	history.push_back(SolersLLMMessage::user("place the unit"));
+	history.push_back(make_user_message("place the unit", 2));
 	SolersContextManager context;
 	const Dictionary result = context.apply_compaction(history, "Continue from the live scene.", 2000);
+	CHECK(result.get("accepted", false));
 	const Array compacted = result.get("messages", Array());
 	CHECK((int)result.get("tokens_after", 0) <= 2000);
 	CHECK((int)result.get("tokens_after", 0) < (int)result.get("tokens_before", 0));
@@ -131,11 +143,19 @@ TEST_CASE("[SolersContextManager] compaction never returns more than its budget"
 	CHECK(context.get_token_count_with_pending(compacted, "sys", 4) == SolersContextManager::estimate_tokens("sys") + 4 + SolersContextManager::estimate_messages_tokens(compacted));
 }
 
+TEST_CASE("[SolersContextManager] rejects a projection that cannot make progress") {
+	SolersContextManager context;
+	const Array history = Array({ make_user_message("current instruction", 7) });
+	const Dictionary result = context.apply_compaction(history, String("larger summary ").repeat(200), 32);
+	CHECK_FALSE(result.get("accepted", true));
+	CHECK_FALSE(result.has("messages"));
+	CHECK(context.get_compaction_count() == 0);
+}
+
 TEST_CASE("[SolersContextManager] one observation can never fill the window") {
 	const String dump = String("{\"node\":\"Node3D\"},").repeat(60000);
 	const String clamped = SolersContextManager::clamp_to_tokens(dump, SolersContextManager::TOOL_RESULT_MAX_TOKENS);
 	CHECK(SolersContextManager::estimate_tokens(clamped) <= SolersContextManager::TOOL_RESULT_MAX_TOKENS);
-	CHECK(SolersContextManager::TOOL_RESULT_MAX_TOKENS * 8 < SolersContextManager::DEFAULT_CONTEXT_TOKENS);
 	// Position-independent truncation is what keeps the prompt prefix cacheable.
 	CHECK(clamped == SolersContextManager::clamp_to_tokens(dump, SolersContextManager::TOOL_RESULT_MAX_TOKENS));
 }

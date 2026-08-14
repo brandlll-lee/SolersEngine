@@ -221,7 +221,7 @@ class SolersAgentSession : public Object {
 	Dictionary _build_request(const Array &p_messages, const String &p_request_system_prompt, const Array &p_tools) const;
 	Dictionary _provider_dispatch_error() const;
 	Error _begin_provider_request(const Dictionary &p_request, const Dictionary &p_profile);
-	Error _dispatch_model_request(bool p_skip_compaction = false);
+	Error _dispatch_model_request();
 	Error _dispatch_compaction_request();
 	void _commit_attachment_projection();
 	Error _begin_compaction(bool p_from_overflow);

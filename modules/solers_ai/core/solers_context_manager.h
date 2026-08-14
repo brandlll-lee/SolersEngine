@@ -48,7 +48,6 @@ private:
 	static String _build_summary_text(const String &p_summary);
 
 public:
-	static constexpr int DEFAULT_CONTEXT_TOKENS = 131072;
 	static constexpr int DEFAULT_OUTPUT_TOKENS = 8192;
 	// Ceiling for one observation, independent of where it lands in the
 	// conversation so identical results stay byte-identical and cacheable.
@@ -68,7 +67,7 @@ public:
 	// Reserve the provider's declared output capacity. Unknown windows never compact.
 	bool should_compact(int p_used_tokens, int p_context_window, int p_max_output_tokens) const;
 	bool should_compact(const Array &p_messages, const String &p_system_prompt, int p_tool_tokens, int p_context_window, int p_max_output_tokens, int p_transient_tokens = 0);
-	// Guarantees tokens_after <= p_token_budget, so every compaction makes progress.
+	// A zero budget builds the smallest semantic core for unknown-window overflow recovery.
 	Dictionary apply_compaction(const Array &p_messages, const String &p_summary, int p_token_budget);
 	void reset();
 

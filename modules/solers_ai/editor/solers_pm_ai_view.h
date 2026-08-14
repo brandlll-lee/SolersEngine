@@ -45,6 +45,7 @@ class ScrollContainer;
 class SolersCategoryCard;
 class SolersProviderRegistry;
 class SolersSettingsService;
+class SpinBox;
 class Texture2D;
 class VBoxContainer;
 
@@ -76,6 +77,8 @@ class SolersPMAIView : public HBoxContainer {
 	LineEdit *model_edit = nullptr;
 	Label *base_url_label = nullptr;
 	LineEdit *base_url_edit = nullptr;
+	SpinBox *context_window_edit = nullptr;
+	SpinBox *max_tokens_edit = nullptr;
 	Label *api_key_label = nullptr;
 	LineEdit *api_key_edit = nullptr;
 	Button *api_key_reveal = nullptr;

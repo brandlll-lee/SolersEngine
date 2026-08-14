@@ -252,6 +252,12 @@ Dictionary SolersSettingsService::_get_provider_config(const String &p_provider,
 	data["model"] = settings->has_setting(_provider_setting_path(p_provider, "model")) ? String(settings->get_setting(_provider_setting_path(p_provider, "model"))) : String(profile.get("default_model", String()));
 	data["reasoning_effort"] = settings->has_setting(_provider_setting_path(p_provider, "reasoning_effort")) ? String(settings->get_setting(_provider_setting_path(p_provider, "reasoning_effort"))) : String();
 	data["base_url"] = settings->has_setting(_provider_setting_path(p_provider, "base_url")) ? String(settings->get_setting(_provider_setting_path(p_provider, "base_url"))) : String(profile.get("default_base_url", String()));
+	for (const String &key : { String("context_window"), String("max_tokens") }) {
+		const String path = _provider_setting_path(p_provider, key);
+		if (settings->has_setting(path) && (int)settings->get_setting(path) > 0) {
+			data[key] = settings->get_setting(path);
+		}
+	}
 
 	// Credential PRESENCE only: a stored blob / env var existing is the
 	// authoritative signal that a credential was configured. Decryption
@@ -393,6 +399,18 @@ Dictionary SolersSettingsService::set_provider_config(const Dictionary &p_args) 
 	if (p_args.has("base_url")) {
 		settings->set_manually(_provider_setting_path(provider, "base_url"), String(p_args["base_url"]));
 	}
+	for (const String &key : { String("context_window"), String("max_tokens") }) {
+		if (!p_args.has(key)) {
+			continue;
+		}
+		const String path = _provider_setting_path(provider, key);
+		const int value = p_args[key];
+		if (value > 0) {
+			settings->set_manually(path, value);
+		} else {
+			settings->erase(path);
+		}
+	}
 	if (p_args.has("api_key") && !String(p_args["api_key"]).is_empty()) {
 		settings->set_manually(_provider_setting_path(provider, "api_key"), SolersSecretStore::protect(String(p_args["api_key"])));
 	}
@@ -411,7 +429,7 @@ Dictionary SolersSettingsService::set_provider_config(const Dictionary &p_args) 
 Dictionary SolersSettingsService::disconnect_provider(const String &p_provider) {
 	EditorSettings *settings = EditorSettings::get_singleton();
 	ERR_FAIL_NULL_V(settings, _error("EDITOR_SETTINGS_UNAVAILABLE", "EditorSettings is not available.", false));
-	static const char *KEYS[] = { "configured", "model", "reasoning_effort", "base_url", "api_key", "oauth" };
+	static const char *KEYS[] = { "configured", "model", "reasoning_effort", "base_url", "context_window", "max_tokens", "api_key", "oauth" };
 	for (const char *key : KEYS) {
 		const String path = _provider_setting_path(p_provider, key);
 		if (settings->has_setting(path)) {

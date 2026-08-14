@@ -120,7 +120,7 @@ struct SolersToolContext {
 	String project_path;
 	Array mentions;
 	uint64_t authored_revision = 0;
-	int result_token_budget = SolersContextManager::DEFAULT_CONTEXT_TOKENS - SolersContextManager::DEFAULT_OUTPUT_TOKENS;
+	int result_token_budget = SolersContextManager::TOOL_RESULT_MAX_TOKENS;
 	int approval_id = 0;
 	const SafeFlag *cancel_requested = nullptr;
 };

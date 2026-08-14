@@ -95,6 +95,7 @@ TEST_CASE("[SolersProviderRegistry] assembles catalog and AuthHook overlays") {
 	CHECK(relay.get("protocol", String()) == "anthropic-messages");
 	CHECK(relay.get("auth_header", String()) == "x-api-key");
 	CHECK_FALSE(relay.get("catalog_limits_authoritative", true));
+	CHECK_FALSE(registry.get_provider_profile("custom_openai_compatible").has("context_window"));
 }
 
 TEST_CASE("[SolersProviderRegistry] requires an explicit connection profile") {
@@ -179,6 +180,41 @@ TEST_CASE("[Editor][SolersSettingsService] v6 migrates one explicit custom conne
 	SolersSettingsService known_service;
 	known_service.set_provider_registry(&registry);
 	CHECK(String(settings->get_setting(prefix + "provider")) == "anthropic");
+}
+
+TEST_CASE("[Editor][SolersSettingsService] explicit token limits persist and clear") {
+	EditorSettings *settings = EditorSettings::get_singleton();
+	REQUIRE(settings != nullptr);
+	const String prefix = "solers/ai/";
+	const String provider = "custom_openai_compatible";
+	Array paths;
+	paths.push_back(prefix + "provider");
+	for (const String &key : { String("configured"), String("model"), String("base_url"), String("context_window"), String("max_tokens"), String("api_key") }) {
+		paths.push_back(prefix + "providers/" + provider + "/" + key);
+	}
+	ScopedEditorSettings restore(settings, paths);
+
+	SolersProviderRegistry registry;
+	SolersSettingsService service;
+	service.set_provider_registry(&registry);
+	Dictionary config;
+	config["provider"] = provider;
+	config["model"] = "synthetic-model";
+	config["base_url"] = "https://gateway.example/v1";
+	config["api_key"] = "synthetic-key";
+	config["context_window"] = 272000;
+	config["max_tokens"] = 32000;
+	CHECK(service.set_provider_config(config).get("ok", false));
+	Dictionary stored = service.get_provider_config().get("data", Dictionary());
+	CHECK((int)stored.get("context_window", 0) == 272000);
+	CHECK((int)stored.get("max_tokens", 0) == 32000);
+
+	config["context_window"] = 0;
+	config["max_tokens"] = 0;
+	CHECK(service.set_provider_config(config).get("ok", false));
+	stored = service.get_provider_config().get("data", Dictionary());
+	CHECK_FALSE(stored.has("context_window"));
+	CHECK_FALSE(stored.has("max_tokens"));
 }
 
 TEST_CASE("[SolersModelsDev] input modality support is model-level and unknown is permissive") {

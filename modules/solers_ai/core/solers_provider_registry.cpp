@@ -118,9 +118,6 @@ Dictionary SolersProviderRegistry::_default_custom_profile(const String &p_id) c
 	profile["api_key_env"] = String();
 	profile["notes"] = "OpenAI-compatible gateway (LiteLLM, OpenRouter-style, vLLM, or private deployments).";
 	profile["source_kind"] = "custom";
-	// Relays often inherit inflated catalog windows; require an explicit
-	// active_provider.context_window to exceed this default.
-	profile["context_window"] = 131072;
 	return profile;
 }
 

@@ -233,53 +233,86 @@ bool SolersContextManager::should_compact(const Array &p_messages, const String 
 
 Dictionary SolersContextManager::apply_compaction(const Array &p_messages, const String &p_summary, int p_token_budget) {
 	const int tokens_before = estimate_messages_tokens(p_messages);
-	const String context_summary = _build_summary_text(p_summary);
 	Dictionary summary_message;
 	summary_message["role"] = MODEL_CONTEXT_ROLE;
-	summary_message["content"] = context_summary;
+	summary_message["content"] = _build_summary_text(p_summary);
 	summary_message["origin"] = "compaction_summary";
-	// The verbatim tail is what the model still needs, and the budget the
-	// compacted prompt must fit into is the only thing deciding how far it reaches.
-	const int tail_budget = MAX(0, p_token_budget - _estimate_message_tokens(summary_message));
-	int preserve_from = p_messages.size();
-	int tail_tokens = 0;
-	while (preserve_from > 0) {
-		const int cost = _estimate_message_tokens(p_messages[preserve_from - 1]);
-		if (tail_tokens + cost > tail_budget) {
-			break;
+
+	int active_turn_id = 0;
+	int latest_user_index = -1;
+	for (int i = 0; i < p_messages.size(); i++) {
+		const Dictionary message = p_messages[i];
+		if (String(message.get("role", String())) != String(SolersLLMRole::USER) || (bool)message.get("ephemeral", false)) {
+			continue;
 		}
-		tail_tokens += cost;
-		preserve_from--;
+		const int message_turn_id = message.get("turn_id", 0);
+		if (message_turn_id > active_turn_id) {
+			active_turn_id = message_turn_id;
+			latest_user_index = i;
+		} else if (message_turn_id == active_turn_id) {
+			latest_user_index = i;
+		}
 	}
-	// A tool result whose call stayed in the dropped prefix is unanswerable.
-	while (preserve_from < p_messages.size() && String(Dictionary(p_messages[preserve_from]).get("role", String())) == String(SolersLLMRole::TOOL)) {
-		tail_tokens -= _estimate_message_tokens(p_messages[preserve_from]);
-		preserve_from++;
-	}
-	const Array suffix = p_messages.slice(preserve_from);
-	const Array prefix_projection = project_completed_turns(p_messages.slice(0, preserve_from));
-	const int remaining = MAX(0, tail_budget - tail_tokens);
+
 	Array compacted;
-	for (int i = 0; i < prefix_projection.size(); i++) {
-		const Dictionary message = prefix_projection[i];
-		if (String(message.get("origin", String())) == "turn_checkpoint" && _estimate_message_tokens(message) <= remaining) {
+	compacted.push_back(summary_message);
+	const Array projection = project_completed_turns(p_messages);
+	for (int i = 0; i < projection.size(); i++) {
+		const Dictionary message = projection[i];
+		if (String(message.get("origin", String())) == "turn_checkpoint") {
 			compacted.push_back(message);
 		}
 	}
-	compacted.push_back(summary_message);
-	compacted.append_array(suffix);
-	const int tokens_after = estimate_messages_tokens(compacted);
-	// Provider usage is the only authoritative prompt size.
-	// Until the next record_usage, recount from compacted messages.
-	authoritative_tokens = 0;
-	covered_message_count = 0;
-	last_estimated_tokens = tokens_after;
-	compaction_count++;
+	for (int i = 0; i < p_messages.size(); i++) {
+		const Dictionary message = p_messages[i];
+		if (String(message.get("role", String())) == String(SolersLLMRole::USER) && (int)message.get("turn_id", 0) == active_turn_id && !(bool)message.get("ephemeral", false)) {
+			compacted.push_back(message);
+		}
+	}
 
+	if (p_token_budget > 0 && latest_user_index >= 0) {
+		Array tail;
+		for (int i = latest_user_index + 1; i < p_messages.size(); i++) {
+			const Dictionary message = p_messages[i];
+			const String role = message.get("role", String());
+			if (!(bool)message.get("ephemeral", false) && (role == String(SolersLLMRole::ASSISTANT) || role == String(SolersLLMRole::TOOL))) {
+				tail.push_back(message);
+			}
+		}
+		tail = repair_tool_pairing(tail);
+		const int tail_budget = MAX(0, p_token_budget - estimate_messages_tokens(compacted));
+		int preserve_from = tail.size();
+		int tail_tokens = 0;
+		while (preserve_from > 0) {
+			const int cost = _estimate_message_tokens(tail[preserve_from - 1]);
+			if (tail_tokens + cost > tail_budget) {
+				break;
+			}
+			tail_tokens += cost;
+			preserve_from--;
+		}
+		while (preserve_from < tail.size() && String(Dictionary(tail[preserve_from]).get("role", String())) == String(SolersLLMRole::TOOL)) {
+			preserve_from++;
+		}
+		compacted.append_array(tail.slice(preserve_from));
+	}
+
+	const int tokens_after = estimate_messages_tokens(compacted);
+	const bool accepted = active_turn_id > 0 && tokens_after < tokens_before && (p_token_budget <= 0 || tokens_after <= p_token_budget);
 	Dictionary result;
-	result["messages"] = compacted;
+	result["accepted"] = accepted;
+	result["target_tokens"] = p_token_budget;
 	result["tokens_before"] = tokens_before;
 	result["tokens_after"] = tokens_after;
+	if (accepted) {
+		result["messages"] = compacted;
+		// Provider usage is authoritative for wire size. Until the next response,
+		// recount only the accepted local projection.
+		authoritative_tokens = 0;
+		covered_message_count = 0;
+		last_estimated_tokens = tokens_after;
+		compaction_count++;
+	}
 	return result;
 }
 
