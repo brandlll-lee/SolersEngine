@@ -234,7 +234,6 @@ Dictionary SolersMCPAdapter::read_resource(const Dictionary &p_params) const {
 			snapshot["open_scenes"] = observation_service->get_open_scenes();
 			snapshot["selection"] = observation_service->get_selection();
 			snapshot["runtime"] = observation_service->get_runtime_status();
-			snapshot["editor_log"] = observation_service->get_editor_logs(40);
 		}
 		data = snapshot;
 	} else if (uri == "solers://timeline/actions") {

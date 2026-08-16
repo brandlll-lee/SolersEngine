@@ -216,7 +216,6 @@ Dictionary SolersProviderRegistry::resolve_provider_profile(const String &p_prov
 	const String override_url = p_base_url_override.strip_edges();
 	const String default_url = String(profile.get("default_base_url", String())).trim_suffix("/");
 	profile["base_url"] = override_url.is_empty() ? default_url : override_url.trim_suffix("/");
-	profile["catalog_limits_authoritative"] = override_url.is_empty() || String(profile["base_url"]) == default_url;
 	return profile;
 }
 

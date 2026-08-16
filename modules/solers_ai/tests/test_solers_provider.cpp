@@ -91,10 +91,10 @@ TEST_CASE("[SolersProviderRegistry] assembles catalog and AuthHook overlays") {
 	CHECK(openai.get("default_base_url", String()) == "https://api.openai.com/v1");
 	CHECK(anthropic.get("protocol", String()) == "anthropic-messages");
 	CHECK(anthropic.get("default_base_url", String()) == "https://api.anthropic.com");
-	CHECK(registry.resolve_provider_profile("openai").get("catalog_limits_authoritative", false));
 	CHECK(relay.get("protocol", String()) == "anthropic-messages");
 	CHECK(relay.get("auth_header", String()) == "x-api-key");
-	CHECK_FALSE(relay.get("catalog_limits_authoritative", true));
+	CHECK(relay.get("catalog_provider", String()) == "anthropic");
+	CHECK_FALSE(relay.has("catalog_limits_authoritative"));
 	CHECK_FALSE(registry.get_provider_profile("custom_openai_compatible").has("context_window"));
 }
 

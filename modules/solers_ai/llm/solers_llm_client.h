@@ -64,7 +64,6 @@ private:
 	State shared_state = STATE_IDLE; // mutex-guarded snapshot for main-thread queries
 	Dictionary shared_error; // mutex-guarded
 	Dictionary shared_auth_update; // rotated OAuth credentials, consumed on main
-	Array shared_emitted_attachment_identities;
 	int64_t shared_request_body_bytes = 0;
 
 	// --- Worker-owned request inputs (set by begin() before the thread runs). -
@@ -138,8 +137,6 @@ public:
 	Dictionary get_error() const;
 	Dictionary take_auth_update();
 	int64_t get_request_body_bytes() const;
-	Array get_emitted_attachment_identities() const;
-
 	void abort();
 
 	SolersLLMClient() {}

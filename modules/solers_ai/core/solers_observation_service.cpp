@@ -51,7 +51,6 @@
 #include "editor/debugger/script_editor_debugger.h"
 #include "editor/editor_data.h"
 #include "editor/editor_interface.h"
-#include "editor/editor_log.h"
 #include "editor/editor_main_screen.h"
 #include "editor/editor_node.h"
 #include "editor/editor_undo_redo_manager.h"
@@ -383,7 +382,6 @@ void SolersObservationService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("query_scene_nodes", "args", "token_budget"), &SolersObservationService::query_scene_nodes);
 	ClassDB::bind_method(D_METHOD("get_runtime_status"), &SolersObservationService::get_runtime_status);
 	ClassDB::bind_method(D_METHOD("observe_runtime", "args", "token_budget"), &SolersObservationService::observe_runtime, DEFVAL(INT32_MAX));
-	ClassDB::bind_method(D_METHOD("get_editor_logs", "max_messages"), &SolersObservationService::get_editor_logs, DEFVAL(200));
 	ClassDB::bind_method(D_METHOD("capture_viewport", "args"), &SolersObservationService::capture_viewport);
 }
 
@@ -2400,22 +2398,6 @@ bool SolersObservationService::get_runtime_property(uint64_t p_epoch, const Node
 	}
 	r_value = properties[p_property];
 	return true;
-}
-
-Dictionary SolersObservationService::get_editor_logs(int p_max_messages) const {
-	Dictionary result;
-	EditorLog *log = EditorNode::get_log();
-	if (!log) {
-		result["available"] = false;
-		result["messages"] = Array();
-		result["counts"] = Dictionary();
-		return result;
-	}
-
-	result["available"] = true;
-	result["messages"] = log->get_messages(p_max_messages);
-	result["counts"] = log->get_message_counts();
-	return result;
 }
 
 SolersObservationService::SolersObservationService() {

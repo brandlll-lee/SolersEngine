@@ -38,7 +38,6 @@
 #include "core/os/os.h"
 #include "core/os/time.h"
 #include "editor/editor_interface.h"
-#include "editor/editor_log.h"
 #include "editor/editor_node.h"
 #include "editor/editor_undo_redo_manager.h"
 #include "scene/main/node.h"
@@ -402,9 +401,7 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 	String restored_outcome;
 	int restored_turn_id = 0;
 	uint64_t restored_authored_revision = 0;
-	uint64_t restored_observed_revision = 0;
 	Dictionary restored_reversal;
-	HashSet<String> restored_model_attachments;
 	if (p_project_path.is_empty() || p_session_id.is_empty()) {
 		Dictionary empty;
 		empty["messages"] = restored;
@@ -423,10 +420,8 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 		String *restored_outcome = nullptr;
 		int *restored_turn_id = nullptr;
 		uint64_t *restored_authored_revision = nullptr;
-		uint64_t *restored_observed_revision = nullptr;
 		int64_t *event_sequence = nullptr;
 		Dictionary *restored_reversal = nullptr;
-		HashSet<String> *restored_model_attachments = nullptr;
 	} restore_state;
 	restore_state.project_path = &p_project_path;
 	restore_state.session_id = &p_session_id;
@@ -438,10 +433,8 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 	restore_state.restored_outcome = &restored_outcome;
 	restore_state.restored_turn_id = &restored_turn_id;
 	restore_state.restored_authored_revision = &restored_authored_revision;
-	restore_state.restored_observed_revision = &restored_observed_revision;
 	restore_state.event_sequence = &transcript_event_sequence;
 	restore_state.restored_reversal = &restored_reversal;
-	restore_state.restored_model_attachments = &restored_model_attachments;
 	solers_transcript_foreach_session(p_session_id, &restore_state, [](void *p_userdata, const String &p_record) -> bool {
 		ScanState &scan = *static_cast<ScanState *>(p_userdata);
 		const String line = p_record.strip_edges();
@@ -462,20 +455,9 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 		}
 		*scan.restored_turn_id = MAX(*scan.restored_turn_id, (int)event.get("turn_id", 0));
 		*scan.restored_authored_revision = MAX(*scan.restored_authored_revision, (uint64_t)(int64_t)event.get("session_revision", 0));
-		*scan.restored_observed_revision = MAX(*scan.restored_observed_revision, (uint64_t)(int64_t)event.get("observed_revision", 0));
 
 		const String event_type = event.get("event_type", String());
 		_solers_project_timeline_event(event, *scan.restored_timeline, *scan.restored_open_tools);
-		if (event_type == "attachment_projection_committed") {
-			const Array identities = event.get("identities", Array());
-			for (int i = 0; i < identities.size(); i++) {
-				const String identity = identities[i];
-				if (!identity.is_empty()) {
-					scan.restored_model_attachments->insert(identity);
-				}
-			}
-			return true;
-		}
 		if (event_type == "checkpoint_created") {
 			Dictionary checkpoint = event.get("checkpoint", Dictionary());
 			*scan.restored_reversal = checkpoint.duplicate(true);
@@ -586,12 +568,6 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 	state["turn_id"] = restored_turn_id;
 	state["background_assets"] = restored_background_assets;
 	state["session_revision"] = (int64_t)restored_authored_revision;
-	state["observed_revision"] = (int64_t)restored_observed_revision;
-	Array delivered_attachments;
-	for (const String &identity : restored_model_attachments) {
-		delivered_attachments.push_back(identity);
-	}
-	state["delivered_model_attachments"] = delivered_attachments;
 	state["reversal"] = restored_reversal;
 	return state;
 }
@@ -605,7 +581,6 @@ void SolersAgentSession::_stamp_transcript_event(Dictionary &r_event) const {
 	r_event["project_path"] = project_path;
 	r_event["session_id"] = session_id;
 	r_event["session_revision"] = (int64_t)authored_revision;
-	r_event["observed_revision"] = (int64_t)observed_revision;
 }
 
 int64_t SolersAgentSession::_write_transcript_event(const String &p_type, const Dictionary &p_payload) const {
@@ -718,7 +693,6 @@ void SolersAgentSession::_write_transcript_tool(const String &p_call_id, const S
 }
 
 void SolersAgentSession::_ensure_godot_log_audit(bool p_turn_active) {
-	EditorLog *log = EditorNode::get_singleton() ? EditorNode::get_log() : nullptr;
 	if (p_turn_active) {
 		MutexLock lock(godot_log_mutex);
 		godot_log_error_count = 0;
@@ -727,25 +701,13 @@ void SolersAgentSession::_ensure_godot_log_audit(bool p_turn_active) {
 		main_thread_tool_audit.clear();
 		deferred_window_audit.clear();
 		attributable_tool_errors.clear();
-		pending_godot_diagnostics.clear();
-		pending_godot_diagnostic_index.clear();
-		pending_godot_diagnostics_overflow = 0;
 	}
 	godot_log_turn_active = p_turn_active;
-	Dictionary baseline;
-	baseline["available"] = log != nullptr;
-	baseline["turn_active"] = p_turn_active;
-	if (log) {
-		const Callable callback = callable_mp(this, &SolersAgentSession::_on_godot_log_message);
-		if (!godot_log_audit_installed) {
-			log->set_message_audit_callback(callback);
-			godot_log_audit_installed = true;
-			godot_log_object_id = log->get_instance_id();
-		}
-		baseline["counts"] = log->get_message_counts();
-	}
-	if (p_turn_active) {
-		_write_transcript_event("godot_log_baseline", baseline);
+	if (!godot_log_audit_installed) {
+		godot_error_handler.errfunc = _godot_error_callback;
+		godot_error_handler.userdata = this;
+		add_error_handler(&godot_error_handler);
+		godot_log_audit_installed = true;
 	}
 }
 
@@ -753,12 +715,8 @@ void SolersAgentSession::_release_godot_log_audit() {
 	if (!godot_log_audit_installed) {
 		return;
 	}
-	EditorLog *log = Object::cast_to<EditorLog>(ObjectDB::get_instance(godot_log_object_id));
-	if (log) {
-		log->clear_message_audit_callback(callable_mp(this, &SolersAgentSession::_on_godot_log_message));
-	}
+	remove_error_handler(&godot_error_handler);
 	godot_log_audit_installed = false;
-	godot_log_object_id = ObjectID();
 	godot_log_turn_active = false;
 	{
 		MutexLock lock(godot_log_mutex);
@@ -794,11 +752,13 @@ static bool _solers_accumulate_diagnostic(Array &r_groups, const Dictionary &p_e
 	return true;
 }
 
-void SolersAgentSession::_on_godot_log_message(const String &p_message, int p_type, int64_t p_source_thread) {
-	if (p_type != EditorLog::MSG_TYPE_ERROR && p_type != EditorLog::MSG_TYPE_WARNING) {
-		return;
-	}
-	const bool is_error = p_type == EditorLog::MSG_TYPE_ERROR;
+void SolersAgentSession::_godot_error_callback(void *p_self, const char *p_function, const char *p_file, int p_line, const char *p_error, const char *p_message, bool p_editor_notify, ErrorHandlerType p_type) {
+	const String message = p_message && *p_message ? String::utf8(p_message) : String::utf8(p_error);
+	static_cast<SolersAgentSession *>(p_self)->_on_godot_error(message, p_type, Thread::get_caller_id(), p_function ? String::utf8(p_function) : String(), p_file ? String::utf8(p_file) : String(), p_line);
+}
+
+void SolersAgentSession::_on_godot_error(const String &p_message, ErrorHandlerType p_type, int64_t p_source_thread, const String &p_function, const String &p_file, int p_line) {
+	const bool is_error = p_type != ERR_HANDLER_WARNING;
 	Dictionary event;
 	event["severity"] = is_error ? "error" : "warning";
 	event["source"] = "godot_editor";
@@ -806,10 +766,9 @@ void SolersAgentSession::_on_godot_log_message(const String &p_message, int p_ty
 	event["turn_active"] = godot_log_turn_active;
 	event["ticks_msec"] = (int64_t)OS::get_singleton()->get_ticks_msec();
 	event["thread_id"] = p_source_thread;
-	if (!godot_log_turn_active) {
-		_write_transcript_event("godot_log", event);
-		return;
-	}
+	event["function"] = p_function;
+	event["file"] = p_file;
+	event["line"] = p_line;
 	bool new_group = false;
 	{
 		MutexLock lock(godot_log_mutex);
@@ -863,11 +822,21 @@ void SolersAgentSession::_on_godot_log_message(const String &p_message, int p_ty
 		} else {
 			pending_godot_diagnostics_overflow++;
 		}
+		if (new_group) {
+			pending_godot_log_records.push_back(event);
+		}
 	}
-	// One transcript record per unique message per boundary; occurrence
-	// counts arrive with godot_diagnostics_delivered.
-	if (new_group) {
-		_write_transcript_event("godot_log", event);
+}
+
+void SolersAgentSession::_flush_godot_log_records() {
+	Array records;
+	{
+		MutexLock lock(godot_log_mutex);
+		records = pending_godot_log_records.duplicate();
+		pending_godot_log_records.clear();
+	}
+	for (int i = 0; i < records.size(); i++) {
+		_write_transcript_event("godot_log", records[i]);
 	}
 }
 
@@ -1108,7 +1077,7 @@ String SolersAgentSession::_default_system_prompt() const {
 			"Operating contract:\n"
 			"- Prefer the smallest coherent native change. Inspect live state before editing; do not guess APIs or project contents.\n"
 			"- Digests in [Selected Solers context] and Current engine context are authoritative bounded observations. Use tools only for incomplete or live facts.\n"
-			"- Built-in tools are already available. If tool.search is present, it discovers only external plugin, connector, or MCP tools. Skills provide knowledge and never activate capabilities.\n"
+			"- Core tools are available. Use tool.search to discover and unlock deferred built-in, plugin, connector, or MCP capabilities. Skills provide knowledge and never activate capabilities.\n"
 			"- Inspect unfamiliar classes with engine.describe; ClassDB property metadata and native documentation are the authority for names, types, units, and usage.\n"
 			"- Read live state with object.query. Edit scenes/resources with object.transaction and its native state/hash preconditions. Use script.compute for isolated bulk generation with declared file outputs.\n"
 			"- Scene transactions are one EditorUndoRedo action and Solers persists successful live-scene changes. Resource transactions are file-checkpointed. Tool results carry native state receipts and persisted file hashes; do not issue a separate save.\n"
@@ -1134,7 +1103,6 @@ Dictionary SolersAgentSession::_environment_context_message() {
 	Dictionary context;
 	context["project"] = observation->get_project_info();
 	context["session_revision"] = (int64_t)authored_revision;
-	context["observed_revision"] = (int64_t)observed_revision;
 	const Dictionary runtime_status = observation->get_runtime_status();
 	context["runtime"] = runtime_status;
 	EditorInterface *editor_interface = EditorInterface::get_singleton();
@@ -1224,30 +1192,24 @@ bool SolersAgentSession::_refresh_active_model_limits() {
 
 	const bool explicit_context = active_provider.has("context_window");
 	const bool explicit_output = active_provider.has("max_tokens");
-	const bool catalog_limits_authoritative = profile.get("catalog_limits_authoritative", false);
 	const Dictionary model_limits = Dictionary(profile.get("model_limits", Dictionary())).get(model_id, Dictionary());
-	int resolved_context = 0;
-	if (catalog_limits_authoritative) {
-		resolved_context = (int)profile.get("context_window", 0);
-		if ((int)model.get("context", 0) > 0) {
-			resolved_context = model.get("context", 0);
-		}
-		if ((int)model_limits.get("context", 0) > 0) {
-			resolved_context = model_limits.get("context", 0);
-		}
+	int resolved_context = (int)profile.get("context_window", 0);
+	if ((int)model.get("context", 0) > 0) {
+		resolved_context = model.get("context", 0);
+	}
+	if ((int)model_limits.get("context", 0) > 0) {
+		resolved_context = model_limits.get("context", 0);
 	}
 	if (explicit_context) {
 		resolved_context = (int)active_provider["context_window"];
 	}
 	int resolved_output = SolersContextManager::DEFAULT_OUTPUT_TOKENS;
-	if (catalog_limits_authoritative) {
-		resolved_output = (int)profile.get("max_output_tokens", resolved_output);
-		if ((int)model.get("output", 0) > 0) {
-			resolved_output = model.get("output", 0);
-		}
-		if ((int)model_limits.get("output", 0) > 0) {
-			resolved_output = model_limits.get("output", 0);
-		}
+	resolved_output = (int)profile.get("max_output_tokens", resolved_output);
+	if ((int)model.get("output", 0) > 0) {
+		resolved_output = model.get("output", 0);
+	}
+	if ((int)model_limits.get("output", 0) > 0) {
+		resolved_output = model_limits.get("output", 0);
 	}
 	if (explicit_output) {
 		resolved_output = (int)active_provider["max_tokens"];
@@ -1325,25 +1287,6 @@ Dictionary SolersAgentSession::_provider_dispatch_error() const {
 	return Dictionary();
 }
 
-void SolersAgentSession::_commit_attachment_projection() {
-	const Array emitted = client ? client->get_emitted_attachment_identities() : Array();
-	for (int i = 0; i < emitted.size(); i++) {
-		pending_model_attachments.insert(emitted[i]);
-	}
-	if (pending_model_attachments.is_empty()) {
-		return;
-	}
-	Array identities;
-	for (const String &key : pending_model_attachments) {
-		delivered_model_attachments.insert(key);
-		identities.push_back(key);
-	}
-	Dictionary event;
-	event["identities"] = identities;
-	_write_transcript_event("attachment_projection_committed", event);
-	pending_model_attachments.clear();
-}
-
 Error SolersAgentSession::_dispatch_model_request() {
 	const Dictionary availability_error = _provider_dispatch_error();
 	if (!availability_error.is_empty()) {
@@ -1353,6 +1296,9 @@ Error SolersAgentSession::_dispatch_model_request() {
 	}
 	_append_background_asset_deltas(false);
 	_flush_pending_steering();
+	if (context_manager) {
+		context_manager->prune_old_tool_outputs(messages);
+	}
 	// Drop prior-turn usage so compaction headroom is not computed from a
 	// stale prompt total that already included the previous max_output reserve.
 	last_usage.clear();
@@ -1393,11 +1339,6 @@ Error SolersAgentSession::_dispatch_model_request() {
 		return _begin_compaction(false);
 	}
 	Dictionary request = _build_request(request_messages, system_prompt, tools);
-	Array delivered_attachments;
-	for (const String &identity : delivered_model_attachments) {
-		delivered_attachments.push_back(identity);
-	}
-	request["_delivered_attachment_identities"] = delivered_attachments;
 	phase = PHASE_STREAMING;
 	streamed_tool_calls.clear();
 	return _begin_provider_request(request, profile);
@@ -1464,48 +1405,47 @@ Error SolersAgentSession::_dispatch_compaction_request() {
 	const String base_url = active_provider.get("base_url", String());
 	const Dictionary profile = settings_service->resolve_provider_profile(provider_id, base_url);
 
-	const String compaction_system_prompt = "Update one task continuation from the authoritative checkpoint and current turn. Current user instructions override conflicting history. Preserve durable constraints, decisions, unresolved work, and the precise next action. Never invent engine state or completion claims. Return text only.";
+	const String compaction_system_prompt = R"(Update one continuation for another agent using exactly these headings:
+## Goal
+## Constraints & Preferences
+## Progress
+### Done
+### In Progress
+### Blocked
+## Key Decisions
+## Next Steps
+## Critical Context
+Current user instructions override conflicting history. Preserve exact paths, API names, errors, and attachment ids. The structured Godot checkpoint is authoritative: never invent engine state or rewrite hashes, ObjectIDs, revisions, or receipts. Return text only.)";
 	Array history;
 	const Array projection = SolersContextManager::project_completed_turns(compaction_source_messages);
 	for (int i = 0; i < projection.size(); i++) {
 		const Dictionary message = projection[i];
 		const String origin = message.get("origin", String());
-		history.push_back(SolersLLMMessage::user((origin == "turn_checkpoint" ? "Authoritative completed-work checkpoint:\n" : "Previous continuation:\n") + String(message.get("content", String()))));
-	}
-	int current_turn_start = -1;
-	for (int i = 0; i < compaction_source_messages.size(); i++) {
-		const Dictionary message = compaction_source_messages[i];
-		if (String(message.get("role", String())) == SolersLLMRole::USER && (int)message.get("turn_id", 0) == turn_id) {
-			current_turn_start = i;
-			break;
-		}
-	}
-	for (int i = current_turn_start; i >= 0 && i < compaction_source_messages.size(); i++) {
-		const Dictionary message = compaction_source_messages[i];
 		const String role = message.get("role", String());
-		if ((bool)message.get("ephemeral", false) || String(message.get("origin", String())) == "solers_state") {
-			continue;
-		}
-		if (role == SolersLLMRole::USER && (int)message.get("turn_id", 0) == turn_id) {
-			history.push_back(SolersLLMMessage::user(SolersMention::strip_prompt_block(message.get("content", String()))));
+		if (origin == "turn_checkpoint" || origin == "compaction_summary") {
+			history.push_back(SolersLLMMessage::user((origin == "turn_checkpoint" ? "Authoritative Godot checkpoint:\n" : "Previous continuation:\n") + String(message.get("content", String()))));
+		} else if (role == SolersLLMRole::USER) {
+			String content = SolersMention::strip_prompt_block(message.get("content", String()));
+			PackedStringArray attachment_ids;
+			for (const Variant &attachment : Array(message.get("attachments", Array()))) {
+				attachment_ids.push_back(SolersLLMMessage::attachment_identity(attachment));
+			}
+			if (!attachment_ids.is_empty()) {
+				content += "\n[Attachment ids: " + String(", ").join(attachment_ids) + "]";
+			}
+			history.push_back(SolersLLMMessage::user(content));
 		} else if (role == SolersLLMRole::ASSISTANT && !String(message.get("content", String())).strip_edges().is_empty()) {
 			history.push_back(SolersLLMMessage::assistant(message.get("content", String()), Array()));
 		}
 	}
 	ERR_FAIL_COND_V(history.is_empty(), ERR_INVALID_DATA);
 	const int intent_tokens = SolersContextManager::estimate_messages_tokens(history);
-	history.push_back(SolersLLMMessage::user(
-			"Write a concise continuation containing the user's goal, durable constraints, decisions already made, unresolved work, and the exact next action. Treat the structured checkpoint as authoritative: do not rewrite its engine identities, hashes, receipts, diagnostics, or attachments into prose. Respond with text only and do not call tools."));
+	history.push_back(SolersLLMMessage::user("Update the structured continuation from this history. Do not call tools."));
 	Dictionary request = _build_request(history, compaction_system_prompt, Array());
 	const int continuation_budget = MAX(1, MIN(intent_tokens, context_window > 0 ? context_window - max_output_tokens - SolersContextManager::estimate_tokens(compaction_system_prompt) : max_output_tokens));
 	if (request.has("max_tokens")) {
 		request["max_tokens"] = MIN((int)request["max_tokens"], continuation_budget);
 	}
-	Array delivered_attachments;
-	for (const String &identity : delivered_model_attachments) {
-		delivered_attachments.push_back(identity);
-	}
-	request["_delivered_attachment_identities"] = delivered_attachments;
 	phase = PHASE_COMPACTING;
 	return _begin_provider_request(request, profile);
 }
@@ -1588,7 +1528,6 @@ void SolersAgentSession::_poll_compaction() {
 }
 
 void SolersAgentSession::_on_compaction_complete() {
-	_commit_attachment_projection();
 	const int projection_budget = context_window > 0 ? context_window - max_output_tokens - SolersContextManager::estimate_tokens(system_prompt) - cached_request_tool_tokens - request_transient_tokens - SolersContextManager::TOOL_RESULT_MAX_TOKENS : 0;
 	if (context_window > 0 && projection_budget <= 0) {
 		const Dictionary error = _error("MODEL_CONTEXT_BUDGET_INVALID", "The model context cannot fit the system prompt, tools, output, engine state, and one observation.").get("error", Dictionary());
@@ -1605,12 +1544,6 @@ void SolersAgentSession::_on_compaction_complete() {
 		return;
 	}
 	messages = result.get("messages", Array());
-	for (int i = 0; i < messages.size(); i++) {
-		const Array attachments = Dictionary(messages[i]).get("attachments", Array());
-		for (int attachment_index = 0; attachment_index < attachments.size(); attachment_index++) {
-			delivered_model_attachments.erase(SolersLLMMessage::attachment_identity(attachments[attachment_index]));
-		}
-	}
 	_write_transcript_compaction("completed", result);
 	emit_signal(SNAME("timeline_entry_committed"), compaction_timeline_event_id, "context_compaction");
 
@@ -1843,7 +1776,6 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 	turn_tool_calls = 0;
 	turn_duplicate_observations = 0;
 	turn_successful_mutations = 0;
-	turn_evidence_advances = 0;
 	_ensure_godot_log_audit(true);
 
 	Dictionary turn_started;
@@ -1868,6 +1800,7 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 }
 
 void SolersAgentSession::poll() {
+	_flush_godot_log_records();
 	if (!running || !client) {
 		return;
 	}
@@ -1992,7 +1925,6 @@ void SolersAgentSession::poll() {
 void SolersAgentSession::_on_model_turn_complete() {
 	const int64_t wire_body_bytes = client->get_request_body_bytes();
 	turn_wire_body_bytes += wire_body_bytes;
-	_commit_attachment_projection();
 	retry_attempt = 0;
 	Dictionary response_event;
 	response_event["request_index"] = model_request_index;
@@ -2000,7 +1932,6 @@ void SolersAgentSession::_on_model_turn_complete() {
 	response_event["tool_call_count"] = pending_tool_calls.size();
 	response_event["text_bytes"] = current_text.utf8().length();
 	response_event["wire_body_bytes"] = wire_body_bytes;
-	response_event["new_attachment_count"] = client->get_emitted_attachment_identities().size();
 	if (!last_usage.is_empty()) {
 		response_event["usage"] = last_usage;
 	}
@@ -2175,7 +2106,6 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	usage["output_tokens"] = turn_output_tokens;
 	usage["wire_body_bytes"] = turn_wire_body_bytes;
 	usage["effective_mutations"] = turn_successful_mutations;
-	usage["evidence_advances"] = turn_evidence_advances;
 	usage["duplicate_observation_rate"] = turn_tool_calls > 0 ? double(turn_duplicate_observations) / turn_tool_calls : 0.0;
 	data["turn_usage"] = usage;
 
@@ -2245,7 +2175,6 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	deferred_canonical_name = String();
 	current_text = String();
 	current_reasoning = String();
-	pending_model_attachments.clear();
 	turn_attachments.clear();
 	turn_mentions.clear();
 	waiting_background_asset_ids.clear();
@@ -2277,7 +2206,6 @@ void SolersAgentSession::_poll_tool_queue() {
 		if (tool_delivery_index < tool_queue.size()) {
 			return;
 		}
-		observed_revision = authored_revision;
 		tool_queue.clear();
 		completed_tool_results.clear();
 		tool_queue_index = 0;
@@ -2779,22 +2707,6 @@ void SolersAgentSession::_poll_tool_executing() {
 		if ((bool)data.get("authored_state_changed", false)) {
 			authored_revision++;
 			turn_successful_mutations++;
-			turn_evidence_advances++;
-			const Dictionary mutation = data.get("mutation", Dictionary());
-			const Dictionary receipt = mutation.get("receipt", Dictionary());
-			if (receipt.has("scene_after")) {
-				render_artifacts.clear();
-			}
-		}
-		const Dictionary artifact = data.get("artifact", Dictionary());
-		const String artifact_kind = artifact.get("kind", String());
-		if (!artifact_kind.is_empty()) {
-			render_artifacts[artifact_kind] = artifact;
-		}
-		if (canonical_name == "object.query") {
-			observed_revision = authored_revision;
-		} else if (canonical_name == "render.capture") {
-			observed_revision = authored_revision;
 		}
 	}
 	if (deferred_prepared_call) {
@@ -2813,7 +2725,6 @@ void SolersAgentSession::_poll_tool_executing() {
 	const bool cacheable = canonical_name != "render.capture" && !result.has("attachments") && !Dictionary(result.get("data", Dictionary())).has("poll_args");
 	if (tool_succeeded && cacheable && tool_registry && tool_registry->is_read_only(StringName(canonical_name), args)) {
 		readonly_cache[_readonly_cache_key(StringName(canonical_name), args)] = result.duplicate(true);
-		turn_evidence_advances++;
 	}
 
 	const int queue_index = deferred_queue_index;
@@ -2994,9 +2905,9 @@ void SolersAgentSession::shutdown() {
 
 void SolersAgentSession::_reset_session_derived_state() {
 	runtime_observation_cursor = 0;
-	render_artifacts.clear();
 	MutexLock lock(godot_log_mutex);
 	pending_godot_diagnostics.clear();
+	pending_godot_log_records.clear();
 	pending_godot_diagnostic_index.clear();
 	pending_godot_diagnostics_overflow = 0;
 }
@@ -3009,8 +2920,6 @@ void SolersAgentSession::reset_conversation() {
 	timeline_entries.clear();
 	open_timeline_tools.clear();
 	transcript_event_sequence = 0;
-	delivered_model_attachments.clear();
-	pending_model_attachments.clear();
 	pending_steering_messages.clear();
 	current_plan.clear();
 	last_outcome = String();
@@ -3029,7 +2938,6 @@ void SolersAgentSession::reset_conversation() {
 	}
 	session_id = _make_session_id();
 	authored_revision = 0;
-	observed_revision = 0;
 	if (!project_path.is_empty()) {
 		_ensure_godot_log_audit(false);
 	}
@@ -3064,13 +2972,6 @@ void SolersAgentSession::set_session(const String &p_project_path, const String 
 	last_outcome = state.get("outcome", String());
 	turn_id = state.get("turn_id", 0);
 	authored_revision = (int64_t)state.get("session_revision", 0);
-	observed_revision = (int64_t)state.get("observed_revision", 0);
-	delivered_model_attachments.clear();
-	pending_model_attachments.clear();
-	const Array delivered_attachments = state.get("delivered_model_attachments", Array());
-	for (int i = 0; i < delivered_attachments.size(); i++) {
-		delivered_model_attachments.insert(delivered_attachments[i]);
-	}
 	if (tool_registry) {
 		tool_registry->restore_session_reversal(session_id, state.get("reversal", Dictionary()));
 	}
@@ -3201,7 +3102,6 @@ Dictionary SolersAgentSession::get_status() const {
 	}
 	status["session_revision"] = (int64_t)authored_revision;
 	status["runtime_epoch"] = tool_registry && tool_registry->observation_service ? tool_registry->observation_service->get_runtime_status().get("runtime_epoch", 0) : Variant((int64_t)0);
-	status["observed_revision"] = (int64_t)observed_revision;
 	if (context_manager) {
 		status["context_tokens"] = context_manager->get_last_estimated_tokens();
 		status["compaction_count"] = context_manager->get_compaction_count();

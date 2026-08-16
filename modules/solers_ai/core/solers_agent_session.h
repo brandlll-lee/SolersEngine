@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "core/error/error_macros.h"
 #include "core/object/object.h"
 #include "core/os/mutex.h"
 #include "core/os/thread.h"
@@ -42,7 +43,6 @@
 class SolersToolRegistry;
 struct SolersPreparedToolCall;
 class SolersActionTimeline;
-class EditorLog;
 class SolersSettingsService;
 class SolersPermissionManager;
 class SolersContextManager;
@@ -105,8 +105,6 @@ class SolersAgentSession : public Object {
 	uint32_t cached_request_deferred_count = 0;
 	uint64_t cached_tool_catalog_revision = 0;
 	Array turn_attachments;
-	HashSet<String> delivered_model_attachments;
-	HashSet<String> pending_model_attachments;
 	Array turn_mentions;
 	int tool_queue_index = 0; // next provider-ordered call to start
 	int tool_delivery_index = 0; // next provider-ordered terminal result to deliver
@@ -153,7 +151,6 @@ class SolersAgentSession : public Object {
 	int turn_tool_calls = 0;
 	int turn_duplicate_observations = 0;
 	int turn_successful_mutations = 0;
-	int turn_evidence_advances = 0;
 	int request_transient_tokens = 0;
 	uint64_t retry_resume_msec = 0;
 	int text_delta_count = 0;
@@ -173,7 +170,7 @@ class SolersAgentSession : public Object {
 	HashSet<String> delivered_background_assets;
 	HashSet<String> waiting_background_asset_ids;
 	bool godot_log_audit_installed = false;
-	ObjectID godot_log_object_id;
+	ErrorHandlerList godot_error_handler;
 	bool godot_log_turn_active = false;
 	mutable Mutex godot_log_mutex;
 	int godot_log_error_count = 0;
@@ -183,13 +180,12 @@ class SolersAgentSession : public Object {
 	Dictionary deferred_window_audit; // the single parked tool whose continuation owns the main thread between polls
 	Dictionary attributable_tool_errors; // call_id -> scoped Godot error evidence
 	uint64_t authored_revision = 0; // Session-local ordering only; native receipts carry authority.
-	uint64_t observed_revision = 0;
 	uint64_t runtime_observation_cursor = 0;
-	Dictionary render_artifacts; // artifact kind -> versioned native-tool result
 	// Aggregated by (severity, message, call_id) at ingestion: a repeated
 	// engine error is one entry with a count, so a per-frame error loop can
 	// never flood the transcript or the model boundary.
 	Array pending_godot_diagnostics;
+	Array pending_godot_log_records;
 	HashMap<String, int> pending_godot_diagnostic_index; // group key -> index into pending_godot_diagnostics
 	int pending_godot_diagnostics_overflow = 0;
 	bool background_resume_suppressed = false;
@@ -207,7 +203,9 @@ class SolersAgentSession : public Object {
 	void _write_prepared_journal_event(SolersPreparedToolCall *p_call) const;
 	void _ensure_godot_log_audit(bool p_turn_active);
 	void _release_godot_log_audit();
-	void _on_godot_log_message(const String &p_message, int p_type, int64_t p_source_thread);
+	static void _godot_error_callback(void *p_self, const char *p_function, const char *p_file, int p_line, const char *p_error, const char *p_message, bool p_editor_notify, ErrorHandlerType p_type);
+	void _on_godot_error(const String &p_message, ErrorHandlerType p_type, int64_t p_source_thread, const String &p_function, const String &p_file, int p_line);
+	void _flush_godot_log_records();
 	void _begin_main_thread_tool_audit();
 	void _end_main_thread_tool_audit();
 	void _refresh_deferred_window_audit();
@@ -223,7 +221,6 @@ class SolersAgentSession : public Object {
 	Error _begin_provider_request(const Dictionary &p_request, const Dictionary &p_profile);
 	Error _dispatch_model_request();
 	Error _dispatch_compaction_request();
-	void _commit_attachment_projection();
 	Error _begin_compaction(bool p_from_overflow);
 	void _poll_compaction();
 	void _on_compaction_complete();

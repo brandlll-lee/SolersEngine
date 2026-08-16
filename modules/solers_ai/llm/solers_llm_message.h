@@ -178,7 +178,7 @@ public:
 	static String attachment_identity(const Dictionary &p_attachment);
 	// Build the wire projection once for every protocol. Previously delivered
 	// images become compact hash references; new images appear exactly once.
-	static Array project_attachments(const Array &p_messages, const HashSet<String> &p_delivered, HashSet<String> &r_emitted);
+	static Array project_attachments(const Array &p_messages);
 
 	static Dictionary system(const String &p_text) {
 		Dictionary m;

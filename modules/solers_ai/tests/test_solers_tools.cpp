@@ -612,19 +612,26 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 	CHECK(FileAccess::get_sha256(path) == sha);
 }
 
-TEST_CASE("[SolersToolRegistry] tool.search is absent without external deferred tools") {
+TEST_CASE("[SolersToolRegistry] built-ins retain deferred exposure and remain discoverable") {
+	SolersObservationService observation_service;
 	SolersPermissionManager permissions;
+	SolersResourceService resource_service;
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
 	SolersToolRegistry registry;
+	registry.set_observation_service(&observation_service);
 	registry.set_permission_manager(&permissions);
+	registry.set_resource_service(&resource_service);
 	registry.register_default_tools();
-	CHECK(solers_test_find_dictionary(registry.list_tools(), SNAME("name"), "tool.search").is_empty());
-	const Dictionary result = search_deferred_tools(registry, "anything", 10);
-	CHECK_FALSE((bool)result.get("ok", true));
-	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "TOOL_NOT_FOUND");
+	const Array catalog = registry.list_tools();
+	CHECK(solers_test_find_dictionary(catalog, SNAME("name"), "tool.search").get("exposure", String()) == "direct");
+	CHECK(solers_test_find_dictionary(catalog, SNAME("name"), "export.run_preset").get("exposure", String()) == "deferred");
+	const Dictionary result = search_deferred_tools(registry, "export preset", 10);
+	CHECK((bool)result.get("ok", false));
+	CHECK(search_result_has_tool(result, "export.run_preset"));
+	CHECK(Array(Dictionary(result.get("data", Dictionary())).get("unlock_tools", Array())).has("export.run_preset"));
 }
 
-TEST_CASE("[SolersToolRegistry] external search prioritizes exact ids and never returns direct tools") {
+TEST_CASE("[SolersToolRegistry] deferred search prioritizes exact ids and never returns direct tools") {
 	SolersPermissionManager permissions;
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
 	SolersToolRegistry registry;

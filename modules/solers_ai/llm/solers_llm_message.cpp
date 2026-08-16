@@ -32,6 +32,7 @@
 
 #include "core/crypto/crypto_core.h"
 #include "core/io/file_access.h"
+#include "core/io/json.h"
 #include "core/templates/hash_map.h"
 #include "core/templates/hash_set.h"
 
@@ -51,7 +52,7 @@ String SolersLLMMessage::attachment_identity(const Dictionary &p_attachment) {
 	return String();
 }
 
-static String _solers_attachment_reference(const Dictionary &p_attachment, bool p_prior_request) {
+static String _solers_attachment_reference(const Dictionary &p_attachment) {
 	const String id = String(p_attachment.get("id", String())).strip_edges();
 	const String sha = String(p_attachment.get("content_sha256", String())).strip_edges();
 	String identity;
@@ -61,12 +62,44 @@ static String _solers_attachment_reference(const Dictionary &p_attachment, bool 
 	if (!sha.is_empty()) {
 		identity += " sha256=" + sha;
 	}
-	return vformat("[Image evidence%s was delivered %s; use its recorded facts or request a fresh capture.]", identity, p_prior_request ? "in an earlier model request" : "earlier in this request");
+	return vformat("[Image evidence%s is represented by its native receipt; request a fresh capture if pixels are needed.]", identity);
 }
 
-Array SolersLLMMessage::project_attachments(const Array &p_messages, const HashSet<String> &p_delivered, HashSet<String> &r_emitted) {
-	r_emitted.clear();
-	HashSet<String> seen(p_delivered);
+static String _solers_capture_view_key(const Dictionary &p_message, const Dictionary &p_attachment) {
+	if (String(p_attachment.get("source", String())) != "tool_capture") {
+		return String();
+	}
+	const Variant parsed = JSON::parse_string(p_message.get("content", String()));
+	if (parsed.get_type() != Variant::DICTIONARY) {
+		return String();
+	}
+	const Dictionary data = Dictionary(parsed).get("data", Dictionary());
+	return String(Dictionary(data.get("render_receipt", Dictionary())).get("view_key", String()));
+}
+
+Array SolersLLMMessage::project_attachments(const Array &p_messages) {
+	HashSet<String> current_views;
+	HashSet<String> superseded;
+	for (int i = p_messages.size() - 1; i >= 0; i--) {
+		const Dictionary message = p_messages[i];
+		const Array attachments = message.get("attachments", Array());
+		for (int a = 0; a < attachments.size(); a++) {
+			const Dictionary attachment = attachments[a];
+			const String view_key = _solers_capture_view_key(message, attachment);
+			if (view_key.is_empty()) {
+				continue;
+			}
+			const String identity = attachment_identity(attachment);
+			if (current_views.has(view_key)) {
+				if (!identity.is_empty()) {
+					superseded.insert(identity);
+				}
+			} else {
+				current_views.insert(view_key);
+			}
+		}
+	}
+	HashSet<String> seen;
 	Array projected;
 	for (int i = 0; i < p_messages.size(); i++) {
 		Dictionary message = Dictionary(p_messages[i]).duplicate(true);
@@ -80,19 +113,17 @@ Array SolersLLMMessage::project_attachments(const Array &p_messages, const HashS
 		for (int a = 0; a < attachments.size(); a++) {
 			const Dictionary attachment = attachments[a];
 			const String key = attachment_identity(attachment);
-			const bool already_delivered = !key.is_empty() && p_delivered.has(key);
-			const bool duplicate = !key.is_empty() && seen.has(key);
-			if (duplicate) {
+			const bool reference_only = !key.is_empty() && (seen.has(key) || superseded.has(key));
+			if (reference_only) {
 				if (!content.is_empty()) {
 					content += "\n";
 				}
-				content += _solers_attachment_reference(attachment, already_delivered);
+				content += _solers_attachment_reference(attachment);
 				continue;
 			}
 			wire_attachments.push_back(attachment);
 			if (!key.is_empty()) {
 				seen.insert(key);
-				r_emitted.insert(key);
 			}
 		}
 		message["content"] = content;

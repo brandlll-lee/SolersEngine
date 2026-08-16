@@ -41,6 +41,8 @@ const char *SolersContextManager::COMPACTION_SUMMARY_PREFIX =
 const char *SolersContextManager::CANCELLED_TOOL_RESULT =
 		"{\"ok\":false,\"error\":{\"code\":\"TOOL_CANCELLED\",\"message\":\"This call never produced a result: the turn ended before it finished. Re-run it if its output is still needed.\",\"recoverable\":true}}";
 const char *SolersContextManager::MODEL_CONTEXT_ROLE = "model_context";
+static constexpr int SOLERS_PRUNE_PROTECT_TOKENS = 40000;
+static constexpr int SOLERS_PRUNE_MINIMUM_TOKENS = 20000;
 
 int SolersContextManager::estimate_tokens(const String &p_text) {
 	int ascii_count = 0;
@@ -132,6 +134,16 @@ Array SolersContextManager::repair_tool_pairing(const Array &p_messages) {
 
 Array SolersContextManager::project_completed_turns(const Array &p_messages) {
 	Dictionary latest_summary, facts, failures;
+	int projection_start = 0;
+	for (int i = p_messages.size() - 1; i >= 0; i--) {
+		const Dictionary message = p_messages[i];
+		if (String(message.get("origin", String())) == "compaction_summary") {
+			latest_summary = message;
+			projection_start = i + 1;
+			break;
+		}
+	}
+	Array conversation;
 	for (int i = 0; i < p_messages.size(); i++) {
 		const Dictionary message = p_messages[i];
 		const String role = message.get("role", String());
@@ -140,7 +152,6 @@ Array SolersContextManager::project_completed_turns(const Array &p_messages) {
 			continue;
 		}
 		if (origin == "compaction_summary") {
-			latest_summary = message;
 			continue;
 		}
 		if (origin == "turn_checkpoint") {
@@ -150,6 +161,17 @@ Array SolersContextManager::project_completed_turns(const Array &p_messages) {
 				const Dictionary checkpoint = json->get_data();
 				facts.merge(checkpoint.get("facts", Dictionary()), true);
 				failures.merge(checkpoint.get("failures", Dictionary()), true);
+			}
+			continue;
+		}
+		if (i >= projection_start && role == String(SolersLLMRole::USER)) {
+			conversation.push_back(message);
+			continue;
+		}
+		if (i >= projection_start && role == String(SolersLLMRole::ASSISTANT)) {
+			const String content = message.get("content", String());
+			if (!content.is_empty()) {
+				conversation.push_back(Dictionary({ { "role", SolersLLMRole::ASSISTANT }, { "content", content } }));
 			}
 			continue;
 		}
@@ -186,10 +208,56 @@ Array SolersContextManager::project_completed_turns(const Array &p_messages) {
 	if (!latest_summary.is_empty()) {
 		projected.push_back(latest_summary);
 	}
+	projected.append_array(conversation);
 	if (!facts.is_empty() || !failures.is_empty()) {
 		projected.push_back(Dictionary({ { "role", MODEL_CONTEXT_ROLE }, { "origin", "turn_checkpoint" }, { "content", JSON::stringify(Dictionary({ { "facts", facts }, { "failures", failures } }), "", false, true) } }));
 	}
 	return projected;
+}
+
+int SolersContextManager::prune_old_tool_outputs(Array &r_messages) {
+	Array candidates;
+	int protected_tokens = 0;
+	int saved_tokens = 0;
+	for (int i = r_messages.size() - 1; i >= 0; i--) {
+		const Dictionary message = r_messages[i];
+		if (String(message.get("role", String())) != String(SolersLLMRole::TOOL) || String(message.get("name", String())) == "skill.read") {
+			continue;
+		}
+		const String content = message.get("content", String());
+		const int tokens = estimate_tokens(content);
+		if (protected_tokens < SOLERS_PRUNE_PROTECT_TOKENS) {
+			protected_tokens += tokens;
+			continue;
+		}
+		Ref<JSON> json;
+		json.instantiate();
+		const Dictionary result = json->parse(content) == OK && json->get_data().get_type() == Variant::DICTIONARY ? Dictionary(json->get_data()) : Dictionary();
+		const Dictionary receipt = Dictionary(Dictionary(result.get("data", Dictionary())).get("mutation", Dictionary())).get("receipt", Dictionary());
+		if (!receipt.is_empty()) {
+			continue;
+		}
+		const String replacement = JSON::stringify(Dictionary({ { "pruned", true }, { "original_sha256", content.sha256_text() } }));
+		const int saving = tokens - estimate_tokens(replacement);
+		if (saving > 0) {
+			candidates.push_back(Dictionary({ { "index", i }, { "content", replacement } }));
+			saved_tokens += saving;
+		}
+	}
+	if (saved_tokens < SOLERS_PRUNE_MINIMUM_TOKENS) {
+		return 0;
+	}
+	for (int i = 0; i < candidates.size(); i++) {
+		const Dictionary candidate = candidates[i];
+		const int index = candidate.get("index", -1);
+		Dictionary message = r_messages[index];
+		message["content"] = candidate.get("content", String());
+		message.erase("attachments");
+		r_messages[index] = message;
+	}
+	authoritative_tokens = 0;
+	covered_message_count = 0;
+	return saved_tokens;
 }
 
 String SolersContextManager::_build_summary_text(const String &p_summary) {

@@ -237,7 +237,6 @@ Error SolersLLMClient::begin(const Dictionary &p_request, const Dictionary &p_pr
 		shared_events = Array();
 		shared_error = Dictionary();
 		shared_auth_update = Dictionary();
-		shared_emitted_attachment_identities = Array();
 		shared_request_body_bytes = 0;
 		shared_state = STATE_IDLE;
 	}
@@ -352,18 +351,7 @@ void SolersLLMClient::_publish(const Array &p_events, State p_state) {
 void SolersLLMClient::_run_worker() {
 	Array batch;
 	Array messages = SolersContextManager::repair_tool_pairing(worker_request.get("messages", Array()));
-	HashSet<String> delivered;
-	const Array delivered_identities = worker_request.get("_delivered_attachment_identities", Array());
-	for (int i = 0; i < delivered_identities.size(); i++) {
-		delivered.insert(delivered_identities[i]);
-	}
-	HashSet<String> emitted;
-	worker_request["messages"] = SolersLLMMessage::project_attachments(messages, delivered, emitted);
-	worker_request.erase("_delivered_attachment_identities");
-	Array emitted_identities;
-	for (const String &identity : emitted) {
-		emitted_identities.push_back(identity);
-	}
+	worker_request["messages"] = SolersLLMMessage::project_attachments(messages);
 	request_body = JSON::stringify(active_protocol->build_request_body(worker_request), "", false, true);
 	initial_stream_state = active_protocol->begin_stream(worker_request);
 	Dictionary trace_payload;
@@ -376,7 +364,6 @@ void SolersLLMClient::_run_worker() {
 	{
 		MutexLock lock(mutex);
 		shared_request_body_bytes = request_body.utf8().length();
-		shared_emitted_attachment_identities = emitted_identities;
 	}
 
 	if (!_prepare_auth_headers()) {
@@ -566,11 +553,6 @@ void SolersLLMClient::_run_worker() {
 int64_t SolersLLMClient::get_request_body_bytes() const {
 	MutexLock lock(mutex);
 	return shared_request_body_bytes;
-}
-
-Array SolersLLMClient::get_emitted_attachment_identities() const {
-	MutexLock lock(mutex);
-	return shared_emitted_attachment_identities;
 }
 
 void SolersLLMClient::_drain_records(Array &r_events) {

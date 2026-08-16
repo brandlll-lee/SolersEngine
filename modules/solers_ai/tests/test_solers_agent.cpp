@@ -29,6 +29,7 @@
 /**************************************************************************/
 
 #include "core/config/project_settings.h"
+#include "core/core_globals.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/json.h"
@@ -111,6 +112,46 @@ TEST_CASE("[SolersContextManager] compaction replaces the active prefix and pres
 	CHECK_FALSE(wire.contains("obsolete"));
 	CHECK_FALSE(wire.contains("superseded continuation"));
 	CHECK((int)result.get("tokens_after", 0) < (int)result.get("tokens_before", 0));
+}
+
+TEST_CASE("[SolersContextManager] completed-turn projection preserves the exact conversation spine") {
+	Array history;
+	history.push_back(make_user_message("Old task B: tune the sky.", 7));
+	history.push_back(SolersLLMMessage::assistant("Task B is complete.", Array()));
+	history.push_back(make_user_message("Task A: repair the fence collision.", 8));
+	history.push_back(SolersLLMMessage::assistant("The missing collision is at z=-7.244.", make_tool_calls("query_a", "object.query")));
+	history.push_back(SolersLLMMessage::tool_result("query_a", "object.query", String("large scene payload ").repeat(2000)));
+
+	Array projected = SolersContextManager::project_completed_turns(history);
+	const String wire = JSON::stringify(projected);
+	CHECK(wire.contains("Task A: repair the fence collision."));
+	CHECK(wire.contains("The missing collision is at z=-7.244."));
+	CHECK(wire.contains("Old task B: tune the sky."));
+	CHECK_FALSE(wire.contains("large scene payload"));
+	CHECK_FALSE(wire.contains("query_a"));
+
+	projected.push_back(make_user_message("Continue exactly.", 9));
+	const String continued = JSON::stringify(SolersContextManager::project_completed_turns(projected));
+	CHECK(continued.contains("Task A: repair the fence collision."));
+	CHECK(continued.contains("Continue exactly."));
+}
+
+TEST_CASE("[SolersContextManager] prune clears old tool payloads but keeps recent evidence and mutation receipts") {
+	Array history;
+	history.push_back(make_user_message("Inspect the scene.", 1));
+	for (int i = 0; i < 3; i++) {
+		history.push_back(SolersLLMMessage::tool_result("old_" + String::num_int64(i), "object.query", String("old payload ").repeat(7000)));
+	}
+	history.push_back(SolersLLMMessage::tool_result("receipt", "object.transaction", R"({"ok":true,"data":{"mutation":{"receipt":{"scene_after":{"version":9}}}}})"));
+	history.push_back(SolersLLMMessage::tool_result("recent", "render.capture", String("recent payload ").repeat(12000)));
+
+	SolersContextManager manager;
+	CHECK(manager.prune_old_tool_outputs(history) > 20000);
+	const String wire = JSON::stringify(history);
+	CHECK_FALSE(wire.contains("old payload"));
+	CHECK(wire.contains("recent payload"));
+	CHECK(wire.contains("scene_after"));
+	CHECK(wire.contains("original_sha256"));
 }
 
 TEST_CASE("[SolersContextManager] envelope clamp keeps head and tail under the token budget") {
@@ -265,6 +306,30 @@ TEST_CASE("[SolersJournal] append repairs only an incomplete crash tail") {
 	}
 	CHECK(records == 2);
 	repaired.unref();
+}
+
+TEST_CASE("[SolersSession][SceneTree][Editor] native Godot errors remain pending across an idle turn boundary") {
+	const String session_id = "idle-diagnostic-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
+	const String project = "test://" + session_id;
+	const String path = solers_session_dir().path_join("sessions").path_join(session_id.sha256_text() + ".jsonl");
+	SolersTestPaths cleanup;
+	cleanup.add(path);
+	SolersAgentSession session;
+	session.set_session(project, session_id);
+	const bool print_ready = CoreGlobals::print_ready;
+	CoreGlobals::print_ready = true;
+	ERR_PRINT("synthetic idle engine failure");
+	CoreGlobals::print_ready = print_ready;
+	CHECK((int)session.get_status().get("godot_log_errors", -1) == 1);
+	session.poll();
+	solers_transcript_flush(session_id);
+	session.shutdown();
+
+	Ref<FileAccess> file = FileAccess::open(path, FileAccess::READ);
+	REQUIRE(file.is_valid());
+	const String audit = file->get_as_text();
+	CHECK(audit.contains("synthetic idle engine failure"));
+	CHECK(audit.contains("\"event_type\":\"godot_log\""));
 }
 
 TEST_CASE("[SolersAgentSession] validates the Codex update_plan contract") {

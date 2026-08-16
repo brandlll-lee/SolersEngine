@@ -120,7 +120,6 @@ public:
 	Dictionary poll_uv2_unwrap(const Dictionary &p_args);
 	bool is_uv2_unwrap_ready(const Dictionary &p_args) const;
 	void cancel_uv2_unwrap(const String &p_operation_id);
-	Dictionary bake_lightmap(const Dictionary &p_args);
 	uint64_t get_lightmap_input_digest() const;
 
 	Dictionary batch(const Dictionary &p_args);

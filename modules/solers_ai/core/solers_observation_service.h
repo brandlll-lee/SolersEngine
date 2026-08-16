@@ -122,7 +122,6 @@ public:
 	bool is_runtime_observation_ready(const Dictionary &p_args) const;
 	bool has_runtime_query() const { return !runtime_query.is_empty(); }
 	bool get_runtime_property(uint64_t p_epoch, const NodePath &p_node_path, ObjectID p_object_id, const StringName &p_property, Variant &r_value) const;
-	Dictionary get_editor_logs(int p_max_messages = 200) const;
 	Dictionary capture_viewport(const Dictionary &p_args);
 	Dictionary poll_viewport_capture(const Dictionary &p_args);
 	bool is_viewport_capture_ready(const Dictionary &p_args);
