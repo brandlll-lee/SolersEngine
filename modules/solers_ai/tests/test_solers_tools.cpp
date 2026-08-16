@@ -612,6 +612,20 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 	CHECK(FileAccess::get_sha256(path) == sha);
 }
 
+TEST_CASE("[SolersToolRegistry] session rewind stops at the recorded irreversible boundary") {
+	SolersToolRegistry registry;
+	Dictionary barrier({ { "id", "barrier-5" }, { "session_id", "session-a" }, { "session_revision", 5 }, { "policy", "irreversible" } });
+	Array records;
+	records.push_back(barrier);
+	registry.restore_session_reversals("session-a", records);
+	const Dictionary blocked = registry.preview_session_rewind("session-a", 4);
+	CHECK_FALSE((bool)blocked.get("ok", true));
+	CHECK(Dictionary(blocked.get("error", Dictionary())).get("code", String()) == "REWIND_IRREVERSIBLE_BOUNDARY");
+	const Dictionary after_boundary = registry.preview_session_rewind("session-a", 5);
+	REQUIRE((bool)after_boundary.get("ok", false));
+	CHECK((int)Dictionary(after_boundary.get("data", Dictionary())).get("action_count", -1) == 0);
+}
+
 TEST_CASE("[SolersToolRegistry] built-ins retain deferred exposure and remain discoverable") {
 	SolersObservationService observation_service;
 	SolersPermissionManager permissions;

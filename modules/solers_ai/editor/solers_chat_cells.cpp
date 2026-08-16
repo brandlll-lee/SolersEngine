@@ -35,9 +35,14 @@
 #include "core/os/os.h"
 #include "editor/themes/editor_scale.h"
 #include "scene/gui/box_container.h"
+#include "scene/gui/button.h"
+#include "scene/gui/label.h"
+#include "scene/gui/text_edit.h"
+#include "scene/gui/texture_rect.h"
 #include "scene/resources/style_box_flat.h"
 #include "scene/resources/text_paragraph.h"
 #include "scene/theme/theme_db.h"
+#include "servers/display/display_server.h"
 
 #include "modules/solers_ai/core/solers_mention.h"
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
@@ -342,6 +347,184 @@ void SolersUserBubble::_notification(int p_what) {
 				}
 			}
 		} break;
+	}
+}
+
+/* ------------------------------------------------------------------ */
+/* SolersUserMessageCell                                               */
+/* ------------------------------------------------------------------ */
+
+SolersUserMessageCell::SolersUserMessageCell() {
+	set_h_size_flags(SIZE_EXPAND_FILL);
+	set_mouse_filter(MOUSE_FILTER_PASS);
+	add_theme_constant_override("separation", 2 * EDSCALE);
+	bubble = memnew(SolersUserBubble);
+	bubble->set_name("UserMessageBubble");
+	add_child(bubble);
+	footer = memnew(HBoxContainer);
+	footer->set_name("UserMessageFooter");
+	footer->set_h_size_flags(SIZE_EXPAND_FILL);
+	footer->set_custom_minimum_size(Size2(0, 24 * EDSCALE));
+	footer->set_alignment(BoxContainer::ALIGNMENT_END);
+	footer->add_theme_constant_override("separation", 2 * EDSCALE);
+	add_child(footer);
+	time_label = memnew(Label);
+	time_label->set_v_size_flags(SIZE_SHRINK_CENTER);
+	time_label->add_theme_color_override("font_color", SOLERS_CELL_TEXT_FAINT);
+	time_label->add_theme_font_size_override(SceneStringName(font_size), 11 * EDSCALE);
+	footer->add_child(time_label);
+	copy_button = memnew(SolersGlyphButton);
+	copy_button->configure(SNAME("copy"), SolersGlyphButton::SKIN_GHOST, TTR("Copy message"), 14);
+	copy_button->set_custom_minimum_size(Size2(24, 24) * EDSCALE);
+	copy_button->set_pressed_callback(callable_mp(this, &SolersUserMessageCell::_copy_message));
+	footer->add_child(copy_button);
+	edit_button = memnew(SolersGlyphButton);
+	edit_button->configure(SNAME("tool_file"), SolersGlyphButton::SKIN_GHOST, TTR("Edit message"), 14);
+	edit_button->set_custom_minimum_size(Size2(24, 24) * EDSCALE);
+	edit_button->set_pressed_callback(callable_mp(this, &SolersUserMessageCell::_begin_edit));
+	footer->add_child(edit_button);
+	editor_surface = memnew(SolersSurface);
+	editor_surface->set_name("HistoryMessageEditorSurface");
+	solers_configure_prompt_surface(editor_surface);
+	editor_surface->hide();
+	add_child(editor_surface);
+
+	VBoxContainer *editor_stack = memnew(VBoxContainer);
+	editor_stack->set_h_size_flags(SIZE_EXPAND_FILL);
+	editor_stack->add_theme_constant_override("separation", 6 * EDSCALE);
+	editor_surface->add_child(editor_stack);
+
+	editor = memnew(TextEdit);
+	editor->set_name("HistoryMessageEditor");
+	solers_configure_prompt_text_edit(editor);
+	editor_stack->add_child(editor);
+
+	editor_attachments = memnew(HBoxContainer);
+	editor_attachments->add_theme_constant_override("separation", 6 * EDSCALE);
+	editor_attachments->hide();
+	editor_stack->add_child(editor_attachments);
+
+	HBoxContainer *actions = memnew(HBoxContainer);
+	actions->set_h_size_flags(SIZE_EXPAND_FILL);
+	actions->set_alignment(BoxContainer::ALIGNMENT_END);
+	actions->add_theme_constant_override("separation", 6 * EDSCALE);
+	editor_stack->add_child(actions);
+
+	Button *cancel = memnew(Button(TTR("Cancel")));
+	cancel->connect(SceneStringName(pressed), callable_mp(this, &SolersUserMessageCell::_cancel_edit));
+	actions->add_child(cancel);
+
+	Button *send = memnew(Button(TTR("Send")));
+	send->connect(SceneStringName(pressed), callable_mp(this, &SolersUserMessageCell::_send_edit));
+	actions->add_child(send);
+
+	_set_footer_active(false);
+}
+
+void SolersUserMessageCell::configure(int64_t p_event_id, const String &p_message, const Array &p_attachments, const String &p_time_label, const Callable &p_edit_requested, const Callable &p_content_changed) {
+	event_id = p_event_id;
+	message = p_message;
+	attachments = p_attachments.duplicate(true);
+	edit_requested = p_edit_requested;
+	content_changed = p_content_changed;
+	time_label->set_text(p_time_label);
+	bubble->set_message(message);
+	bubble->set_attachments(attachments);
+	bubble->set_content_changed_callback(content_changed);
+	set_event_id(event_id);
+
+	while (editor_attachments->get_child_count() > 0) {
+		Node *child = editor_attachments->get_child(0);
+		editor_attachments->remove_child(child);
+		memdelete(child);
+	}
+	for (const Variant &item : attachments) {
+		if (item.get_type() != Variant::DICTIONARY) {
+			continue;
+		}
+		const Ref<Texture2D> texture = solers_attachment_texture(item);
+		if (texture.is_null()) {
+			continue;
+		}
+		TextureRect *preview = memnew(TextureRect);
+		preview->set_texture(texture);
+		preview->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
+		preview->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_COVERED);
+		preview->set_custom_minimum_size(Size2(42, 42) * EDSCALE);
+		preview->set_tooltip_text(TTR("This attachment will be verified and sent unchanged."));
+		editor_attachments->add_child(preview);
+	}
+	editor_attachments->set_visible(editor_attachments->get_child_count() > 0);
+}
+
+void SolersUserMessageCell::set_event_id(int64_t p_event_id) {
+	event_id = p_event_id;
+	edit_button->set_enabled(event_id >= 0);
+}
+
+void SolersUserMessageCell::set_inline_object_handlers(const Callable &p_parse, const Callable &p_draw, const Callable &p_click) {
+	editor->set_inline_object_handlers(p_parse, p_draw, p_click);
+}
+
+void SolersUserMessageCell::_set_footer_active(bool p_active) {
+	footer->set_modulate(Color(1, 1, 1, p_active ? 1.0f : 0.0f));
+	footer->set_mouse_filter(p_active ? MOUSE_FILTER_PASS : MOUSE_FILTER_IGNORE);
+}
+
+void SolersUserMessageCell::_copy_message() {
+	DisplayServer::get_singleton()->clipboard_set(message);
+}
+
+void SolersUserMessageCell::_begin_edit() {
+	if (event_id < 0) {
+		return;
+	}
+	editor->set_text(message);
+	bubble->hide();
+	footer->hide();
+	editor_surface->show();
+	editor->grab_focus();
+	editor->set_caret_line(editor->get_line_count() - 1);
+	editor->set_caret_column(editor->get_line(editor->get_caret_line()).length());
+	if (content_changed.is_valid()) {
+		content_changed.call();
+	}
+}
+
+void SolersUserMessageCell::_cancel_edit() {
+	cancel_edit();
+}
+
+void SolersUserMessageCell::cancel_edit() {
+	editor_surface->hide();
+	bubble->show();
+	footer->show();
+	_set_footer_active(false);
+	if (content_changed.is_valid()) {
+		content_changed.call();
+	}
+}
+
+void SolersUserMessageCell::_send_edit() {
+	const String edited = editor->get_text().strip_edges();
+	if ((edited.is_empty() && attachments.is_empty()) || !edit_requested.is_valid()) {
+		return;
+	}
+	edit_requested.call(event_id, edited, attachments.duplicate(true));
+}
+
+void SolersUserMessageCell::_notification(int p_what) {
+	switch (p_what) {
+		case NOTIFICATION_MOUSE_ENTER:
+			if (!editor_surface->is_visible()) {
+				_set_footer_active(true);
+			}
+			break;
+		case NOTIFICATION_MOUSE_EXIT:
+			if (!editor_surface->is_visible()) {
+				_set_footer_active(false);
+			}
+			break;
 	}
 }
 

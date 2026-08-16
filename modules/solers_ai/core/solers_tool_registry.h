@@ -66,8 +66,7 @@ class SolersToolRegistry : public Object {
 	Array tool_catalog;
 	HashMap<StringName, Dictionary> tool_catalog_by_name;
 	uint64_t tool_catalog_revision = 0;
-	HashMap<String, Dictionary> reversals;
-	HashMap<String, String> latest_reversal_by_session;
+	HashMap<String, Vector<Dictionary>> reversals_by_session;
 	HashSet<String> delivered_addon_contracts;
 
 	SolersObservationService *observation_service = nullptr;
@@ -125,6 +124,7 @@ class SolersToolRegistry : public Object {
 	Dictionary _poll_runtime_control(const Dictionary &p_args) const;
 	bool _is_runtime_control_ready(const Dictionary &p_args) const;
 	Dictionary _revert_latest(const SolersToolContext &p_context, const Dictionary &p_args);
+	const Dictionary *_find_reversal(const String &p_reversal_id) const;
 	Dictionary _prepare_reversal(SolersPreparedToolCall &r_call);
 	void _discard_reversal(const Dictionary &p_record);
 	Dictionary _finalize_prepared_result(SolersPreparedToolCall &r_call, const Dictionary &p_result);
@@ -172,7 +172,12 @@ public:
 	Dictionary call_tool(const StringName &p_name, const Dictionary &p_args);
 	Dictionary call_tool_with_context(const StringName &p_name, const Dictionary &p_args, const SolersToolContext &p_context);
 	void clear_task_state(const String &p_session_id);
-	void restore_session_reversal(const String &p_session_id, const Dictionary &p_record);
+	void restore_session_reversals(const String &p_session_id, const Array &p_records);
+	Dictionary preview_session_rewind(const String &p_session_id, uint64_t p_target_revision) const;
+	Dictionary prepare_session_rewind(const String &p_session_id, uint64_t p_target_revision);
+	Dictionary apply_session_rewind(const Dictionary &p_transaction);
+	Dictionary abort_session_rewind(const Dictionary &p_transaction);
+	Dictionary finish_session_rewind(const Dictionary &p_transaction);
 	int get_tool_count() const;
 
 	SolersToolRegistry();

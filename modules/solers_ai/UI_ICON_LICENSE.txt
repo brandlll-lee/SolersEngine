@@ -15,6 +15,7 @@ chevron_down       chevron-down
 chevron_right      chevron-right
 chevron_up         chevron-up
 cloud              cloud
+copy               copy
 cross              x
 file               file
 file_alert         file-alert

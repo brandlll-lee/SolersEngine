@@ -37,14 +37,17 @@
 #include "scene/resources/texture.h"
 
 class SolersMarkdownView;
+class SolersGlyphButton;
+class SolersSurface;
+class HBoxContainer;
+class Label;
+class TextEdit;
 class TextParagraph;
 class VBoxContainer;
 
 String solers_summarize_tool_args(const String &p_arguments_json);
 
-// Right-aligned user message bubble. Shrinks to fit its content, caps its
-// width for readability, and wraps long prompts. Never degenerates into the
-// one-character-per-line column a min-width autowrap Label produces.
+// Right-aligned, content-sized user bubble with bounded readable wrapping.
 class SolersUserBubble : public Control {
 	GDCLASS(SolersUserBubble, Control);
 
@@ -73,6 +76,43 @@ public:
 	void set_content_changed_callback(const Callable &p_cb) { content_changed = p_cb; }
 
 	SolersUserBubble();
+};
+
+class SolersUserMessageCell : public VBoxContainer {
+	GDCLASS(SolersUserMessageCell, VBoxContainer);
+
+	int64_t event_id = -1;
+	String message;
+	Array attachments;
+	Callable edit_requested;
+	Callable content_changed;
+
+	SolersUserBubble *bubble = nullptr;
+	HBoxContainer *footer = nullptr;
+	Label *time_label = nullptr;
+	SolersGlyphButton *copy_button = nullptr;
+	SolersGlyphButton *edit_button = nullptr;
+	SolersSurface *editor_surface = nullptr;
+	TextEdit *editor = nullptr;
+	HBoxContainer *editor_attachments = nullptr;
+
+	void _set_footer_active(bool p_active);
+	void _copy_message();
+	void _begin_edit();
+	void _cancel_edit();
+	void _send_edit();
+
+protected:
+	void _notification(int p_what);
+	static void _bind_methods() {}
+
+public:
+	void configure(int64_t p_event_id, const String &p_message, const Array &p_attachments, const String &p_time_label, const Callable &p_edit_requested, const Callable &p_content_changed);
+	void set_event_id(int64_t p_event_id);
+	void set_inline_object_handlers(const Callable &p_parse, const Callable &p_draw, const Callable &p_click);
+	void cancel_edit();
+
+	SolersUserMessageCell();
 };
 
 class SolersAssistantCell : public VBoxContainer {

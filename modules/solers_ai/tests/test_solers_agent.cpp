@@ -308,6 +308,40 @@ TEST_CASE("[SolersJournal] append repairs only an incomplete crash tail") {
 	repaired.unref();
 }
 
+TEST_CASE("[SolersSession] rewind marker projects one active append-only branch") {
+	const String session_id = "rewind-projection-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
+	const String project = "test://" + session_id;
+	SolersTestPaths cleanup;
+	cleanup.add(solers_session_dir().path_join("sessions").path_join(session_id.sha256_text() + ".jsonl"));
+	auto write = [&](int p_id, const String &p_type, Dictionary p_event) {
+		p_event["event_id"] = p_id;
+		p_event["event_type"] = p_type;
+		p_event["project_path"] = project;
+		p_event["session_id"] = session_id;
+		solers_transcript_write(p_event);
+	};
+	Dictionary first = make_user_message("first");
+	first["wall"] = 100;
+	first["session_revision"] = 1;
+	write(1, "message", first);
+	write(2, "message", SolersLLMMessage::assistant("answer", Array()));
+	Dictionary replaced = make_user_message("replace me");
+	write(3, "message", replaced);
+	write(4, "rewind_prepared", Dictionary({ { "transaction", Dictionary({ { "transaction_id", "tx" } }) } }));
+	write(5, "session_rewind", Dictionary({ { "target_event_id", 3 } }));
+	Dictionary edited = make_user_message("edited");
+	write(6, "message", edited);
+	solers_transcript_flush(session_id);
+	SolersAgentSession restored;
+	restored.set_session(project, session_id);
+	const Array timeline = restored.get_timeline_entries();
+	REQUIRE(timeline.size() == 3);
+	CHECK((int64_t)Dictionary(timeline[0]).get("wall", 0) == 100);
+	CHECK((int64_t)Dictionary(timeline[0]).get("session_revision", 0) == 1);
+	CHECK(String(Dictionary(timeline[2]).get("content", String())) == "edited");
+	restored.shutdown();
+}
+
 TEST_CASE("[SolersSession][SceneTree][Editor] native Godot errors remain pending across an idle turn boundary") {
 	const String session_id = "idle-diagnostic-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
 	const String project = "test://" + session_id;

@@ -200,6 +200,7 @@ class SolersAgentSession : public Object {
 	Dictionary _read_transcript_state(const String &p_project_path, const String &p_session_id) const;
 	void _stamp_transcript_event(Dictionary &r_event) const;
 	int64_t _write_transcript_event(const String &p_type, const Dictionary &p_payload = Dictionary()) const;
+	Error _write_transcript_event_durable(const String &p_type, const Dictionary &p_payload, int64_t &r_event_id) const;
 	void _write_prepared_journal_event(SolersPreparedToolCall *p_call) const;
 	void _ensure_godot_log_audit(bool p_turn_active);
 	void _release_godot_log_audit();
@@ -274,6 +275,8 @@ public:
 
 	static Dictionary validate_plan(const Dictionary &p_args);
 	Dictionary start_turn(const Dictionary &p_args); // { prompt: String }
+	Dictionary preview_rewind_to_event(int64_t p_event_id) const;
+	Dictionary rewind_to_event(int64_t p_event_id);
 	// Steer the running turn: the message is queued and joins the
 	// conversation after the current tool batch, before the next model
 	// dispatch. Fails with AGENT_IDLE when no turn is running.

@@ -134,4 +134,25 @@ TEST_CASE("[SolersUI][SceneTree][Editor] editor locale and technical tool chrome
 	SolersIcons::clear_cache();
 }
 
+TEST_CASE("[SolersUI][SceneTree] user messages preserve the bubble and own one full-width editor") {
+	SolersUserMessageCell *cell = memnew(SolersUserMessageCell);
+	cell->set_theme(SolersUITheme::create());
+	cell->configure(42, "Edit this earlier request", Array(), "2026.8.17 12:30", Callable(), Callable());
+	SceneTree::get_singleton()->get_root()->add_child(cell);
+	MessageQueue::get_singleton()->flush();
+	Control *bubble = Object::cast_to<Control>(cell->find_child("UserMessageBubble", true, false));
+	Control *footer = Object::cast_to<Control>(cell->find_child("UserMessageFooter", true, false));
+	Control *editor = Object::cast_to<Control>(cell->find_child("HistoryMessageEditorSurface", true, false));
+	REQUIRE(bool(bubble && footer && editor));
+	CHECK(bubble->is_visible());
+	CHECK(footer->is_visible());
+	CHECK_FALSE(editor->is_visible());
+#ifdef MODULE_SVG_ENABLED
+	CHECK(SolersIcons::get(SNAME("copy"), 16).is_valid());
+#endif
+	cell->queue_free();
+	MessageQueue::get_singleton()->flush();
+	SolersIcons::clear_cache();
+}
+
 } // namespace TestSolersEditor

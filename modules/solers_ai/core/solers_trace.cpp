@@ -192,26 +192,32 @@ void solers_trace_write(const String &p_where, const String &p_msg) {
 	}
 }
 
-void solers_transcript_write(const Dictionary &p_event) {
+Error solers_transcript_write(const Dictionary &p_event) {
 	if (transcript_io_active) {
-		return;
+		return ERR_BUSY;
 	}
 	transcript_io_active = true;
 	Dictionary event = p_event.duplicate(true);
 	event["schema"] = JOURNAL_SCHEMA;
 	event["ticks_msec"] = (int64_t)OS::get_singleton()->get_ticks_msec();
+	Error write_error = OK;
 	{
 		MutexLock lock(transcript_mutex);
 		const String id = event.get("session_id", String());
-		if (!id.is_empty()) {
+		if (id.is_empty()) {
+			write_error = ERR_INVALID_PARAMETER;
+		} else {
 			if (journal_session_id != id) {
 				journal_file = append_file(journal_path(id), true);
 				journal_session_id = id;
 			}
 			if (journal_file.is_valid()) {
 				journal_file->store_line(JSON::stringify(event, "", false, true));
+				write_error = journal_file->get_error();
+			} else {
+				write_error = ERR_CANT_OPEN;
 			}
-			if (solers_transcript_is_human_message(event) || String(event.get("event_type", String())) == "turn_started") {
+			if (write_error == OK && (solers_transcript_is_human_message(event) || String(event.get("event_type", String())) == "turn_started")) {
 				Ref<FileAccess> index = append_file(solers_session_dir().path_join("sessions.index.jsonl"), true);
 				if (index.is_valid()) {
 					index->store_line(JSON::stringify(index_record(event)));
@@ -220,18 +226,27 @@ void solers_transcript_write(const Dictionary &p_event) {
 		}
 	}
 	transcript_io_active = false;
-	index_event(event);
+	if (write_error == OK) {
+		index_event(event);
+	}
+	return write_error;
 }
 
-void solers_transcript_flush(const String &p_session_id) {
+Error solers_transcript_flush(const String &p_session_id) {
 	MutexLock lock(transcript_mutex);
+	Error flush_error = OK;
 	if (p_session_id.is_empty() || p_session_id == journal_session_id) {
+		if (journal_file.is_valid()) {
+			journal_file->flush();
+			flush_error = journal_file->get_error();
+		}
 		journal_file.unref();
 		journal_session_id = String();
 	}
 	if (trace_file.is_valid()) {
 		trace_file->flush();
 	}
+	return flush_error;
 }
 
 void solers_transcript_close() {

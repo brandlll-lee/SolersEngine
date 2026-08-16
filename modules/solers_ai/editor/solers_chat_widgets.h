@@ -41,6 +41,8 @@
 #include "scene/resources/font.h"
 #include "scene/resources/texture.h"
 
+class TextEdit;
+
 // Module-owned SVG catalog with one process-lifetime texture cache.
 class SolersIcons {
 public:
@@ -211,6 +213,9 @@ inline Color solers_cell_bubble_bg() {
 inline Color solers_composer_border() {
 	return Color(0.95f, 0.95f, 0.97f, 0.16f);
 }
+
+void solers_configure_prompt_surface(SolersSurface *p_surface);
+void solers_configure_prompt_text_edit(TextEdit *p_edit);
 
 // Technical tool chrome stays English while ui_kind remains the authority.
 StringName solers_tool_icon_for_ui_kind(const String &p_ui_kind);

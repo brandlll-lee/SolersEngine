@@ -40,6 +40,7 @@ class Button;
 class ButtonGroup;
 class Control;
 class AcceptDialog;
+class ConfirmationDialog;
 class HBoxContainer;
 class HSplitContainer;
 class ItemList;
@@ -68,7 +69,7 @@ class SolersThinkingCell;
 class SolersToolCell;
 class SolersToolGroupCell;
 class SolersToolRegistry;
-class SolersUserBubble;
+class SolersUserMessageCell;
 
 class SolersDock : public PanelContainer {
 	GDCLASS(SolersDock, PanelContainer);
@@ -94,6 +95,10 @@ class SolersDock : public PanelContainer {
 	SolersGlyphButton *send_chat_button = nullptr;
 	HBoxContainer *attachment_bar = nullptr;
 	AcceptDialog *provider_settings_dialog = nullptr;
+	ConfirmationDialog *rewind_dialog = nullptr;
+	int64_t pending_rewind_event_id = -1;
+	String pending_rewind_prompt;
+	Array pending_rewind_attachments;
 	SolersPMAIView *provider_settings_view = nullptr;
 	SolersSelectChip *model_chip = nullptr;
 	PanelContainer *plugin_mention_popup = nullptr;
@@ -240,10 +245,12 @@ class SolersDock : public PanelContainer {
 	void _update_send_enabled();
 	bool _is_scroll_pinned() const;
 	void _on_cell_content_changed();
+	void _on_history_edit_requested(int64_t p_event_id, const String &p_prompt, const Array &p_attachments);
+	void _on_history_edit_confirmed();
 	void _scroll_chat_to_bottom();
 	void _clear_empty_state();
 	void _show_empty_state();
-	Control *_append_user_message(const String &p_message, const Array &p_attachments = Array());
+	SolersUserMessageCell *_append_user_message(const String &p_message, const Array &p_attachments = Array(), int64_t p_event_id = -1, int64_t p_wall = 0);
 	void _append_error_row(const String &p_text);
 	void _ensure_status_cell(const String &p_status);
 	void _remove_status_cell();

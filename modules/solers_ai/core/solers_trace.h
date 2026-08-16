@@ -36,8 +36,8 @@
 
 String solers_session_dir();
 void solers_trace_write(const String &p_where, const String &p_msg);
-void solers_transcript_write(const Dictionary &p_event);
-void solers_transcript_flush(const String &p_session_id = String());
+Error solers_transcript_write(const Dictionary &p_event);
+Error solers_transcript_flush(const String &p_session_id = String());
 void solers_transcript_close();
 bool solers_transcript_parse_record(const String &p_line, Dictionary &r_event);
 bool solers_transcript_is_human_message(const Dictionary &p_event);

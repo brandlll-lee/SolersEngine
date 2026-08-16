@@ -309,6 +309,26 @@ static Dictionary _solers_restore_model_context(const Dictionary &p_event) {
 	return message;
 }
 
+static Array _solers_restore_attachment_paths(const Array &p_attachments) {
+	Array restored;
+	const String attachment_dir = solers_session_dir().path_join("attachments");
+	for (const Variant &item : p_attachments) {
+		if (item.get_type() != Variant::DICTIONARY) {
+			continue;
+		}
+		Dictionary attachment = Dictionary(item).duplicate(true);
+		const String sha = String(attachment.get("content_sha256", String())).strip_edges().to_lower();
+		if (!sha.is_empty()) {
+			const String path = attachment_dir.path_join(sha + ".png");
+			if (FileAccess::exists(path) && FileAccess::get_sha256(path) == sha) {
+				attachment["local_path"] = path;
+			}
+		}
+		restored.push_back(attachment);
+	}
+	return restored;
+}
+
 static void _solers_project_timeline_event(const Dictionary &p_event, Array &r_entries, HashMap<String, Dictionary> &r_open_tools) {
 	const String type = p_event.get("event_type", String());
 	if (type == "message") {
@@ -322,10 +342,13 @@ static void _solers_project_timeline_event(const Dictionary &p_event, Array &r_e
 		entry["event_id"] = p_event.get("event_id", 0);
 		entry["role"] = role;
 		entry["content"] = content;
-		for (const char *field : { "reasoning", "attachments", "origin" }) {
+		for (const char *field : { "reasoning", "attachments", "mentions", "origin", "wall", "session_revision" }) {
 			if (p_event.has(field)) {
 				entry[field] = p_event[field];
 			}
+		}
+		if (entry.has("attachments")) {
+			entry["attachments"] = _solers_restore_attachment_paths(entry["attachments"]);
 		}
 		Array calls = Array(p_event.get("tool_calls", Array())).duplicate(true);
 		for (int i = calls.size() - 1; i >= 0; i--) {
@@ -401,14 +424,73 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 	String restored_outcome;
 	int restored_turn_id = 0;
 	uint64_t restored_authored_revision = 0;
-	Dictionary restored_reversal;
+	Array restored_reversals;
+	Dictionary pending_rewind;
+	Array committed_rewinds;
 	if (p_project_path.is_empty() || p_session_id.is_empty()) {
 		Dictionary empty;
 		empty["messages"] = restored;
 		empty["timeline_entries"] = restored_timeline;
 		return empty;
 	}
-
+	HashSet<int64_t> active_event_ids;
+	Vector<int64_t> active_event_order;
+	struct ProjectionScan {
+		const String *project_path = nullptr;
+		const String *session_id = nullptr;
+		HashSet<int64_t> *active_ids = nullptr;
+		Vector<int64_t> *active_order = nullptr;
+		Dictionary *pending_rewind = nullptr;
+		Array *committed_rewinds = nullptr;
+		int64_t sequence = 0;
+		int restored_turn_id = 0;
+		uint64_t restored_revision = 0;
+	} projection;
+	projection.project_path = &p_project_path;
+	projection.session_id = &p_session_id;
+	projection.active_ids = &active_event_ids;
+	projection.active_order = &active_event_order;
+	projection.pending_rewind = &pending_rewind;
+	projection.committed_rewinds = &committed_rewinds;
+	solers_transcript_foreach_session(p_session_id, &projection, [](void *p_userdata, const String &p_record) -> bool {
+		ProjectionScan &scan = *static_cast<ProjectionScan *>(p_userdata);
+		Dictionary event;
+		if (!solers_transcript_parse_record(p_record.strip_edges(), event) || String(event.get("project_path", String())) != *scan.project_path || String(event.get("session_id", String())) != *scan.session_id) {
+			return true;
+		}
+		scan.sequence = MAX(scan.sequence + 1, (int64_t)event.get("event_id", 0));
+		const int64_t event_id = event.get("event_id", scan.sequence);
+		scan.restored_turn_id = MAX(scan.restored_turn_id, (int)event.get("turn_id", 0));
+		scan.restored_revision = MAX(scan.restored_revision, (uint64_t)(int64_t)event.get("session_revision", 0));
+		const String type = event.get("event_type", String());
+		if (type == "rewind_prepared") {
+			*scan.pending_rewind = event.get("transaction", Dictionary());
+			return true;
+		}
+		if (type == "rewind_aborted") {
+			scan.pending_rewind->clear();
+			return true;
+		}
+		if (type == "session_rewind") {
+			const int64_t target_event_id = event.get("target_event_id", 0);
+			while (!scan.active_order->is_empty() && scan.active_order->get(scan.active_order->size() - 1) >= target_event_id) {
+				scan.active_ids->erase(scan.active_order->get(scan.active_order->size() - 1));
+				scan.active_order->remove_at(scan.active_order->size() - 1);
+			}
+			const Dictionary transaction = event.get("transaction", Dictionary());
+			if (!transaction.is_empty()) {
+				scan.committed_rewinds->push_back(transaction);
+			}
+			scan.pending_rewind->clear();
+			return true;
+		}
+		scan.active_ids->insert(event_id);
+		scan.active_order->push_back(event_id);
+		return true;
+	});
+	transcript_event_sequence = projection.sequence;
+	restored_turn_id = projection.restored_turn_id;
+	restored_authored_revision = projection.restored_revision;
 	struct ScanState {
 		const String *project_path = nullptr;
 		const String *session_id = nullptr;
@@ -418,10 +500,9 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 		Array *restored_background_assets = nullptr;
 		Dictionary *restored_plan = nullptr;
 		String *restored_outcome = nullptr;
-		int *restored_turn_id = nullptr;
-		uint64_t *restored_authored_revision = nullptr;
-		int64_t *event_sequence = nullptr;
-		Dictionary *restored_reversal = nullptr;
+		const HashSet<int64_t> *active_event_ids = nullptr;
+		int64_t replay_sequence = 0;
+		Array *restored_reversals = nullptr;
 	} restore_state;
 	restore_state.project_path = &p_project_path;
 	restore_state.session_id = &p_session_id;
@@ -431,10 +512,8 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 	restore_state.restored_background_assets = &restored_background_assets;
 	restore_state.restored_plan = &restored_plan;
 	restore_state.restored_outcome = &restored_outcome;
-	restore_state.restored_turn_id = &restored_turn_id;
-	restore_state.restored_authored_revision = &restored_authored_revision;
-	restore_state.event_sequence = &transcript_event_sequence;
-	restore_state.restored_reversal = &restored_reversal;
+	restore_state.active_event_ids = &active_event_ids;
+	restore_state.restored_reversals = &restored_reversals;
 	solers_transcript_foreach_session(p_session_id, &restore_state, [](void *p_userdata, const String &p_record) -> bool {
 		ScanState &scan = *static_cast<ScanState *>(p_userdata);
 		const String line = p_record.strip_edges();
@@ -449,22 +528,37 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 		if (String(event.get("project_path", String())) != *scan.project_path || String(event.get("session_id", String())) != *scan.session_id) {
 			return true;
 		}
-		*scan.event_sequence = MAX(*scan.event_sequence + 1, (int64_t)event.get("event_id", 0));
+		scan.replay_sequence = MAX(scan.replay_sequence + 1, (int64_t)event.get("event_id", 0));
 		if (!event.has("event_id")) {
-			event["event_id"] = *scan.event_sequence;
+			event["event_id"] = scan.replay_sequence;
 		}
-		*scan.restored_turn_id = MAX(*scan.restored_turn_id, (int)event.get("turn_id", 0));
-		*scan.restored_authored_revision = MAX(*scan.restored_authored_revision, (uint64_t)(int64_t)event.get("session_revision", 0));
+		if (!scan.active_event_ids->has(event.get("event_id", 0))) {
+			return true;
+		}
 
 		const String event_type = event.get("event_type", String());
 		_solers_project_timeline_event(event, *scan.restored_timeline, *scan.restored_open_tools);
 		if (event_type == "checkpoint_created") {
 			Dictionary checkpoint = event.get("checkpoint", Dictionary());
-			*scan.restored_reversal = checkpoint.duplicate(true);
+			scan.restored_reversals->push_back(checkpoint.duplicate(true));
 			return true;
 		}
-		if (event_type == "checkpoint_cleared" || event_type == "checkpoint_consumed") {
-			scan.restored_reversal->clear();
+		if (event_type == "checkpoint_cleared") {
+			scan.restored_reversals->clear();
+			const Dictionary barrier = event.get("barrier", Dictionary());
+			if (!barrier.is_empty()) {
+				scan.restored_reversals->push_back(barrier.duplicate(true));
+			}
+			return true;
+		}
+		if (event_type == "checkpoint_consumed") {
+			const String reversal_id = event.get("reversal_id", String());
+			for (int i = scan.restored_reversals->size() - 1; i >= 0; i--) {
+				if (reversal_id.is_empty() || String(Dictionary((*scan.restored_reversals)[i]).get("id", String())) == reversal_id) {
+					scan.restored_reversals->remove_at(i);
+					break;
+				}
+			}
 			return true;
 		}
 		if (event_type == "tool_result") {
@@ -534,7 +628,7 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 				mentions = SolersMention::parse(display);
 			}
 			String model_content = had_block ? content : (display + SolersMention::prompt_block(mentions));
-			const Array attachments = event.get("attachments", Array());
+			const Array attachments = _solers_restore_attachment_paths(event.get("attachments", Array()));
 			Dictionary user_message = SolersLLMMessage::user(model_content);
 			user_message["turn_id"] = event.get("turn_id", 0);
 			if (!attachments.is_empty()) {
@@ -568,7 +662,9 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 	state["turn_id"] = restored_turn_id;
 	state["background_assets"] = restored_background_assets;
 	state["session_revision"] = (int64_t)restored_authored_revision;
-	state["reversal"] = restored_reversal;
+	state["reversals"] = restored_reversals;
+	state["pending_rewind"] = pending_rewind;
+	state["committed_rewinds"] = committed_rewinds;
 	return state;
 }
 
@@ -592,6 +688,38 @@ int64_t SolersAgentSession::_write_transcript_event(const String &p_type, const 
 	_solers_project_timeline_event(event, timeline_entries, open_timeline_tools);
 	solers_transcript_write(event);
 	return event["event_id"];
+}
+
+Error SolersAgentSession::_write_transcript_event_durable(const String &p_type, const Dictionary &p_payload, int64_t &r_event_id) const {
+	Dictionary event = p_payload.duplicate(true);
+	event["event_type"] = p_type;
+	event["turn_id"] = turn_id;
+	event["wall"] = Time::get_singleton()->get_unix_time_from_system();
+	_stamp_transcript_event(event);
+	r_event_id = event["event_id"];
+	const Error write_error = solers_transcript_write(event);
+	if (write_error != OK) {
+		return write_error;
+	}
+	const Error flush_error = solers_transcript_flush(session_id);
+	if (flush_error != OK) {
+		struct DurableCheck {
+			int64_t id;
+			String type;
+			bool found = false;
+		} check{ r_event_id, p_type };
+		solers_transcript_foreach_session(session_id, &check, [](void *p_data, const String &p_line) -> bool {
+			DurableCheck &check = *static_cast<DurableCheck *>(p_data);
+			Dictionary stored;
+			check.found = solers_transcript_parse_record(p_line, stored) && (int64_t)stored.get("event_id", 0) == check.id && String(stored.get("event_type", String())) == check.type;
+			return !check.found;
+		});
+		if (!check.found) {
+			return flush_error;
+		}
+	}
+	_solers_project_timeline_event(event, timeline_entries, open_timeline_tools);
+	return OK;
 }
 
 void SolersAgentSession::_write_prepared_journal_event(SolersPreparedToolCall *p_call) const {
@@ -1662,6 +1790,114 @@ Array SolersAgentSession::_attachments_for_ids(const Array &p_ids) const {
 		}
 	}
 	return out;
+}
+
+Dictionary SolersAgentSession::preview_rewind_to_event(int64_t p_event_id) const {
+	if (running) {
+		return _error("AGENT_BUSY", "Wait for the current Agent turn to finish before editing history.");
+	}
+	if (!session_tools_registry || p_event_id <= 0) {
+		return _error("REWIND_UNAVAILABLE", "Historical project rewind is unavailable for this session.");
+	}
+	Dictionary target;
+	int target_index = -1;
+	for (int i = 0; i < timeline_entries.size(); i++) {
+		const Dictionary entry = timeline_entries[i];
+		if ((int64_t)entry.get("event_id", 0) == p_event_id && String(entry.get("role", String())) == SolersLLMRole::USER) {
+			target = entry;
+			target_index = i;
+			break;
+		}
+	}
+	if (target_index < 0) {
+		return _error("REWIND_TARGET_NOT_FOUND", "The selected user message is not active in this session.");
+	}
+	if (!target.has("session_revision")) {
+		return _error("REWIND_BOUNDARY_UNAVAILABLE", "This message predates native mutation boundaries and cannot be edited safely.");
+	}
+	const Array attachments = _solers_restore_attachment_paths(target.get("attachments", Array()));
+	for (const Variant &item : attachments) {
+		const Dictionary attachment = item;
+		const String sha = attachment.get("content_sha256", String());
+		const String path = attachment.get("local_path", String());
+		if (!sha.is_empty() && (path.is_empty() || !FileAccess::exists(path) || FileAccess::get_sha256(path) != sha)) {
+			return _error("REWIND_ATTACHMENT_CONFLICT", "An attachment from the selected message is missing or no longer matches its recorded SHA-256.");
+		}
+	}
+	const uint64_t target_revision = (int64_t)target.get("session_revision", 0);
+	const Dictionary registry_preview = session_tools_registry->preview_session_rewind(session_id, target_revision);
+	if (!(bool)registry_preview.get("ok", false)) {
+		return registry_preview;
+	}
+	int following_messages = 0;
+	for (int i = target_index + 1; i < timeline_entries.size(); i++) {
+		const String role = Dictionary(timeline_entries[i]).get("role", String());
+		if (role == SolersLLMRole::USER || role == SolersLLMRole::ASSISTANT) {
+			following_messages++;
+		}
+	}
+	Dictionary data = Dictionary(registry_preview.get("data", Dictionary())).duplicate(true);
+	data["target_event_id"] = p_event_id;
+	data["target_revision"] = (int64_t)target_revision;
+	data["content"] = target.get("content", String());
+	data["attachments"] = attachments;
+	data["following_messages"] = following_messages;
+	return _ok(data);
+}
+Dictionary SolersAgentSession::rewind_to_event(int64_t p_event_id) {
+	const Dictionary preview = preview_rewind_to_event(p_event_id);
+	if (!(bool)preview.get("ok", false)) {
+		return preview;
+	}
+	const Dictionary preview_data = preview.get("data", Dictionary());
+	const uint64_t target_revision = (int64_t)preview_data.get("target_revision", 0);
+	const Dictionary prepared = session_tools_registry->prepare_session_rewind(session_id, target_revision);
+	if (!(bool)prepared.get("ok", false)) {
+		return prepared;
+	}
+	const Dictionary transaction = prepared.get("data", Dictionary());
+	Dictionary journal_payload;
+	journal_payload["target_event_id"] = p_event_id;
+	journal_payload["transaction"] = transaction;
+	int64_t journal_event_id = 0;
+	if (_write_transcript_event_durable("rewind_prepared", journal_payload, journal_event_id) != OK) {
+		session_tools_registry->abort_session_rewind(transaction);
+		return _error("REWIND_JOURNAL_FAILED", "The rewind recovery record could not be persisted; the project was not changed.");
+	}
+	const Dictionary applied = session_tools_registry->apply_session_rewind(transaction);
+	if (!(bool)applied.get("ok", false)) {
+		Dictionary aborted;
+		aborted["transaction_id"] = transaction.get("transaction_id", String());
+		aborted["reason"] = Dictionary(applied.get("error", Dictionary())).get("message", String());
+		_write_transcript_event_durable("rewind_aborted", aborted, journal_event_id);
+		return applied;
+	}
+	if (_write_transcript_event_durable("session_rewind", journal_payload, journal_event_id) != OK) {
+		const Dictionary compensated = session_tools_registry->abort_session_rewind(transaction);
+		Dictionary aborted;
+		aborted["transaction_id"] = transaction.get("transaction_id", String());
+		aborted["reason"] = "session_rewind journal commit failed";
+		_write_transcript_event_durable("rewind_aborted", aborted, journal_event_id);
+		return _error((bool)compensated.get("ok", false) ? "REWIND_JOURNAL_FAILED" : "REWIND_COMPENSATION_FAILED", "The session marker could not be persisted; the original project state was restored when possible.");
+	}
+	session_tools_registry->finish_session_rewind(transaction);
+	const Dictionary state = _read_transcript_state(project_path, session_id);
+	messages = state.get("messages", Array());
+	timeline_entries = state.get("timeline_entries", Array());
+	open_timeline_tools.clear();
+	current_plan = state.get("plan", Dictionary());
+	last_outcome = state.get("outcome", String());
+	turn_id = state.get("turn_id", turn_id);
+	authored_revision = (int64_t)state.get("session_revision", authored_revision);
+	session_tools_registry->restore_session_reversals(session_id, state.get("reversals", Array()));
+	Dictionary data;
+	data["target_event_id"] = p_event_id;
+	data["content"] = preview_data.get("content", String());
+	data["attachments"] = preview_data.get("attachments", Array());
+	data["following_messages"] = preview_data.get("following_messages", 0);
+	data["action_count"] = preview_data.get("action_count", 0);
+	data["file_count"] = preview_data.get("file_count", 0);
+	return _ok(data);
 }
 
 Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
@@ -2934,7 +3170,7 @@ void SolersAgentSession::reset_conversation() {
 		context_manager->reset();
 	}
 	if (tool_registry) {
-		tool_registry->restore_session_reversal(session_id, Dictionary());
+		tool_registry->restore_session_reversals(session_id, Array());
 	}
 	session_id = _make_session_id();
 	authored_revision = 0;
@@ -2961,7 +3197,7 @@ void SolersAgentSession::set_session(const String &p_project_path, const String 
 		session_id = p_session_id;
 	}
 	if (tool_registry && previous_session_id != session_id) {
-		tool_registry->restore_session_reversal(previous_session_id, Dictionary());
+		tool_registry->restore_session_reversals(previous_session_id, Array());
 	}
 	transcript_event_sequence = 0;
 	const Dictionary state = _read_transcript_state(project_path, session_id);
@@ -2973,7 +3209,21 @@ void SolersAgentSession::set_session(const String &p_project_path, const String 
 	turn_id = state.get("turn_id", 0);
 	authored_revision = (int64_t)state.get("session_revision", 0);
 	if (tool_registry) {
-		tool_registry->restore_session_reversal(session_id, state.get("reversal", Dictionary()));
+		tool_registry->restore_session_reversals(session_id, state.get("reversals", Array()));
+		for (const Variant &transaction : Array(state.get("committed_rewinds", Array()))) {
+			tool_registry->finish_session_rewind(transaction);
+		}
+		const Dictionary pending_rewind = state.get("pending_rewind", Dictionary());
+		if (!pending_rewind.is_empty()) {
+			const Dictionary recovered = tool_registry->abort_session_rewind(pending_rewind);
+			if ((bool)recovered.get("ok", false)) {
+				Dictionary aborted;
+				aborted["transaction_id"] = pending_rewind.get("transaction_id", String());
+				aborted["reason"] = "Recovered an interrupted historical-message rewind.";
+				int64_t recovery_event_id = 0;
+				_write_transcript_event_durable("rewind_aborted", aborted, recovery_event_id);
+			}
+		}
 	}
 	pending_background_assets = state.get("background_assets", Array());
 	background_resume_suppressed = false;

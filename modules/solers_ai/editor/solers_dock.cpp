@@ -90,9 +90,6 @@
 #include "modules/solers_ai/protocol/solers_mcp_adapter.h"
 #include "modules/solers_ai/protocol/solers_rpc_server.h"
 
-// Composer growth cap; past this TextEdit shows its own scrollbar
-// (fit_content_height + custom_maximum_size, engine-owned).
-constexpr float SOLERS_COMPOSER_TEXT_MAX_HEIGHT = 220.0f;
 constexpr int SOLERS_MENTION_VISIBLE_ROWS = 4;
 // Space reserved for a timeline row that has never been laid out. Only the
 // scrollbar range depends on it: the measured height replaces it the first time
@@ -100,13 +97,11 @@ constexpr int SOLERS_MENTION_VISIBLE_ROWS = 4;
 constexpr float SOLERS_TIMELINE_ROW_SEED_HEIGHT = 72.0f;
 static Ref<StyleBoxFlat> solers_row_styles[7];
 static real_t solers_row_style_scale = 0;
+static String _solers_session_time_label(int64_t p_wall, int64_t p_time_zone_offset);
 
 // Codex-calibrated surface palette.
 static const Color SOLERS_BG = Color(0.030, 0.030, 0.023);
-// Composer / chip colors: shared authority in solers_chat_widgets.h
-#define SOLERS_COMPOSER_BG solers_composer_bg()
 static const Color SOLERS_POPUP_BG = Color(0.118, 0.118, 0.122);
-#define SOLERS_COMPOSER_BORDER solers_composer_border()
 // Primary text: high contrast for readability on dark backgrounds.
 static const Color SOLERS_TEXT_PRIMARY = Color(0.961, 0.969, 0.984);
 // Body text: comfortable reading with slightly reduced contrast for hierarchy.
@@ -114,8 +109,6 @@ static const Color SOLERS_TEXT_BODY = Color(0.918, 0.929, 0.945);
 // Dim text: secondary info and status labels.
 static const Color SOLERS_TEXT_DIM = Color(0.667, 0.690, 0.733);
 static const Color SOLERS_TEXT_META = Color(0.735, 0.755, 0.790);
-// Placeholder text: subtle cue in the input field.
-static const Color SOLERS_TEXT_PLACEHOLDER = Color(0.345, 0.357, 0.388);
 
 static Ref<StyleBoxFlat> solers_make_stylebox(const Color &p_bg, const Color &p_border, int p_radius, int p_padding, bool p_shadow = false) {
 	Ref<StyleBoxFlat> style(memnew(StyleBoxFlat));
@@ -612,24 +605,66 @@ void SolersDock::_on_cell_content_changed() {
 	}
 }
 
-Control *SolersDock::_append_user_message(const String &p_message, const Array &p_attachments) {
+void SolersDock::_on_history_edit_requested(int64_t p_event_id, const String &p_prompt, const Array &p_attachments) {
+	if (!agent_session || !rewind_dialog) {
+		return;
+	}
+	const Dictionary preview = agent_session->preview_rewind_to_event(p_event_id);
+	if (!(bool)preview.get("ok", false)) {
+		const Dictionary error = preview.get("error", Dictionary());
+		_append_error_row(String::utf8("\u26a0 ") + String(error.get("message", TTR("This message can no longer be edited."))));
+		return;
+	}
+	const Dictionary preview_data = preview.get("data", Dictionary());
+	pending_rewind_event_id = p_event_id;
+	pending_rewind_prompt = p_prompt;
+	pending_rewind_attachments = p_attachments.duplicate(true);
+	rewind_dialog->set_text(vformat(TTR("Discard %d later messages and rewind %d recorded Godot actions affecting %d files?\n\nManual edits, external file changes, or native history conflicts will stop the rewind."), preview_data.get("following_messages", 0), preview_data.get("action_count", 0), preview_data.get("file_count", 0)));
+	rewind_dialog->popup_centered(Size2(510, 0) * EDSCALE);
+}
+
+void SolersDock::_on_history_edit_confirmed() {
+	if (!agent_session || pending_rewind_event_id < 0) {
+		return;
+	}
+	const String prompt = pending_rewind_prompt;
+	const Array attachments = pending_rewind_attachments.duplicate(true);
+	const Dictionary rewound = agent_session->rewind_to_event(pending_rewind_event_id);
+	pending_rewind_event_id = -1;
+	pending_rewind_prompt = String();
+	pending_rewind_attachments.clear();
+	if (!(bool)rewound.get("ok", false)) {
+		const Dictionary error = rewound.get("error", Dictionary());
+		_append_error_row(String::utf8("\u26a0 ") + String(error.get("message", TTR("The project could not be rewound safely."))));
+		return;
+	}
+	timeline_messages = agent_session->get_timeline_entries();
+	_render_timeline();
+	_submit_chat_prompt(prompt, attachments);
+}
+
+SolersUserMessageCell *SolersDock::_append_user_message(const String &p_message, const Array &p_attachments, int64_t p_event_id, int64_t p_wall) {
 	VBoxContainer *mount = _chat_mount();
 	if (!mount) {
 		return nullptr;
 	}
 	_clear_empty_state();
 
-	SolersUserBubble *bubble = memnew(SolersUserBubble);
-	bubble->set_meta("timeline_row", true);
-	bubble->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
-	mount->add_child(bubble);
-	bubble->set_attachments(p_attachments);
-	bubble->set_message(p_message);
+	SolersUserMessageCell *cell = memnew(SolersUserMessageCell);
+	cell->set_meta("timeline_row", true);
+	const int64_t wall = p_wall > 0 ? p_wall : (int64_t)Time::get_singleton()->get_unix_time_from_system();
+	const int64_t offset = (int64_t)Time::get_singleton()->get_time_zone_from_system().get("bias", 0) * 60;
+	cell->configure(p_event_id, p_message, p_attachments, _solers_session_time_label(wall, offset), callable_mp(this, &SolersDock::_on_history_edit_requested), callable_mp(this, &SolersDock::_on_cell_content_changed));
+	cell->set_inline_object_handlers(
+			callable_mp(this, &SolersDock::_mention_inline_parse),
+			callable_mp(this, &SolersDock::_mention_inline_draw),
+			callable_mp(this, &SolersDock::_mention_inline_click));
+	mount->add_child(cell);
 
 	if (!history_mount) {
 		callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
 	}
-	return bubble;
+	return cell;
 }
 
 void SolersDock::_append_error_row(const String &p_text) {
@@ -1621,7 +1656,7 @@ void SolersDock::_append_history_message(const Dictionary &p_message) {
 			return;
 		}
 		_settle_tool_group();
-		_append_user_message(SolersMention::strip_prompt_block(content), p_message.get("attachments", Array()));
+		_append_user_message(SolersMention::strip_prompt_block(content), p_message.get("attachments", Array()), p_message.get("event_id", -1), p_message.get("wall", 0));
 	} else if (role == SolersLLMRole::ASSISTANT) {
 		_settle_tool_group();
 		const String reasoning = String(p_message.get("reasoning", String())).strip_edges();
@@ -1668,7 +1703,7 @@ void SolersDock::_submit_chat_prompt(const String &p_prompt, const Array &p_atta
 		return;
 	}
 
-	Control *user_row = _append_user_message(prompt, p_attachments);
+	SolersUserMessageCell *user_row = _append_user_message(prompt, p_attachments);
 
 	if (!agent_session) {
 		_append_error_row(TTR("Agent session is unavailable."));
@@ -1694,7 +1729,9 @@ void SolersDock::_submit_chat_prompt(const String &p_prompt, const Array &p_atta
 		_append_error_row(String::utf8("\u26a0 ") + String(error.get("message", "Could not start the agent turn.")));
 	} else {
 		if (user_row) {
-			user_row->set_meta("timeline_event_id", Dictionary(result.get("data", Dictionary())).get("event_id", -1));
+			const int64_t event_id = Dictionary(result.get("data", Dictionary())).get("event_id", -1);
+			user_row->set_meta("timeline_event_id", event_id);
+			user_row->set_event_id(event_id);
 		}
 		timeline_messages = agent_session->get_timeline_entries();
 		session_current_id = agent_session->get_status().get("session_id", session_current_id);
@@ -1715,9 +1752,11 @@ void SolersDock::_submit_steering(const String &p_prompt, const Array &p_attachm
 	}
 	const Dictionary result = agent_session ? agent_session->queue_user_message(args) : Dictionary();
 	if ((bool)result.get("ok", false)) {
-		Control *row = _append_user_message(p_prompt, p_attachments);
+		SolersUserMessageCell *row = _append_user_message(p_prompt, p_attachments);
 		if (row) {
-			row->set_meta("timeline_event_id", Dictionary(result.get("data", Dictionary())).get("event_id", -1));
+			const int64_t event_id = Dictionary(result.get("data", Dictionary())).get("event_id", -1);
+			row->set_meta("timeline_event_id", event_id);
+			row->set_event_id(event_id);
 			row->set_meta("timeline_pending", true);
 		}
 		callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
@@ -2667,8 +2706,6 @@ SolersDock::SolersDock() {
 	approval_submit_button = memnew(Button(TTR("Submit")));
 	approval_submit_button->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_submit_current_approval));
 	approval_box->add_child(approval_submit_button);
-	/* Composer — one floating rounded card owns text entry and actions. */
-
 	composer_inset = memnew(MarginContainer);
 	composer_inset->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	composer_inset->add_theme_constant_override("margin_left", 20 * EDSCALE);
@@ -2687,8 +2724,7 @@ SolersDock::SolersDock() {
 	composer_stack->add_child(plan_capsule);
 
 	SolersSurface *composer_card = memnew(SolersSurface);
-	composer_card->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	composer_card->configure(SOLERS_COMPOSER_BG, SOLERS_COMPOSER_BORDER, 19, 14, true);
+	solers_configure_prompt_surface(composer_card);
 	composer_stack->add_child(composer_card);
 
 	VBoxContainer *composer = memnew(VBoxContainer);
@@ -2698,27 +2734,8 @@ SolersDock::SolersDock() {
 
 	chat_input = memnew(TextEdit);
 	chat_input->set_name("ComposerInput");
-	chat_input->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	chat_input->set_custom_maximum_size(Size2(-1, SOLERS_COMPOSER_TEXT_MAX_HEIGHT * EDSCALE));
-	chat_input->set_line_wrapping_mode(TextEdit::LINE_WRAPPING_BOUNDARY);
+	solers_configure_prompt_text_edit(chat_input);
 	chat_input->set_placeholder(TTR("Ask Solers to create..."));
-	chat_input->set_smooth_scroll_enabled(true);
-	chat_input->set_scroll_past_end_of_file_enabled(false);
-	chat_input->set_fit_content_height_enabled(true);
-	chat_input->set_indent_wrapped_lines(false);
-	chat_input->set_highlight_current_line(false);
-	chat_input->set_draw_minimap(false);
-	chat_input->set_caret_blink_enabled(true);
-	chat_input->add_theme_style_override("normal", memnew(StyleBoxEmpty));
-	chat_input->add_theme_style_override("focus", memnew(StyleBoxEmpty));
-	chat_input->add_theme_style_override("read_only", memnew(StyleBoxEmpty));
-	chat_input->add_theme_color_override("font_color", SOLERS_TEXT_PRIMARY);
-	chat_input->add_theme_color_override("font_placeholder_color", SOLERS_TEXT_PLACEHOLDER);
-	chat_input->add_theme_color_override("background_color", Color(0, 0, 0, 0));
-	chat_input->add_theme_color_override("caret_color", Color(0.86, 0.91, 0.98, 1));
-	chat_input->add_theme_color_override("selection_color", Color(0.10, 0.42, 0.62, 0.56));
-	chat_input->add_theme_constant_override("line_spacing", 4 * EDSCALE);
-	chat_input->add_theme_font_size_override(SceneStringName(font_size), 14 * EDSCALE);
 	chat_input->connect(SceneStringName(gui_input), callable_mp(this, &SolersDock::_on_chat_input_gui_input));
 	chat_input->connect(SceneStringName(text_changed), callable_mp(this, &SolersDock::_on_chat_input_text_changed));
 	chat_input->connect(SNAME("caret_changed"), callable_mp(this, &SolersDock::_refresh_mention_popup));
@@ -2827,6 +2844,12 @@ SolersDock::SolersDock() {
 	provider_settings_view->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	provider_settings_view->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	provider_settings_dialog->add_child(provider_settings_view);
+
+	rewind_dialog = memnew(ConfirmationDialog);
+	rewind_dialog->set_title(TTR("Edit earlier message?"));
+	rewind_dialog->get_ok_button()->set_text(TTR("Continue"));
+	rewind_dialog->connect(SNAME("confirmed"), callable_mp(this, &SolersDock::_on_history_edit_confirmed));
+	add_child(rewind_dialog);
 
 	model_menu = memnew(PanelContainer);
 	model_menu->set_mouse_filter(Control::MOUSE_FILTER_STOP);

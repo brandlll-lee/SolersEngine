@@ -41,6 +41,7 @@
 #include "scene/gui/box_container.h"
 #include "scene/gui/label.h"
 #include "scene/gui/panel_container.h"
+#include "scene/gui/text_edit.h"
 #include "scene/resources/font.h"
 #include "scene/resources/image_texture.h"
 #include "scene/resources/style_box.h"
@@ -590,6 +591,36 @@ void SolersSurface::_notification(int p_what) {
 			}
 		} break;
 	}
+}
+
+void solers_configure_prompt_surface(SolersSurface *p_surface) {
+	ERR_FAIL_NULL(p_surface);
+	p_surface->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	p_surface->configure(solers_composer_bg(), solers_composer_border(), 19, 14, true);
+}
+
+void solers_configure_prompt_text_edit(TextEdit *p_edit) {
+	ERR_FAIL_NULL(p_edit);
+	p_edit->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	p_edit->set_custom_maximum_size(Size2(-1, 220.0f * EDSCALE));
+	p_edit->set_line_wrapping_mode(TextEdit::LINE_WRAPPING_BOUNDARY);
+	p_edit->set_smooth_scroll_enabled(true);
+	p_edit->set_scroll_past_end_of_file_enabled(false);
+	p_edit->set_fit_content_height_enabled(true);
+	p_edit->set_indent_wrapped_lines(false);
+	p_edit->set_highlight_current_line(false);
+	p_edit->set_draw_minimap(false);
+	p_edit->set_caret_blink_enabled(true);
+	p_edit->add_theme_style_override("normal", memnew(StyleBoxEmpty));
+	p_edit->add_theme_style_override("focus", memnew(StyleBoxEmpty));
+	p_edit->add_theme_style_override("read_only", memnew(StyleBoxEmpty));
+	p_edit->add_theme_color_override("font_color", Color(0.961, 0.969, 0.984));
+	p_edit->add_theme_color_override("font_placeholder_color", Color(0.56, 0.57, 0.60));
+	p_edit->add_theme_color_override("background_color", Color(0, 0, 0, 0));
+	p_edit->add_theme_color_override("caret_color", Color(0.86, 0.91, 0.98, 1));
+	p_edit->add_theme_color_override("selection_color", Color(0.10, 0.42, 0.62, 0.56));
+	p_edit->add_theme_constant_override("line_spacing", 4 * EDSCALE);
+	p_edit->add_theme_font_size_override(SceneStringName(font_size), 14 * EDSCALE);
 }
 
 /* ------------------------------------------------------------------ */

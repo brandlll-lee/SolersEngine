@@ -35,6 +35,7 @@
 #include "core/io/resource_loader.h"
 #include "core/object/class_db.h"
 #include "core/os/os.h"
+#include "core/os/time.h"
 #include "core/string/fuzzy_search.h"
 #include "core/templates/hash_set.h"
 #include "core/version.h"
@@ -1008,8 +1009,10 @@ Dictionary SolersToolRegistry::_finalize_prepared_result(SolersPreparedToolCall 
 		return result;
 	}
 	Dictionary data = result.get("data", Dictionary());
-	if ((bool)data.get("checkpoint_consumed", false)) {
+	const bool checkpoint_consumed = data.get("checkpoint_consumed", false);
+	if (checkpoint_consumed) {
 		r_call.journal_event["event_type"] = "checkpoint_consumed";
+		r_call.journal_event["reversal_id"] = data.get("reversal_id", String());
 	}
 	bool changed = (bool)data.get("authored_state_changed", false);
 	Dictionary record = r_call.reversal_state.duplicate(true);
@@ -1100,6 +1103,7 @@ Dictionary SolersToolRegistry::_finalize_prepared_result(SolersPreparedToolCall 
 		receipt["scene_before"] = r_call.reversal_state.get("scene_state_before", Dictionary());
 		receipt["scene_after"] = _solers_scene_state_receipt();
 	}
+	record["receipt"] = receipt;
 
 	data["authored_state_changed"] = true;
 	Dictionary mutation;
@@ -1108,51 +1112,55 @@ Dictionary SolersToolRegistry::_finalize_prepared_result(SolersPreparedToolCall 
 	mutation["receipt"] = receipt;
 	const String session_key = r_call.context.session_id.is_empty() ? String("direct") : r_call.context.session_id;
 	if (r_call.mutation_policy == SolersToolMutationPolicy::EDITOR_UNDO || r_call.mutation_policy == SolersToolMutationPolicy::FILE_CHECKPOINT) {
-		const String *previous_id = latest_reversal_by_session.getptr(session_key);
-		if (previous_id) {
-			const Dictionary *previous = reversals.getptr(*previous_id);
-			if (previous) {
-				_discard_reversal(*previous);
-			}
-			reversals.erase(*previous_id);
-		}
-		const String reversal_id = (session_key + ":" + r_call.context.call_id + ":" + String::num_uint64(r_call.context.authored_revision + 1) + ":" + String::num_int64(reversals.size() + 1)).sha256_text();
+		Vector<Dictionary> &stack = reversals_by_session[session_key];
+		const String reversal_id = (session_key + ":" + r_call.context.call_id + ":" + String::num_uint64(r_call.context.authored_revision + 1) + ":" + String::num_int64(stack.size() + 1)).sha256_text();
 		record["id"] = reversal_id;
 		record["session_id"] = session_key;
 		record["session_revision"] = (int64_t)(r_call.context.authored_revision + 1);
-		reversals[reversal_id] = record;
-		latest_reversal_by_session[session_key] = reversal_id;
+		stack.push_back(record);
 		mutation["reversal_id"] = reversal_id;
 		r_call.journal_event["event_type"] = "checkpoint_created";
 		r_call.journal_event["checkpoint"] = record;
 		r_call.journal_event["note"] = "Protective checkpoint for history.revert; not a rollback of your edit.";
-	} else {
-		const String *previous_id = latest_reversal_by_session.getptr(session_key);
-		if (previous_id) {
-			const Dictionary *previous = reversals.getptr(*previous_id);
-			if (previous) {
-				_discard_reversal(*previous);
-			}
-			reversals.erase(*previous_id);
-			latest_reversal_by_session.erase(session_key);
-			r_call.journal_event["event_type"] = "checkpoint_cleared";
+	} else if (!checkpoint_consumed) {
+		Vector<Dictionary> &stack = reversals_by_session[session_key];
+		for (const Dictionary &previous : stack) {
+			_discard_reversal(previous);
 		}
+		stack.clear();
+		Dictionary barrier = record;
+		barrier["id"] = (session_key + ":barrier:" + String::num_uint64(r_call.context.authored_revision + 1)).sha256_text();
+		barrier["session_id"] = session_key;
+		barrier["session_revision"] = (int64_t)(r_call.context.authored_revision + 1);
+		stack.push_back(barrier);
+		r_call.journal_event["event_type"] = "checkpoint_cleared";
+		r_call.journal_event["barrier"] = barrier;
 	}
 	data["mutation"] = mutation;
 	result["data"] = data;
 	return result;
 }
 
+const Dictionary *SolersToolRegistry::_find_reversal(const String &p_reversal_id) const {
+	for (const KeyValue<String, Vector<Dictionary>> &session : reversals_by_session) {
+		for (const Dictionary &record : session.value) {
+			if (String(record.get("id", String())) == p_reversal_id) {
+				return &record;
+			}
+		}
+	}
+	return nullptr;
+}
+
 Dictionary SolersToolRegistry::_revert_latest(const SolersToolContext &p_context, const Dictionary &p_args) {
 	const String reversal_id = String(p_args.get("reversal_id", String())).strip_edges();
-	const Dictionary *record_ptr = reversals.getptr(reversal_id);
-	if (!record_ptr) {
+	const String session_key = p_context.session_id.is_empty() ? String("direct") : p_context.session_id;
+	Vector<Dictionary> *stack = reversals_by_session.getptr(session_key);
+	if (!stack || stack->is_empty()) {
 		return _error("REVERSAL_NOT_FOUND", "The reversal id is unknown or has already been used.");
 	}
-	const Dictionary record = *record_ptr;
-	const String session_key = p_context.session_id.is_empty() ? String("direct") : p_context.session_id;
-	const String *latest = latest_reversal_by_session.getptr(session_key);
-	if (!latest || *latest != reversal_id || String(record.get("session_id", String())) != session_key) {
+	const Dictionary record = stack->get(stack->size() - 1);
+	if (String(record.get("id", String())) != reversal_id || String(record.get("session_id", String())) != session_key) {
 		return _error("STALE_REVERSAL", "Only the latest Agent mutation at the current revision can be reverted.");
 	}
 
@@ -1190,8 +1198,7 @@ Dictionary SolersToolRegistry::_revert_latest(const SolersToolContext &p_context
 	}
 	_discard_reversal(record);
 
-	reversals.erase(reversal_id);
-	latest_reversal_by_session.erase(session_key);
+	stack->remove_at(stack->size() - 1);
 	Dictionary data;
 	data["reversal_id"] = reversal_id;
 	data["reverted_session_revision"] = record.get("session_revision", 0);
@@ -2238,7 +2245,7 @@ void SolersToolRegistry::register_default_tools() {
 			access["key"] = "*";
 			accesses.push_back(access);
 			return accesses; }, {}, {}, {}, [this](const Dictionary &a) {
-			const Dictionary *record = reversals.getptr(String(a.get("reversal_id", String())));
+			const Dictionary *record = _find_reversal(String(a.get("reversal_id", String())));
 			return record && String(record->get("policy", String())) == "file_checkpoint" ? SolersPermissionManager::PERMISSION_EDIT_FILES : SolersPermissionManager::PERMISSION_EDIT_SCENE; });
 	_register_skill_tools();
 	_register_reflection_tools();
@@ -2615,21 +2622,324 @@ void SolersToolRegistry::clear_task_state(const String &p_session_id) {
 	}
 }
 
-void SolersToolRegistry::restore_session_reversal(const String &p_session_id, const Dictionary &p_record) {
+void SolersToolRegistry::restore_session_reversals(const String &p_session_id, const Array &p_records) {
 	if (p_session_id.is_empty()) {
 		return;
 	}
-	const String *existing_id = latest_reversal_by_session.getptr(p_session_id);
-	if (existing_id) {
-		reversals.erase(*existing_id);
-		latest_reversal_by_session.erase(p_session_id);
+	reversals_by_session.erase(p_session_id);
+	Vector<Dictionary> restored;
+	for (const Variant &item : p_records) {
+		if (item.get_type() != Variant::DICTIONARY) {
+			continue;
+		}
+		const Dictionary record = item;
+		if (!String(record.get("id", String())).is_empty() && String(record.get("session_id", String())) == p_session_id) {
+			restored.push_back(record.duplicate(true));
+		}
 	}
-	const String reversal_id = p_record.get("id", String());
-	if (reversal_id.is_empty() || String(p_record.get("session_id", String())) != p_session_id) {
-		return;
+	if (!restored.is_empty()) {
+		reversals_by_session[p_session_id] = restored;
 	}
-	reversals[reversal_id] = p_record.duplicate(true);
-	latest_reversal_by_session[p_session_id] = reversal_id;
+}
+Dictionary SolersToolRegistry::preview_session_rewind(const String &p_session_id, uint64_t p_target_revision) const {
+	const Vector<Dictionary> *stack = reversals_by_session.getptr(p_session_id);
+	Array records;
+	if (stack) {
+		for (const Dictionary &record : *stack) {
+			if ((uint64_t)(int64_t)record.get("session_revision", 0) > p_target_revision) {
+				records.push_back(record.duplicate(true));
+			}
+		}
+	}
+	HashMap<int, int64_t> expected_history_versions;
+	HashMap<String, Dictionary> expected_file_states;
+	HashSet<String> files;
+	EditorUndoRedoManager *manager = EditorUndoRedoManager::get_singleton();
+	for (int i = records.size() - 1; i >= 0; i--) {
+		const Dictionary record = records[i];
+		const String policy = record.get("policy", String());
+		if (policy == "irreversible") {
+			return _error("REWIND_IRREVERSIBLE_BOUNDARY", "An irreversible Agent mutation exists after this message.", false);
+		}
+		if (policy == "editor_undo") {
+			const int history_id = record.get("history_id", EditorUndoRedoManager::INVALID_HISTORY);
+			const int64_t before = record.get("version_before", 0);
+			const int64_t after = record.get("version_after", 0);
+			const int64_t *expected = expected_history_versions.getptr(history_id);
+			UndoRedo *undo_redo = manager ? manager->get_history_undo_redo(history_id) : nullptr;
+			if ((!expected && (!undo_redo || (int64_t)undo_redo->get_version() != after)) || (expected && *expected != after)) {
+				return _error("REWIND_NATIVE_HISTORY_CONFLICT", "Godot's UndoRedo history changed after the selected message.", false);
+			}
+			if (!expected) {
+				const Dictionary expected_scene = Dictionary(record.get("receipt", Dictionary())).get("scene_after", Dictionary());
+				const Dictionary current_scene = _solers_scene_state_receipt();
+				for (const char *field : { "root_object_id", "scene_path", "history_id", "version" }) {
+					if (expected_scene.has(field) && current_scene.get(field, Variant()) != expected_scene[field]) {
+						return _error("REWIND_SCENE_CONFLICT", vformat("Godot scene fact changed: %s", field), false);
+					}
+				}
+				const String scene_path = expected_scene.get("scene_path", String());
+				if (!scene_path.is_empty()) {
+					files.insert(scene_path);
+				}
+				const Dictionary *projected_file = expected_file_states.getptr(scene_path);
+				const String expected_sha = expected_scene.get("saved_sha256", String());
+				const String observed_sha = projected_file ? String(projected_file->get("sha256", String())) : String(current_scene.get("saved_sha256", String()));
+				if (!expected_sha.is_empty() && observed_sha != expected_sha) {
+					return _error("REWIND_SCENE_CONFLICT", "The saved scene SHA-256 changed after the selected message.", false);
+				}
+			}
+			expected_history_versions[history_id] = before;
+			continue;
+		}
+		if (policy != "file_checkpoint") {
+			return _error("REWIND_POLICY_UNSUPPORTED", "The mutation receipt has an unsupported reversal policy.", false);
+		}
+		const Array checkpoints = record.get("checkpoints", Array());
+		for (const Variant &item : checkpoints) {
+			const Dictionary checkpoint = item;
+			const String path = checkpoint.get("path", String());
+			const bool after_exists = checkpoint.get("exists_after", false);
+			const String after_sha = checkpoint.get("sha256_after", String());
+			const Dictionary *expected = expected_file_states.getptr(path);
+			if (expected) {
+				if ((bool)expected->get("exists", false) != after_exists || (after_exists && String(expected->get("sha256", String())) != after_sha)) {
+					return _error("REWIND_CHECKPOINT_CHAIN_BROKEN", vformat("The recorded file history is not contiguous: %s", path), false);
+				}
+			} else {
+				const bool exists_now = FileAccess::exists(path);
+				if (exists_now != after_exists || (exists_now && FileAccess::get_sha256(path) != after_sha)) {
+					return _error("REWIND_FILE_CONFLICT", vformat("File changed outside the recorded Agent history: %s", path), false);
+				}
+			}
+			if ((bool)checkpoint.get("existed", false) && !FileAccess::exists(checkpoint.get("checkpoint_path", String()))) {
+				return _error("REWIND_CHECKPOINT_MISSING", vformat("A required checkpoint is missing: %s", path), false);
+			}
+			Dictionary before_state;
+			before_state["exists"] = checkpoint.get("existed", false);
+			before_state["sha256"] = checkpoint.get("content_sha256", String());
+			expected_file_states[path] = before_state;
+			files.insert(path);
+		}
+	}
+	Dictionary data;
+	data["session_id"] = p_session_id;
+	data["target_revision"] = (int64_t)p_target_revision;
+	data["records"] = records;
+	data["action_count"] = records.size();
+	data["file_count"] = files.size();
+	return _ok(data);
+}
+
+Dictionary SolersToolRegistry::prepare_session_rewind(const String &p_session_id, uint64_t p_target_revision) {
+	const Dictionary preview = preview_session_rewind(p_session_id, p_target_revision);
+	if (!(bool)preview.get("ok", false)) {
+		return preview;
+	}
+	if (!file_checkpoint) {
+		return _error("CHECKPOINT_SERVICE_UNAVAILABLE", "The file checkpoint service is not initialized.", false);
+	}
+	const Dictionary preview_data = preview.get("data", Dictionary());
+	const Array records = preview_data.get("records", Array());
+	HashSet<String> paths;
+	for (const Variant &item : records) {
+		const Dictionary record = item;
+		if (String(record.get("policy", String())) == "file_checkpoint") {
+			for (const Variant &checkpoint_item : Array(record.get("checkpoints", Array()))) {
+				paths.insert(String(Dictionary(checkpoint_item).get("path", String())));
+			}
+		} else if (String(record.get("policy", String())) == "editor_undo") {
+			const Dictionary scene_after = Dictionary(record.get("receipt", Dictionary())).get("scene_after", Dictionary());
+			const String scene_path = scene_after.get("scene_path", String());
+			if (!scene_path.is_empty()) {
+				paths.insert(scene_path);
+			}
+		}
+	}
+	Array recovery;
+	for (const String &path : paths) {
+		const Dictionary checkpoint = file_checkpoint->create_checkpoint(path, "Solers historical-message rewind recovery");
+		if (!(bool)checkpoint.get("ok", false)) {
+			for (const Variant &created : recovery) {
+				file_checkpoint->discard_checkpoint_state(created);
+			}
+			return checkpoint;
+		}
+		recovery.push_back(checkpoint.get("data", Dictionary()));
+	}
+	Dictionary transaction = preview_data.duplicate(true);
+	transaction["transaction_id"] = (p_session_id + ":" + String::num_uint64(p_target_revision) + ":" + String::num_uint64(Time::get_singleton()->get_ticks_usec())).sha256_text();
+	transaction["recovery_checkpoints"] = recovery;
+	return _ok(transaction);
+}
+
+Dictionary SolersToolRegistry::abort_session_rewind(const Dictionary &p_transaction) {
+	const Array records = p_transaction.get("records", Array());
+	EditorUndoRedoManager *manager = EditorUndoRedoManager::get_singleton();
+	HashMap<int, int64_t> latest_history_versions;
+	for (const Variant &item : records) {
+		const Dictionary record = item;
+		if (String(record.get("policy", String())) == "editor_undo") {
+			latest_history_versions[record.get("history_id", EditorUndoRedoManager::INVALID_HISTORY)] = record.get("version_after", 0);
+		}
+	}
+	for (const KeyValue<int, int64_t> &expected : latest_history_versions) {
+		UndoRedo *undo_redo = manager ? manager->get_history_undo_redo(expected.key) : nullptr;
+		if (!undo_redo || (int64_t)undo_redo->get_version() > expected.value) {
+			return _error("REWIND_COMPENSATION_CONFLICT", "Godot's UndoRedo history changed after the rewind transaction.", false);
+		}
+	}
+	const Array recovery = p_transaction.get("recovery_checkpoints", Array());
+	for (const Variant &recovery_item : recovery) {
+		const Dictionary recovery_state = recovery_item;
+		const String path = recovery_state.get("path", String());
+		const bool exists = FileAccess::exists(path);
+		const String sha = exists ? FileAccess::get_sha256(path) : String();
+		bool known = exists == (bool)recovery_state.get("existed", false) && (!exists || sha == String(recovery_state.get("content_sha256", String())));
+		for (int i = records.size() - 1; i >= 0 && !known; i--) {
+			const Dictionary record = records[i];
+			if (String(record.get("policy", String())) == "file_checkpoint") {
+				for (const Variant &checkpoint_item : Array(record.get("checkpoints", Array()))) {
+					const Dictionary checkpoint = checkpoint_item;
+					known = String(checkpoint.get("path", String())) == path && exists == (bool)checkpoint.get("existed", false) && (!exists || sha == String(checkpoint.get("content_sha256", String())));
+					if (known) {
+						break;
+					}
+				}
+			} else {
+				const Dictionary receipt = record.get("receipt", Dictionary());
+				for (const char *field : { "scene_before", "scene_after" }) {
+					const Dictionary state = receipt.get(field, Dictionary());
+					known = exists && String(state.get("scene_path", String())) == path && sha == String(state.get("saved_sha256", String()));
+					if (known) {
+						break;
+					}
+				}
+			}
+		}
+		if (!known) {
+			return _error("REWIND_COMPENSATION_CONFLICT", vformat("File changed outside the interrupted rewind: %s", path), false);
+		}
+	}
+	bool scene_changed = false;
+	for (const Variant &item : records) {
+		const Dictionary record = item;
+		if (String(record.get("policy", String())) != "editor_undo") {
+			continue;
+		}
+		scene_changed = true;
+		const int history_id = record.get("history_id", EditorUndoRedoManager::INVALID_HISTORY);
+		const uint64_t before = (int64_t)record.get("version_before", 0);
+		const uint64_t after = (int64_t)record.get("version_after", 0);
+		UndoRedo *undo_redo = manager ? manager->get_history_undo_redo(history_id) : nullptr;
+		if (!undo_redo) {
+			return _error("REWIND_COMPENSATION_CONFLICT", "Godot's UndoRedo history is unavailable during compensation.", false);
+		}
+		const uint64_t current = undo_redo->get_version();
+		if (current == before && (!manager->redo_history(history_id) || undo_redo->get_version() != after)) {
+			return _error("REWIND_COMPENSATION_FAILED", "Godot could not redo a compensated editor action.", false);
+		}
+		if (current < before || (current > before && current < after)) {
+			return _error("REWIND_COMPENSATION_CONFLICT", "Godot's UndoRedo history changed during compensation.", false);
+		}
+	}
+	if (scene_changed && EditorInterface::get_singleton()) {
+		EditorInterface::get_singleton()->save_scene();
+	}
+	for (int i = recovery.size() - 1; i >= 0; i--) {
+		if (!file_checkpoint || !(bool)file_checkpoint->restore_checkpoint_state(recovery[i]).get("ok", false)) {
+			return _error("REWIND_COMPENSATION_FAILED", "A recovery checkpoint could not be restored.", false);
+		}
+	}
+	for (const Variant &checkpoint : recovery) {
+		file_checkpoint->discard_checkpoint_state(checkpoint);
+	}
+	Dictionary data;
+	data["transaction_id"] = p_transaction.get("transaction_id", String());
+	data["compensated"] = true;
+	return _ok(data);
+}
+
+Dictionary SolersToolRegistry::apply_session_rewind(const Dictionary &p_transaction) {
+	const String session = p_transaction.get("session_id", String());
+	const uint64_t target = (int64_t)p_transaction.get("target_revision", 0);
+	const Dictionary checked = preview_session_rewind(session, target);
+	if (!(bool)checked.get("ok", false)) {
+		return checked;
+	}
+	const Array records = p_transaction.get("records", Array());
+	const Array current_records = Dictionary(checked.get("data", Dictionary())).get("records", Array());
+	if (records.size() != current_records.size()) {
+		return _error("REWIND_PLAN_STALE", "The reversible mutation stack changed after confirmation.", false);
+	}
+	for (int i = 0; i < records.size(); i++) {
+		if (String(Dictionary(records[i]).get("id", String())) != String(Dictionary(current_records[i]).get("id", String()))) {
+			return _error("REWIND_PLAN_STALE", "The reversible mutation stack changed after confirmation.", false);
+		}
+	}
+	EditorUndoRedoManager *manager = EditorUndoRedoManager::get_singleton();
+	for (int i = records.size() - 1; i >= 0; i--) {
+		const Dictionary record = records[i];
+		const String policy = record.get("policy", String());
+		bool applied = true;
+		if (policy == "editor_undo") {
+			const int history_id = record.get("history_id", EditorUndoRedoManager::INVALID_HISTORY);
+			const uint64_t before = (int64_t)record.get("version_before", 0);
+			const uint64_t after = (int64_t)record.get("version_after", 0);
+			UndoRedo *undo_redo = manager ? manager->get_history_undo_redo(history_id) : nullptr;
+			applied = undo_redo && undo_redo->get_version() == after && manager->undo_history(history_id) && undo_redo->get_version() == before;
+			if (applied && EditorInterface::get_singleton()) {
+				EditorInterface::get_singleton()->save_scene();
+				applied = !manager->is_history_unsaved(history_id);
+			}
+		} else if (policy == "file_checkpoint") {
+			const Array checkpoints = record.get("checkpoints", Array());
+			for (int checkpoint_index = checkpoints.size() - 1; checkpoint_index >= 0; checkpoint_index--) {
+				const Dictionary checkpoint = checkpoints[checkpoint_index];
+				const bool restored = file_checkpoint && (bool)file_checkpoint->restore_checkpoint_state(checkpoint).get("ok", false);
+				const String path = checkpoint.get("path", String());
+				const bool exists = FileAccess::exists(path);
+				if (!restored || exists != (bool)checkpoint.get("existed", false) || (exists && FileAccess::get_sha256(path) != String(checkpoint.get("content_sha256", String())))) {
+					applied = false;
+					break;
+				}
+			}
+		}
+		if (!applied) {
+			const Dictionary compensated = abort_session_rewind(p_transaction);
+			return _error((bool)compensated.get("ok", false) ? "REWIND_APPLY_FAILED" : "REWIND_COMPENSATION_FAILED", "The project rewind failed; the pre-rewind state was restored when possible.", false);
+		}
+	}
+	Dictionary data = p_transaction.duplicate(true);
+	data["applied"] = true;
+	return _ok(data);
+}
+Dictionary SolersToolRegistry::finish_session_rewind(const Dictionary &p_transaction) {
+	const String session = p_transaction.get("session_id", String());
+	Vector<Dictionary> *stack = reversals_by_session.getptr(session);
+	const Array records = p_transaction.get("records", Array());
+	if (stack && records.size() <= stack->size()) {
+		bool suffix_matches = true;
+		const int stack_offset = stack->size() - records.size();
+		for (int i = 0; i < records.size(); i++) {
+			suffix_matches = suffix_matches && String(stack->get(stack_offset + i).get("id", String())) == String(Dictionary(records[i]).get("id", String()));
+		}
+		if (suffix_matches) {
+			for (int i = records.size() - 1; i >= 0; i--) {
+				_discard_reversal(stack->get(stack->size() - 1));
+				stack->remove_at(stack->size() - 1);
+			}
+		}
+	}
+	for (const Variant &checkpoint : Array(p_transaction.get("recovery_checkpoints", Array()))) {
+		if (file_checkpoint) {
+			file_checkpoint->discard_checkpoint_state(checkpoint);
+		}
+	}
+	Dictionary data;
+	data["transaction_id"] = p_transaction.get("transaction_id", String());
+	data["target_revision"] = p_transaction.get("target_revision", 0);
+	return _ok(data);
 }
 
 int SolersToolRegistry::get_tool_count() const {
@@ -2640,7 +2950,6 @@ SolersToolRegistry::SolersToolRegistry() {}
 
 SolersToolRegistry::~SolersToolRegistry() {
 	_clear_tools();
-	reversals.clear();
-	latest_reversal_by_session.clear();
+	reversals_by_session.clear();
 	delivered_addon_contracts.clear();
 }
