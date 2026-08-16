@@ -213,7 +213,7 @@ TEST_CASE("[SolersContextManager] transient request state replaces the prior req
 	CHECK(context.get_token_count_with_pending(persistent, String(), 0, 50) == 750 + SolersContextManager::estimate_messages_tokens(pending));
 }
 
-TEST_CASE("[SolersSession][SceneTree][Editor] journal preserves terminal compaction semantics and stays lazy when empty") {
+TEST_CASE("[SolersSession][SceneTree][Editor] journal rows preserve terminal semantics and virtualized ownership") {
 	const String session_id = "timeline-authority-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
 	const String project = "test://" + session_id;
 	auto write = [&](const String &p_type, int p_id, int p_turn, Dictionary p_event) {
@@ -256,21 +256,24 @@ TEST_CASE("[SolersSession][SceneTree][Editor] journal preserves terminal compact
 	REQUIRE((rows != nullptr && scroll != nullptr));
 	REQUIRE(rows->get_child_count() == timeline.size());
 	for (int i = 0; i < timeline.size(); i++) {
-		CHECK((int64_t)rows->get_child(i)->get_meta("timeline_event_id", -1) == (int64_t)Dictionary(timeline[i]).get("event_id", -1));
+		Node *row = rows->get_child(i);
+		CHECK((int64_t)row->get_meta("timeline_event_id", -1) == (int64_t)Dictionary(timeline[i]).get("event_id", -1));
+		CHECK((bool)row->get_meta("timeline_row", false));
+		for (int child_index = 0; child_index < row->get_child_count(); child_index++) {
+			CHECK_FALSE((bool)row->get_child(child_index)->get_meta("timeline_row", false));
+		}
 	}
-	Control *stale_editor = Object::cast_to<Control>(dock->find_child("HistoryMessageEditorSurface", true, false));
-	REQUIRE(stale_editor != nullptr);
-	stale_editor->show();
-	const ObjectID stale_editor_id = stale_editor->get_instance_id();
-	dock->load_chat_history(timeline);
-	SceneTree::get_singleton()->process(0);
-	CHECK(ObjectDB::get_instance(stale_editor_id) == nullptr);
-	CHECK(rows->get_child_count() == timeline.size());
+	Control *history_editor = Object::cast_to<Control>(dock->find_child("HistoryMessageEditorSurface", true, false));
+	REQUIRE(history_editor != nullptr);
+	CHECK_FALSE(history_editor->is_visible());
 
 	scroll->set_v_scroll((int)scroll->get_v_scroll_bar()->get_max());
 	dock->set_size(Size2(480, 720));
 	MessageQueue::get_singleton()->flush();
 	CHECK(rows->get_child_count() == timeline.size());
+	scroll->set_v_scroll(0);
+	MessageQueue::get_singleton()->flush();
+	CHECK_FALSE(history_editor->is_visible());
 	dock->queue_free();
 	MessageQueue::get_singleton()->flush();
 	restored.reset_conversation();

@@ -650,7 +650,6 @@ SolersUserMessageCell *SolersDock::_append_user_message(const String &p_message,
 	_clear_empty_state();
 
 	SolersUserMessageCell *cell = memnew(SolersUserMessageCell);
-	cell->set_meta("timeline_row", true);
 	const int64_t wall = p_wall > 0 ? p_wall : (int64_t)Time::get_singleton()->get_unix_time_from_system();
 	const int64_t offset = (int64_t)Time::get_singleton()->get_time_zone_from_system().get("bias", 0) * 60;
 	cell->configure(p_event_id, p_message, p_attachments, _solers_session_time_label(wall, offset), callable_mp(this, &SolersDock::_on_history_edit_requested), callable_mp(this, &SolersDock::_on_cell_content_changed));
@@ -658,6 +657,12 @@ SolersUserMessageCell *SolersDock::_append_user_message(const String &p_message,
 			callable_mp(this, &SolersDock::_mention_inline_parse),
 			callable_mp(this, &SolersDock::_mention_inline_draw),
 			callable_mp(this, &SolersDock::_mention_inline_click));
+	if (!history_mount) {
+		VBoxContainer *row = memnew(VBoxContainer);
+		row->set_meta("timeline_row", true);
+		mount->add_child(row);
+		mount = row;
+	}
 	mount->add_child(cell);
 
 	if (!history_mount) {
@@ -1729,7 +1734,7 @@ void SolersDock::_submit_chat_prompt(const String &p_prompt, const Array &p_atta
 	} else {
 		if (user_row) {
 			const int64_t event_id = Dictionary(result.get("data", Dictionary())).get("event_id", -1);
-			user_row->set_meta("timeline_event_id", event_id);
+			user_row->get_parent()->set_meta("timeline_event_id", event_id);
 			user_row->set_event_id(event_id);
 		}
 		timeline_messages = agent_session->get_timeline_entries();
@@ -1754,9 +1759,9 @@ void SolersDock::_submit_steering(const String &p_prompt, const Array &p_attachm
 		SolersUserMessageCell *row = _append_user_message(p_prompt, p_attachments);
 		if (row) {
 			const int64_t event_id = Dictionary(result.get("data", Dictionary())).get("event_id", -1);
-			row->set_meta("timeline_event_id", event_id);
+			row->get_parent()->set_meta("timeline_event_id", event_id);
 			row->set_event_id(event_id);
-			row->set_meta("timeline_pending", true);
+			row->get_parent()->set_meta("timeline_pending", true);
 		}
 		callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
 		return;
