@@ -44,10 +44,10 @@
 // streaming frames back into a single provider-agnostic event stream. Solers
 // carries that representation as plain Godot `Dictionary`/`Array` values so it
 // flows for free across the tool registry, the RPC/MCP layer, and the dock UI
-// without bespoke marshalling.
+// without bespoke marshaling.
 //
 // This header is the single source of truth for the *shape* of those values.
-// It owns only constants and small constructor helpers (no behaviour), so the
+// It owns only constants and small constructor helpers (no behavior), so the
 // protocols, the client, and the agent session all speak the exact same
 // vocabulary. Changing a field name here changes it everywhere (locality).
 // ---------------------------------------------------------------------------
@@ -75,7 +75,7 @@ public:
 	static const char *ERROR; // protocol/transport surfaced error
 };
 
-// Canonical stop reasons, normalised across providers.
+// Canonical stop reasons, normalized across providers.
 class SolersLLMStopReason {
 public:
 	static const char *END_TURN; // model finished its message
