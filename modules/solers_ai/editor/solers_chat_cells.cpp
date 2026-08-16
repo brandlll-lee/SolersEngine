@@ -364,22 +364,26 @@ SolersUserMessageCell::SolersUserMessageCell() {
 	footer = memnew(HBoxContainer);
 	footer->set_name("UserMessageFooter");
 	footer->set_h_size_flags(SIZE_EXPAND_FILL);
+	footer->set_mouse_filter(MOUSE_FILTER_PASS);
 	footer->set_custom_minimum_size(Size2(0, 24 * EDSCALE));
 	footer->set_alignment(BoxContainer::ALIGNMENT_END);
 	footer->add_theme_constant_override("separation", 2 * EDSCALE);
 	add_child(footer);
 	time_label = memnew(Label);
 	time_label->set_v_size_flags(SIZE_SHRINK_CENTER);
+	time_label->set_mouse_filter(MOUSE_FILTER_IGNORE);
 	time_label->add_theme_color_override("font_color", SOLERS_CELL_TEXT_FAINT);
 	time_label->add_theme_font_size_override(SceneStringName(font_size), 11 * EDSCALE);
 	footer->add_child(time_label);
 	copy_button = memnew(SolersGlyphButton);
 	copy_button->configure(SNAME("copy"), SolersGlyphButton::SKIN_GHOST, TTR("Copy message"), 14);
+	copy_button->set_mouse_filter(MOUSE_FILTER_PASS);
 	copy_button->set_custom_minimum_size(Size2(24, 24) * EDSCALE);
 	copy_button->set_pressed_callback(callable_mp(this, &SolersUserMessageCell::_copy_message));
 	footer->add_child(copy_button);
 	edit_button = memnew(SolersGlyphButton);
 	edit_button->configure(SNAME("tool_file"), SolersGlyphButton::SKIN_GHOST, TTR("Edit message"), 14);
+	edit_button->set_mouse_filter(MOUSE_FILTER_PASS);
 	edit_button->set_custom_minimum_size(Size2(24, 24) * EDSCALE);
 	edit_button->set_pressed_callback(callable_mp(this, &SolersUserMessageCell::_begin_edit));
 	footer->add_child(edit_button);
@@ -468,7 +472,6 @@ void SolersUserMessageCell::set_inline_object_handlers(const Callable &p_parse, 
 
 void SolersUserMessageCell::_set_footer_active(bool p_active) {
 	footer->set_modulate(Color(1, 1, 1, p_active ? 1.0f : 0.0f));
-	footer->set_mouse_filter(p_active ? MOUSE_FILTER_PASS : MOUSE_FILTER_IGNORE);
 }
 
 void SolersUserMessageCell::_copy_message() {

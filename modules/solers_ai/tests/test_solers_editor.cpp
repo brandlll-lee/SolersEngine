@@ -134,7 +134,7 @@ TEST_CASE("[SolersUI][SceneTree][Editor] editor locale and technical tool chrome
 	SolersIcons::clear_cache();
 }
 
-TEST_CASE("[SolersUI][SceneTree] user messages preserve the bubble and own one full-width editor") {
+TEST_CASE("[SolersUI][SceneTree] user messages preserve the bubble, hover footer, and full-width editor") {
 	SolersUserMessageCell *cell = memnew(SolersUserMessageCell);
 	cell->set_theme(SolersUITheme::create());
 	cell->configure(42, "Edit this earlier request", Array(), "2026.8.17 12:30", Callable(), Callable());
@@ -144,9 +144,22 @@ TEST_CASE("[SolersUI][SceneTree] user messages preserve the bubble and own one f
 	Control *footer = Object::cast_to<Control>(cell->find_child("UserMessageFooter", true, false));
 	Control *editor = Object::cast_to<Control>(cell->find_child("HistoryMessageEditorSurface", true, false));
 	REQUIRE(bool(bubble && footer && editor));
+	CHECK(cell->get_mouse_filter() == Control::MOUSE_FILTER_PASS);
+	CHECK(footer->get_mouse_filter() == Control::MOUSE_FILTER_PASS);
+	for (int i = 0; i < footer->get_child_count(); i++) {
+		Control *footer_child = Object::cast_to<Control>(footer->get_child(i));
+		REQUIRE(bool(footer_child));
+		CHECK(footer_child->get_mouse_filter() != Control::MOUSE_FILTER_STOP);
+	}
 	CHECK(bubble->is_visible());
 	CHECK(footer->is_visible());
 	CHECK_FALSE(editor->is_visible());
+	CHECK(footer->get_modulate().a == 0.0f);
+	cell->notification(Control::NOTIFICATION_MOUSE_ENTER);
+	CHECK(footer->get_modulate().a == 1.0f);
+	cell->notification(Control::NOTIFICATION_MOUSE_EXIT);
+	CHECK(footer->get_modulate().a == 0.0f);
+	CHECK(footer->get_mouse_filter() == Control::MOUSE_FILTER_PASS);
 #ifdef MODULE_SVG_ENABLED
 	CHECK(SolersIcons::get(SNAME("copy"), 16).is_valid());
 #endif
