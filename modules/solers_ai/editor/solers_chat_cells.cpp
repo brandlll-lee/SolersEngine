@@ -414,11 +414,15 @@ SolersUserMessageCell::SolersUserMessageCell() {
 	actions->add_theme_constant_override("separation", 6 * EDSCALE);
 	editor_stack->add_child(actions);
 
-	Button *cancel = memnew(Button(TTR("Cancel")));
+	Button *cancel = memnew(Button);
+	cancel->set_translation_domain(SNAME("godot.editor"));
+	cancel->set_text("Cancel");
 	cancel->connect(SceneStringName(pressed), callable_mp(this, &SolersUserMessageCell::_cancel_edit));
 	actions->add_child(cancel);
 
-	Button *send = memnew(Button(TTR("Send")));
+	Button *send = memnew(Button);
+	send->set_translation_domain(SNAME("godot.editor"));
+	send->set_text("Send");
 	send->connect(SceneStringName(pressed), callable_mp(this, &SolersUserMessageCell::_send_edit));
 	actions->add_child(send);
 

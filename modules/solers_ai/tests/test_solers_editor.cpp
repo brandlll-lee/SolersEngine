@@ -31,6 +31,7 @@
 #include "core/object/message_queue.h"
 #include "core/string/translation_server.h"
 #include "editor/settings/editor_settings.h"
+#include "scene/gui/button.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/label.h"
 #include "scene/gui/split_container.h"
@@ -103,6 +104,8 @@ TEST_CASE("[SolersUI][SceneTree][Editor] editor locale and technical tool chrome
 	EditorSettings::get_singleton()->set_setting(setting, "zh_Hans");
 	TranslationServer::get_singleton()->set_locale("zh_Hans");
 	solers_load_editor_translation();
+	CHECK(TranslationServer::get_singleton()->get_editor_domain()->translate("Cancel", StringName()) != "Cancel");
+	CHECK(TranslationServer::get_singleton()->get_editor_domain()->translate("Send", StringName()) != "Send");
 	CHECK(TranslationServer::get_singleton()->get_editor_domain()->translate("New chat", StringName()) == String::utf8("\xE6\x96\xB0\xE5\xBB\xBA\xE5\xAF\xB9\xE8\xAF\x9D"));
 	CHECK(TranslationServer::get_singleton()->get_editor_domain()->translate("Effort", StringName()) != "Effort");
 	CHECK(solers_tool_verb_for_ui_kind("search") == "Search");
@@ -144,6 +147,14 @@ TEST_CASE("[SolersUI][SceneTree] user messages preserve the bubble, hover footer
 	Control *footer = Object::cast_to<Control>(cell->find_child("UserMessageFooter", true, false));
 	Control *editor = Object::cast_to<Control>(cell->find_child("HistoryMessageEditorSurface", true, false));
 	REQUIRE(bool(bubble && footer && editor));
+	TypedArray<Node> action_buttons = editor->find_children("*", "Button", true, false);
+	REQUIRE(action_buttons.size() == 2);
+	for (int i = 0; i < action_buttons.size(); i++) {
+		Button *button = Object::cast_to<Button>(action_buttons[i].operator Object *());
+		REQUIRE(button != nullptr);
+		CHECK(button->get_translation_domain() == SNAME("godot.editor"));
+		CHECK(button->get_text() == (i == 0 ? "Cancel" : "Send"));
+	}
 	CHECK(cell->get_mouse_filter() == Control::MOUSE_FILTER_PASS);
 	CHECK(footer->get_mouse_filter() == Control::MOUSE_FILTER_PASS);
 	for (int i = 0; i < footer->get_child_count(); i++) {

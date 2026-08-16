@@ -258,6 +258,15 @@ TEST_CASE("[SolersSession][SceneTree][Editor] journal preserves terminal compact
 	for (int i = 0; i < timeline.size(); i++) {
 		CHECK((int64_t)rows->get_child(i)->get_meta("timeline_event_id", -1) == (int64_t)Dictionary(timeline[i]).get("event_id", -1));
 	}
+	Control *stale_editor = Object::cast_to<Control>(dock->find_child("HistoryMessageEditorSurface", true, false));
+	REQUIRE(stale_editor != nullptr);
+	stale_editor->show();
+	const ObjectID stale_editor_id = stale_editor->get_instance_id();
+	dock->load_chat_history(timeline);
+	SceneTree::get_singleton()->process(0);
+	CHECK(ObjectDB::get_instance(stale_editor_id) == nullptr);
+	CHECK(rows->get_child_count() == timeline.size());
+
 	scroll->set_v_scroll((int)scroll->get_v_scroll_bar()->get_max());
 	dock->set_size(Size2(480, 720));
 	MessageQueue::get_singleton()->flush();

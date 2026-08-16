@@ -638,8 +638,7 @@ void SolersDock::_on_history_edit_confirmed() {
 		_append_error_row(String::utf8("\u26a0 ") + String(error.get("message", TTR("The project could not be rewound safely."))));
 		return;
 	}
-	timeline_messages = agent_session->get_timeline_entries();
-	_render_timeline();
+	load_chat_history(agent_session->get_timeline_entries());
 	_submit_chat_prompt(prompt, attachments);
 }
 
