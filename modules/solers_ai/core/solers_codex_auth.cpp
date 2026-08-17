@@ -393,8 +393,6 @@ void SolersCodexAuth::poll() {
 					return;
 				}
 				authorization_code = code;
-				_respond("<!doctype html><title>Solers authorization</title><style>body{font-family:system-ui;background:#151515;color:#eee;display:grid;place-items:center;height:100vh;margin:0}main{text-align:center}p{color:#aaa}</style><main><h1>Authorization received</h1><p>You can close this window and return to Solers.</p></main>");
-				_close_listener();
 				state = STATE_EXCHANGING;
 				const Thread::ID thread_id = exchange_thread.start(&SolersCodexAuth::_exchange_thread, this);
 				if (thread_id == Thread::UNASSIGNED_ID) {
@@ -414,9 +412,16 @@ void SolersCodexAuth::poll() {
 		if (result.get("ok", false)) {
 			completed_tokens = result.get("tokens", Dictionary());
 			state = STATE_SUCCEEDED;
+			const String success_page = "<!doctype html><title>Solers authorization</title><style>body{font-family:system-ui;background:#151515;color:#eee;display:grid;place-items:center;height:100vh;margin:0}main{text-align:center}p{color:#aaa}</style><main><h1>Authorization received</h1><p>Return to Solers while secure sign-in finishes.</p></main>";
+			_respond(success_page);
+			_close_listener();
+			authorization_code = String();
 		} else {
 			const Dictionary error = result.get("error", Dictionary());
 			_fail(error.get("code", "OAUTH_EXCHANGE_FAILED"), error.get("message", "ChatGPT authorization failed."));
+			const String failure_page = "<!doctype html><title>Solers authorization</title><h1>Authorization failed</h1><p>Return to Solers and try again.</p>";
+			_respond(failure_page, 400);
+			_close_listener();
 		}
 	}
 }
@@ -454,9 +459,8 @@ Dictionary SolersCodexAuth::take_credential() {
 	if (state != STATE_SUCCEEDED) {
 		return Dictionary();
 	}
-	Dictionary out = completed_tokens;
+	Dictionary out = completed_tokens.duplicate(true);
 	completed_tokens.clear();
-	state = STATE_IDLE;
 	return out;
 }
 

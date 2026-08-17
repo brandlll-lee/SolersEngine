@@ -46,21 +46,30 @@ namespace TestSolersProvider {
 
 class SyntheticAuth final : public SolersProviderAuth {
 	StringName method_id;
+	Dictionary credential;
 
 public:
 	bool started = false;
 
 	explicit SyntheticAuth(const StringName &p_method_id) :
 			method_id(p_method_id) {}
+	void set_credential(const Dictionary &p_credential) { credential = p_credential; }
 	StringName get_method_id() const override { return method_id; }
 	Dictionary start(const Dictionary &p_inputs) override {
 		started = true;
+		if (p_inputs.has("credential")) {
+			credential = Dictionary(p_inputs["credential"]);
+		}
 		return Dictionary({ { "ok", true }, { "input", p_inputs } });
 	}
 	void poll() override {}
 	void cancel() override { started = false; }
 	Dictionary get_status() const override { return Dictionary({ { "state", started ? "pending" : "idle" }, { "active", started } }); }
-	Dictionary take_credential() override { return Dictionary(); }
+	Dictionary take_credential() override {
+		Dictionary out = credential.duplicate(true);
+		credential.clear();
+		return out;
+	}
 	bool is_active() const override { return started; }
 	Dictionary prepare_request(const Dictionary &p_credential, const Dictionary &p_profile, const Dictionary &p_request, bool p_force_refresh) const override {
 		Dictionary headers;
@@ -167,6 +176,55 @@ TEST_CASE("[Editor][SolersProviderAuth] methods are provider-scoped and profile-
 	CHECK(service.start_provider_auth("openai_codex", "chatgpt-browser").get("ok", false));
 	CHECK(codex_method.started);
 	service.cancel_auth();
+}
+
+TEST_CASE("[Editor][SolersSettingsService] settles a declared OAuth credential once") {
+	EditorSettings *settings = EditorSettings::get_singleton();
+	REQUIRE(settings != nullptr);
+	const String prefix = "solers/ai/";
+	Array paths;
+	paths.push_back(prefix + "provider");
+	for (const String &key : { String("configured"), String("model"), String("base_url"), String("oauth") }) {
+		paths.push_back(prefix + "providers/openai_codex/" + key);
+	}
+	ScopedEditorSettings restore(settings, paths);
+
+	SolersProviderRegistry registry;
+	SyntheticAuth auth(SNAME("chatgpt-browser"));
+	SolersSettingsService service;
+	service.set_provider_registry(&registry);
+	service.register_auth_method("openai_codex", &auth, false);
+	auth.set_credential(Dictionary({ { "type", "oauth" }, { "method_id", "chatgpt-browser" }, { "access", "access" }, { "refresh", "refresh" } }));
+	REQUIRE(service.start_provider_auth("openai_codex", "chatgpt-browser").get("ok", false));
+
+	service.poll_auth();
+	const Dictionary status = service.get_auth_status("openai_codex");
+	CHECK(status.get("connected", false));
+	CHECK(status.get("available", false));
+	CHECK(SolersSecretStore::is_protected(String(settings->get_setting(prefix + "providers/openai_codex/oauth"))));
+	service.poll_auth();
+	CHECK(service.get_auth_status("openai_codex").get("connected", false));
+}
+
+TEST_CASE("[Editor][SolersSettingsService] keeps an incomplete authorization retryable") {
+	SolersProviderRegistry registry;
+	SyntheticAuth auth(SNAME("chatgpt-browser"));
+	SolersSettingsService service;
+	service.set_provider_registry(&registry);
+	service.register_auth_method("openai_codex", &auth, false);
+	REQUIRE(service.start_provider_auth("openai_codex", "chatgpt-browser").get("ok", false));
+	service.poll_auth();
+	const Dictionary pending = service.get_auth_status("openai_codex");
+	CHECK(pending.get("active", false));
+	CHECK(pending.get("state", String()) == "pending");
+	service.cancel_auth();
+	CHECK_FALSE(service.get_auth_status("openai_codex").get("active", true));
+	const Dictionary retry = service.start_provider_auth("openai_codex", "chatgpt-browser");
+	CHECK(retry.get("ok", false));
+	CHECK(auth.started);
+	service.cancel_auth();
+	CHECK_FALSE(auth.started);
+	CHECK_FALSE(service.get_auth_status("openai_codex").get("active", true));
 }
 
 TEST_CASE("[SolersCodexAuth] Godot Thread returns an assigned ID on success") {

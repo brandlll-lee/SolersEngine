@@ -685,12 +685,25 @@ void SolersSettingsService::poll_auth() {
 		return;
 	}
 	active_auth->poll();
+	const Dictionary profile = provider_registry ? provider_registry->get_provider_profile(active_auth_provider) : Dictionary();
+	if (active_auth_provider.is_empty() || profile.is_empty()) {
+		auth_error["code"] = "OAUTH_PROFILE_UNAVAILABLE";
+		auth_error["message"] = "The provider authorization profile is no longer available.";
+		return;
+	}
 	const Dictionary credential = active_auth->take_credential();
 	if (credential.is_empty()) {
 		return;
 	}
-	const Dictionary profile = provider_registry ? provider_registry->get_provider_profile(active_auth_provider) : Dictionary();
-	if (active_auth_provider.is_empty() || profile.is_empty()) {
+	Dictionary config;
+	config["provider"] = active_auth_provider;
+	config["model"] = profile.get("default_model", String());
+	config["base_url"] = profile.get("default_base_url", String());
+	const Dictionary config_result = set_provider_config(config);
+	if (!config_result.get("ok", false)) {
+		const Dictionary error = config_result.get("error", Dictionary());
+		auth_error["code"] = error.get("code", "OAUTH_CONFIG_FAILED");
+		auth_error["message"] = error.get("message", "The provider configuration could not be saved.");
 		return;
 	}
 	if (!store_provider_auth(active_auth_provider, credential)) {
@@ -698,12 +711,16 @@ void SolersSettingsService::poll_auth() {
 		auth_error["message"] = "Authorization credentials could not be protected by the operating system and were not stored.";
 		return;
 	}
-	Dictionary config;
-	config["provider"] = active_auth_provider;
-	config["model"] = profile.get("default_model", String());
-	config["base_url"] = profile.get("default_base_url", String());
 	set_local_models_only(false); // Completing OAuth is explicit consent to remote model access.
-	set_provider_config(config);
+	const Dictionary connected = _get_provider_config(active_auth_provider, false);
+	if (!(bool)connected.get("connected", false)) {
+		auth_error["code"] = "OAUTH_NOT_CONNECTED";
+		auth_error["message"] = "Authorization was saved, but the provider did not validate as connected.";
+		return;
+	}
+	active_auth = nullptr;
+	active_auth_provider = String();
+	auth_error.clear();
 }
 
 void SolersSettingsService::cancel_auth() {
