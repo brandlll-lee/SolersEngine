@@ -57,6 +57,7 @@
 
 #include "modules/modules_enabled.gen.h"
 #ifdef MODULE_SOLERS_AI_ENABLED
+#include "modules/solers_ai/core/solers_permission_manager.h"
 #include "modules/solers_ai/core/solers_provider_registry.h"
 #include "modules/solers_ai/core/solers_secret_store.h"
 #include "modules/solers_ai/core/solers_settings_service.h"
@@ -106,8 +107,8 @@ bool SolersPMAIView::_is_asset_provider(const String &p_id) const {
 	return !_asset_plugin_profile(p_id).is_empty();
 }
 
-bool SolersPMAIView::_uses_codex_auth(const String &p_id) const {
-	return registry && String(registry->get_provider_profile(p_id).get("oauth_kind", String())) == "codex";
+bool SolersPMAIView::_uses_oauth(const String &p_id) const {
+	return registry && String(registry->get_provider_profile(p_id).get("auth_type", String())) == "oauth";
 }
 
 Dictionary SolersPMAIView::_provider_status(const String &p_id, bool p_live_form) const {
@@ -130,11 +131,11 @@ Dictionary SolersPMAIView::_provider_status(const String &p_id, bool p_live_form
 	if (!settings_service || !registry) {
 		return out;
 	}
-	if (_uses_codex_auth(p_id)) {
-		const Dictionary auth = settings_service->get_codex_auth_status(p_id);
+	if (_uses_oauth(p_id)) {
+		const Dictionary auth = settings_service->get_auth_status(p_id);
 		if (auth.get("available", false)) {
 			out["color"] = SOLERS_AI_COL_OK;
-			out["text"] = TTR("ChatGPT Codex is connected.");
+			out["text"] = TTR("Account authorization is connected.");
 		} else if (auth.get("connected", false)) {
 			out["color"] = SOLERS_AI_COL_WARNING;
 			out["text"] = TTR("Local Models Only currently blocks this remote provider.");
@@ -143,7 +144,7 @@ Dictionary SolersPMAIView::_provider_status(const String &p_id, bool p_live_form
 			out["text"] = TTR("Authorization is in progress.");
 		} else {
 			out["color"] = auth.has("error") ? SOLERS_AI_COL_BLOCKER : SOLERS_AI_COL_WARNING;
-			out["text"] = String(auth.get("error", TTR("Sign in with ChatGPT to connect Codex.")));
+			out["text"] = String(auth.get("error", TTR("Connect an account to use this provider.")));
 		}
 		return out;
 	}
@@ -208,6 +209,12 @@ void SolersPMAIView::_build_nav() {
 	llm->set_pressed_callback(callable_mp(this, &SolersPMAIView::_select_category).bind(String("llm")));
 	nav_list->add_child(llm);
 
+	SolersCategoryCard *permissions = memnew(SolersCategoryCard);
+	permissions->configure(TTR("Permissions"), SolersIcons::get(SNAME("shield"), int(Math::round(16.0f * EDSCALE))));
+	permissions->set_meta("category_id", "permissions");
+	permissions->set_pressed_callback(callable_mp(this, &SolersPMAIView::_select_category).bind(String("permissions")));
+	nav_list->add_child(permissions);
+
 	SolersCategoryCard *quick = memnew(SolersCategoryCard);
 	quick->configure(TTR("Quick Settings"), SolersIcons::get(SNAME("adjustments"), int(Math::round(16.0f * EDSCALE))));
 	quick->set_meta("category_id", "quick");
@@ -226,13 +233,21 @@ void SolersPMAIView::_select_category(const String &p_id) {
 		card->set_selected(String(card->get_meta("category_id", String())) == p_id);
 	}
 	const bool quick = p_id == "quick";
+	const bool permissions = p_id == "permissions";
 	if (quick_settings_view) {
 		quick_settings_view->set_visible(quick);
 	}
-	if (quick) {
+	if (permissions_view) {
+		permissions_view->set_visible(permissions);
+	}
+	if (quick || permissions) {
 		provider_list_view->hide();
 		provider_detail_view->hide();
-		_update_quick_settings_values();
+		if (quick) {
+			_update_quick_settings_values();
+		} else if (approval_mode_option && permission_manager) {
+			approval_mode_option->select(permission_manager->is_auto_approve_all() ? 1 : 0);
+		}
 		return;
 	}
 	_build_provider_list();
@@ -241,7 +256,7 @@ void SolersPMAIView::_select_category(const String &p_id) {
 
 void SolersPMAIView::_add_provider_row(const String &p_id, const String &p_title, const Ref<Texture2D> &p_icon, bool p_preserve_icon_color, const String &p_subtitle) {
 	SolersCategoryCard *card = memnew(SolersCategoryCard);
-	// Plugins keep readiness dots; LLM rows use subtitle source tags (OpenCode/Kilo).
+	// Plugin rows keep readiness dots; LLM rows use source subtitles.
 	const Color dot = selected_category == "llm" ? Color(0, 0, 0, 0) : Color(_provider_status(p_id).get("color", Color()));
 	card->configure(p_title, p_icon, p_subtitle, dot);
 	card->set_preserve_icon_color(p_preserve_icon_color);
@@ -542,19 +557,19 @@ void SolersPMAIView::_refresh_form(bool p_load_stored) {
 	const Dictionary config = settings_service->get_provider_config_for(selected_provider).get("data", Dictionary());
 	provider_title->set_text(TTRGET(String(profile.get("label", selected_provider))));
 	provider_notes->set_text(TTRGET(String(profile.get("notes", String()))));
-	if (_uses_codex_auth(selected_provider)) {
+	if (_uses_oauth(selected_provider)) {
 		connection_grid->hide();
 		env_hint->hide();
 		oauth_box->show();
 		save_btn->hide();
-		const Dictionary auth_status = settings_service->get_codex_auth_status(selected_provider);
+		const Dictionary auth_status = settings_service->get_auth_status(selected_provider);
 		const String auth_state = auth_status.get("state", "idle");
 		const bool connected = auth_status.get("connected", false);
 		const bool available = auth_status.get("available", false);
 		if (connected && available) {
-			oauth_status->set_text(TTR("Connected with ChatGPT. Codex models are available in the Chat panel."));
+			oauth_status->set_text(TTR("Account connected. Provider models are available in the Chat panel."));
 		} else if (connected) {
-			oauth_status->set_text(TTR("Connected with ChatGPT. Disable Local Models Only to make Codex models available."));
+			oauth_status->set_text(TTR("Account connected. Disable Local Models Only to make this provider available."));
 		} else if (auth_state == "waiting_browser") {
 			oauth_status->set_text(TTR("Waiting for authorization in your browser..."));
 		} else if (auth_state == "exchanging") {
@@ -562,8 +577,18 @@ void SolersPMAIView::_refresh_form(bool p_load_stored) {
 		} else if (auth_state == "failed") {
 			oauth_status->set_text(auth_status.get("error", TTR("Authorization failed. Try again.")));
 		} else {
-			oauth_status->set_text(TTR("Use your ChatGPT Plus, Pro, Business, Edu, or Enterprise plan."));
+			oauth_status->set_text(TTR("Choose an authorization method to connect this account."));
 		}
+		const Array methods = profile.get("auth_methods", Array());
+		oauth_method_option->clear();
+		for (const Variant &method_value : methods) {
+			const Dictionary method = method_value;
+			if (String(method.get("type", String())) == "oauth") {
+				oauth_method_option->add_item(TTRGET(String(method.get("label", TTR("Account")))));
+				oauth_method_option->set_item_metadata(oauth_method_option->get_item_count() - 1, method.get("id", StringName()));
+			}
+		}
+		oauth_method_option->set_visible(oauth_method_option->get_item_count() > 1);
 		const bool active = auth_status.get("active", false);
 		oauth_connect_btn->set_visible(!connected && !active);
 		oauth_cancel_btn->set_visible(active);
@@ -657,11 +682,13 @@ void SolersPMAIView::_on_reveal_toggled(bool p_pressed) {
 	api_key_edit->set_secret(!p_pressed);
 }
 
-void SolersPMAIView::_on_codex_connect() {
+void SolersPMAIView::_on_auth_connect() {
 	if (!settings_service) {
 		return;
 	}
-	const Dictionary result = settings_service->start_codex_login(selected_provider);
+	const int selected = oauth_method_option->get_selected();
+	const StringName method_id = selected >= 0 ? StringName(oauth_method_option->get_item_metadata(selected)) : StringName();
+	const Dictionary result = settings_service->start_provider_auth(selected_provider, method_id);
 	if (!result.get("ok", false)) {
 		oauth_status->set_text(Dictionary(result.get("error", Dictionary())).get("message", TTR("Could not start authorization.")));
 	}
@@ -669,21 +696,32 @@ void SolersPMAIView::_on_codex_connect() {
 	_refresh_status();
 }
 
-void SolersPMAIView::_on_codex_cancel() {
+void SolersPMAIView::_on_auth_cancel() {
 	if (settings_service) {
-		settings_service->cancel_codex_login();
+		settings_service->cancel_auth();
 	}
 	set_process_internal(false);
 	_refresh_form(false);
 	_refresh_status();
 }
 
-void SolersPMAIView::_on_codex_disconnect() {
+void SolersPMAIView::_on_auth_disconnect() {
 	if (settings_service) {
-		settings_service->disconnect_codex(selected_provider);
+		settings_service->disconnect_auth(selected_provider);
 	}
 	_refresh_form(false);
 	_refresh_status();
+}
+
+void SolersPMAIView::_on_approval_mode_selected(int p_index) {
+	if (!permission_manager) {
+		return;
+	}
+	const bool automatic = p_index == 1;
+	permission_manager->set_auto_approve_all(automatic);
+	if (EditorSettings::get_singleton()) {
+		EditorSettings::get_singleton()->set_project_metadata("solers", "auto_approve_mode", automatic);
+	}
 }
 
 void SolersPMAIView::_save() {
@@ -722,7 +760,7 @@ void SolersPMAIView::_save() {
 		}
 		return;
 	}
-	if (_uses_codex_auth(selected_provider) || !settings_service) {
+	if (_uses_oauth(selected_provider) || !settings_service) {
 		return;
 	}
 	const Dictionary profile = registry->get_provider_profile(selected_provider);
@@ -748,7 +786,7 @@ void SolersPMAIView::_save() {
 }
 
 void SolersPMAIView::_disconnect_selected_provider() {
-	if (!settings_service || _is_asset_provider(selected_provider) || _uses_codex_auth(selected_provider)) {
+	if (!settings_service || _is_asset_provider(selected_provider) || _uses_oauth(selected_provider)) {
 		return;
 	}
 	settings_service->disconnect_provider(selected_provider);
@@ -969,7 +1007,7 @@ void SolersPMAIView::_notification(int p_what) {
 	} else if (p_what == NOTIFICATION_INTERNAL_PROCESS && settings_service) {
 		settings_service->poll_auth();
 		set_process_internal(settings_service->is_auth_active());
-		if (_uses_codex_auth(selected_provider)) {
+		if (_uses_oauth(selected_provider)) {
 			_refresh_form(false);
 			_refresh_status();
 		}
@@ -994,7 +1032,7 @@ void SolersPMAIView::update_quick_popup_size_limits(const Size2 &p_max_popup_siz
 #endif
 }
 
-void SolersPMAIView::bind_services(SolersSettingsService *p_settings_service) {
+void SolersPMAIView::bind_services(SolersSettingsService *p_settings_service, SolersPermissionManager *p_permission_manager) {
 #ifdef MODULE_SOLERS_AI_ENABLED
 	if (owns_services) {
 		if (settings_service) {
@@ -1008,6 +1046,7 @@ void SolersPMAIView::bind_services(SolersSettingsService *p_settings_service) {
 		owns_services = false;
 	}
 	settings_service = p_settings_service;
+	permission_manager = p_permission_manager;
 	registry = p_settings_service ? p_settings_service->get_provider_registry() : nullptr;
 	refresh();
 #else
@@ -1244,18 +1283,21 @@ SolersPMAIView::SolersPMAIView() {
 	oauth_status->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
 	oauth_status->add_theme_color_override(SceneStringName(font_color), Color(tokens.text.r, tokens.text.g, tokens.text.b, 0.72f));
 	oauth_box->add_child(oauth_status);
+	oauth_method_option = memnew(OptionButton);
+	oauth_method_option->set_fit_to_longest_item(false);
+	oauth_box->add_child(oauth_method_option);
 	HBoxContainer *oauth_actions = memnew(HBoxContainer);
 	oauth_actions->add_theme_constant_override("separation", 8 * EDSCALE);
 	oauth_box->add_child(oauth_actions);
-	oauth_connect_btn = memnew(Button(TTR("Sign in with ChatGPT")));
+	oauth_connect_btn = memnew(Button(TTR("Connect Account")));
 	oauth_connect_btn->set_theme_type_variation("PMPrimaryButton");
-	oauth_connect_btn->connect(SceneStringName(pressed), callable_mp(this, &SolersPMAIView::_on_codex_connect));
+	oauth_connect_btn->connect(SceneStringName(pressed), callable_mp(this, &SolersPMAIView::_on_auth_connect));
 	oauth_actions->add_child(oauth_connect_btn);
 	oauth_cancel_btn = memnew(Button(TTR("Cancel")));
-	oauth_cancel_btn->connect(SceneStringName(pressed), callable_mp(this, &SolersPMAIView::_on_codex_cancel));
+	oauth_cancel_btn->connect(SceneStringName(pressed), callable_mp(this, &SolersPMAIView::_on_auth_cancel));
 	oauth_actions->add_child(oauth_cancel_btn);
 	oauth_disconnect_btn = memnew(Button(TTR("Disconnect")));
-	oauth_disconnect_btn->connect(SceneStringName(pressed), callable_mp(this, &SolersPMAIView::_on_codex_disconnect));
+	oauth_disconnect_btn->connect(SceneStringName(pressed), callable_mp(this, &SolersPMAIView::_on_auth_disconnect));
 	oauth_actions->add_child(oauth_disconnect_btn);
 
 	env_hint = memnew(Label);
@@ -1298,6 +1340,27 @@ SolersPMAIView::SolersPMAIView() {
 	saved_feedback->set_v_size_flags(SIZE_SHRINK_CENTER);
 	saved_feedback->add_theme_color_override(SceneStringName(font_color), Color(SOLERS_AI_COL_OK.r, SOLERS_AI_COL_OK.g, SOLERS_AI_COL_OK.b, 0.9f));
 	actions->add_child(saved_feedback);
+
+	permissions_view = memnew(VBoxContainer);
+	permissions_view->set_h_size_flags(SIZE_EXPAND_FILL);
+	permissions_view->add_theme_constant_override("separation", 10 * EDSCALE);
+	permissions_view->hide();
+	content->add_child(permissions_view);
+	Label *permissions_title = memnew(Label(TTR("Permissions")));
+	permissions_title->add_theme_font_size_override(SceneStringName(font_size), MAX(12, (int)(17 * EDSCALE)));
+	permissions_title->add_theme_color_override(SceneStringName(font_color), tokens.text);
+	permissions_view->add_child(permissions_title);
+	Label *permissions_note = memnew(Label(TTR("Choose whether Solers asks before project-changing tool calls.")));
+	permissions_note->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	permissions_note->add_theme_color_override(SceneStringName(font_color), tokens.text_dim);
+	permissions_view->add_child(permissions_note);
+	approval_mode_option = memnew(OptionButton);
+	approval_mode_option->set_name("ApprovalModeOption");
+	approval_mode_option->add_item(TTR("Manual"));
+	approval_mode_option->add_item(TTR("Auto"));
+	approval_mode_option->set_h_size_flags(SIZE_SHRINK_BEGIN);
+	approval_mode_option->connect(SceneStringName(item_selected), callable_mp(this, &SolersPMAIView::_on_approval_mode_selected));
+	permissions_view->add_child(approval_mode_option);
 
 	// Quick Settings pane (EditorSettings) — sibling of provider list/detail.
 	quick_settings_view = memnew(VBoxContainer);

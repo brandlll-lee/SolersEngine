@@ -39,9 +39,9 @@
 #include "core/variant/dictionary.h"
 
 class SolersModelsDev {
-	// providerID -> { id, name, api, env(Array), local(bool), protocol,
+	// providerID -> { id, name, npm, api, env(Array), local(bool), protocol,
 	//                 models: { modelID -> { id, name, context, output,
-	//                 reasoning, reasoning_options, tool_call, attachment } } }
+	//                 status, modalities, provider_npm, provider_api } } }
 	HashMap<StringName, Dictionary> providers;
 	mutable Mutex providers_mutex;
 	String cache_path;

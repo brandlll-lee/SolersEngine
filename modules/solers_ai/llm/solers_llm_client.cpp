@@ -38,8 +38,8 @@
 #include "core/os/time.h"
 #include "core/templates/hash_set.h"
 
-#include "modules/solers_ai/core/solers_codex_auth.h"
 #include "modules/solers_ai/core/solers_context_manager.h"
+#include "modules/solers_ai/core/solers_provider_auth.h"
 #include "modules/solers_ai/core/solers_trace.h"
 #include "modules/solers_ai/llm/solers_llm_message.h"
 
@@ -171,48 +171,78 @@ void SolersLLMClient::_fail_provider_response() {
 	_fail("HTTP_ERROR", error_buffer.is_empty() ? "Provider returned an error." : error_buffer);
 }
 
+void SolersLLMClient::_set_request_header(const String &p_name, const String &p_value) {
+	for (int i = request_headers.size() - 1; i >= 0; i--) {
+		if (request_headers[i].get_slice(":", 0).nocasecmp_to(p_name) == 0) {
+			request_headers.remove_at(i);
+		}
+	}
+	request_headers.push_back(p_name + ": " + p_value);
+}
+
+bool SolersLLMClient::_configure_endpoint(const Dictionary &p_profile) {
+	String base_url = String(p_profile.get("base_url", String())).strip_edges();
+	if (base_url.is_empty()) {
+		_fail("NO_BASE_URL", "Provider profile has no base URL configured.");
+		return false;
+	}
+	use_tls = base_url.begins_with("https://");
+	port = use_tls ? 443 : 80;
+	base_url = base_url.trim_prefix(use_tls ? "https://" : "http://");
+	const int slash = base_url.find("/");
+	const String authority = slash >= 0 ? base_url.substr(0, slash) : base_url;
+	const String path_prefix = (slash >= 0 ? base_url.substr(slash) : String()).trim_suffix("/");
+	const int colon = authority.find(":");
+	host = colon >= 0 ? authority.substr(0, colon) : authority;
+	if (colon >= 0) {
+		port = authority.substr(colon + 1).to_int();
+	}
+	request_path = path_prefix + active_protocol->get_default_path();
+	return true;
+}
+
 bool SolersLLMClient::_prepare_auth_headers(bool p_force_oauth_refresh) {
+	request_headers.clear();
+	_set_request_header("Content-Type", "application/json");
+	_set_request_header("Accept", "text/event-stream");
+	const Dictionary profile_headers = worker_profile.get("headers", Dictionary());
+	for (const Variant *key = profile_headers.next(nullptr); key; key = profile_headers.next(key)) {
+		_set_request_header(String(*key), String(profile_headers[*key]));
+	}
+	Dictionary protocol_headers;
+	active_protocol->augment_headers(protocol_headers, worker_request);
+	for (const Variant *key = protocol_headers.next(nullptr); key; key = protocol_headers.next(key)) {
+		_set_request_header(String(*key), String(protocol_headers[*key]));
+	}
+
 	const String auth_type = worker_auth.get("type", String(worker_profile.get("auth_type", "api_key")));
 	if (auth_type == "none") {
-		return true;
+		return _configure_endpoint(worker_profile);
 	}
 	if (auth_type == "oauth") {
-		if (String(worker_profile.get("oauth_kind", String())) != "codex") {
-			_fail("OAUTH_KIND_UNSUPPORTED", "The provider requested an unsupported OAuth flow.");
+		if (!worker_auth_method) {
+			_fail("OAUTH_METHOD_UNAVAILABLE", "The stored credential references an unavailable authorization method.");
 			return false;
 		}
-		if (p_force_oauth_refresh) {
-			for (int i = request_headers.size() - 1; i >= 0; i--) {
-				const String header = request_headers[i];
-				if (header.begins_with("Authorization:") || header.begins_with("ChatGPT-Account-Id:")) {
-					request_headers.remove_at(i);
-				}
-			}
+		const Dictionary result = worker_auth_method->prepare_request(worker_auth, worker_profile, worker_request, p_force_oauth_refresh);
+		if (!result.get("ok", false)) {
+			const Dictionary error = result.get("error", Dictionary());
+			_fail(error.get("code", "OAUTH_PREPARE_FAILED"), error.get("message", "Authorization could not prepare the request."));
+			return false;
 		}
-		String access = worker_auth.get("access", String());
-		const String refresh = worker_auth.get("refresh", String());
-		const int64_t expires_at = worker_auth.get("expires_at", 0);
-		const int64_t now = (int64_t)Time::get_singleton()->get_unix_time_from_system();
-		if (p_force_oauth_refresh || access.is_empty() || expires_at <= now + 60) {
-			const Dictionary result = SolersCodexAuth::refresh_tokens(refresh);
-			if (!result.get("ok", false)) {
-				const Dictionary error = result.get("error", Dictionary());
-				_fail(error.get("code", "OAUTH_REFRESH_FAILED"), error.get("message", "ChatGPT authorization could not be refreshed."));
-				return false;
-			}
-			worker_auth = result.get("tokens", Dictionary());
-			access = worker_auth.get("access", String());
+		const Dictionary next_auth = result.get("credential", worker_auth);
+		if (next_auth != worker_auth) {
+			worker_auth = next_auth;
 			MutexLock lock(mutex);
 			shared_auth_update = worker_auth.duplicate(true);
 		}
-		if (access.is_empty()) {
-			_fail("OAUTH_ACCESS_MISSING", "ChatGPT authorization returned no access token.");
+		worker_profile = result.get("profile", worker_profile);
+		if (!_configure_endpoint(worker_profile)) {
 			return false;
 		}
-		request_headers.push_back("Authorization: Bearer " + access);
-		const String account_id = worker_auth.get("account_id", String());
-		if (!account_id.is_empty()) {
-			request_headers.push_back("ChatGPT-Account-Id: " + account_id);
+		const Dictionary auth_headers = result.get("headers", Dictionary());
+		for (const Variant *key = auth_headers.next(nullptr); key; key = auth_headers.next(key)) {
+			_set_request_header(String(*key), String(auth_headers[*key]));
 		}
 		return true;
 	}
@@ -221,12 +251,12 @@ bool SolersLLMClient::_prepare_auth_headers(bool p_force_oauth_refresh) {
 	if (!key.is_empty()) {
 		const String auth_header = worker_profile.get("auth_header", "Authorization");
 		const String auth_prefix = worker_profile.get("auth_prefix", "Bearer ");
-		request_headers.push_back(auth_header + ": " + auth_prefix + key);
+		_set_request_header(auth_header, auth_prefix + key);
 	}
-	return true;
+	return _configure_endpoint(worker_profile);
 }
 
-Error SolersLLMClient::begin(const Dictionary &p_request, const Dictionary &p_profile, const Dictionary &p_auth) {
+Error SolersLLMClient::begin(const Dictionary &p_request, const Dictionary &p_profile, const Dictionary &p_auth, SolersProviderAuth *p_auth_method) {
 	// Join any prior worker before reconfiguring shared state.
 	abort_requested.set();
 	_join_worker();
@@ -258,38 +288,6 @@ Error SolersLLMClient::begin(const Dictionary &p_request, const Dictionary &p_pr
 		return ERR_UNAVAILABLE;
 	}
 
-	String base_url = String(p_profile.get("base_url", String())).strip_edges();
-	if (base_url.is_empty()) {
-		last_error["code"] = "NO_BASE_URL";
-		last_error["message"] = "Provider profile has no base URL configured.";
-		_publish(Array(), STATE_FAILED);
-		return ERR_UNCONFIGURED;
-	}
-
-	use_tls = true;
-	port = 443;
-	if (base_url.begins_with("https://")) {
-		base_url = base_url.substr(8);
-		use_tls = true;
-		port = 443;
-	} else if (base_url.begins_with("http://")) {
-		base_url = base_url.substr(7);
-		use_tls = false;
-		port = 80;
-	}
-	const int slash = base_url.find("/");
-	String authority = slash >= 0 ? base_url.substr(0, slash) : base_url;
-	String path_prefix = slash >= 0 ? base_url.substr(slash) : String();
-	path_prefix = path_prefix.trim_suffix("/");
-	const int colon = authority.find(":");
-	if (colon >= 0) {
-		host = authority.substr(0, colon);
-		port = authority.substr(colon + 1).to_int();
-	} else {
-		host = authority;
-	}
-	request_path = path_prefix + active_protocol->get_default_path();
-
 	worker_request = p_request;
 	worker_protocol_id = protocol_id;
 	request_body = String();
@@ -300,15 +298,7 @@ Error SolersLLMClient::begin(const Dictionary &p_request, const Dictionary &p_pr
 	request_headers.push_back("Accept: text/event-stream");
 	worker_profile = p_profile.duplicate(true);
 	worker_auth = p_auth.duplicate(true);
-	const Dictionary profile_headers = p_profile.get("headers", Dictionary());
-	for (const Variant *key = profile_headers.next(nullptr); key; key = profile_headers.next(key)) {
-		request_headers.push_back(String(*key) + ": " + String(profile_headers[*key]));
-	}
-	Dictionary extra_headers;
-	active_protocol->augment_headers(extra_headers, p_request);
-	for (const Variant *k = extra_headers.next(nullptr); k; k = extra_headers.next(k)) {
-		request_headers.push_back(String(*k) + ": " + String(extra_headers[*k]));
-	}
+	worker_auth_method = p_auth_method;
 
 	// Reset worker-owned transient state for the fresh request.
 	http = Ref<HTTPClient>();
@@ -350,6 +340,10 @@ void SolersLLMClient::_publish(const Array &p_events, State p_state) {
 
 void SolersLLMClient::_run_worker() {
 	Array batch;
+	if (!_prepare_auth_headers()) {
+		_publish(batch, state);
+		return;
+	}
 	Array messages = SolersContextManager::repair_tool_pairing(worker_request.get("messages", Array()));
 	worker_request["messages"] = SolersLLMMessage::project_attachments(messages);
 	request_body = JSON::stringify(active_protocol->build_request_body(worker_request), "", false, true);
@@ -366,10 +360,6 @@ void SolersLLMClient::_run_worker() {
 		shared_request_body_bytes = request_body.utf8().length();
 	}
 
-	if (!_prepare_auth_headers()) {
-		_publish(batch, state);
-		return;
-	}
 	http = HTTPClient::create();
 	if (http.is_null()) {
 		_fail("NO_HTTP_CLIENT", "Failed to create HTTPClient.");
@@ -456,8 +446,8 @@ void SolersLLMClient::_run_worker() {
 							}
 						}
 					}
-					const bool codex_oauth = String(worker_auth.get("type", String())) == "oauth" && String(worker_profile.get("oauth_kind", String())) == "codex";
-					if (code == 401 && codex_oauth && !oauth_401_retried) {
+					const bool refreshable_oauth = String(worker_auth.get("type", String())) == "oauth" && worker_auth_method;
+					if (code == 401 && refreshable_oauth && !oauth_401_retried) {
 						oauth_401_retried = true;
 						http->close();
 						if (!_prepare_auth_headers(true)) {
@@ -467,7 +457,7 @@ void SolersLLMClient::_run_worker() {
 						const Ref<TLSOptions> retry_tls = use_tls ? TLSOptions::client() : Ref<TLSOptions>();
 						const Error retry_error = http.is_valid() ? http->connect_to_host(host, port, retry_tls) : ERR_CANT_CREATE;
 						if (retry_error != OK) {
-							_fail("OAUTH_RETRY_CONNECT_FAILED", "Could not reconnect after refreshing ChatGPT authorization.", true);
+							_fail("OAUTH_RETRY_CONNECT_FAILED", "Could not reconnect after refreshing authorization.", true);
 						} else {
 							request_sent = false;
 							response_checked = false;

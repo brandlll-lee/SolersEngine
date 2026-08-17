@@ -40,6 +40,8 @@
 
 #include "modules/solers_ai/llm/solers_llm_protocol.h"
 
+class SolersProviderAuth;
+
 class SolersLLMClient {
 public:
 	enum State {
@@ -79,6 +81,7 @@ private:
 	Dictionary worker_auth;
 	Dictionary worker_request;
 	StringName worker_protocol_id;
+	SolersProviderAuth *worker_auth_method = nullptr; // Owned by SettingsService.
 
 	// --- Worker-owned transient state (touched only on the worker thread). ---
 	Ref<HTTPClient> http;
@@ -116,6 +119,8 @@ private:
 	void _run_worker();
 	void _publish(const Array &p_events, State p_state);
 	bool _prepare_auth_headers(bool p_force_oauth_refresh = false);
+	bool _configure_endpoint(const Dictionary &p_profile);
+	void _set_request_header(const String &p_name, const String &p_value);
 	void _join_worker();
 
 public:
@@ -124,7 +129,7 @@ public:
 	// Prepares and validates the request on the calling (main) thread, then
 	// hands the network loop to a worker thread. Returns OK or an error code;
 	// on synchronous failure `get_error()` carries the canonical error payload.
-	Error begin(const Dictionary &p_request, const Dictionary &p_profile, const Dictionary &p_auth);
+	Error begin(const Dictionary &p_request, const Dictionary &p_profile, const Dictionary &p_auth, SolersProviderAuth *p_auth_method = nullptr);
 
 	// Drains canonical events produced by the worker since the last call. Does
 	// no network I/O on the main thread.

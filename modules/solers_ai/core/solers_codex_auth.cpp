@@ -212,6 +212,7 @@ Dictionary SolersCodexAuth::_token_request(const Dictionary &p_fields, SafeFlag 
 	}
 	Dictionary tokens;
 	tokens["type"] = "oauth";
+	tokens["method_id"] = "chatgpt-browser";
 	tokens["access"] = access;
 	tokens["refresh"] = refresh;
 	tokens["expires_at"] = (int64_t)Time::get_singleton()->get_unix_time_from_system() + (int64_t)payload.get("expires_in", 3600);
@@ -220,7 +221,9 @@ Dictionary SolersCodexAuth::_token_request(const Dictionary &p_fields, SafeFlag 
 		account_id = _account_id_from_jwt(access);
 	}
 	if (!account_id.is_empty()) {
-		tokens["account_id"] = account_id;
+		Dictionary metadata;
+		metadata["account_id"] = account_id;
+		tokens["metadata"] = metadata;
 	}
 	Dictionary out;
 	out["ok"] = true;
@@ -269,7 +272,16 @@ void SolersCodexAuth::_close_listener() {
 	request_buffer = String();
 }
 
-Dictionary SolersCodexAuth::start() {
+Dictionary SolersCodexAuth::_fail(const String &p_code, const String &p_message) {
+	state = STATE_FAILED;
+	error_code = p_code;
+	error_message = p_message;
+	ERR_PRINT(vformat("Solers OAuth failed [%s]: %s", p_code, p_message));
+	return _codex_error(p_code, p_message);
+}
+
+Dictionary SolersCodexAuth::start(const Dictionary &p_inputs) {
+	(void)p_inputs;
 	if (is_active()) {
 		return _codex_error("OAUTH_BUSY", "ChatGPT authorization is already in progress.");
 	}
@@ -280,15 +292,14 @@ Dictionary SolersCodexAuth::start() {
 	exchange_done.clear();
 	worker_result.clear();
 	completed_tokens.clear();
+	error_code = String();
 	error_message = String();
 	request_buffer = String();
 
 	const PackedByteArray verifier_bytes = _random_bytes(32);
 	const PackedByteArray state_bytes = _random_bytes(32);
 	if (verifier_bytes.is_empty() || state_bytes.is_empty()) {
-		state = STATE_FAILED;
-		error_message = "Secure random generation is unavailable.";
-		return _codex_error("OAUTH_RANDOM_FAILED", error_message);
+		return _fail("OAUTH_RANDOM_FAILED", "Secure random generation is unavailable.");
 	}
 	verifier = _base64_url(verifier_bytes);
 	expected_state = _base64_url(state_bytes);
@@ -307,9 +318,7 @@ Dictionary SolersCodexAuth::start() {
 	const Error listen_error = server->listen(CALLBACK_PORT, IPAddress("127.0.0.1"));
 	if (listen_error != OK) {
 		server.unref();
-		state = STATE_FAILED;
-		error_message = "Port 1455 is already in use. Close Codex CLI or another login window and try again.";
-		return _codex_error("OAUTH_PORT_BUSY", error_message);
+		return _fail("OAUTH_PORT_BUSY", "Port 1455 is already in use. Close Codex CLI or another login window and try again.");
 	}
 
 	const String scope = "openid profile email offline_access";
@@ -326,9 +335,7 @@ Dictionary SolersCodexAuth::start() {
 	const Error browser_error = OS::get_singleton()->shell_open(url);
 	if (browser_error != OK) {
 		_close_listener();
-		state = STATE_FAILED;
-		error_message = "Could not open the system browser for ChatGPT authorization.";
-		return _codex_error("OAUTH_BROWSER_FAILED", error_message);
+		return _fail("OAUTH_BROWSER_FAILED", "Could not open the system browser for ChatGPT authorization.");
 	}
 	Dictionary out;
 	out["ok"] = true;
@@ -339,9 +346,8 @@ Dictionary SolersCodexAuth::start() {
 void SolersCodexAuth::poll() {
 	if (state == STATE_WAITING_BROWSER) {
 		if (OS::get_singleton()->get_ticks_msec() - started_msec > CALLBACK_TIMEOUT_MSEC) {
-			error_message = "ChatGPT authorization timed out.";
-			state = STATE_FAILED;
 			_close_listener();
+			_fail("OAUTH_CALLBACK_TIMEOUT", "ChatGPT authorization timed out.");
 			return;
 		}
 		if (peer.is_null() && server.is_valid()) {
@@ -374,26 +380,25 @@ void SolersCodexAuth::poll() {
 					return;
 				}
 				if (!error.is_empty()) {
-					error_message = "ChatGPT authorization was declined.";
 					_respond("<!doctype html><title>Solers authorization</title><h1>Authorization cancelled</h1><p>You can close this window and return to Solers.</p>");
-					state = STATE_FAILED;
 					_close_listener();
+					_fail("OAUTH_DECLINED", "ChatGPT authorization was declined.");
 					return;
 				}
 				if (code.is_empty() || callback_state != expected_state) {
-					error_message = code.is_empty() ? "The authorization callback contained no code." : "The authorization state did not match.";
+					const String message = code.is_empty() ? "The authorization callback contained no code." : "The authorization state did not match.";
 					_respond("<!doctype html><title>Solers authorization</title><h1>Authorization failed</h1><p>Return to Solers and try again.</p>", 400);
-					state = STATE_FAILED;
 					_close_listener();
+					_fail(code.is_empty() ? "OAUTH_CODE_MISSING" : "OAUTH_STATE_MISMATCH", message);
 					return;
 				}
 				authorization_code = code;
 				_respond("<!doctype html><title>Solers authorization</title><style>body{font-family:system-ui;background:#151515;color:#eee;display:grid;place-items:center;height:100vh;margin:0}main{text-align:center}p{color:#aaa}</style><main><h1>Authorization received</h1><p>You can close this window and return to Solers.</p></main>");
 				_close_listener();
 				state = STATE_EXCHANGING;
-				if (exchange_thread.start(&SolersCodexAuth::_exchange_thread, this) != OK) {
-					state = STATE_FAILED;
-					error_message = "Could not start the OAuth token exchange.";
+				const Thread::ID thread_id = exchange_thread.start(&SolersCodexAuth::_exchange_thread, this);
+				if (thread_id == Thread::UNASSIGNED_ID) {
+					_fail("OAUTH_THREAD_FAILED", "Could not start the OAuth token exchange.");
 				}
 			}
 		}
@@ -410,8 +415,8 @@ void SolersCodexAuth::poll() {
 			completed_tokens = result.get("tokens", Dictionary());
 			state = STATE_SUCCEEDED;
 		} else {
-			error_message = Dictionary(result.get("error", Dictionary())).get("message", "ChatGPT authorization failed.");
-			state = STATE_FAILED;
+			const Dictionary error = result.get("error", Dictionary());
+			_fail(error.get("code", "OAUTH_EXCHANGE_FAILED"), error.get("message", "ChatGPT authorization failed."));
 		}
 	}
 }
@@ -420,8 +425,7 @@ void SolersCodexAuth::cancel() {
 	cancel_requested.set();
 	_close_listener();
 	if (state == STATE_WAITING_BROWSER || state == STATE_EXCHANGING) {
-		state = STATE_FAILED;
-		error_message = "ChatGPT authorization was cancelled.";
+		_fail("OAUTH_CANCELLED", "ChatGPT authorization was cancelled.");
 	}
 }
 
@@ -440,12 +444,13 @@ Dictionary SolersCodexAuth::get_status() const {
 	out["state"] = state_name;
 	out["active"] = is_active();
 	if (!error_message.is_empty()) {
+		out["code"] = error_code;
 		out["error"] = error_message;
 	}
 	return out;
 }
 
-Dictionary SolersCodexAuth::take_tokens() {
+Dictionary SolersCodexAuth::take_credential() {
 	if (state != STATE_SUCCEEDED) {
 		return Dictionary();
 	}
@@ -455,23 +460,47 @@ Dictionary SolersCodexAuth::take_tokens() {
 	return out;
 }
 
-Dictionary SolersCodexAuth::refresh_tokens(const String &p_refresh_token) {
-	if (p_refresh_token.is_empty()) {
-		return _codex_error("OAUTH_REFRESH_MISSING", "The ChatGPT refresh token is missing.");
-	}
-	Dictionary fields;
-	fields["grant_type"] = "refresh_token";
-	fields["refresh_token"] = p_refresh_token;
-	fields["client_id"] = SOLERS_CODEX_CLIENT_ID;
-	Dictionary result = _token_request(fields);
-	if (result.get("ok", false)) {
-		Dictionary tokens = result.get("tokens", Dictionary());
-		if (String(tokens.get("refresh", String())).is_empty()) {
-			tokens["refresh"] = p_refresh_token;
+Dictionary SolersCodexAuth::prepare_request(const Dictionary &p_credential, const Dictionary &p_profile, const Dictionary &p_request, bool p_force_refresh) const {
+	(void)p_request;
+	Dictionary credential = p_credential.duplicate(true);
+	String access = credential.get("access", String());
+	const String refresh = credential.get("refresh", String());
+	const int64_t expires_at = credential.get("expires_at", 0);
+	const int64_t now = (int64_t)Time::get_singleton()->get_unix_time_from_system();
+	if (p_force_refresh || access.is_empty() || expires_at <= now + 60) {
+		if (refresh.is_empty()) {
+			return _codex_error("OAUTH_REFRESH_MISSING", "The ChatGPT refresh token is missing.");
 		}
-		result["tokens"] = tokens;
+		Dictionary fields;
+		fields["grant_type"] = "refresh_token";
+		fields["refresh_token"] = refresh;
+		fields["client_id"] = SOLERS_CODEX_CLIENT_ID;
+		const Dictionary result = _token_request(fields);
+		if (!result.get("ok", false)) {
+			return result;
+		}
+		credential = result.get("tokens", Dictionary());
+		if (String(credential.get("refresh", String())).is_empty()) {
+			credential["refresh"] = refresh;
+		}
+		access = credential.get("access", String());
 	}
-	return result;
+	if (access.is_empty()) {
+		return _codex_error("OAUTH_ACCESS_MISSING", "ChatGPT authorization returned no access token.");
+	}
+	Dictionary headers;
+	headers["Authorization"] = "Bearer " + access;
+	const Dictionary metadata = credential.get("metadata", Dictionary());
+	const String account_id = metadata.get("account_id", String());
+	if (!account_id.is_empty()) {
+		headers["ChatGPT-Account-Id"] = account_id;
+	}
+	Dictionary out;
+	out["ok"] = true;
+	out["credential"] = credential;
+	out["headers"] = headers;
+	out["profile"] = p_profile;
+	return out;
 }
 
 SolersCodexAuth::~SolersCodexAuth() {

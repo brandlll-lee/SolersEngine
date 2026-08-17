@@ -38,7 +38,7 @@
 
 void SolersProviderRegistry::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_provider_profile", "provider"), &SolersProviderRegistry::get_provider_profile);
-	ClassDB::bind_method(D_METHOD("resolve_provider_profile", "provider", "base_url_override"), &SolersProviderRegistry::resolve_provider_profile, DEFVAL(String()));
+	ClassDB::bind_method(D_METHOD("resolve_provider_profile", "provider", "base_url_override", "model"), &SolersProviderRegistry::resolve_provider_profile, DEFVAL(String()), DEFVAL(String()));
 	ClassDB::bind_method(D_METHOD("list_provider_profiles"), &SolersProviderRegistry::list_provider_profiles);
 	ClassDB::bind_method(D_METHOD("list_popular_provider_ids"), &SolersProviderRegistry::list_popular_provider_ids);
 	ClassDB::bind_method(D_METHOD("validate_config", "config"), &SolersProviderRegistry::validate_config);
@@ -78,7 +78,11 @@ String SolersProviderRegistry::_default_model_for_catalog(const Dictionary &p_ca
 
 Dictionary SolersProviderRegistry::_profile_from_catalog(const Dictionary &p_catalog) const {
 	const String id = p_catalog.get("id", String());
-	const String protocol = p_catalog.get("protocol", String());
+	const String npm = p_catalog.get("npm", String());
+	String protocol = _protocol_for_package(npm);
+	if (protocol.is_empty()) {
+		protocol = p_catalog.get("protocol", String());
+	}
 	if (id.is_empty() || protocol.is_empty()) {
 		return Dictionary();
 	}
@@ -100,6 +104,25 @@ Dictionary SolersProviderRegistry::_profile_from_catalog(const Dictionary &p_cat
 	profile["notes"] = String();
 	profile["source_kind"] = "catalog";
 	return profile;
+}
+
+String SolersProviderRegistry::_protocol_for_package(const String &p_package) const {
+	static const struct {
+		const char *package;
+		const char *protocol;
+	} ROUTES[] = {
+		{ "@ai-sdk/openai", "openai-responses" },
+		{ "@ai-sdk/openai-compatible", "openai-chat" },
+		{ "@openrouter/ai-sdk-provider", "openai-chat" },
+		{ "@ai-sdk/anthropic", "anthropic-messages" },
+		{ "@ai-sdk/xai", "openai-responses" },
+	};
+	for (const auto &route : ROUTES) {
+		if (p_package == route.package) {
+			return route.protocol;
+		}
+	}
+	return String();
 }
 
 Dictionary SolersProviderRegistry::_default_custom_profile(const String &p_id) const {
@@ -125,7 +148,7 @@ void SolersProviderRegistry::_register_auth_hooks() {
 	overlays.clear();
 	overlay_order.clear();
 
-	// ChatGPT Codex — OAuth + Responses protocol (Solers AuthHook).
+	// Product overlay. OAuth behavior is registered independently by method id.
 	Dictionary codex;
 	codex["id"] = "openai_codex";
 	codex["label"] = "ChatGPT Codex";
@@ -135,7 +158,13 @@ void SolersProviderRegistry::_register_auth_hooks() {
 	codex["catalog_provider"] = "openai";
 	codex["local"] = false;
 	codex["auth_type"] = "oauth";
-	codex["oauth_kind"] = "codex";
+	Dictionary browser_auth;
+	browser_auth["id"] = "chatgpt-browser";
+	browser_auth["type"] = "oauth";
+	browser_auth["label"] = "ChatGPT Pro/Plus (browser)";
+	Array auth_methods;
+	auth_methods.push_back(browser_auth);
+	codex["auth_methods"] = auth_methods;
 	codex["auth_header"] = "Authorization";
 	codex["auth_prefix"] = "Bearer ";
 	codex["api_key_required"] = false;
@@ -168,7 +197,7 @@ void SolersProviderRegistry::_register_auth_hooks() {
 	overlays["openai_codex"] = codex;
 	overlay_order.push_back("openai_codex");
 
-	// Custom template — OpenCode/Kilo "Custom provider" entry.
+	// Custom provider template.
 	overlays["custom_openai_compatible"] = _default_custom_profile("custom_openai_compatible");
 	overlay_order.push_back("custom_openai_compatible");
 }
@@ -208,14 +237,30 @@ Dictionary SolersProviderRegistry::get_provider_profile(const String &p_provider
 	return Dictionary();
 }
 
-Dictionary SolersProviderRegistry::resolve_provider_profile(const String &p_provider, const String &p_base_url_override) const {
+Dictionary SolersProviderRegistry::resolve_provider_profile(const String &p_provider, const String &p_base_url_override, const String &p_model) const {
 	Dictionary profile = get_provider_profile(p_provider);
 	if (profile.is_empty()) {
 		return Dictionary();
 	}
+	String default_url = String(profile.get("default_base_url", String())).trim_suffix("/");
+	if (!p_model.is_empty() && models_dev) {
+		const Dictionary model = models_dev->get_model(StringName(profile.get("catalog_provider", p_provider)), p_model);
+		const String package = model.get("provider_npm", String());
+		if (!package.is_empty()) {
+			profile["protocol"] = _protocol_for_package(package);
+		}
+		const String model_url = model.get("provider_api", String());
+		if (!model_url.is_empty()) {
+			default_url = model_url.trim_suffix("/");
+		}
+		profile["model_id"] = model.get("id", p_model);
+	}
 	const String override_url = p_base_url_override.strip_edges();
-	const String default_url = String(profile.get("default_base_url", String())).trim_suffix("/");
-	profile["base_url"] = override_url.is_empty() ? default_url : override_url.trim_suffix("/");
+	String base_url = (override_url.is_empty() ? default_url : override_url).trim_suffix("/");
+	if (String(profile.get("protocol", String())) == "anthropic-messages") {
+		base_url = base_url.trim_suffix("/v1");
+	}
+	profile["base_url"] = base_url;
 	return profile;
 }
 
@@ -227,19 +272,14 @@ Array SolersProviderRegistry::list_provider_profiles() const {
 		result.push_back(get_provider_profile(id));
 		seen.insert(id);
 	}
-	if (models_dev) {
-		const Array catalog = models_dev->list_providers();
-		for (const Variant &entry_v : catalog) {
-			const Dictionary entry = entry_v;
-			const String id = entry.get("id", String());
-			if (id.is_empty() || seen.has(id)) {
-				continue;
-			}
-			const Dictionary profile = _profile_from_catalog(entry);
+	for (const Variant &id_v : list_popular_provider_ids()) {
+		const String id = id_v;
+		if (!seen.has(id)) {
+			const Dictionary profile = get_provider_profile(id);
 			if (!profile.is_empty()) {
 				result.push_back(profile);
+				seen.insert(id);
 			}
-			seen.insert(id);
 		}
 	}
 	return result;
@@ -261,7 +301,12 @@ bool SolersProviderRegistry::is_model_allowed(const String &p_provider, const St
 		const Array allowed_models = overlay.get("allowed_models", Array());
 		return allowed_models.is_empty() || allowed_models.has(p_model.strip_edges());
 	}
-	return true;
+	if (!models_dev) {
+		return true;
+	}
+	const Dictionary profile = get_provider_profile(p_provider);
+	const Dictionary model = models_dev->get_model(StringName(profile.get("catalog_provider", p_provider)), p_model);
+	return model.is_empty() || (String(model.get("status", "active")) != "deprecated" && !String(resolve_provider_profile(p_provider, String(), p_model).get("protocol", String())).is_empty());
 }
 
 Dictionary SolersProviderRegistry::validate_config(const Dictionary &p_config) const {
@@ -296,7 +341,7 @@ Dictionary SolersProviderRegistry::validate_config(const Dictionary &p_config) c
 		}
 	}
 	if (String(profile.get("auth_type", String())) == "oauth" && !oauth_configured) {
-		blockers.push_back(TTR("provider requires ChatGPT authorization."));
+		blockers.push_back(TTR("provider requires authorization."));
 	} else if (api_key_required && !api_key_available) {
 		blockers.push_back(TTR("provider requires an API key (set one in AI settings or via its environment variable)."));
 	}
@@ -306,7 +351,7 @@ Dictionary SolersProviderRegistry::validate_config(const Dictionary &p_config) c
 	if (model.is_empty()) {
 		warnings.push_back(TTR("model is empty; Solers will need an explicit model before inference."));
 	} else if (!is_model_allowed(provider, model)) {
-		blockers.push_back(TTR("model is not available through ChatGPT Codex authentication."));
+		blockers.push_back(TTR("model is deprecated or its provider protocol is not supported."));
 	}
 	if (!base_url.is_empty() && !(base_url.begins_with("http://") || base_url.begins_with("https://"))) {
 		blockers.push_back(TTR("base_url must start with http:// or https://."));

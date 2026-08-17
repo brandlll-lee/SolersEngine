@@ -2439,26 +2439,6 @@ void SolersDock::_submit_current_approval() {
 	_sync_approval_panel();
 }
 
-void SolersDock::_set_auto_approve_mode(bool p_enabled, bool p_persist) {
-	if (!permission_manager) {
-		return;
-	}
-	permission_manager->set_auto_approve_all(p_enabled);
-	if (approval_mode_chip) {
-		approval_mode_chip->set_texts(p_enabled ? TTR("Auto") : TTR("Manual"), String());
-		approval_mode_chip->set_tooltip_text(p_enabled ? TTR("Auto-approve each pending tool call once.") : TTR("Ask before mutating tool calls."));
-	}
-	if (p_persist && EditorSettings::get_singleton()) {
-		EditorSettings::get_singleton()->set_project_metadata("solers", "auto_approve_mode", p_enabled);
-	}
-}
-
-void SolersDock::_on_auto_approve_chip_pressed() {
-	const bool enabled = permission_manager && permission_manager->is_auto_approve_all();
-	_set_auto_approve_mode(!enabled, true);
-	_sync_approval_panel();
-}
-
 void SolersDock::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_ENTER_TREE: {
@@ -2494,10 +2474,12 @@ void SolersDock::set_services(SolersObservationService *p_observation_service, S
 	rpc_server = p_rpc_server;
 	settings_service = p_settings_service;
 	if (provider_settings_view && p_settings_service) {
-		provider_settings_view->bind_services(p_settings_service);
+		provider_settings_view->bind_services(p_settings_service, p_permission_manager);
 	}
 	const bool auto_mode = EditorSettings::get_singleton() ? (bool)EditorSettings::get_singleton()->get_project_metadata("solers", "auto_approve_mode", false) : false;
-	_set_auto_approve_mode(auto_mode, false);
+	if (permission_manager) {
+		permission_manager->set_auto_approve_all(auto_mode);
+	}
 	_refresh_status();
 	_sync_approval_panel();
 }
@@ -2756,6 +2738,7 @@ SolersDock::SolersDock() {
 	composer->add_child(attachment_bar);
 
 	HBoxContainer *composer_toolbar = memnew(HBoxContainer);
+	composer_toolbar->set_name("ComposerToolbar");
 	composer_toolbar->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	composer_toolbar->set_alignment(BoxContainer::ALIGNMENT_BEGIN);
 	composer_toolbar->add_theme_constant_override("separation", 6 * EDSCALE);
@@ -2768,19 +2751,15 @@ SolersDock::SolersDock() {
 	add_context_button->set_pressed_callback(callable_mp(this, &SolersDock::_on_add_context_pressed));
 	composer_toolbar->add_child(add_context_button);
 
-	approval_mode_chip = memnew(SolersSelectChip);
-	approval_mode_chip->configure(SNAME("shield"), TTR("Manual"), String(), TTR("Ask before mutating tool calls."));
-	approval_mode_chip->set_pressed_callback(callable_mp(this, &SolersDock::_on_auto_approve_chip_pressed));
-	composer_toolbar->add_child(approval_mode_chip);
+	model_chip = memnew(SolersSelectChip);
+	model_chip->set_name("ComposerModelChip");
+	model_chip->configure(StringName(), TTR("Model"), String(), TTR("Model and provider"));
+	model_chip->set_pressed_callback(callable_mp(this, &SolersDock::_on_model_chip_pressed));
+	composer_toolbar->add_child(model_chip);
 
 	Control *toolbar_spacer = memnew(Control);
 	toolbar_spacer->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	composer_toolbar->add_child(toolbar_spacer);
-
-	model_chip = memnew(SolersSelectChip);
-	model_chip->configure(StringName(), TTR("Model"), String(), TTR("Model and provider"));
-	model_chip->set_pressed_callback(callable_mp(this, &SolersDock::_on_model_chip_pressed));
-	composer_toolbar->add_child(model_chip);
 
 	send_chat_button = memnew(SolersGlyphButton);
 	send_chat_button->configure(SNAME("send_up"), SolersGlyphButton::SKIN_PRIMARY, TTR("Send"), 16);

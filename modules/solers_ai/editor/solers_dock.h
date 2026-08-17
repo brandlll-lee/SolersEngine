@@ -125,7 +125,6 @@ class SolersDock : public PanelContainer {
 	int model_submenu_kind = 0; // 0 = closed, 1 = model, 2 = effort.
 	// Cached model rows for search filtering (provider, model_id, label, available).
 	Array model_submenu_entries;
-	SolersSelectChip *approval_mode_chip = nullptr;
 	MarginContainer *approval_overlay_inset = nullptr;
 	PanelContainer *approval_overlay_card = nullptr;
 	Label *approval_tool_label = nullptr;
@@ -221,8 +220,6 @@ class SolersDock : public PanelContainer {
 	void _sync_approval_panel();
 	void _set_approval_choice(const String &p_choice);
 	void _submit_current_approval();
-	void _set_auto_approve_mode(bool p_enabled, bool p_persist);
-	void _on_auto_approve_chip_pressed();
 	void _on_chat_input_gui_input(const Ref<InputEvent> &p_event);
 	void _on_chat_input_text_changed();
 	Array _mention_inline_parse(const String &p_line_text);

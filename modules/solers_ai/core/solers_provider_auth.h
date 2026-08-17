@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  solers_provider_registry.h                                            */
+/*  solers_provider_auth.h                                                */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -30,47 +30,23 @@
 
 #pragma once
 
-#include "core/object/object.h"
-#include "core/variant/array.h"
+#include "core/string/string_name.h"
 #include "core/variant/dictionary.h"
 
-class SolersModelsDev;
-
-// Assembles transport profiles from catalog entries with declared connection
-// facts plus the small AuthHook/custom overlay table. Metadata-only catalog
-// entries are not presented as usable connections.
-class SolersProviderRegistry : public Object {
-	GDCLASS(SolersProviderRegistry, Object);
-
-	SolersModelsDev *models_dev = nullptr; // Owned.
-	Dictionary overlays; // id -> special profile (AuthHooks).
-	Array overlay_order;
-	bool owns_models_dev = true;
-
-	Dictionary _ok(const Variant &p_data) const;
-	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
-	void _register_auth_hooks();
-	Dictionary _profile_from_catalog(const Dictionary &p_catalog) const;
-	String _protocol_for_package(const String &p_package) const;
-	Dictionary _default_custom_profile(const String &p_id) const;
-	String _default_model_for_catalog(const Dictionary &p_catalog) const;
-
-protected:
-	static void _bind_methods();
-
+// Provider methods own authentication and request-specific protocol facts.
+class SolersProviderAuth {
 public:
-	SolersModelsDev *get_models_dev() const { return models_dev; }
-	void set_models_dev(SolersModelsDev *p_models_dev, bool p_owned = false);
+	virtual StringName get_method_id() const = 0;
+	virtual Dictionary start(const Dictionary &p_inputs = Dictionary()) = 0;
+	virtual void poll() = 0;
+	virtual void cancel() = 0;
+	virtual Dictionary get_status() const = 0;
+	virtual Dictionary take_credential() = 0;
+	virtual bool is_active() const = 0;
 
-	Dictionary get_provider_profile(const String &p_provider) const;
-	Dictionary resolve_provider_profile(const String &p_provider, const String &p_base_url_override = String(), const String &p_model = String()) const;
-	// Only profiles with an explicit wire protocol and authentication contract.
-	Array list_provider_profiles() const;
-	Array list_popular_provider_ids() const;
-	Array list_overlay_provider_ids() const;
-	Dictionary validate_config(const Dictionary &p_config) const;
-	bool is_model_allowed(const String &p_provider, const String &p_model) const;
+	// Worker-thread entry point. Returns { ok, credential, headers, profile }
+	// or { ok:false, error }. Implementations may refresh and rotate credentials.
+	virtual Dictionary prepare_request(const Dictionary &p_credential, const Dictionary &p_profile, const Dictionary &p_request, bool p_force_refresh) const = 0;
 
-	SolersProviderRegistry();
-	~SolersProviderRegistry();
+	virtual ~SolersProviderAuth() = default;
 };

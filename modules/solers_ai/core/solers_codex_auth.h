@@ -37,10 +37,12 @@
 #include "core/templates/safe_refcount.h"
 #include "core/variant/dictionary.h"
 
+#include "modules/solers_ai/core/solers_provider_auth.h"
+
 // Short-lived OAuth state machine for ChatGPT Codex authentication. It owns
 // only the browser handoff and token exchange; persistence stays in
 // SolersSettingsService and request shaping stays in the LLM protocol.
-class SolersCodexAuth {
+class SolersCodexAuth : public SolersProviderAuth {
 public:
 	enum State {
 		STATE_IDLE,
@@ -60,6 +62,7 @@ private:
 	String verifier;
 	String expected_state;
 	String authorization_code;
+	String error_code;
 	String error_message;
 	Dictionary completed_tokens;
 	uint64_t started_msec = 0;
@@ -80,18 +83,17 @@ private:
 	void _run_exchange();
 	void _respond(const String &p_html, int p_status = 200);
 	void _close_listener();
+	Dictionary _fail(const String &p_code, const String &p_message);
 
 public:
-	Dictionary start();
-	void poll();
-	void cancel();
-	Dictionary get_status() const;
-	Dictionary take_tokens();
-	bool is_active() const { return state == STATE_WAITING_BROWSER || state == STATE_EXCHANGING; }
-
-	// Blocking helper intended for an existing network worker, never the editor
-	// main thread. Returns { ok, tokens|error }.
-	static Dictionary refresh_tokens(const String &p_refresh_token);
+	StringName get_method_id() const override { return SNAME("chatgpt-browser"); }
+	Dictionary start(const Dictionary &p_inputs = Dictionary()) override;
+	void poll() override;
+	void cancel() override;
+	Dictionary get_status() const override;
+	Dictionary take_credential() override;
+	bool is_active() const override { return state == STATE_WAITING_BROWSER || state == STATE_EXCHANGING; }
+	Dictionary prepare_request(const Dictionary &p_credential, const Dictionary &p_profile, const Dictionary &p_request, bool p_force_refresh) const override;
 
 	~SolersCodexAuth();
 };

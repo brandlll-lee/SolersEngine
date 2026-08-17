@@ -1314,7 +1314,7 @@ bool SolersAgentSession::_refresh_active_model_limits() {
 	}
 	const String provider_id = active_provider.get("provider", String());
 	const String model_id = active_provider.get("model", String());
-	const Dictionary profile = settings_service->resolve_provider_profile(provider_id, active_provider.get("base_url", String()));
+	const Dictionary profile = settings_service->resolve_provider_profile(provider_id, active_provider.get("base_url", String()), model_id);
 	const StringName catalog_provider = StringName(profile.get("catalog_provider", provider_id));
 	const Dictionary model = models_dev->get_model(catalog_provider, model_id);
 
@@ -1346,8 +1346,7 @@ bool SolersAgentSession::_refresh_active_model_limits() {
 	const int previous_context = context_window;
 	const int previous_output = max_output_tokens;
 	context_window = resolved_context > 0 ? resolved_context : 0;
-	// Catalog output is advisory only. OpenCode hard-caps wire output at 32k so
-	// a lying catalog (output≈context≈500k) cannot starve input or force compact.
+	// Keep catalog output from consuming the usable input budget.
 	static constexpr int SOLERS_OUTPUT_TOKEN_MAX = 32000;
 	if (resolved_output <= 0) {
 		resolved_output = SolersContextManager::DEFAULT_OUTPUT_TOKENS;
@@ -1362,7 +1361,7 @@ int SolersAgentSession::_active_model_input_support(const String &p_modality) co
 		return -1;
 	}
 	const String provider_id = active_provider.get("provider", String());
-	const Dictionary profile = settings_service->resolve_provider_profile(provider_id, active_provider.get("base_url", String()));
+	const Dictionary profile = settings_service->resolve_provider_profile(provider_id, active_provider.get("base_url", String()), active_provider.get("model", String()));
 	const StringName catalog_provider = StringName(profile.get("catalog_provider", provider_id));
 	return SolersModelsDev::input_modality_support(models_dev->get_model(catalog_provider, active_provider.get("model", String())), p_modality);
 }
@@ -1385,7 +1384,7 @@ Dictionary SolersAgentSession::_build_request(const Array &p_messages, const Str
 	const String reasoning_effort = String(active_provider.get("reasoning_effort", String())).strip_edges();
 	if (!reasoning_effort.is_empty()) {
 		const String provider_id = active_provider.get("provider", String());
-		const Dictionary active_profile = settings_service ? settings_service->resolve_provider_profile(provider_id, active_provider.get("base_url", String())) : Dictionary();
+		const Dictionary active_profile = settings_service ? settings_service->resolve_provider_profile(provider_id, active_provider.get("base_url", String()), active_provider.get("model", String())) : Dictionary();
 		const StringName catalog_provider = StringName(active_profile.get("catalog_provider", provider_id));
 		const Dictionary model = models_dev ? models_dev->get_model(catalog_provider, active_provider.get("model", String())) : Dictionary();
 		if (SolersModelsDev::reasoning_efforts(model).has(reasoning_effort)) {
@@ -1441,7 +1440,7 @@ Error SolersAgentSession::_dispatch_model_request() {
 	}
 	const String provider_id = active_provider.get("provider", String());
 	const String base_url = active_provider.get("base_url", String());
-	const Dictionary profile = settings_service->resolve_provider_profile(provider_id, base_url);
+	const Dictionary profile = settings_service->resolve_provider_profile(provider_id, base_url, active_provider.get("model", String()));
 	if (system_prompt.is_empty()) {
 		system_prompt = _default_system_prompt();
 	}
@@ -1477,7 +1476,9 @@ Error SolersAgentSession::_begin_provider_request(const Dictionary &p_request, c
 	retry_profile = p_profile.duplicate(true);
 	current_provider_metadata.clear();
 	model_request_index++;
-	const Error err = client->begin(retry_request, retry_profile, active_provider.get("auth", Dictionary()));
+	const Dictionary auth = active_provider.get("auth", Dictionary());
+	const String provider = active_provider.get("provider", String());
+	const Error err = client->begin(retry_request, retry_profile, auth, settings_service->get_auth_method(provider, retry_profile, auth));
 	if (err != OK) {
 		const Dictionary error = client->get_error();
 		_finish_turn("failed", String(error.get("message", "Failed to start the model request.")), error);
@@ -1531,7 +1532,7 @@ Error SolersAgentSession::_dispatch_compaction_request() {
 	last_stop_reason = String();
 	const String provider_id = active_provider.get("provider", String());
 	const String base_url = active_provider.get("base_url", String());
-	const Dictionary profile = settings_service->resolve_provider_profile(provider_id, base_url);
+	const Dictionary profile = settings_service->resolve_provider_profile(provider_id, base_url, active_provider.get("model", String()));
 
 	const String compaction_system_prompt = R"(Update one continuation for another agent using exactly these headings:
 ## Goal
@@ -1921,7 +1922,7 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 	const String model = active_provider.get("model", String());
 	const String base_url = active_provider.get("base_url", String());
 	const Dictionary auth = active_provider.get("auth", Dictionary());
-	const Dictionary profile = settings_service->resolve_provider_profile(provider_id, base_url);
+	const Dictionary profile = settings_service->resolve_provider_profile(provider_id, base_url, model);
 	const bool local = profile.get("local", false);
 
 	_refresh_active_model_limits();

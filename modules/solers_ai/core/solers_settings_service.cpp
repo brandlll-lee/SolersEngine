@@ -56,10 +56,10 @@ void SolersSettingsService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("list_connected_provider_configs"), &SolersSettingsService::list_connected_provider_configs);
 	ClassDB::bind_method(D_METHOD("list_provider_view"), &SolersSettingsService::list_provider_view);
 	ClassDB::bind_method(D_METHOD("validate_provider_config", "args"), &SolersSettingsService::validate_provider_config);
-	ClassDB::bind_method(D_METHOD("start_codex_login", "provider"), &SolersSettingsService::start_codex_login);
-	ClassDB::bind_method(D_METHOD("cancel_codex_login"), &SolersSettingsService::cancel_codex_login);
-	ClassDB::bind_method(D_METHOD("get_codex_auth_status", "provider"), &SolersSettingsService::get_codex_auth_status);
-	ClassDB::bind_method(D_METHOD("disconnect_codex", "provider"), &SolersSettingsService::disconnect_codex);
+	ClassDB::bind_method(D_METHOD("start_provider_auth", "provider", "method_id", "inputs"), &SolersSettingsService::start_provider_auth, DEFVAL(StringName()), DEFVAL(Dictionary()));
+	ClassDB::bind_method(D_METHOD("cancel_auth"), &SolersSettingsService::cancel_auth);
+	ClassDB::bind_method(D_METHOD("get_auth_status", "provider"), &SolersSettingsService::get_auth_status);
+	ClassDB::bind_method(D_METHOD("disconnect_auth", "provider"), &SolersSettingsService::disconnect_auth);
 }
 
 Dictionary SolersSettingsService::_ok(const Variant &p_data) const {
@@ -232,6 +232,25 @@ Dictionary SolersSettingsService::_get_stored_auth(const String &p_provider) con
 	auth["key"] = key;
 	auth["source"] = source;
 	return auth;
+}
+
+StringName SolersSettingsService::_resolve_auth_method_id(const Dictionary &p_profile, const Dictionary &p_credential) const {
+	const StringName stored = StringName(p_credential.get("method_id", StringName()));
+	if (!stored.is_empty()) {
+		return stored;
+	}
+	StringName only;
+	for (const Variant &method_value : Array(p_profile.get("auth_methods", Array()))) {
+		const Dictionary method = method_value;
+		if (String(method.get("type", String())) != "oauth") {
+			continue;
+		}
+		if (!only.is_empty()) {
+			return StringName();
+		}
+		only = StringName(method.get("id", StringName()));
+	}
+	return only;
 }
 
 Dictionary SolersSettingsService::_get_provider_config(const String &p_provider, bool p_include_secret) const {
@@ -608,76 +627,115 @@ Dictionary SolersSettingsService::validate_provider_config(const Dictionary &p_a
 	return provider_registry->validate_config(config);
 }
 
-Dictionary SolersSettingsService::resolve_provider_profile(const String &p_provider, const String &p_base_url_override) const {
-	return provider_registry ? provider_registry->resolve_provider_profile(p_provider, p_base_url_override) : Dictionary();
+Dictionary SolersSettingsService::resolve_provider_profile(const String &p_provider, const String &p_base_url_override, const String &p_model) const {
+	return provider_registry ? provider_registry->resolve_provider_profile(p_provider, p_base_url_override, p_model) : Dictionary();
 }
 
 bool SolersSettingsService::is_model_allowed(const String &p_provider, const String &p_model) const {
 	return provider_registry && provider_registry->is_model_allowed(p_provider, p_model);
 }
 
-Dictionary SolersSettingsService::start_codex_login(const String &p_provider) {
-	ERR_FAIL_NULL_V(codex_auth, _error("OAUTH_UNAVAILABLE", "ChatGPT authorization is unavailable.", false));
+void SolersSettingsService::register_auth_method(const String &p_provider, SolersProviderAuth *p_method, bool p_owned) {
+	ERR_FAIL_NULL(p_method);
+	const StringName id = p_method->get_method_id();
+	ERR_FAIL_COND(p_provider.is_empty() || id.is_empty());
+	auth_methods[p_provider + "/" + String(id)] = p_method;
+	if (p_owned) {
+		owned_auth_methods.push_back(p_method);
+	}
+}
+
+SolersProviderAuth *SolersSettingsService::get_auth_method(const String &p_provider, const Dictionary &p_profile, const Dictionary &p_credential) const {
+	const StringName id = _resolve_auth_method_id(p_profile, p_credential);
+	SolersProviderAuth *const *found = auth_methods.getptr(p_provider + "/" + String(id));
+	return found ? *found : nullptr;
+}
+
+Dictionary SolersSettingsService::start_provider_auth(const String &p_provider, const StringName &p_method_id, const Dictionary &p_inputs) {
 	ERR_FAIL_NULL_V(provider_registry, _error("PROVIDER_REGISTRY_UNAVAILABLE", "Solers provider registry is not initialized.", false));
 	const Dictionary profile = provider_registry->get_provider_profile(p_provider);
-	if (String(profile.get("oauth_kind", String())) != "codex") {
-		return _error("OAUTH_PROFILE_INVALID", "The selected provider does not use ChatGPT Codex authorization.");
+	const StringName method_id = p_method_id.is_empty() ? _resolve_auth_method_id(profile) : p_method_id;
+	bool declared = false;
+	for (const Variant &method_value : Array(profile.get("auth_methods", Array()))) {
+		const Dictionary method = method_value;
+		if (String(method.get("type", String())) == "oauth" && StringName(method.get("id", StringName())) == method_id) {
+			declared = true;
+			break;
+		}
 	}
-	codex_provider = p_provider;
-	auth_error = String();
-	return codex_auth->start();
+	if (!declared) {
+		return _error("OAUTH_METHOD_NOT_DECLARED", "The selected provider does not declare this authorization method.", false);
+	}
+	SolersProviderAuth *const *found = auth_methods.getptr(p_provider + "/" + String(method_id));
+	if (!found) {
+		return _error("OAUTH_METHOD_UNAVAILABLE", "The selected authorization method is unavailable.", false);
+	}
+	if (active_auth && active_auth != *found && active_auth->is_active()) {
+		return _error("OAUTH_BUSY", "Another authorization attempt is already active.");
+	}
+	active_auth = *found;
+	active_auth_provider = p_provider;
+	auth_error.clear();
+	Dictionary result = active_auth->start(p_inputs);
+	return result;
 }
 
 void SolersSettingsService::poll_auth() {
-	if (!codex_auth) {
+	if (!active_auth) {
 		return;
 	}
-	codex_auth->poll();
-	const Dictionary tokens = codex_auth->take_tokens();
-	if (tokens.is_empty()) {
+	active_auth->poll();
+	const Dictionary credential = active_auth->take_credential();
+	if (credential.is_empty()) {
 		return;
 	}
-	const Dictionary profile = provider_registry ? provider_registry->get_provider_profile(codex_provider) : Dictionary();
-	if (codex_provider.is_empty() || profile.is_empty()) {
+	const Dictionary profile = provider_registry ? provider_registry->get_provider_profile(active_auth_provider) : Dictionary();
+	if (active_auth_provider.is_empty() || profile.is_empty()) {
 		return;
 	}
-	if (!store_provider_auth(codex_provider, tokens)) {
-		auth_error = "ChatGPT credentials could not be protected by the operating system and were not stored.";
+	if (!store_provider_auth(active_auth_provider, credential)) {
+		auth_error["code"] = "OAUTH_STORE_FAILED";
+		auth_error["message"] = "Authorization credentials could not be protected by the operating system and were not stored.";
 		return;
 	}
 	Dictionary config;
-	config["provider"] = codex_provider;
+	config["provider"] = active_auth_provider;
 	config["model"] = profile.get("default_model", String());
 	config["base_url"] = profile.get("default_base_url", String());
 	set_local_models_only(false); // Completing OAuth is explicit consent to remote model access.
 	set_provider_config(config);
 }
 
-void SolersSettingsService::cancel_codex_login() {
-	if (codex_auth) {
-		codex_auth->cancel();
+void SolersSettingsService::cancel_auth() {
+	if (active_auth) {
+		active_auth->cancel();
 	}
 }
 
-Dictionary SolersSettingsService::get_codex_auth_status(const String &p_provider) const {
-	Dictionary status = codex_auth ? codex_auth->get_status() : Dictionary();
+Dictionary SolersSettingsService::get_auth_status(const String &p_provider) const {
+	Dictionary status = active_auth && active_auth_provider == p_provider ? active_auth->get_status() : Dictionary();
+	if (status.is_empty()) {
+		status["state"] = "idle";
+		status["active"] = false;
+	}
 	const Dictionary config = _get_provider_config(p_provider, false);
 	status["connected"] = config.get("connected", false);
 	status["available"] = config.get("available", false);
-	if (!auth_error.is_empty()) {
+	if (active_auth_provider == p_provider && !auth_error.is_empty()) {
 		status["state"] = "failed";
-		status["error"] = auth_error;
+		status["code"] = auth_error.get("code", String());
+		status["error"] = auth_error.get("message", String());
 	}
 	return status;
 }
 
 bool SolersSettingsService::is_auth_active() const {
-	return codex_auth && codex_auth->is_active();
+	return active_auth && active_auth->is_active();
 }
 
-Dictionary SolersSettingsService::disconnect_codex(const String &p_provider) {
-	cancel_codex_login();
-	auth_error = String();
+Dictionary SolersSettingsService::disconnect_auth(const String &p_provider) {
+	cancel_auth();
+	auth_error.clear();
 	return disconnect_provider(p_provider);
 }
 
@@ -707,12 +765,13 @@ Dictionary SolersSettingsService::resolve_active_provider() const {
 }
 
 SolersSettingsService::SolersSettingsService() {
-	codex_auth = memnew(SolersCodexAuth);
+	register_auth_method("openai_codex", memnew(SolersCodexAuth));
 }
 
 SolersSettingsService::~SolersSettingsService() {
-	if (codex_auth) {
-		memdelete(codex_auth);
-		codex_auth = nullptr;
+	for (SolersProviderAuth *method : owned_auth_methods) {
+		memdelete(method);
 	}
+	owned_auth_methods.clear();
+	auth_methods.clear();
 }

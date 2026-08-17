@@ -78,6 +78,7 @@ void SolersModelsDev::_load_seed() {
 		const char *id;
 		const char *name;
 		const char *api;
+		const char *npm;
 		const char *env;
 		const char *protocol;
 		const char *auth_header;
@@ -85,20 +86,28 @@ void SolersModelsDev::_load_seed() {
 		bool local;
 	};
 	static const SeedProvider seeds[] = {
-		{ "openai", "OpenAI", "https://api.openai.com/v1", "OPENAI_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
-		{ "anthropic", "Anthropic", "https://api.anthropic.com", "ANTHROPIC_API_KEY", "anthropic-messages", "x-api-key", "", false },
-		{ "google", "Google", "https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
-		{ "deepseek", "DeepSeek", "https://api.deepseek.com", "DEEPSEEK_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
-		{ "openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
-		{ "qwen", "Qwen / DashScope", "https://dashscope.aliyuncs.com/compatible-mode/v1", "DASHSCOPE_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
-		{ "ollama", "Ollama", "http://127.0.0.1:11434/v1", "", "openai-chat", "", "", true },
-		{ "lmstudio", "LM Studio", "http://127.0.0.1:1234/v1", "", "openai-chat", "", "", true },
+		{ "openai", "OpenAI", "https://api.openai.com/v1", "@ai-sdk/openai", "OPENAI_API_KEY", "openai-responses", "Authorization", "Bearer ", false },
+		{ "anthropic", "Anthropic", "https://api.anthropic.com", "@ai-sdk/anthropic", "ANTHROPIC_API_KEY", "anthropic-messages", "x-api-key", "", false },
+		{ "google", "Google", "https://generativelanguage.googleapis.com/v1beta/openai", "@ai-sdk/openai-compatible", "GEMINI_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
+		{ "deepseek", "DeepSeek", "https://api.deepseek.com", "@ai-sdk/openai-compatible", "DEEPSEEK_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
+		{ "openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "@openrouter/ai-sdk-provider", "OPENROUTER_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
+		{ "qwen", "Qwen / DashScope", "https://dashscope.aliyuncs.com/compatible-mode/v1", "@ai-sdk/openai-compatible", "DASHSCOPE_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
+		{ "minimax", "MiniMax", "https://api.minimax.io/anthropic/v1", "@ai-sdk/anthropic", "MINIMAX_API_KEY", "anthropic-messages", "x-api-key", "", false },
+		{ "moonshotai", "Moonshot AI", "https://api.moonshot.ai/v1", "@ai-sdk/openai-compatible", "MOONSHOT_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
+		{ "xai", "xAI", "https://api.x.ai/v1", "@ai-sdk/xai", "XAI_API_KEY", "openai-responses", "Authorization", "Bearer ", false },
+		{ "zhipuai", "Z.AI", "https://open.bigmodel.cn/api/paas/v4", "@ai-sdk/openai-compatible", "ZHIPU_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
+		{ "zai-coding-plan", "Z.AI Coding Plan", "https://api.z.ai/api/coding/paas/v4", "@ai-sdk/openai-compatible", "ZHIPU_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
+		{ "opencode", "OpenCode Zen", "https://opencode.ai/zen/v1", "@ai-sdk/openai-compatible", "OPENCODE_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
+		{ "opencode-go", "OpenCode Go", "https://opencode.ai/zen/go/v1", "@ai-sdk/openai-compatible", "OPENCODE_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
+		{ "ollama", "Ollama", "http://127.0.0.1:11434/v1", "@ai-sdk/openai-compatible", "", "openai-chat", "", "", true },
+		{ "lmstudio", "LM Studio", "http://127.0.0.1:1234/v1", "@ai-sdk/openai-compatible", "", "openai-chat", "", "", true },
 	};
 	for (const SeedProvider &seed : seeds) {
 		Dictionary provider;
 		provider["id"] = String(seed.id);
 		provider["name"] = String(seed.name);
 		provider["api"] = String(seed.api);
+		provider["npm"] = String(seed.npm);
 		provider["protocol"] = String(seed.protocol);
 		provider["auth_header"] = String(seed.auth_header);
 		provider["auth_prefix"] = String(seed.auth_prefix);
@@ -154,7 +163,11 @@ void SolersModelsDev::_ingest(const Dictionary &p_root) {
 		}
 		out_provider["id"] = po.get("id", provider_id);
 		out_provider["name"] = po.get("name", provider_id);
-		out_provider["api"] = po.get("api", "");
+		out_provider["npm"] = po.get("npm", out_provider.get("npm", String()));
+		const Variant provider_api = po.get("api", Variant());
+		if (provider_api.get_type() == Variant::STRING && !String(provider_api).is_empty()) {
+			out_provider["api"] = provider_api;
+		}
 		out_provider["env"] = po.get("env", Array());
 		out_provider["local"] = po.get("local", false);
 
@@ -183,8 +196,13 @@ void SolersModelsDev::_ingest(const Dictionary &p_root) {
 				model["reasoning_options"] = mo.get("reasoning_options", Array());
 				model["tool_call"] = mo.get("tool_call", true);
 				model["attachment"] = mo.get("attachment", false);
+				model["status"] = mo.get("status", "active");
 				const Dictionary modalities = mo.get("modalities", Dictionary());
 				model["input_modalities"] = modalities.get("input", Array());
+				model["output_modalities"] = modalities.get("output", Array());
+				const Dictionary model_provider = mo.get("provider", Dictionary());
+				model["provider_npm"] = model_provider.get("npm", String());
+				model["provider_api"] = model_provider.get("api", String());
 				models_out[model_id] = model;
 			}
 		}
@@ -324,6 +342,7 @@ static Dictionary _solers_provider_meta(const Dictionary &p_provider) {
 	out["id"] = p_provider.get("id", String());
 	out["name"] = p_provider.get("name", String());
 	out["api"] = p_provider.get("api", String());
+	out["npm"] = p_provider.get("npm", String());
 	out["env"] = Array(p_provider.get("env", Array())).duplicate();
 	out["local"] = p_provider.get("local", false);
 	out["protocol"] = p_provider.get("protocol", String());
@@ -427,13 +446,21 @@ static const SolersProviderAlias SOLERS_PROVIDER_ALIASES[] = {
 } // namespace
 
 Array SolersModelsDev::list_popular_provider_ids() const {
-	// Catalog ordering data (OpenCode/Kilo style), not a behavior switch.
+	// Catalog ordering data, not a behavior switch.
 	static const char *POPULAR[] = {
 		"openai",
 		"anthropic",
 		"google",
 		"deepseek",
 		"openrouter",
+		"qwen",
+		"minimax",
+		"moonshotai",
+		"xai",
+		"zhipuai",
+		"zai-coding-plan",
+		"opencode",
+		"opencode-go",
 		"ollama",
 		"lmstudio",
 	};

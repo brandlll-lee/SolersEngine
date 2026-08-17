@@ -43,6 +43,7 @@ class LineEdit;
 class OptionButton;
 class ScrollContainer;
 class SolersCategoryCard;
+class SolersPermissionManager;
 class SolersProviderRegistry;
 class SolersSettingsService;
 class SpinBox;
@@ -54,6 +55,7 @@ class SolersPMAIView : public HBoxContainer {
 
 	SolersProviderRegistry *registry = nullptr;
 	SolersSettingsService *settings_service = nullptr;
+	SolersPermissionManager *permission_manager = nullptr;
 	bool owns_services = false;
 
 	// Left rail.
@@ -86,12 +88,15 @@ class SolersPMAIView : public HBoxContainer {
 	VBoxContainer *oauth_box = nullptr;
 	Label *oauth_status = nullptr;
 	Button *oauth_connect_btn = nullptr;
+	OptionButton *oauth_method_option = nullptr;
 	Button *oauth_cancel_btn = nullptr;
 	Button *oauth_disconnect_btn = nullptr;
 	VBoxContainer *status_list = nullptr;
 	Button *save_btn = nullptr;
 	Button *disconnect_btn = nullptr;
 	Label *saved_feedback = nullptr;
+	VBoxContainer *permissions_view = nullptr;
+	OptionButton *approval_mode_option = nullptr;
 
 	AcceptDialog *view_all_dialog = nullptr;
 	LineEdit *view_all_search = nullptr;
@@ -125,7 +130,7 @@ class SolersPMAIView : public HBoxContainer {
 	String _stored_asset_string(const String &p_plugin_id, const String &p_key, const String &p_default = String()) const;
 	Dictionary _asset_plugin_profile(const String &p_id) const;
 	bool _is_asset_provider(const String &p_id) const;
-	bool _uses_codex_auth(const String &p_id) const;
+	bool _uses_oauth(const String &p_id) const;
 	Dictionary _provider_status(const String &p_id, bool p_live_form = false) const;
 	String _source_label(const String &p_source) const;
 	void _add_section_label(const String &p_text);
@@ -143,9 +148,10 @@ class SolersPMAIView : public HBoxContainer {
 	void _on_field_changed(const String &p_ignored = String());
 	void _on_local_models_only_toggled(bool p_pressed);
 	void _on_reveal_toggled(bool p_pressed);
-	void _on_codex_connect();
-	void _on_codex_cancel();
-	void _on_codex_disconnect();
+	void _on_auth_connect();
+	void _on_auth_cancel();
+	void _on_auth_disconnect();
+	void _on_approval_mode_selected(int p_index);
 	void _save();
 	void _disconnect_selected_provider();
 	void _open_view_all();
@@ -173,7 +179,7 @@ protected:
 	static void _bind_methods();
 
 public:
-	void bind_services(SolersSettingsService *p_settings_service);
+	void bind_services(SolersSettingsService *p_settings_service, SolersPermissionManager *p_permission_manager = nullptr);
 	void refresh();
 	void select_category(const String &p_id);
 	void update_quick_popup_size_limits(const Size2 &p_max_popup_size);
