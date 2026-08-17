@@ -30,9 +30,11 @@
 
 #include "core/config/project_settings.h"
 #include "core/io/config_file.h"
+#include "core/os/thread.h"
 #include "editor/settings/editor_settings.h"
 #include "tests/test_macros.h"
 
+#include "modules/solers_ai/core/solers_provider_auth.h"
 #include "modules/solers_ai/core/solers_provider_registry.h"
 #include "modules/solers_ai/core/solers_secret_store.h"
 #include "modules/solers_ai/core/solers_settings_service.h"
@@ -41,6 +43,35 @@
 TEST_FORCE_LINK(test_solers_provider)
 
 namespace TestSolersProvider {
+
+class SyntheticAuth final : public SolersProviderAuth {
+	StringName method_id;
+
+public:
+	bool started = false;
+
+	explicit SyntheticAuth(const StringName &p_method_id) :
+			method_id(p_method_id) {}
+	StringName get_method_id() const override { return method_id; }
+	Dictionary start(const Dictionary &p_inputs) override {
+		started = true;
+		return Dictionary({ { "ok", true }, { "input", p_inputs } });
+	}
+	void poll() override {}
+	void cancel() override { started = false; }
+	Dictionary get_status() const override { return Dictionary({ { "state", started ? "pending" : "idle" }, { "active", started } }); }
+	Dictionary take_credential() override { return Dictionary(); }
+	bool is_active() const override { return started; }
+	Dictionary prepare_request(const Dictionary &p_credential, const Dictionary &p_profile, const Dictionary &p_request, bool p_force_refresh) const override {
+		Dictionary headers;
+		headers["Synthetic-Auth"] = p_force_refresh ? "refreshed" : "ready";
+		return Dictionary({ { "ok", true }, { "credential", p_credential }, { "profile", p_profile }, { "request", p_request }, { "headers", headers } });
+	}
+};
+
+static void _mark_thread_started(void *p_userdata) {
+	*static_cast<bool *>(p_userdata) = true;
+}
 
 class ScopedEditorSettings {
 	EditorSettings *settings = nullptr;
@@ -87,15 +118,64 @@ TEST_CASE("[SolersProviderRegistry] assembles catalog and AuthHook overlays") {
 	Dictionary anthropic = registry.get_provider_profile("anthropic");
 	Dictionary relay = registry.resolve_provider_profile("anthropic", "https://relay.example/v1");
 
-	CHECK(openai.get("protocol", String()) == "openai-chat");
+	CHECK(openai.get("protocol", String()) == "openai-responses");
 	CHECK(openai.get("default_base_url", String()) == "https://api.openai.com/v1");
 	CHECK(anthropic.get("protocol", String()) == "anthropic-messages");
 	CHECK(anthropic.get("default_base_url", String()) == "https://api.anthropic.com");
 	CHECK(relay.get("protocol", String()) == "anthropic-messages");
 	CHECK(relay.get("auth_header", String()) == "x-api-key");
 	CHECK(relay.get("catalog_provider", String()) == "anthropic");
+	CHECK(relay.get("base_url", String()) == "https://relay.example");
 	CHECK_FALSE(relay.has("catalog_limits_authoritative"));
 	CHECK_FALSE(registry.get_provider_profile("custom_openai_compatible").has("context_window"));
+}
+
+TEST_CASE("[SolersProviderRegistry] selected providers use catalog-aligned protocols and endpoints") {
+	SolersProviderRegistry registry;
+	const Dictionary expected = {
+		{ "minimax", Array({ "anthropic-messages", "https://api.minimax.io/anthropic" }) },
+		{ "moonshotai", Array({ "openai-chat", "https://api.moonshot.ai/v1" }) },
+		{ "xai", Array({ "openai-responses", "https://api.x.ai/v1" }) },
+		{ "zhipuai", Array({ "openai-chat", "https://open.bigmodel.cn/api/paas/v4" }) },
+		{ "zai-coding-plan", Array({ "openai-chat", "https://api.z.ai/api/coding/paas/v4" }) },
+		{ "opencode", Array({ "openai-chat", "https://opencode.ai/zen/v1" }) },
+		{ "opencode-go", Array({ "openai-chat", "https://opencode.ai/zen/go/v1" }) },
+	};
+	for (const Variant &id_value : expected.keys()) {
+		const String id = id_value;
+		const Array contract = expected[id];
+		const Dictionary profile = registry.resolve_provider_profile(id);
+		CHECK(profile.get("protocol", String()) == contract[0]);
+		CHECK(profile.get("base_url", String()) == contract[1]);
+	}
+}
+
+TEST_CASE("[Editor][SolersProviderAuth] methods are provider-scoped and profile-declared") {
+	SolersProviderRegistry registry;
+	SyntheticAuth codex_method(SNAME("chatgpt-browser"));
+	SyntheticAuth other_method(SNAME("chatgpt-browser"));
+	SolersSettingsService service;
+	service.set_provider_registry(&registry);
+	service.register_auth_method("openai_codex", &codex_method, false);
+	service.register_auth_method("future-provider", &other_method, false);
+	const Dictionary profile = registry.get_provider_profile("openai_codex");
+	Dictionary credential;
+	credential["method_id"] = "chatgpt-browser";
+	CHECK(service.get_auth_method("openai_codex", profile, credential) == &codex_method);
+	CHECK(service.get_auth_method("future-provider", profile, credential) == &other_method);
+	CHECK_FALSE(service.start_provider_auth("openai_codex", "not-declared").get("ok", true));
+	CHECK(service.start_provider_auth("openai_codex", "chatgpt-browser").get("ok", false));
+	CHECK(codex_method.started);
+	service.cancel_auth();
+}
+
+TEST_CASE("[SolersCodexAuth] Godot Thread returns an assigned ID on success") {
+	Thread thread;
+	bool ran = false;
+	const Thread::ID id = thread.start(&_mark_thread_started, &ran);
+	REQUIRE(id != Thread::UNASSIGNED_ID);
+	thread.wait_to_finish();
+	CHECK(ran);
 }
 
 TEST_CASE("[SolersProviderRegistry] requires an explicit connection profile") {

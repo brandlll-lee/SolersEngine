@@ -251,6 +251,11 @@ TEST_CASE("[SolersSession][SceneTree][Editor] journal rows preserve terminal sem
 	SceneTree::get_singleton()->get_root()->add_child(dock);
 	dock->load_chat_history(timeline);
 	MessageQueue::get_singleton()->flush();
+	Node *approval_mode = dock->find_child("ApprovalModeOption", true, false);
+	HBoxContainer *composer_toolbar = Object::cast_to<HBoxContainer>(dock->find_child("ComposerToolbar", true, false));
+	REQUIRE((approval_mode != nullptr && composer_toolbar != nullptr));
+	REQUIRE(composer_toolbar->get_child_count() >= 2);
+	CHECK(composer_toolbar->get_child(1)->get_name() == "ComposerModelChip");
 	VBoxContainer *rows = Object::cast_to<VBoxContainer>(dock->find_child("ChatTimelineMessages", true, false));
 	ScrollContainer *scroll = Object::cast_to<ScrollContainer>(dock->find_child("ChatTimelineScroll", true, false));
 	REQUIRE((rows != nullptr && scroll != nullptr));
