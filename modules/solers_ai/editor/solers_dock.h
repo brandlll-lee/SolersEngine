@@ -117,13 +117,17 @@ class SolersDock : public PanelContainer {
 	VBoxContainer *model_menu_box = nullptr;
 	Button *model_menu_model_row = nullptr;
 	Button *model_menu_effort_row = nullptr;
+	PanelContainer *model_provider_menu = nullptr;
+	ScrollContainer *model_provider_scroll = nullptr;
+	VBoxContainer *model_provider_list = nullptr;
 	PanelContainer *model_submenu = nullptr;
 	ScrollContainer *model_submenu_scroll = nullptr;
 	VBoxContainer *model_submenu_box = nullptr;
 	LineEdit *model_submenu_search = nullptr;
 	VBoxContainer *model_submenu_list = nullptr;
 	int model_submenu_kind = 0; // 0 = closed, 1 = model, 2 = effort.
-	// Cached model rows for search filtering (provider, model_id, label, available).
+	uint64_t model_catalog_revision = 0;
+	// Cached model rows for search filtering.
 	Array model_submenu_entries;
 	MarginContainer *approval_overlay_inset = nullptr;
 	PanelContainer *approval_overlay_card = nullptr;
@@ -191,6 +195,8 @@ class SolersDock : public PanelContainer {
 	void _on_model_chip_pressed();
 	void _position_model_menu();
 	void _open_model_submenu(int p_kind);
+	void _open_provider_models(const Dictionary &p_config, Button *p_anchor_row);
+	void _position_model_provider_menu(Button *p_anchor_row);
 	void _rebuild_model_submenu_list(const String &p_filter = String());
 	void _on_model_submenu_search(const String &p_text);
 	void _position_model_submenu(Button *p_anchor_row);

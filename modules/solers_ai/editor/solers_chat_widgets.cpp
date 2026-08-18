@@ -597,6 +597,7 @@ void solers_configure_prompt_surface(SolersSurface *p_surface) {
 	ERR_FAIL_NULL(p_surface);
 	p_surface->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	p_surface->configure(solers_composer_bg(), solers_composer_border(), 19, 14, true);
+	p_surface->add_theme_constant_override("margin_bottom", 7 * EDSCALE);
 }
 
 void solers_configure_prompt_text_edit(TextEdit *p_edit) {

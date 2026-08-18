@@ -31,6 +31,7 @@
 #include "core/object/message_queue.h"
 #include "core/string/translation_server.h"
 #include "editor/settings/editor_settings.h"
+#include "editor/themes/editor_scale.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
 #include "scene/gui/label.h"
@@ -147,6 +148,8 @@ TEST_CASE("[SolersUI][SceneTree] user messages preserve the bubble, hover footer
 	Control *footer = Object::cast_to<Control>(cell->find_child("UserMessageFooter", true, false));
 	Control *editor = Object::cast_to<Control>(cell->find_child("HistoryMessageEditorSurface", true, false));
 	REQUIRE(bool(bubble && footer && editor));
+	CHECK(editor->get_theme_constant("margin_top") == 14 * EDSCALE);
+	CHECK(editor->get_theme_constant("margin_bottom") == 7 * EDSCALE);
 	TypedArray<Node> action_buttons = editor->find_children("*", "Button", true, false);
 	REQUIRE(action_buttons.size() == 2);
 	for (int i = 0; i < action_buttons.size(); i++) {
@@ -178,5 +181,4 @@ TEST_CASE("[SolersUI][SceneTree] user messages preserve the bubble, hover footer
 	MessageQueue::get_singleton()->flush();
 	SolersIcons::clear_cache();
 }
-
 } // namespace TestSolersEditor

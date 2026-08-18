@@ -211,27 +211,6 @@ static void solers_style_session_button(Button *p_button, bool p_session_row) {
 	p_button->add_theme_style_override("hover_pressed", solers_row_styles[6]);
 }
 
-static Button *solers_make_model_popup_group(const String &p_title, const Ref<Texture2D> &p_icon = Ref<Texture2D>()) {
-	Button *label = memnew(Button);
-	label->set_disabled(true);
-	label->set_focus_mode(Control::FOCUS_NONE);
-	label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	label->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
-	label->set_clip_text(true);
-	label->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
-	label->set_custom_minimum_size(Size2(0, 24 * EDSCALE));
-	label->set_text(p_title);
-	label->add_theme_font_size_override("font_size", int(12 * EDSCALE));
-	label->add_theme_color_override("font_disabled_color", Color(0.50, 0.55, 0.58));
-	label->add_theme_style_override("disabled", solers_make_stylebox_margins(Color(0, 0, 0, 0), 0, 8, 8, 8, 2));
-	if (p_icon.is_valid()) {
-		label->set_button_icon(p_icon);
-		label->add_theme_color_override("icon_disabled_color", Color(1, 1, 1, 0.62));
-		label->add_theme_constant_override("h_separation", int(6 * EDSCALE));
-	}
-	return label;
-}
-
 static Button *solers_make_model_popup_row(const String &p_label, const String &p_model_id, bool p_selected) {
 	Button *row = memnew(Button);
 	row->set_auto_translate_mode(Node::AUTO_TRANSLATE_MODE_DISABLED);
@@ -306,14 +285,10 @@ static void solers_add_unique_model(Array &r_models, HashSet<String> &r_seen, co
 	r_models.push_back(model);
 }
 
-static String solers_model_display_label(const String &p_model_id, const Dictionary &p_model_info, const Dictionary &p_model_labels) {
+static String solers_model_display_label(const String &p_model_id, const Dictionary &p_model_info) {
 	const String catalog_name = String(p_model_info.get("name", String())).strip_edges();
 	if (!catalog_name.is_empty()) {
 		return catalog_name;
-	}
-	const String labeled = String(p_model_labels.get(p_model_id, String())).strip_edges();
-	if (!labeled.is_empty()) {
-		return labeled;
 	}
 	// Catalog is the authority; slug humanization is only the last resort.
 	return p_model_id.replace("-", " ").replace("_", " ").strip_edges().capitalize();
@@ -337,7 +312,7 @@ static String solers_resolve_model_display(SolersSettingsService *p_settings, co
 	const String catalog_id = profile.get("catalog_provider", provider);
 	SolersModelsDev *models_dev = solers_dock_models_dev(p_settings);
 	const Dictionary model_info = models_dev ? models_dev->get_model(StringName(catalog_id), p_model) : Dictionary();
-	return solers_model_display_label(p_model, model_info, profile.get("model_labels", Dictionary()));
+	return solers_model_display_label(p_model, model_info);
 }
 
 static String solers_reasoning_effort_label(const String &p_effort) {
@@ -1104,6 +1079,11 @@ void SolersDock::_on_model_chip_pressed() {
 	solers_clear_children(model_menu_box);
 	model_menu_model_row = nullptr;
 	model_menu_effort_row = nullptr;
+	SolersModelsDev *models_dev = solers_dock_models_dev(settings_service);
+	if (models_dev) {
+		models_dev->refresh();
+		model_catalog_revision = models_dev->get_catalog_revision();
+	}
 
 	const Dictionary provider_data = settings_service ? Dictionary(settings_service->get_provider_config().get("data", Dictionary())) : Dictionary();
 	const String active_provider = String(provider_data.get("provider", String())).strip_edges();
@@ -1119,7 +1099,6 @@ void SolersDock::_on_model_chip_pressed() {
 	model_menu_model_row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_open_model_submenu).bind(SOLERS_SUBMENU_MODEL));
 	model_menu_box->add_child(model_menu_model_row);
 
-	SolersModelsDev *models_dev = solers_dock_models_dev(settings_service);
 	const Dictionary active_model_info = models_dev ? models_dev->get_model(StringName(active_catalog_id), active_model) : Dictionary();
 	const Array efforts = SolersModelsDev::reasoning_efforts(active_model_info);
 	if (provider_data.get("available", false) && !active_model.is_empty() && !efforts.is_empty()) {
@@ -1145,6 +1124,7 @@ void SolersDock::_on_model_chip_pressed() {
 	model_popup_overlay->move_to_front();
 	model_menu->show();
 	_position_model_menu();
+	set_process_internal(true);
 }
 
 void SolersDock::_position_model_menu() {
@@ -1179,15 +1159,12 @@ void SolersDock::_open_model_submenu(int p_kind) {
 	if (!model_submenu || !model_submenu_scroll || !model_submenu_list) {
 		return;
 	}
-	if (model_submenu_kind == p_kind && model_submenu->is_visible()) {
+	if ((p_kind == SOLERS_SUBMENU_MODEL && model_provider_menu && model_provider_menu->is_visible()) ||
+			(p_kind == SOLERS_SUBMENU_EFFORT && model_submenu_kind == p_kind && model_submenu->is_visible())) {
 		return;
 	}
 	model_submenu_kind = p_kind;
 	model_submenu_entries.clear();
-	if (model_submenu_search) {
-		model_submenu_search->set_visible(p_kind == SOLERS_SUBMENU_MODEL);
-		model_submenu_search->set_text(String());
-	}
 
 	const Dictionary provider_data = settings_service ? Dictionary(settings_service->get_provider_config().get("data", Dictionary())) : Dictionary();
 	const String active_provider = String(provider_data.get("provider", String())).strip_edges();
@@ -1195,73 +1172,47 @@ void SolersDock::_open_model_submenu(int p_kind) {
 	const String active_effort = String(provider_data.get("reasoning_effort", String())).strip_edges();
 
 	if (p_kind == SOLERS_SUBMENU_MODEL) {
+		if (!model_provider_menu || !model_provider_list) {
+			return;
+		}
+		model_submenu->hide();
+		solers_clear_children(model_provider_list);
 		const Dictionary connected_data = settings_service ? Dictionary(settings_service->list_connected_provider_configs().get("data", Dictionary())) : Dictionary();
 		const Array connected = connected_data.get("providers", Array());
-		SolersModelsDev *models_dev = solers_dock_models_dev(settings_service);
-
 		for (const Variant &config_value : connected) {
 			const Dictionary config = config_value;
 			const bool available = config.get("available", false);
 			const Dictionary profile = config.get("profile", Dictionary());
 			const String provider = config.get("provider", String());
-			const bool selected = active_provider == provider;
 			const String catalog_id = profile.get("catalog_provider", provider);
-			const StringName catalog_name = StringName(catalog_id);
-			const Array allowed_models = profile.get("allowed_models", Array());
-			const bool has_allowlist = !allowed_models.is_empty();
-
-			Array models;
-			HashSet<String> seen_models;
-			solers_add_unique_model(models, seen_models, config.get("model", String()));
-			for (const Variant &profile_model : allowed_models) {
-				solers_add_unique_model(models, seen_models, profile_model);
-			}
-			if (models_dev) {
-				for (const Variant &model_id_value : models_dev->list_model_ids(catalog_name)) {
-					const String model_id = model_id_value;
-					if (has_allowlist && !allowed_models.has(model_id)) {
-						continue;
-					}
-					const Dictionary model_info = models_dev->get_model(catalog_name, model_id);
-					if (model_info.has("tool_call") && !(bool)model_info["tool_call"]) {
-						continue;
-					}
-					solers_add_unique_model(models, seen_models, model_id);
-				}
-			}
-			solers_add_unique_model(models, seen_models, profile.get("default_model", String()));
-			if (models.is_empty()) {
-				continue;
-			}
-
 			const String provider_label = profile.get("label", provider);
-			Dictionary group;
-			group["kind"] = "group";
-			group["provider"] = provider;
-			group["label"] = available ? provider_label : vformat(TTR("%s — blocked by Local Models Only"), provider_label);
-			group["catalog_id"] = catalog_id;
-			model_submenu_entries.push_back(group);
-
-			const Dictionary model_labels = profile.get("model_labels", Dictionary());
-			for (const Variant &model_value : models) {
-				const String model_id = model_value;
-				if (has_allowlist && !allowed_models.has(model_id)) {
-					continue;
-				}
-				const Dictionary model_info = models_dev ? models_dev->get_model(catalog_name, model_id) : Dictionary();
-				Dictionary entry;
-				entry["kind"] = "model";
-				entry["provider"] = provider;
-				entry["model_id"] = model_id;
-				entry["label"] = model_info.get("name", model_labels.get(model_id, model_id));
-				entry["available"] = available;
-				entry["selected"] = selected && model_id == active_model;
-				model_submenu_entries.push_back(entry);
+			Button *row = solers_make_model_popup_row(provider_label, provider, active_provider == provider);
+			if (available) {
+				row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_open_provider_models).bind(config, row));
+				row->connect(SceneStringName(mouse_entered), callable_mp(this, &SolersDock::_open_provider_models).bind(config, row));
+			} else {
+				row->set_disabled(true);
+				row->add_theme_color_override("font_disabled_color", SOLERS_TEXT_DIM);
+				row->set_tooltip_text(TTR("Disable Local Models Only to use this remote provider."));
 			}
+			model_provider_list->add_child(row);
 		}
-		_rebuild_model_submenu_list();
-		_position_model_submenu(model_menu_model_row);
+		if (model_provider_list->get_child_count() == 0) {
+			Label *empty = memnew(Label(TTR("No connected model provider. Connect one in Provider Settings.")));
+			empty->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+			empty->add_theme_color_override("font_color", SOLERS_TEXT_DIM);
+			empty->set_custom_minimum_size(Size2(0, 52 * EDSCALE));
+			model_provider_list->add_child(empty);
+		}
+		_position_model_provider_menu(model_menu_model_row);
 	} else if (p_kind == SOLERS_SUBMENU_EFFORT) {
+		if (model_provider_menu) {
+			model_provider_menu->hide();
+		}
+		if (model_submenu_search) {
+			model_submenu_search->hide();
+			model_submenu_search->set_text(String());
+		}
 		solers_clear_children(model_submenu_list);
 		const Dictionary active_profile = provider_data.get("profile", Dictionary());
 		const String active_catalog_id = active_profile.get("catalog_provider", active_provider);
@@ -1282,6 +1233,55 @@ void SolersDock::_open_model_submenu(int p_kind) {
 	}
 }
 
+void SolersDock::_open_provider_models(const Dictionary &p_config, Button *p_anchor_row) {
+	if (!settings_service || !model_submenu || !model_submenu_list || !p_anchor_row) {
+		return;
+	}
+	model_submenu_kind = SOLERS_SUBMENU_MODEL;
+	model_submenu_entries.clear();
+	if (model_submenu_search) {
+		model_submenu_search->show();
+		model_submenu_search->set_text(String());
+	}
+
+	const Dictionary profile = p_config.get("profile", Dictionary());
+	const String provider = p_config.get("provider", String());
+	const String catalog_id = profile.get("catalog_provider", provider);
+	const StringName catalog_name = StringName(catalog_id);
+	const Dictionary active = settings_service->get_provider_config().get("data", Dictionary());
+	const String active_provider = active.get("provider", String());
+	const String active_model = active.get("model", String());
+	SolersProviderRegistry *registry = settings_service->get_provider_registry();
+	SolersModelsDev *models_dev = solers_dock_models_dev(settings_service);
+
+	Array models;
+	HashSet<String> seen_models;
+	solers_add_unique_model(models, seen_models, p_config.get("model", String()));
+	if (models_dev) {
+		for (const Variant &model_id : models_dev->list_model_ids(catalog_name)) {
+			solers_add_unique_model(models, seen_models, model_id);
+		}
+	}
+	solers_add_unique_model(models, seen_models, profile.get("default_model", String()));
+	models.sort();
+
+	for (const Variant &model_value : models) {
+		const String model_id = model_value;
+		if (registry && !registry->is_model_allowed(provider, model_id)) {
+			continue;
+		}
+		const Dictionary model_info = models_dev ? models_dev->get_model(catalog_name, model_id) : Dictionary();
+		Dictionary entry;
+		entry["provider"] = provider;
+		entry["model_id"] = model_id;
+		entry["label"] = solers_model_display_label(model_id, model_info);
+		entry["selected"] = provider == active_provider && model_id == active_model;
+		model_submenu_entries.push_back(entry);
+	}
+	_rebuild_model_submenu_list();
+	_position_model_submenu(p_anchor_row);
+}
+
 void SolersDock::_on_model_submenu_search(const String &p_text) {
 	if (model_submenu_kind == SOLERS_SUBMENU_MODEL) {
 		_rebuild_model_submenu_list(p_text);
@@ -1295,48 +1295,25 @@ void SolersDock::_rebuild_model_submenu_list(const String &p_filter) {
 	solers_clear_children(model_submenu_list);
 	const String filter = p_filter.strip_edges().to_lower();
 	int visible_models = 0;
-	HashSet<String> emitted_groups;
 
 	for (int i = 0; i < model_submenu_entries.size(); i++) {
 		const Dictionary entry = model_submenu_entries[i];
-		if (String(entry.get("kind", String())) != "model") {
-			continue;
-		}
 		const String model_id = entry.get("model_id", String());
 		const String label = entry.get("label", model_id);
 		if (!filter.is_empty() && !model_id.to_lower().contains(filter) && !label.to_lower().contains(filter)) {
 			continue;
 		}
 		const String provider = entry.get("provider", String());
-		if (!emitted_groups.has(provider)) {
-			for (const Variant &g_v : model_submenu_entries) {
-				const Dictionary g = g_v;
-				if (g.get("kind", String()) == "group" && String(g.get("provider", String())) == provider) {
-					model_submenu_list->add_child(solers_make_model_popup_group(
-							g.get("label", provider),
-							SolersIcons::provider_logo(g.get("catalog_id", provider), int(Math::round(13.0f * EDSCALE)))));
-					emitted_groups.insert(provider);
-					break;
-				}
-			}
-		}
-		const bool available = entry.get("available", false);
 		Button *row = solers_make_model_popup_row(label, model_id, entry.get("selected", false));
-		if (available) {
-			row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_set_model_provider_from_popup).bind(provider, model_id));
-		} else {
-			row->set_disabled(true);
-			row->add_theme_color_override("font_disabled_color", SOLERS_TEXT_DIM);
-			row->set_tooltip_text(TTR("Disable Local Models Only to use this remote model."));
-		}
+		row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_set_model_provider_from_popup).bind(provider, model_id));
 		model_submenu_list->add_child(row);
 		visible_models++;
 	}
 
 	if (visible_models == 0) {
 		Label *empty = memnew(Label(model_submenu_entries.is_empty()
-						? TTR("No connected model provider. Connect one in Provider Settings.")
-						: (filter.is_empty() ? TTR("Connected providers do not expose any selectable models.") : TTR("No models match this search."))));
+						? TTR("This provider does not expose any selectable models.")
+						: TTR("No models match this search.")));
 		empty->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
 		empty->add_theme_color_override("font_color", SOLERS_TEXT_DIM);
 		empty->set_custom_minimum_size(Size2(0, 52 * EDSCALE));
@@ -1344,14 +1321,48 @@ void SolersDock::_rebuild_model_submenu_list(const String &p_filter) {
 	}
 }
 
-void SolersDock::_position_model_submenu(Button *p_anchor_row) {
-	if (!model_popup_overlay || !model_menu || !model_submenu || !model_submenu_scroll || !model_submenu_list || !p_anchor_row) {
+void SolersDock::_position_model_provider_menu(Button *p_anchor_row) {
+	if (!model_popup_overlay || !model_menu || !model_provider_menu || !model_provider_scroll || !model_provider_list || !p_anchor_row) {
 		return;
 	}
 
 	const Point2 base_screen_pos = model_popup_overlay->get_screen_position();
 	const Size2 overlay_size = model_popup_overlay->get_size();
-	const Rect2 menu_rect(model_menu->get_position(), model_menu->get_size());
+	const Rect2 parent_rect(model_menu->get_position(), model_menu->get_size());
+	const Point2 row_pos = p_anchor_row->get_screen_position() - base_screen_pos;
+	const int margin = int(8 * EDSCALE);
+	const int gap = int(4 * EDSCALE);
+	const int popup_pad = int(8 * EDSCALE);
+	const int max_w = MAX(1, int(overlay_size.x) - margin * 2);
+	const int menu_w = CLAMP(int(230 * EDSCALE), 1, max_w);
+	const float natural_h = model_provider_list->get_combined_minimum_size().y + popup_pad * 2;
+	const int max_h = MIN(int(360 * EDSCALE), MAX(1, int(overlay_size.y) - margin * 2));
+	const int menu_h = int(CLAMP(natural_h, float(MIN(int(60 * EDSCALE), max_h)), float(max_h)));
+
+	model_provider_scroll->set_custom_minimum_size(Size2(MAX(1, menu_w - popup_pad * 2), MAX(1, menu_h - popup_pad * 2)));
+	model_provider_list->set_custom_minimum_size(Size2(MAX(1, menu_w - popup_pad * 2), 0));
+	model_provider_scroll->get_v_scroll_bar()->set_value(0);
+
+	Point2 menu_pos(parent_rect.position.x + parent_rect.size.x + gap, row_pos.y - popup_pad);
+	if (menu_pos.x + menu_w > overlay_size.x - margin) {
+		menu_pos.x = parent_rect.position.x - menu_w - gap;
+	}
+	menu_pos.x = CLAMP(menu_pos.x, float(margin), MAX(float(margin), overlay_size.x - menu_w - margin));
+	menu_pos.y = CLAMP(menu_pos.y, float(margin), MAX(float(margin), overlay_size.y - menu_h - margin));
+	model_provider_menu->set_size(Size2(menu_w, menu_h));
+	model_provider_menu->set_position(menu_pos);
+	model_provider_menu->show();
+}
+
+void SolersDock::_position_model_submenu(Button *p_anchor_row) {
+	PanelContainer *parent_menu = model_submenu_kind == SOLERS_SUBMENU_MODEL ? model_provider_menu : model_menu;
+	if (!model_popup_overlay || !parent_menu || !model_submenu || !model_submenu_scroll || !model_submenu_list || !p_anchor_row) {
+		return;
+	}
+
+	const Point2 base_screen_pos = model_popup_overlay->get_screen_position();
+	const Size2 overlay_size = model_popup_overlay->get_size();
+	const Rect2 menu_rect(parent_menu->get_position(), parent_menu->get_size());
 	const Point2 row_pos = p_anchor_row->get_screen_position() - base_screen_pos;
 	const int margin = int(8 * EDSCALE);
 	const int gap = int(4 * EDSCALE);
@@ -1385,6 +1396,9 @@ void SolersDock::_position_model_submenu(Button *p_anchor_row) {
 
 void SolersDock::_close_model_submenu() {
 	model_submenu_kind = SOLERS_SUBMENU_NONE;
+	if (model_provider_menu) {
+		model_provider_menu->hide();
+	}
 	if (model_submenu) {
 		model_submenu->hide();
 	}
@@ -1398,6 +1412,7 @@ void SolersDock::_hide_model_popup() {
 	if (model_popup_overlay) {
 		model_popup_overlay->hide();
 	}
+	set_process_internal(false);
 }
 
 void SolersDock::_on_model_popup_overlay_gui_input(const Ref<InputEvent> &p_event) {
@@ -2462,6 +2477,16 @@ void SolersDock::_notification(int p_what) {
 			_refresh_status();
 			_refresh_session_list();
 		} break;
+		case NOTIFICATION_INTERNAL_PROCESS: {
+			SolersModelsDev *models_dev = solers_dock_models_dev(settings_service);
+			if (models_dev && model_popup_overlay && model_popup_overlay->is_visible()) {
+				const uint64_t revision = models_dev->get_catalog_revision();
+				if (revision != model_catalog_revision) {
+					_hide_model_popup();
+					_on_model_chip_pressed();
+				}
+			}
+		} break;
 	}
 }
 
@@ -2848,6 +2873,28 @@ SolersDock::SolersDock() {
 	model_menu_box = memnew(VBoxContainer);
 	model_menu_box->add_theme_constant_override("separation", 2 * EDSCALE);
 	model_menu_margin->add_child(model_menu_box);
+
+	model_provider_menu = memnew(PanelContainer);
+	model_provider_menu->set_mouse_filter(Control::MOUSE_FILTER_STOP);
+	model_provider_menu->hide();
+	model_provider_menu->add_theme_style_override(SceneStringName(panel), solers_make_stylebox(SOLERS_POPUP_BG, Color(0, 0, 0, 0), 14, 0, true));
+	model_popup_overlay->add_child(model_provider_menu);
+	MarginContainer *model_provider_margin = memnew(MarginContainer);
+	model_provider_margin->add_theme_constant_override("margin_left", 8 * EDSCALE);
+	model_provider_margin->add_theme_constant_override("margin_right", 8 * EDSCALE);
+	model_provider_margin->add_theme_constant_override("margin_top", 8 * EDSCALE);
+	model_provider_margin->add_theme_constant_override("margin_bottom", 8 * EDSCALE);
+	model_provider_menu->add_child(model_provider_margin);
+	model_provider_scroll = memnew(ScrollContainer);
+	model_provider_scroll->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	model_provider_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	model_provider_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
+	model_provider_scroll->set_vertical_scroll_mode(ScrollContainer::SCROLL_MODE_AUTO);
+	model_provider_margin->add_child(model_provider_scroll);
+	model_provider_list = memnew(VBoxContainer);
+	model_provider_list->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	model_provider_list->add_theme_constant_override("separation", 2 * EDSCALE);
+	model_provider_scroll->add_child(model_provider_list);
 
 	model_submenu = memnew(PanelContainer);
 	model_submenu->set_mouse_filter(Control::MOUSE_FILTER_STOP);
