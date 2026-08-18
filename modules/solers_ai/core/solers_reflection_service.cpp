@@ -52,6 +52,7 @@
 #include "modules/solers_ai/core/solers_action_timeline.h"
 #include "modules/solers_ai/core/solers_geometry_facts.h"
 #include "modules/solers_ai/core/solers_resource_service.h"
+#include "modules/solers_ai/core/solers_tool.h"
 #ifdef MODULE_CSG_ENABLED
 #include "modules/csg/csg_shape.h"
 #endif
@@ -761,7 +762,7 @@ Dictionary SolersReflectionService::inspect_nodes(const Dictionary &p_args) {
 		String safe_path;
 		_safe_node_path(node, safe_path);
 		item["node_path"] = safe_path;
-		item["object_id"] = String::num_int64((int64_t)node->get_instance_id());
+		item["object_id"] = solers_object_id_to_string(node->get_instance_id());
 		item["name"] = node->get_name();
 		item["class_name"] = node->get_class();
 		item["child_count"] = node->get_child_count();
@@ -1470,7 +1471,7 @@ Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
 				String safe_path;
 				if (node && _safe_node_path(node, safe_path)) {
 					receipt["node_path"] = safe_path;
-					receipt["object_id"] = String::num_int64((int64_t)node->get_instance_id());
+					receipt["object_id"] = solers_object_id_to_string(node->get_instance_id());
 					receipt["class_name"] = node->get_class();
 				} else {
 					receipt["node_path"] = path;
@@ -1548,7 +1549,7 @@ Dictionary SolersReflectionService::measure_spatial_relations(const Dictionary &
 		for (const KeyValue<String, Node3D *> &endpoint : { KeyValue<String, Node3D *>("a_node", a), KeyValue<String, Node3D *>("b_node", b) }) {
 			Dictionary identity = _spatial_facts(endpoint.value);
 			identity["node_path"] = endpoint.value->get_path();
-			identity["object_id"] = String::num_int64((int64_t)endpoint.value->get_instance_id());
+			identity["object_id"] = solers_object_id_to_string(endpoint.value->get_instance_id());
 			identity["class_name"] = endpoint.value->get_class();
 			result[endpoint.key] = identity;
 		}
@@ -2010,7 +2011,7 @@ static Dictionary _solers_scene_state_receipt(const String &p_path) {
 	const int history_id = EditorNode::get_editor_data().get_current_edited_scene_history_id();
 	data["history_id"] = history_id;
 	if (Node *root = EditorNode::get_singleton() ? EditorNode::get_singleton()->get_edited_scene() : nullptr) {
-		data["root_object_id"] = (int64_t)root->get_instance_id();
+		data["root_object_id"] = solers_object_id_to_string(root->get_instance_id());
 		data["scene_path"] = root->get_scene_file_path();
 	}
 	EditorUndoRedoManager *manager = EditorUndoRedoManager::get_singleton();
@@ -2022,8 +2023,7 @@ static Dictionary _solers_scene_state_receipt(const String &p_path) {
 
 Dictionary SolersReflectionService::open_scene(const Dictionary &p_args) {
 	EditorNode *editor = EditorNode::get_singleton();
-	EditorInterface *editor_interface = EditorInterface::get_singleton();
-	if (!editor || !editor_interface) {
+	if (!editor) {
 		return _error("EDITOR_UNAVAILABLE", "Editor is not available.", false);
 	}
 	String path = ProjectSettings::get_singleton()->localize_path(String(p_args.get("path", String())).strip_edges());
@@ -2036,7 +2036,20 @@ Dictionary SolersReflectionService::open_scene(const Dictionary &p_args) {
 	if (editor->is_changing_scene()) {
 		return _error("SCENE_BUSY", "Editor is already changing scenes; retry shortly.", true);
 	}
-	editor_interface->open_scene_from_path(path, p_args.get("set_inherited", false));
+	const bool set_inherited = p_args.get("set_inherited", false);
+	if (!set_inherited && FileAccess::exists(path + ".import")) {
+		return _error("IMPORTED_SCENE_REQUIRES_INHERITED", "Godot imported this scene; set_inherited=true to open its editable inherited state.", true);
+	}
+	const Error err = editor->open_scene(path, false, set_inherited, false);
+	if (err != OK) {
+		return _error("SCENE_OPEN_FAILED", vformat("Godot could not open %s (Error %d).", path, err), true);
+	}
+	Node *root = editor->get_edited_scene();
+	const Ref<SceneState> inherited_state = root ? root->get_scene_inherited_state() : Ref<SceneState>();
+	const bool opened = root && (set_inherited ? inherited_state.is_valid() && inherited_state->get_path() == path : root->get_scene_file_path() == path);
+	if (!opened) {
+		return _error("SCENE_OPEN_POSTCONDITION_FAILED", "Godot did not make the requested scene state current.", true);
+	}
 	return _ok(_solers_scene_state_receipt(path));
 }
 

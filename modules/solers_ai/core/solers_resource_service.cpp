@@ -46,6 +46,7 @@
 #include "scene/resources/packed_scene.h"
 
 #include "modules/solers_ai/core/solers_geometry_facts.h"
+#include "modules/solers_ai/core/solers_tool.h"
 
 void SolersResourceService::_bind_methods() {
 }
@@ -170,24 +171,14 @@ static bool _solers_resolve_object_handle(const Variant &p_object_id, Object *&r
 		const Dictionary handle = p_object_id;
 		return _solers_resolve_object_handle(handle.get("object_id", Variant()), r_object, r_error);
 	}
-	int64_t id = 0;
-	if (p_object_id.get_type() == Variant::STRING) {
-		id = String(p_object_id).strip_edges().to_int();
-	} else if (p_object_id.get_type() == Variant::INT) {
-		id = p_object_id;
-	} else if (p_object_id.get_type() == Variant::FLOAT) {
-		id = (int64_t)(double)p_object_id;
-	} else {
-		r_error = "object_id must be the string or integer returned by a native object tool.";
+	ObjectID object_id;
+	if (!solers_object_id_from_variant(p_object_id, object_id)) {
+		r_error = "object_id must be the non-zero decimal string returned by a native object tool.";
 		return false;
 	}
-	if (id == 0) {
-		r_error = "object_id is empty.";
-		return false;
-	}
-	r_object = ObjectDB::get_instance(ObjectID(id));
+	r_object = ObjectDB::get_instance(object_id);
 	if (!r_object) {
-		r_error = vformat("No live Godot object for object_id %s.", String::num_int64(id));
+		r_error = vformat("No live Godot object for object_id %s.", solers_object_id_to_string(object_id));
 		return false;
 	}
 	return true;
@@ -206,7 +197,7 @@ Dictionary solers_native_object_handle(Object *p_object) {
 		return data;
 	}
 	data["valid"] = true;
-	data["object_id"] = String::num_int64((int64_t)p_object->get_instance_id());
+	data["object_id"] = solers_object_id_to_string(p_object->get_instance_id());
 	data["class_name"] = p_object->get_class();
 
 	Resource *resource = Object::cast_to<Resource>(p_object);

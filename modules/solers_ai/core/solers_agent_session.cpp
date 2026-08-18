@@ -60,13 +60,11 @@
 
 struct SolersAgentSession::ToolThreadState {
 	SolersToolRegistry *registry = nullptr;
-	SolersAgentSession *session = nullptr;
 	SolersPreparedToolCall call;
 	Dictionary poll_args;
 	bool polling = false;
 	Dictionary result;
 	SafeFlag done;
-	uint64_t worker_thread_id = Thread::UNASSIGNED_ID;
 	uint64_t token = 0;
 };
 
@@ -825,10 +823,6 @@ void SolersAgentSession::_ensure_godot_log_audit(bool p_turn_active) {
 		MutexLock lock(godot_log_mutex);
 		godot_log_error_count = 0;
 		godot_log_warning_count = 0;
-		worker_tool_audits.clear();
-		main_thread_tool_audit.clear();
-		deferred_window_audit.clear();
-		attributable_tool_errors.clear();
 	}
 	godot_log_turn_active = p_turn_active;
 	if (!godot_log_audit_installed) {
@@ -846,18 +840,9 @@ void SolersAgentSession::_release_godot_log_audit() {
 	remove_error_handler(&godot_error_handler);
 	godot_log_audit_installed = false;
 	godot_log_turn_active = false;
-	{
-		MutexLock lock(godot_log_mutex);
-		main_thread_tool_audit.clear();
-		deferred_window_audit.clear();
-		worker_tool_audits.clear();
-		attributable_tool_errors.clear();
-	}
 }
 
-// Bounds on unique aggregated diagnostic messages: repeats fold into counts,
-// so these only cap distinct message texts per call / per model boundary.
-static constexpr int MAX_UNIQUE_DIAGNOSTICS_PER_CALL = 64;
+// Repeats fold into counts, so this caps only distinct message texts per model boundary.
 static constexpr int MAX_UNIQUE_PENDING_DIAGNOSTICS = 256;
 
 // Fold one occurrence into an aggregated group array: identical
@@ -897,167 +882,24 @@ void SolersAgentSession::_on_godot_error(const String &p_message, ErrorHandlerTy
 	event["function"] = p_function;
 	event["file"] = p_file;
 	event["line"] = p_line;
-	bool new_group = false;
 	{
 		MutexLock lock(godot_log_mutex);
-		const Dictionary *worker_audit = worker_tool_audits.getptr((uint64_t)p_source_thread);
-		Dictionary active_audit = worker_audit ? *worker_audit : main_thread_tool_audit;
-		if (active_audit.is_empty() && !deferred_window_audit.is_empty()) {
-			// No handler is on an audited stack, but exactly one parked tool
-			// (an awaited script, a pending import) owns this window: its
-			// continuation is the only session work the main loop can run.
-			active_audit = deferred_window_audit;
-			event["window"] = "deferred";
-		}
-		const String call_id = active_audit.get("call_id", String());
-		if (!active_audit.is_empty()) {
-			event["call_id"] = call_id;
-			event["tool"] = active_audit.get("tool", String());
-		}
 		if (is_error) {
 			godot_log_error_count++;
-			if (event.has("tool") && !call_id.is_empty()) {
-				Dictionary scoped = attributable_tool_errors.get(call_id, Dictionary());
-				Array events = scoped.get("events", Array());
-				int group_index = -1;
-				for (int i = 0; i < events.size(); i++) {
-					if (Dictionary(events[i]).get("message", String()) == p_message) {
-						group_index = i;
-						break;
-					}
-				}
-				if (group_index >= 0 || events.size() < MAX_UNIQUE_DIAGNOSTICS_PER_CALL) {
-					_solers_accumulate_diagnostic(events, event, group_index);
-				} else {
-					scoped["suppressed_unique_messages"] = (int)scoped.get("suppressed_unique_messages", 0) + 1;
-				}
-				scoped["call_id"] = call_id;
-				scoped["tool"] = event.get("tool", String());
-				scoped["resource_accesses"] = active_audit.get("resource_accesses", Array());
-				scoped["events"] = events;
-				attributable_tool_errors[call_id] = scoped;
-			}
 		} else {
 			godot_log_warning_count++;
 		}
-		const String group_key = String(event.get("severity", String())) + "\n" + call_id + "\n" + p_message;
+		const String group_key = String(event.get("severity", String())) + "\n" + p_message;
 		const int *existing = pending_godot_diagnostic_index.getptr(group_key);
 		if (existing) {
 			_solers_accumulate_diagnostic(pending_godot_diagnostics, event, *existing);
 		} else if (pending_godot_diagnostic_index.size() < MAX_UNIQUE_PENDING_DIAGNOSTICS) {
-			new_group = _solers_accumulate_diagnostic(pending_godot_diagnostics, event, -1);
+			_solers_accumulate_diagnostic(pending_godot_diagnostics, event, -1);
 			pending_godot_diagnostic_index[group_key] = pending_godot_diagnostics.size() - 1;
 		} else {
 			pending_godot_diagnostics_overflow++;
 		}
-		if (new_group) {
-			pending_godot_log_records.push_back(event);
-		}
 	}
-}
-
-void SolersAgentSession::_flush_godot_log_records() {
-	Array records;
-	{
-		MutexLock lock(godot_log_mutex);
-		records = pending_godot_log_records.duplicate();
-		pending_godot_log_records.clear();
-	}
-	for (int i = 0; i < records.size(); i++) {
-		_write_transcript_event("godot_log", records[i]);
-	}
-}
-
-void SolersAgentSession::_begin_main_thread_tool_audit() {
-	Dictionary audit;
-	audit["call_id"] = deferred_call_id;
-	audit["tool"] = deferred_canonical_name;
-	audit["resource_accesses"] = deferred_resource_accesses;
-	MutexLock lock(godot_log_mutex);
-	main_thread_tool_audit = audit;
-}
-
-void SolersAgentSession::_end_main_thread_tool_audit() {
-	MutexLock lock(godot_log_mutex);
-	main_thread_tool_audit.clear();
-}
-
-void SolersAgentSession::_refresh_deferred_window_audit() {
-	// Attribution stays authoritative: only when exactly one tool is parked is
-	// the between-polls window unambiguously its continuation. With zero or
-	// several parked tools the window stays unattributed rather than guessed.
-	Dictionary audit;
-	if (pending_tool_executions.size() == 1) {
-		const PendingToolExecution *pending = pending_tool_executions[0];
-		audit["call_id"] = pending->call_id;
-		audit["tool"] = pending->canonical_name;
-		audit["resource_accesses"] = pending->resource_accesses;
-	}
-	MutexLock lock(godot_log_mutex);
-	deferred_window_audit = audit;
-}
-
-void SolersAgentSession::_register_worker_tool_audit(uint64_t p_thread_id, const String &p_call_id, const String &p_tool, const Array &p_resource_accesses) {
-	if (p_thread_id == Thread::UNASSIGNED_ID) {
-		return;
-	}
-	Dictionary audit;
-	audit["call_id"] = p_call_id;
-	audit["tool"] = p_tool;
-	audit["resource_accesses"] = p_resource_accesses;
-	MutexLock lock(godot_log_mutex);
-	worker_tool_audits[p_thread_id] = audit;
-}
-
-Dictionary SolersAgentSession::_consume_attributable_tool_error(const String &p_call_id) {
-	Dictionary scoped;
-	{
-		MutexLock lock(godot_log_mutex);
-		scoped = attributable_tool_errors.get(p_call_id, Dictionary());
-		attributable_tool_errors.erase(p_call_id);
-		if (!scoped.is_empty()) {
-			// These events are delivered inside the tool result itself, so the
-			// boundary diagnostics channel keeps only unattributed evidence.
-			Array remaining;
-			for (int i = 0; i < pending_godot_diagnostics.size(); i++) {
-				const Dictionary event = pending_godot_diagnostics[i];
-				if (String(event.get("call_id", String())) != p_call_id) {
-					remaining.push_back(event);
-				}
-			}
-			pending_godot_diagnostics = remaining;
-			pending_godot_diagnostic_index.clear();
-			for (int i = 0; i < pending_godot_diagnostics.size(); i++) {
-				const Dictionary event = pending_godot_diagnostics[i];
-				pending_godot_diagnostic_index[String(event.get("severity", String())) + "\n" + String(event.get("call_id", String())) + "\n" + String(event.get("message", String()))] = i;
-			}
-		}
-	}
-	const Array events = scoped.get("events", Array());
-	if (events.is_empty()) {
-		return Dictionary();
-	}
-	bool handler_window = false;
-	int total_occurrences = 0;
-	for (int i = 0; i < events.size(); i++) {
-		const Dictionary event = events[i];
-		total_occurrences += (int)event.get("count", 1);
-		if (String(event.get("window", String())) != "deferred") {
-			handler_window = true;
-		}
-	}
-	const String first_message = Dictionary(events[0]).get("message", "Godot reported an error while the native tool handler was executing.");
-	Dictionary error;
-	error["code"] = "GODOT_TOOL_ERROR";
-	error["message"] = total_occurrences == 1 ? first_message : vformat("Godot reported %d errors (%d distinct messages) while this tool call was executing. First error: %s", total_occurrences, events.size(), first_message);
-	error["recoverable"] = true;
-	error["source"] = "godot_editor";
-	error["handler_window"] = handler_window;
-	error["events"] = events;
-	if (scoped.has("suppressed_unique_messages")) {
-		error["suppressed_unique_messages"] = scoped["suppressed_unique_messages"];
-	}
-	return error;
 }
 
 Dictionary SolersAgentSession::_take_godot_diagnostics() {
@@ -2030,7 +1872,6 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 }
 
 void SolersAgentSession::poll() {
-	_flush_godot_log_records();
 	if (!running || !client) {
 		return;
 	}
@@ -2572,7 +2413,6 @@ void SolersAgentSession::_park_pending_tool(const Dictionary &p_poll_args) {
 	pending->is_resume = deferred_is_resume;
 	pending->started_msec = tool_started_msec;
 	pending_tool_executions.push_back(pending);
-	_refresh_deferred_window_audit();
 
 	deferred_prepared_call = nullptr;
 	deferred_queue_index = -1;
@@ -2600,7 +2440,6 @@ bool SolersAgentSession::_resume_ready_pending_tool() {
 			continue;
 		}
 		pending_tool_executions.remove_at(i);
-		_refresh_deferred_window_audit();
 		deferred_queue_index = pending->queue_index;
 		deferred_call_id = pending->call_id;
 		deferred_model_name = pending->model_name;
@@ -2677,7 +2516,6 @@ void SolersAgentSession::_clear_pending_tools() {
 		memdelete(pending);
 	}
 	pending_tool_executions.clear();
-	_refresh_deferred_window_audit();
 }
 
 // Once a tool_call is in history it must be answered, whatever ended the turn.
@@ -2786,7 +2624,6 @@ void SolersAgentSession::_execute_deferred_tool(uint64_t p_token) {
 	if (deferred_prepared_call->execution == SolersToolExecution::WORKER_THREAD) {
 		ToolThreadState *state = memnew(ToolThreadState);
 		state->registry = tool_registry;
-		state->session = this;
 		state->call = *deferred_prepared_call;
 		state->poll_args = deferred_args;
 		state->polling = deferred_polling;
@@ -2798,19 +2635,13 @@ void SolersAgentSession::_execute_deferred_tool(uint64_t p_token) {
 		}
 		return;
 	}
-	_begin_main_thread_tool_audit();
 	deferred_result = deferred_polling ? tool_registry->_poll_prepared_tool(*deferred_prepared_call, deferred_args) : tool_registry->_execute_prepared_tool(*deferred_prepared_call);
-	_end_main_thread_tool_audit();
 	deferred_done = true;
 	SOLERS_TRACE("session.exec_tool", vformat("END %s ok=%d", deferred_canonical_name, (int)(bool)deferred_result.get("ok", false)));
 }
 
 void SolersAgentSession::_tool_thread_func(void *p_userdata) {
 	ToolThreadState *state = static_cast<ToolThreadState *>(p_userdata);
-	state->worker_thread_id = Thread::get_caller_id();
-	if (state->session) {
-		state->session->_register_worker_tool_audit(state->worker_thread_id, state->call.context.call_id, state->call.name, state->session->deferred_resource_accesses);
-	}
 	state->result = state->polling ? state->registry->_poll_prepared_tool(state->call, state->poll_args) : state->registry->_execute_prepared_tool(state->call);
 	state->done.set();
 }
@@ -2834,10 +2665,6 @@ bool SolersAgentSession::_collect_tool_thread_result(bool p_wait) {
 		deferred_done = true;
 		SOLERS_TRACE("session.exec_tool", vformat("END %s ok=%d", deferred_canonical_name, (int)(bool)deferred_result.get("ok", false)));
 	}
-	{
-		MutexLock lock(godot_log_mutex);
-		worker_tool_audits.erase(state->worker_thread_id);
-	}
 	memdelete(state);
 	tool_thread_state = nullptr;
 	return true;
@@ -2846,9 +2673,7 @@ bool SolersAgentSession::_collect_tool_thread_result(bool p_wait) {
 void SolersAgentSession::_poll_tool_executing() {
 	if (tool_exec_requested) {
 		if (deferred_polling && deferred_prepared_call) {
-			_begin_main_thread_tool_audit();
 			const bool ready = tool_registry->_is_prepared_tool_ready(*deferred_prepared_call, deferred_args);
-			_end_main_thread_tool_audit();
 			if (!ready) {
 				return;
 			}
@@ -2910,20 +2735,6 @@ void SolersAgentSession::_poll_tool_executing() {
 		}
 		_park_pending_tool(Dictionary(poll_args));
 		return;
-	}
-	// The engine's own error stream is authoritative for whether this call's
-	// native work actually succeeded. Evidence is consumed only when the call
-	// settles so awaited continuations keep accumulating into the same call.
-	const Dictionary godot_error = _consume_attributable_tool_error(id);
-	if (!godot_error.is_empty()) {
-		Dictionary evidence_data = result.get("data", Dictionary());
-		evidence_data["godot_errors"] = godot_error.get("events", Array());
-		result["data"] = evidence_data;
-		const bool target_state_confirmed = (bool)Dictionary(result.get("data", Dictionary())).get("target_state_confirmed", false);
-		if ((bool)result.get("ok", false) && (bool)godot_error.get("handler_window", false) && !target_state_confirmed) {
-			result["ok"] = false;
-			result["error"] = godot_error;
-		}
 	}
 	if (deferred_prepared_call) {
 		result = tool_registry->_finalize_prepared_result(*deferred_prepared_call, result);
@@ -3137,7 +2948,6 @@ void SolersAgentSession::_reset_session_derived_state() {
 	runtime_observation_cursor = 0;
 	MutexLock lock(godot_log_mutex);
 	pending_godot_diagnostics.clear();
-	pending_godot_log_records.clear();
 	pending_godot_diagnostic_index.clear();
 	pending_godot_diagnostics_overflow = 0;
 }

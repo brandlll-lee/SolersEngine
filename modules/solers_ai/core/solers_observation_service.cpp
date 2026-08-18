@@ -30,6 +30,7 @@
 
 #include "solers_observation_service.h"
 
+#include "solers_tool.h"
 #include "solers_trace.h"
 
 #include "core/config/engine.h"
@@ -96,9 +97,10 @@ static bool _solers_capture_source_is_current(const Dictionary &p_source) {
 		return false;
 	}
 	const uint64_t version = manager->get_or_create_history(history_id).undo_redo->get_version();
+	ObjectID source_root_id;
 	return (int64_t)p_source.get("history_id", -1) == history_id &&
 			(uint64_t)(int64_t)p_source.get("version", -1) == version &&
-			(!p_source.has("root_object_id") || (uint64_t)(int64_t)p_source.get("root_object_id", 0) == (uint64_t)root->get_instance_id());
+			(!p_source.has("root_object_id") || (solers_object_id_from_variant(p_source["root_object_id"], source_root_id) && source_root_id == root->get_instance_id()));
 }
 
 static Array _solers_vector3_array(const Vector3 &p_vector) {
@@ -484,7 +486,7 @@ Dictionary SolersObservationService::_attach_render_receipt(Dictionary p_result,
 	receipt["captured_frame"] = (int64_t)Engine::get_singleton()->get_frames_drawn();
 	receipt["requested_post_draw_sequence"] = p_pending.get("start_post_draw", 0);
 	receipt["captured_post_draw_sequence"] = (int64_t)render_post_draw_sequence;
-	receipt["viewport_object_id"] = p_pending.get("viewport_id", 0);
+	receipt["viewport_object_id"] = solers_object_id_to_string(ObjectID((int64_t)p_pending.get("viewport_id", 0)));
 	receipt["viewport_rid"] = p_pending.get("viewport_rid", 0);
 	receipt["source_state"] = p_pending.get("source_state", Dictionary());
 	receipt["render_state_sha256"] = p_pending.get("render_state_sha256", String());
@@ -1109,7 +1111,7 @@ void SolersObservationService::_refresh_project_files() {
 static Dictionary _solers_node_identity(Node *p_node, Node *p_root) {
 	Dictionary identity;
 	identity["node_path"] = p_node == p_root ? String(".") : String(p_root->get_path_to(p_node));
-	identity["object_id"] = String::num_uint64(p_node->get_instance_id());
+	identity["object_id"] = solers_object_id_to_string(p_node->get_instance_id());
 	identity["name"] = p_node->get_name();
 	identity["class_name"] = p_node->get_class();
 	identity["child_count"] = p_node->get_child_count();
@@ -1995,7 +1997,7 @@ void SolersObservationService::_runtime_debug_data(const String &p_message, cons
 			if (!requested_ids.has(object_id)) {
 				continue;
 			}
-			const String key = String::num_uint64(object.id);
+			const String key = solers_object_id_to_string(ObjectID(object.id));
 			Dictionary entry = handles.get(key, Dictionary());
 			if (entry.is_empty()) {
 				continue;
@@ -2025,7 +2027,7 @@ void SolersObservationService::_runtime_debug_data(const String &p_message, cons
 				if (!exact.has(property)) {
 					Dictionary error;
 					error["node_path"] = entry.get("node_path", String());
-					error["object_id"] = object_id;
+					error["object_id"] = key;
 					error["property"] = property;
 					error["reason"] = "property_not_returned";
 					errors.push_back(error);
@@ -2033,12 +2035,12 @@ void SolersObservationService::_runtime_debug_data(const String &p_message, cons
 			}
 		}
 		for (int i = 0; i < requested_ids.size(); i++) {
-			const String key = String::num_uint64((uint64_t)(int64_t)requested_ids[i]);
+			const String key = solers_object_id_to_string(ObjectID((int64_t)requested_ids[i]));
 			if (!found.has(key)) {
 				const Dictionary handle = handles.get(key, Dictionary());
 				Dictionary error;
 				error["node_path"] = handle.get("node_path", String());
-				error["object_id"] = requested_ids[i];
+				error["object_id"] = key;
 				error["reason"] = "object_not_returned";
 				errors.push_back(error);
 			}
@@ -2072,7 +2074,7 @@ Array SolersObservationService::project_runtime_tree(const SceneDebuggerTree &p_
 		entry["node_path"] = parent_path + "/" + node.name;
 		entry["name"] = node.name;
 		entry["class_name"] = node.type_name;
-		entry["object_id"] = (int64_t)(uint64_t)node.id;
+		entry["object_id"] = solers_object_id_to_string(ObjectID(node.id));
 		entry["child_count"] = node.child_count;
 		entry["scene_file_path"] = node.scene_file_path;
 		nodes.push_back(entry);
@@ -2128,7 +2130,7 @@ void SolersObservationService::_runtime_tree_updated() {
 				has_more = true;
 				break;
 			}
-			handles[String::num_uint64((uint64_t)(int64_t)entry.get("object_id", 0))] = entry;
+			handles[String(entry.get("object_id", String()))] = entry;
 		}
 		if (!requested_paths.is_empty()) {
 			for (int i = 0; i < requested_paths.size(); i++) {
@@ -2158,9 +2160,12 @@ void SolersObservationService::_runtime_tree_updated() {
 	Array object_ids;
 	TypedArray<uint64_t> ids;
 	for (int i = 0; i < nodes.size(); i++) {
-		const uint64_t object_id = (int64_t)Dictionary(nodes[i]).get("object_id", 0);
+		ObjectID object_id;
+		if (!solers_object_id_from_variant(Dictionary(nodes[i]).get("object_id", Variant()), object_id)) {
+			continue;
+		}
 		object_ids.push_back((int64_t)object_id);
-		ids.push_back(object_id);
+		ids.push_back((uint64_t)object_id);
 	}
 	runtime_query["object_ids"] = object_ids;
 	debugger->request_remote_objects(ids, false);
@@ -2391,7 +2396,7 @@ Dictionary SolersObservationService::observe_runtime(const Dictionary &p_args, i
 }
 
 bool SolersObservationService::get_runtime_property(uint64_t p_epoch, const NodePath &p_node_path, ObjectID p_object_id, const StringName &p_property, Variant &r_value) const {
-	const Dictionary cached = runtime_object_cache.get(String::num_uint64(p_object_id), Dictionary());
+	const Dictionary cached = runtime_object_cache.get(solers_object_id_to_string(p_object_id), Dictionary());
 	const Dictionary properties = cached.get("properties", Dictionary());
 	if (p_epoch != runtime_epoch || p_epoch != (uint64_t)(int64_t)cached.get("runtime_epoch", 0) || NodePath(cached.get("node_path", String())) != p_node_path || !properties.has(p_property)) {
 		return false;

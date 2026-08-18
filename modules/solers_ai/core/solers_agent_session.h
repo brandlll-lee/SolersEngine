@@ -175,17 +175,12 @@ class SolersAgentSession : public Object {
 	mutable Mutex godot_log_mutex;
 	int godot_log_error_count = 0;
 	int godot_log_warning_count = 0;
-	HashMap<uint64_t, Dictionary> worker_tool_audits;
-	Dictionary main_thread_tool_audit; // active only while a native handler is on-stack
-	Dictionary deferred_window_audit; // the single parked tool whose continuation owns the main thread between polls
-	Dictionary attributable_tool_errors; // call_id -> scoped Godot error evidence
 	uint64_t authored_revision = 0; // Session-local ordering only; native receipts carry authority.
 	uint64_t runtime_observation_cursor = 0;
-	// Aggregated by (severity, message, call_id) at ingestion: a repeated
+	// Aggregated by (severity, message) at ingestion: a repeated
 	// engine error is one entry with a count, so a per-frame error loop can
 	// never flood the transcript or the model boundary.
 	Array pending_godot_diagnostics;
-	Array pending_godot_log_records;
 	HashMap<String, int> pending_godot_diagnostic_index; // group key -> index into pending_godot_diagnostics
 	int pending_godot_diagnostics_overflow = 0;
 	bool background_resume_suppressed = false;
@@ -206,12 +201,6 @@ class SolersAgentSession : public Object {
 	void _release_godot_log_audit();
 	static void _godot_error_callback(void *p_self, const char *p_function, const char *p_file, int p_line, const char *p_error, const char *p_message, bool p_editor_notify, ErrorHandlerType p_type);
 	void _on_godot_error(const String &p_message, ErrorHandlerType p_type, int64_t p_source_thread, const String &p_function, const String &p_file, int p_line);
-	void _flush_godot_log_records();
-	void _begin_main_thread_tool_audit();
-	void _end_main_thread_tool_audit();
-	void _refresh_deferred_window_audit();
-	void _register_worker_tool_audit(uint64_t p_thread_id, const String &p_call_id, const String &p_tool, const Array &p_resource_accesses);
-	Dictionary _consume_attributable_tool_error(const String &p_call_id);
 	Dictionary _take_godot_diagnostics();
 	String _readonly_cache_key(const StringName &p_name, const Dictionary &p_args) const;
 	Array _collect_tools();

@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "core/object/object_id.h"
 #include "core/string/ustring.h"
 #include "core/templates/safe_refcount.h"
 #include "core/templates/vector.h"
@@ -39,6 +40,22 @@
 #include "modules/solers_ai/core/solers_permission_manager.h"
 
 #include <functional>
+
+inline String solers_object_id_to_string(ObjectID p_id) {
+	return String::num_int64((int64_t)p_id);
+}
+
+inline bool solers_object_id_from_variant(const Variant &p_value, ObjectID &r_id) {
+	if (p_value.get_type() != Variant::STRING) {
+		return false;
+	}
+	const String encoded = p_value;
+	if (encoded.is_empty() || encoded != encoded.strip_edges() || encoded.begins_with("+") || !encoded.is_valid_int()) {
+		return false;
+	}
+	r_id = ObjectID(encoded.to_int());
+	return r_id.is_valid();
+}
 
 // Where a tool is exposed to the model. Faithful to codex `ToolExposure`:
 // visibility is an authoritative property the tool declares, never inferred
