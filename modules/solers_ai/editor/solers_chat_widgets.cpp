@@ -898,29 +898,28 @@ void SolersPlanCapsule::_notification(int p_what) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Tool ui_kind -> Tabler icon + fixed English verb                   */
+/* Tool ui_kind -> Tabler icon                                        */
 /* ------------------------------------------------------------------ */
 
 namespace {
 struct SolersToolUiChromeRow {
 	const char *kind;
 	const char *icon;
-	const char *verb;
 };
 
 static const SolersToolUiChromeRow SOLERS_TOOL_UI_CHROME[] = {
-	{ "observe", "tool_observe", "Inspect" },
-	{ "read", "tool_read", "Read" },
-	{ "search", "tool_search", "Search" },
-	{ "write", "tool_file", "Edit" },
-	{ "scene", "tool_scene", "Scene" },
-	{ "shell", "tool_shell", "Terminal" },
-	{ "run", "tool_run", "Run" },
-	{ "network", "tool_network", "Network" },
-	{ "asset", "tool_asset", "Asset" },
-	{ "capture", "tool_capture", "Capture" },
-	{ "think", "sparkle", "Wait" },
-	{ "shield", "shield", "Permission" },
+	{ "observe", "tool_observe" },
+	{ "read", "tool_read" },
+	{ "search", "tool_search" },
+	{ "write", "tool_file" },
+	{ "scene", "tool_scene" },
+	{ "shell", "tool_shell" },
+	{ "run", "tool_run" },
+	{ "network", "tool_network" },
+	{ "asset", "tool_asset" },
+	{ "capture", "tool_capture" },
+	{ "think", "sparkle" },
+	{ "shield", "shield" },
 };
 
 static const SolersToolUiChromeRow *_solers_tool_ui_row_for_kind(const String &p_kind) {
@@ -936,11 +935,6 @@ static const SolersToolUiChromeRow *_solers_tool_ui_row_for_kind(const String &p
 StringName solers_tool_icon_for_ui_kind(const String &p_ui_kind) {
 	const SolersToolUiChromeRow *row = _solers_tool_ui_row_for_kind(p_ui_kind.strip_edges());
 	return row ? StringName(row->icon) : SNAME("sparkle");
-}
-
-String solers_tool_verb_for_ui_kind(const String &p_ui_kind) {
-	const SolersToolUiChromeRow *row = _solers_tool_ui_row_for_kind(p_ui_kind.strip_edges());
-	return row ? String(row->verb) : String("Tool");
 }
 
 void solers_style_bare_search_line_edit(LineEdit *p_edit) {

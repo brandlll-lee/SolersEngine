@@ -67,7 +67,6 @@ class SolersSettingsService;
 class SolersStatusCell;
 class SolersThinkingCell;
 class SolersToolCell;
-class SolersToolGroupCell;
 class SolersToolRegistry;
 class SolersUserMessageCell;
 
@@ -144,7 +143,6 @@ class SolersDock : public PanelContainer {
 	VBoxContainer *active_assistant_row = nullptr;
 	int64_t pending_assistant_event_id = -1;
 	SolersStatusCell *status_cell = nullptr;
-	SolersToolGroupCell *active_tool_group = nullptr;
 	HashMap<String, SolersToolCell *> tool_cells_by_id;
 	SolersToolCell *last_started_tool_cell = nullptr;
 	String approval_choice = "once";
@@ -260,7 +258,6 @@ class SolersDock : public PanelContainer {
 	void _settle_thinking_cell();
 	VBoxContainer *_ensure_assistant_row();
 	SolersAssistantCell *_ensure_text_cell();
-	void _settle_tool_group();
 	void _finish_turn_cells();
 	void _clear_chat_view(bool p_show_empty);
 	PanelContainer *_create_panel_card(const Color &p_color, const Color &p_border_color, int p_radius = 12, int p_padding = 12) const;

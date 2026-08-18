@@ -694,15 +694,6 @@ void SolersDock::_settle_thinking_cell() {
 	}
 }
 
-void SolersDock::_settle_tool_group() {
-	// Close the current "N actions" batch; the next tool call opens a new one.
-	if (active_tool_group) {
-		active_tool_group->settle();
-		active_tool_group = nullptr;
-		active_assistant_row = nullptr;
-	}
-}
-
 VBoxContainer *SolersDock::_ensure_assistant_row() {
 	VBoxContainer *mount = _chat_mount();
 	if (!active_assistant_row && mount) {
@@ -739,7 +730,6 @@ void SolersDock::_finish_turn_cells() {
 		active_assistant_row->remove_meta("timeline_pending");
 	}
 	_settle_thinking_cell();
-	_settle_tool_group();
 	if (active_text_cell) {
 		active_text_cell->finalize(String());
 	}
@@ -759,7 +749,6 @@ void SolersDock::_clear_chat_view(bool p_show_empty) {
 	active_assistant_row = nullptr;
 	pending_assistant_event_id = -1;
 	status_cell = nullptr;
-	active_tool_group = nullptr;
 	tool_cells_by_id.clear();
 	last_started_tool_cell = nullptr;
 	timeline_messages.clear();
@@ -1585,7 +1574,6 @@ void SolersDock::_hydrate_timeline_row(Control *p_row, const Variant &p_entry) {
 			SolersAssistantCell *text = active_text_cell;
 			VBoxContainer *row = active_assistant_row;
 			const int64_t pending_id = pending_assistant_event_id;
-			SolersToolGroupCell *group = active_tool_group;
 			HashMap<String, SolersToolCell *> tools(tool_cells_by_id);
 			SolersToolCell *last_tool = last_started_tool_cell;
 			SolersStatusCell *status = status_cell;
@@ -1593,13 +1581,11 @@ void SolersDock::_hydrate_timeline_row(Control *p_row, const Variant &p_entry) {
 			active_text_cell = nullptr;
 			active_assistant_row = nullptr;
 			pending_assistant_event_id = -1;
-			active_tool_group = nullptr;
 			tool_cells_by_id.clear();
 			last_started_tool_cell = nullptr;
 			status_cell = nullptr;
 			_append_history_message(p_entry);
 			_settle_thinking_cell();
-			_settle_tool_group();
 			if (active_text_cell) {
 				active_text_cell->finalize(String());
 			}
@@ -1607,7 +1593,6 @@ void SolersDock::_hydrate_timeline_row(Control *p_row, const Variant &p_entry) {
 			active_text_cell = text;
 			active_assistant_row = row;
 			pending_assistant_event_id = pending_id;
-			active_tool_group = group;
 			tool_cells_by_id = tools;
 			last_started_tool_cell = last_tool;
 			status_cell = status;
@@ -1674,10 +1659,10 @@ void SolersDock::_append_history_message(const Dictionary &p_message) {
 		if (content.is_empty() && Array(p_message.get("attachments", Array())).is_empty()) {
 			return;
 		}
-		_settle_tool_group();
+		active_assistant_row = nullptr;
 		_append_user_message(SolersMention::strip_prompt_block(content), p_message.get("attachments", Array()), p_message.get("event_id", -1), p_message.get("wall", 0));
 	} else if (role == SolersLLMRole::ASSISTANT) {
-		_settle_tool_group();
+		active_assistant_row = nullptr;
 		const String reasoning = String(p_message.get("reasoning", String())).strip_edges();
 		if (!reasoning.is_empty()) {
 			SolersThinkingCell *thinking = memnew(SolersThinkingCell);
@@ -2970,7 +2955,7 @@ void SolersDock::set_agent_session(SolersAgentSession *p_agent_session) {
 
 void SolersDock::_on_agent_model_request_started() {
 	// Covers both the first request and every follow-up after a tool batch.
-	_settle_tool_group();
+	active_assistant_row = nullptr;
 	_ensure_status_cell(TTR("Thinking"));
 	_update_send_enabled();
 }
@@ -3009,7 +2994,6 @@ void SolersDock::_on_agent_reasoning_delta(const String &p_text) {
 	}
 	_clear_empty_state();
 	_remove_status_cell();
-	_settle_tool_group();
 	VBoxContainer *mount = _ensure_assistant_row();
 	if (!active_thinking_cell || !active_thinking_cell->is_active()) {
 		active_thinking_cell = memnew(SolersThinkingCell);
@@ -3026,14 +3010,12 @@ void SolersDock::_on_agent_assistant_delta(const String &p_text) {
 	}
 	// The model moved from thinking to answering.
 	_settle_thinking_cell();
-	_settle_tool_group();
 	_remove_status_cell();
 	_ensure_text_cell()->append_delta(p_text);
 }
 
 void SolersDock::_on_agent_assistant_message(const String &p_text) {
 	const String text = p_text.strip_edges();
-	_settle_tool_group();
 	if (active_text_cell) {
 		// Authoritative final text for this model step; unchanged streams only
 		// drop the caret, avoiding a second full markdown layout.
@@ -3074,12 +3056,9 @@ void SolersDock::_on_agent_tool_started(const String &p_id, const String &p_name
 	if (!mount) {
 		return;
 	}
-	if (!active_tool_group) {
-		active_tool_group = memnew(SolersToolGroupCell);
-		active_tool_group->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
-		mount->add_child(active_tool_group);
-	}
-	SolersToolCell *cell = active_tool_group->add_tool();
+	SolersToolCell *cell = memnew(SolersToolCell);
+	cell->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
+	mount->add_child(cell);
 	cell->start(p_name, p_arguments, solers_tool_ui_kind_for_name(tool_registry, p_name));
 	if (!p_id.is_empty()) {
 		tool_cells_by_id.insert(p_id, cell);
@@ -3134,9 +3113,6 @@ void SolersDock::_on_agent_tool_finished(const String &p_id, const String &p_nam
 		cell->finish(ok, error_message, p_duration_msec);
 	}
 	_remove_status_cell();
-	if (active_tool_group) {
-		active_tool_group->note_finished(ok);
-	}
 	if (agent_session) {
 		timeline_messages = agent_session->get_timeline_entries();
 	}
@@ -3188,7 +3164,6 @@ void SolersDock::_on_agent_turn_retrying(int p_attempt, const String &p_message)
 
 void SolersDock::_on_agent_turn_waiting(const Dictionary &p_waiting) {
 	_settle_thinking_cell();
-	_settle_tool_group();
 	const Array pending_ids = p_waiting.get("pending_ids", Array());
 	if (pending_ids.size() <= 1) {
 		_ensure_status_cell(TTR("Waiting for background job..."));

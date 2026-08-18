@@ -239,49 +239,12 @@ public:
 	void finish(bool p_ok, const String &p_error_message, int p_duration_msec);
 	StringName get_tool_icon() const { return tool_icon; }
 	String get_tool_verb() const { return tool_verb; }
+	String get_status_text() const;
 	Status get_status() const { return status; }
 
 	void set_content_changed_callback(const Callable &p_cb) { content_changed = p_cb; }
 
 	SolersToolCell();
-};
-
-// A folded batch of tool calls, mirroring Cursor's "N actions" row. Collapsed
-// by default to one header (per-tool icons + count + chevron). Click the header
-// to expand the full list of SolersToolCells; click again to collapse.
-class SolersToolGroupCell : public Control {
-	GDCLASS(SolersToolGroupCell, Control);
-
-	VBoxContainer *body = nullptr;
-	int total = 0;
-	int running = 0;
-	int error_count = 0;
-	bool expanded = false;
-	bool hovering = false;
-	float cell_height = 0.0f;
-
-	Callable content_changed;
-
-	float _header_height() const;
-	void _relayout();
-	void _on_child_changed();
-
-protected:
-	void _notification(int p_what);
-	static void _bind_methods() {}
-
-public:
-	virtual Size2 get_minimum_size() const override;
-	virtual void gui_input(const Ref<InputEvent> &p_event) override;
-
-	// Appends a fresh tool row and returns it; the caller drives it via start().
-	SolersToolCell *add_tool();
-	void note_finished(bool p_ok);
-	void settle();
-
-	void set_content_changed_callback(const Callable &p_cb) { content_changed = p_cb; }
-
-	SolersToolGroupCell();
 };
 
 // Transient turn status row: shimmer label ("Thinking").

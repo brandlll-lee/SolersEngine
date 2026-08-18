@@ -100,7 +100,6 @@ void initialize_solers_ai_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(SolersAssistantCell);
 		GDREGISTER_CLASS(SolersThinkingCell);
 		GDREGISTER_CLASS(SolersToolCell);
-		GDREGISTER_CLASS(SolersToolGroupCell);
 		GDREGISTER_CLASS(SolersStatusCell);
 		EditorPlugins::add_by_type<SolersEditorPlugin>();
 		SolersPluginRegistry::register_builtins();
