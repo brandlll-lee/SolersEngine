@@ -54,6 +54,7 @@
 #include "scene/resources/environment.h"
 #include "scene/resources/material.h"
 #include "scene/resources/mesh.h"
+#include "scene/resources/3d/primitive_meshes.h"
 #include "scene/resources/resource_format_text.h"
 #include "scene/resources/shader.h"
 #include "scene/resources/sky.h"
@@ -295,6 +296,25 @@ TEST_CASE("[SolersResourceService] property coercion accepts named and nested Go
 	const Dictionary handle = solers_summarize_display_value(shader);
 	REQUIRE(solers_coerce_property_value(material.ptr(), SNAME("shader"), handle, coerced, error));
 	CHECK(Ref<Shader>(coerced) == shader);
+
+	MeshInstance3D *mesh_instance = memnew(MeshInstance3D);
+	Dictionary material_properties;
+	material_properties["albedo_color"] = Dictionary({ { "r", 0.25 }, { "g", 0.5 }, { "b", 0.75 }, { "a", 1.0 } });
+	Dictionary material_spec;
+	material_spec["class_name"] = "StandardMaterial3D";
+	material_spec["properties"] = material_properties;
+	Dictionary mesh_properties;
+	mesh_properties["size"] = Dictionary({ { "x", 2.0 }, { "y", 3.0 }, { "z", 4.0 } });
+	mesh_properties["material"] = material_spec;
+	Dictionary mesh_spec;
+	mesh_spec["class_name"] = "BoxMesh";
+	mesh_spec["properties"] = mesh_properties;
+	REQUIRE(solers_coerce_property_value(mesh_instance, SNAME("mesh"), mesh_spec, coerced, error));
+	const Ref<BoxMesh> box = coerced;
+	REQUIRE(box.is_valid());
+	CHECK(box->get_size() == Vector3(2, 3, 4));
+	CHECK(box->get_material().is_valid());
+	memdelete(mesh_instance);
 }
 
 #ifdef MODULE_CSG_ENABLED

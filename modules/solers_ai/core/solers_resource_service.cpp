@@ -465,11 +465,38 @@ static bool _solers_coerce_value(const PropertyInfo &p_info, const Variant &p_va
 			object = p_value;
 			object_value = p_value;
 		} else if (p_value.get_type() == Variant::DICTIONARY) {
-			// A handle dictionary names an object either by object_id (native
-			// tool handle) or by res:// path — both are deterministic lookups.
 			const Dictionary handle = p_value;
 			const String handle_path = String(handle.get("path", String())).strip_edges().replace_char('\\', '/').simplify_path();
-			if (!handle.has("object_id") && handle_path.begins_with("res://")) {
+			if (!handle.has("object_id") && handle.has("class_name")) {
+				const StringName class_name = StringName(String(handle.get("class_name", String())).strip_edges());
+				if (!ClassDB::class_exists(class_name) || !ClassDB::can_instantiate(class_name) || !ClassDB::is_parent_class(class_name, Resource::get_class_static())) {
+					r_error = vformat("Class '%s' is not an instantiable Resource.", class_name);
+					return false;
+				}
+				Ref<Resource> resource = Object::cast_to<Resource>(ClassDB::instantiate(class_name));
+				const Variant properties_value = handle.get("properties", Dictionary());
+				if (resource.is_null() || properties_value.get_type() != Variant::DICTIONARY) {
+					r_error = vformat("Inline Resource '%s' requires a properties dictionary.", class_name);
+					return false;
+				}
+				const Dictionary properties = properties_value;
+				const Array names = properties.keys();
+				for (int i = 0; i < names.size(); i++) {
+					const StringName property = StringName(String(names[i]));
+					Variant value;
+					if (!solers_coerce_property_value(resource.ptr(), property, properties[names[i]], value, r_error)) {
+						return false;
+					}
+					bool valid = false;
+					resource->set(property, value, &valid);
+					if (!valid) {
+						r_error = vformat("Failed to set inline Resource property '%s.%s'.", class_name, property);
+						return false;
+					}
+				}
+				object = resource.ptr();
+				object_value = resource;
+			} else if (!handle.has("object_id") && handle_path.begins_with("res://")) {
 				Error load_error = OK;
 				const Ref<Resource> resource = ResourceLoader::load(handle_path, String(), ResourceFormatLoader::CACHE_MODE_REUSE, &load_error);
 				if (resource.is_null() || load_error != OK) {
