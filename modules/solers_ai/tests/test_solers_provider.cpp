@@ -236,6 +236,18 @@ TEST_CASE("[SolersCodexAuth] Godot Thread returns an assigned ID on success") {
 	CHECK(ran);
 }
 
+TEST_CASE("[SolersProviderRegistry] exposes the GPT-5.6 Codex model family") {
+	SolersProviderRegistry registry;
+	const Dictionary profile = registry.get_provider_profile("openai_codex");
+	const Array allowed_models = profile.get("allowed_models", Array());
+
+	CHECK(profile.get("default_model", String()) == "gpt-5.6");
+	for (const String &model : { String("gpt-5.6"), String("gpt-5.6-sol"), String("gpt-5.6-terra"), String("gpt-5.6-luna") }) {
+		CHECK(allowed_models.has(model));
+		CHECK(registry.is_model_allowed("openai_codex", model));
+	}
+}
+
 TEST_CASE("[SolersProviderRegistry] requires an explicit connection profile") {
 	SolersProviderRegistry registry;
 
