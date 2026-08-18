@@ -158,13 +158,19 @@ public:
 		return e;
 	}
 
-	static Dictionary error(const String &p_code, const String &p_message, const String &p_failure_kind = String()) {
+	static Dictionary error(const String &p_code, const String &p_message, const String &p_failure_kind = String(), int p_retryable = -1, const Dictionary &p_details = Dictionary()) {
 		Dictionary e;
 		e["kind"] = SolersLLMEventKind::ERROR;
 		e["code"] = p_code;
 		e["message"] = p_message;
 		if (!p_failure_kind.is_empty()) {
 			e["failure_kind"] = p_failure_kind;
+		}
+		if (p_retryable >= 0) {
+			e["retryable"] = p_retryable != 0;
+		}
+		if (!p_details.is_empty()) {
+			e["details"] = p_details;
 		}
 		return e;
 	}

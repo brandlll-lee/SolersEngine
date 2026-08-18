@@ -30,6 +30,10 @@
 
 #include "solers_protocol_openai_responses.h"
 
+static bool _responses_error_is_terminal(const String &p_code, const String &p_type) {
+	return p_code == "context_length_exceeded" || p_code == "insufficient_quota" || p_code == "invalid_request_error" || p_type == "invalid_request_error" || p_type == "insufficient_quota";
+}
+
 #include "core/io/json.h"
 
 #include "modules/solers_ai/llm/solers_llm_message.h"
@@ -319,7 +323,12 @@ Array SolersOpenAIResponsesProtocol::parse_event(Dictionary &r_state, const Stri
 		const Dictionary nested = response.get("error", Dictionary());
 		const String code = obj.get("code", nested.get("code", "OPENAI_RESPONSES_ERROR"));
 		const String message = obj.get("message", nested.get("message", "OpenAI Responses reported an error."));
-		events.push_back(SolersLLMEvent::error(code, message, code == "context_length_exceeded" ? "context_overflow" : String()));
+		const String error_type = nested.get("type", String());
+		Dictionary details;
+		details["response_id"] = response.get("id", String());
+		details["status"] = response.get("status", String());
+		details["error_type"] = error_type;
+		events.push_back(SolersLLMEvent::error(code, message, code == "context_length_exceeded" ? "context_overflow" : String(), !_responses_error_is_terminal(code, error_type), details));
 	}
 	return events;
 }

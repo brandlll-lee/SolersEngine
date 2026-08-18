@@ -116,7 +116,7 @@ void SolersLLMClient::_trace(const String &p_event, const Dictionary &p_payload)
 	file->store_line(JSON::stringify(entry, "", false, true));
 }
 
-void SolersLLMClient::_fail(const String &p_code, const String &p_message, bool p_retryable, const String &p_failure_kind) {
+void SolersLLMClient::_fail(const String &p_code, const String &p_message, int p_retryable, const String &p_failure_kind, const Dictionary &p_details) {
 	// Preserve any HTTP status / response headers captured before the failure so
 	// the retry layer can classify (5xx vs 4xx) and honor Retry-After headers.
 	const Variant http_status = last_error.get("http_status", Variant());
@@ -125,7 +125,7 @@ void SolersLLMClient::_fail(const String &p_code, const String &p_message, bool 
 	last_error["code"] = p_code;
 	last_error["message"] = p_message;
 	const int status = http_status.get_type() == Variant::NIL ? 0 : (int)http_status;
-	last_error["retryable"] = p_retryable || status == 429 || status >= 500;
+	last_error["retryable"] = p_retryable >= 0 ? p_retryable != 0 : status == 429 || status >= 500;
 	if (!p_failure_kind.is_empty() || status == 413) {
 		last_error["failure_kind"] = status == 413 ? "context_overflow" : p_failure_kind;
 	}
@@ -135,24 +135,17 @@ void SolersLLMClient::_fail(const String &p_code, const String &p_message, bool 
 	if (headers.get_type() != Variant::NIL) {
 		last_error["headers"] = headers;
 	}
+	if (!p_details.is_empty()) {
+		last_error["details"] = p_details;
+	}
 	Dictionary payload;
 	payload["code"] = p_code;
-	payload["message"] = p_message;
 	payload["retryable"] = last_error["retryable"];
 	payload["response_bytes"] = response_bytes;
-	if (!response_prefix.is_empty()) {
-		payload["body_prefix"] = response_prefix.substr(0, MIN(512, response_prefix.length()));
+	if (!p_details.is_empty()) {
+		payload["details"] = p_details;
 	}
 	_trace("fail", payload);
-	// Keep the exact wire body for the last failure so empty/error streams can be
-	// reproduced outside Solers without guessing which schema field the gateway hated.
-	if (!request_body.is_empty() && !trace_path.is_empty()) {
-		const String dump_path = trace_path.get_base_dir().path_join("last_failed_request.json");
-		Ref<FileAccess> dump = FileAccess::open(dump_path, FileAccess::WRITE);
-		if (dump.is_valid()) {
-			dump->store_string(request_body);
-		}
-	}
 	state = STATE_FAILED;
 	if (http.is_valid()) {
 		http->close();
@@ -164,7 +157,7 @@ void SolersLLMClient::_fail_provider_response() {
 	for (const Variant &item : events) {
 		const Dictionary event = item;
 		if (String(event.get("kind", String())) == SolersLLMEventKind::ERROR) {
-			_fail(event.get("code", "HTTP_ERROR"), event.get("message", "Provider returned an error."), false, event.get("failure_kind", String()));
+			_fail(event.get("code", "HTTP_ERROR"), event.get("message", "Provider returned an error."), event.has("retryable") ? ((bool)event["retryable"] ? 1 : 0) : -1, event.get("failure_kind", String()), event.get("details", Dictionary()));
 			return;
 		}
 	}
@@ -594,13 +587,9 @@ void SolersLLMClient::_drain_records(Array &r_events) {
 					payload["text_bytes"] = stream_text_bytes;
 					_trace("stream_finish", payload);
 				} else if (kind == SolersLLMEventKind::ERROR) {
-					// Protocol already named the failure — don't wait for a missing
-					// finish_reason and relabel it as STREAM_ENDED_WITHOUT_FINISH.
-					_fail(String(event.get("code", "PROVIDER_STREAM_ERROR")), String(event.get("message", "Provider stream reported an error.")), stream_has_content && !stream_saw_finish, event.get("failure_kind", String()));
+					const int retryable = event.has("retryable") ? ((bool)event["retryable"] ? 1 : 0) : (stream_has_content && !stream_saw_finish ? 1 : 0);
+					_fail(String(event.get("code", "PROVIDER_STREAM_ERROR")), String(event.get("message", "Provider stream reported an error.")), retryable, event.get("failure_kind", String()), event.get("details", Dictionary()));
 					last_error["response_bytes"] = response_bytes;
-					if (!response_prefix.is_empty()) {
-						last_error["body_prefix"] = response_prefix.substr(0, MIN(512, response_prefix.length()));
-					}
 				}
 				r_events.push_back(produced[i]);
 			}
@@ -648,7 +637,6 @@ void SolersLLMClient::_complete_stream(Array &r_batch) {
 		}
 		_fail(code, message, false, code == "context_length_exceeded" ? "context_overflow" : String());
 		last_error["response_bytes"] = response_bytes;
-		last_error["body_prefix"] = raw.substr(0, MIN(512, raw.length()));
 		return;
 	}
 
@@ -659,9 +647,6 @@ void SolersLLMClient::_complete_stream(Array &r_batch) {
 		_fail("STREAM_ENDED_WITHOUT_FINISH", "Provider stream ended without a terminal protocol event.", false);
 	}
 	last_error["response_bytes"] = response_bytes;
-	if (!response_prefix.is_empty()) {
-		last_error["body_prefix"] = response_prefix.substr(0, MIN(512, response_prefix.length()));
-	}
 }
 
 Array SolersLLMClient::poll() {

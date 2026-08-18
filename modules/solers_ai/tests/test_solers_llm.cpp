@@ -59,7 +59,7 @@ Dictionary find_event_kind(const Array &p_events, const String &p_kind) {
 	return Dictionary();
 }
 
-Dictionary run_openai_failure_response(const String &p_response, Array &r_events) {
+Dictionary run_openai_failure_response(const String &p_response, Array &r_events, const String &p_protocol = "openai-chat") {
 	Ref<TCPServer> server;
 	server.instantiate();
 	if (server->listen(0, IPAddress("127.0.0.1")) != OK) {
@@ -75,7 +75,7 @@ Dictionary run_openai_failure_response(const String &p_response, Array &r_events
 	messages.push_back(SolersLLMMessage::user("test"));
 	request["messages"] = messages;
 	Dictionary profile;
-	profile["protocol"] = "openai-chat";
+	profile["protocol"] = p_protocol;
 	profile["base_url"] = vformat("http://127.0.0.1:%d/v1", server->get_local_port());
 	Dictionary auth;
 	auth["type"] = "none";
@@ -192,6 +192,43 @@ TEST_CASE("[SolersLLMClient] decoded stream without a terminal event is retryabl
 	REQUIRE_FALSE(error.is_empty());
 	CHECK(String(error.get("code", String())) == "STREAM_INTERRUPTED");
 	CHECK(SolersLLMRetry::is_retryable(error));
+}
+
+TEST_CASE("[SolersOpenAIResponsesProtocol] classifies failed responses from protocol facts") {
+	SolersOpenAIResponsesProtocol protocol;
+	Dictionary state;
+	Array events = protocol.parse_event(state, "response.failed", R"json({"type":"response.failed","response":{"error":{"code":"rate_limit_exceeded","type":"server_error","message":"Rate limited."}}})json");
+	Dictionary error = find_event_kind(events, SolersLLMEventKind::ERROR);
+	REQUIRE_FALSE(error.is_empty());
+	CHECK((bool)error.get("retryable", false));
+	CHECK(String(Dictionary(error.get("details", Dictionary())).get("error_type", String())) == "server_error");
+
+	events = protocol.parse_event(state, "response.failed", R"json({"type":"response.failed","response":{"error":{"code":"context_length_exceeded","type":"invalid_request_error","message":"Too much context."}}})json");
+	error = find_event_kind(events, SolersLLMEventKind::ERROR);
+	REQUIRE_FALSE(error.is_empty());
+	CHECK_FALSE((bool)error.get("retryable", true));
+	CHECK(String(error.get("failure_kind", String())) == "context_overflow");
+
+	events = protocol.parse_event(state, "response.failed", R"json({"type":"response.failed","response":{"error":{"code":"insufficient_quota","type":"insufficient_quota","message":"Quota exhausted."}}})json");
+	error = find_event_kind(events, SolersLLMEventKind::ERROR);
+	REQUIRE_FALSE(error.is_empty());
+	CHECK_FALSE((bool)error.get("retryable", true));
+
+	events = protocol.parse_event(state, "response.failed", R"json({"type":"response.failed","response":{"error":null}})json");
+	error = find_event_kind(events, SolersLLMEventKind::ERROR);
+	REQUIRE_FALSE(error.is_empty());
+	CHECK((bool)error.get("retryable", false));
+}
+
+TEST_CASE("[SolersLLMClient] preserves retryable Responses failure details") {
+	const String body = "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_synthetic\",\"status\":\"failed\",\"error\":null}}\n\n";
+	Array events;
+	const Dictionary error = run_openai_failure_response(vformat("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", body.utf8().length(), body), events, "openai-responses");
+	REQUIRE_FALSE(error.is_empty());
+	CHECK((bool)error.get("retryable", false));
+	const Dictionary details = error.get("details", Dictionary());
+	CHECK(String(details.get("response_id", String())) == "resp_synthetic");
+	CHECK(String(details.get("status", String())) == "failed");
 }
 
 TEST_CASE("[SolersOpenAIResponsesProtocol] lowers encrypted reasoning and tool continuation") {

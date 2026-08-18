@@ -35,9 +35,6 @@
 #include "core/variant/array.h"
 #include "core/variant/variant.h"
 
-// Ported verbatim from opencode retry.ts:
-//   RETRY_INITIAL_DELAY = 2000, RETRY_BACKOFF_FACTOR = 2,
-//   RETRY_MAX_DELAY_NO_HEADERS = 30_000.
 static constexpr uint64_t SOLERS_RETRY_INITIAL_DELAY_MSEC = 2000;
 static constexpr uint64_t SOLERS_RETRY_BACKOFF_FACTOR = 2;
 static constexpr uint64_t SOLERS_RETRY_MAX_DELAY_NO_HEADERS_MSEC = 30000;
@@ -69,7 +66,6 @@ bool SolersLLMRetry::is_retryable(const Dictionary &p_error) {
 uint64_t SolersLLMRetry::delay_msec(int p_attempt, const Dictionary &p_error) {
 	const int attempt = MAX(1, p_attempt);
 
-	// Header-driven wait wins (opencode delay(): retry-after-ms then retry-after).
 	const Dictionary headers = p_error.get("headers", Dictionary());
 	if (!headers.is_empty()) {
 		const String retry_after_ms = solers_find_header(headers, "retry-after-ms");

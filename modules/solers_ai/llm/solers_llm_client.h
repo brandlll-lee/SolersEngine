@@ -113,7 +113,7 @@ private:
 	void _drain_records(Array &r_events);
 	void _complete_stream(Array &r_batch);
 	void _fail_provider_response();
-	void _fail(const String &p_code, const String &p_message, bool p_retryable = false, const String &p_failure_kind = String());
+	void _fail(const String &p_code, const String &p_message, int p_retryable = -1, const String &p_failure_kind = String(), const Dictionary &p_details = Dictionary());
 
 	static void _thread_func(void *p_userdata);
 	void _run_worker();
