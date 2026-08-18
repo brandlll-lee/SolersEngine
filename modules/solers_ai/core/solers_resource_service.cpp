@@ -42,7 +42,9 @@
 #include "core/os/os.h"
 #include "editor/export/editor_export.h"
 #include "editor/file_system/editor_file_system.h"
+#include "scene/animation/animation_player.h"
 #include "scene/main/node.h"
+#include "scene/resources/animation.h"
 #include "scene/resources/packed_scene.h"
 
 #include "modules/solers_ai/core/solers_geometry_facts.h"
@@ -554,6 +556,10 @@ bool solers_coerce_property_value(Object *p_object, const StringName &p_property
 	return false;
 }
 
+bool solers_coerce_variant_value(const PropertyInfo &p_info, const Variant &p_value, Variant &r_out, String &r_error) {
+	return _solers_coerce_value(p_info, p_value, r_out, r_error);
+}
+
 static Dictionary _solers_resource_data(const Ref<Resource> &p_resource, const String &p_path = String()) {
 	Dictionary data;
 	data["path"] = p_path.is_empty() ? p_resource->get_path() : p_path;
@@ -645,6 +651,40 @@ String SolersResourceService::_export_message_type_to_string(int p_type) const {
 	return "unknown";
 }
 
+static void _solers_collect_animation_inventory(Node *p_node, Node *p_root, Array &r_players) {
+	if (AnimationPlayer *player = Object::cast_to<AnimationPlayer>(p_node)) {
+		Dictionary player_info;
+		player_info["node_path"] = String(p_root->get_path_to(player));
+		LocalVector<StringName> libraries;
+		player->get_animation_library_list(&libraries);
+		Array library_names;
+		for (const StringName &name : libraries) {
+			library_names.push_back(String(name));
+		}
+		player_info["libraries"] = library_names;
+		LocalVector<StringName> names;
+		player->get_animation_list(&names);
+		Array clips;
+		for (const StringName &name : names) {
+			const Ref<Animation> animation = player->get_animation(name);
+			if (animation.is_null()) {
+				continue;
+			}
+			Dictionary clip;
+			clip["name"] = String(name);
+			clip["length"] = animation->get_length();
+			clip["loop_mode"] = (int)animation->get_loop_mode();
+			clip["track_count"] = animation->get_track_count();
+			clips.push_back(clip);
+		}
+		player_info["clips"] = clips;
+		r_players.push_back(player_info);
+	}
+	for (int i = 0; i < p_node->get_child_count(); i++) {
+		_solers_collect_animation_inventory(p_node->get_child(i), p_root, r_players);
+	}
+}
+
 Dictionary SolersResourceService::get_resource_info(const Dictionary &p_args) const {
 	const String path_arg = p_args.get("path", String());
 	const bool include_dependencies = p_args.get("include_dependencies", true);
@@ -682,6 +722,9 @@ Dictionary SolersResourceService::get_resource_info(const Dictionary &p_args) co
 			Node *root = scene->instantiate(PackedScene::GEN_EDIT_STATE_DISABLED);
 			if (root) {
 				data["geometry"] = solers_describe_geometry(root);
+				Array animation_players;
+				_solers_collect_animation_inventory(root, root, animation_players);
+				data["animation_players"] = animation_players;
 				memdelete(root);
 			}
 		}

@@ -94,6 +94,7 @@ class SolersObservationService : public Object {
 	void _finish_runtime_query(Dictionary p_result);
 	bool _is_runtime_visual_ready() const;
 	bool _request_runtime_screenshot(const String &p_capture_id);
+	bool _request_runtime_frame(const String &p_call_id, const Array &p_focus_paths);
 
 protected:
 	static void _bind_methods();
@@ -124,7 +125,7 @@ public:
 	bool has_runtime_query() const { return !runtime_query.is_empty(); }
 	void clear_runtime_control_result();
 	Dictionary get_runtime_control_result(const String &p_call_id) const;
-	bool get_runtime_property(uint64_t p_epoch, const NodePath &p_node_path, ObjectID p_object_id, const StringName &p_property, Variant &r_value) const;
+	bool get_runtime_property(uint64_t p_epoch, const NodePath &p_node_path, ObjectID p_object_id, const StringName &p_property, Variant &r_value, PropertyInfo &r_info, String &r_observation_id) const;
 	Dictionary capture_viewport(const Dictionary &p_args);
 	Dictionary poll_viewport_capture(const Dictionary &p_args);
 	bool is_viewport_capture_ready(const Dictionary &p_args);

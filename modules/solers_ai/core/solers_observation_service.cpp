@@ -490,6 +490,8 @@ Dictionary SolersObservationService::_attach_render_receipt(Dictionary p_result,
 	receipt["viewport_rid"] = p_pending.get("viewport_rid", 0);
 	receipt["source_state"] = p_pending.get("source_state", Dictionary());
 	receipt["render_state_sha256"] = p_pending.get("render_state_sha256", String());
+	receipt["runtime_frame"] = p_pending.get("runtime_frame", 0);
+	receipt["spatial_sha256"] = p_pending.get("spatial_sha256", String());
 	receipt["image_sha256"] = data.get("content_sha256", String());
 	data["render_state"] = p_pending.get("render_state", Dictionary());
 
@@ -577,7 +579,9 @@ void SolersObservationService::_runtime_screenshot_ready(int64_t p_width, int64_
 	Dictionary result = _capture_image(image, "runtime", p_capture_id);
 	if ((bool)result.get("ok", false)) {
 		Dictionary data = result.get("data", Dictionary());
-		data["frame_valid"] = true;
+		data["runtime_frame"] = pending_data.get("runtime_frame", 0);
+		data["spatial"] = pending_data.get("spatial", Array());
+		data["frame_valid"] = (bool)pending_data.get("runtime_frame_valid", false) && (int64_t)pending_data.get("runtime_frame", 0) > 0 && !String(pending_data.get("spatial_sha256", String())).is_empty();
 		result["data"] = data;
 	}
 	pending_captures[p_capture_id] = _attach_render_receipt(result, pending_data);
@@ -776,9 +780,10 @@ Dictionary SolersObservationService::_poll_pending_capture(const String &p_captu
 			Dictionary source_state;
 			source_state["runtime_epoch"] = (int64_t)runtime_epoch;
 			data["source_state"] = source_state;
+			data["awaiting_runtime_frame"] = true;
 			result["data"] = data;
 			pending_captures[p_capture_id] = result;
-			if (!_request_runtime_screenshot(p_capture_id)) {
+			if (!_request_runtime_frame(p_capture_id, data.get("focus_paths", Array()))) {
 				pending_captures.erase(p_capture_id);
 				return _runtime_capture_unavailable();
 			}
@@ -788,6 +793,23 @@ Dictionary SolersObservationService::_poll_pending_capture(const String &p_captu
 		if (deadline_reached) {
 			pending_captures.erase(p_capture_id);
 			return _capture_error("CAPTURE_TIMEOUT", "The runtime viewport was not visually ready before the capture deadline.", true);
+		}
+		return result;
+	}
+	if (target == "runtime" && (bool)data.get("awaiting_runtime_frame", false)) {
+		if (deadline_reached) {
+			pending_captures.erase(p_capture_id);
+			return _capture_error("CAPTURE_TIMEOUT", "The runtime did not produce post-draw spatial facts before the capture deadline.", true);
+		}
+		return result;
+	}
+	if (target == "runtime" && !(bool)data.get("screenshot_requested", false)) {
+		data["screenshot_requested"] = true;
+		result["data"] = data;
+		pending_captures[p_capture_id] = result;
+		if (!_request_runtime_screenshot(p_capture_id)) {
+			pending_captures.erase(p_capture_id);
+			return _runtime_capture_unavailable();
 		}
 		return result;
 	}
@@ -1010,11 +1032,15 @@ Dictionary SolersObservationService::capture_viewport(const Dictionary &p_args) 
 			Dictionary extra;
 			extra["awaiting_runtime_ready"] = true;
 			extra["runtime"] = get_runtime_status();
+			extra["focus_paths"] = p_args.get("focus_paths", Array());
 			return _register_pending_capture("runtime", extra);
 		}
-		const Dictionary pending = _register_pending_capture("runtime", Dictionary());
+		Dictionary extra;
+		extra["awaiting_runtime_frame"] = true;
+		extra["focus_paths"] = p_args.get("focus_paths", Array());
+		const Dictionary pending = _register_pending_capture("runtime", extra);
 		const String capture_id = Dictionary(pending.get("data", Dictionary())).get("capture_id", String());
-		if (!_request_runtime_screenshot(capture_id)) {
+		if (!_request_runtime_frame(capture_id, extra.get("focus_paths", Array()))) {
 			pending_captures.erase(capture_id);
 			return _runtime_capture_unavailable();
 		}
@@ -1046,9 +1072,8 @@ bool SolersObservationService::is_viewport_capture_ready(const Dictionary &p_arg
 	}
 	const String target = data.get("target", String());
 	if (target == "runtime") {
-		// Wake the poll loop when readiness becomes true so the screenshot
-		// request can start; after that, wait for the callback or deadline.
-		return (bool)data.get("awaiting_runtime_ready", false) && _is_runtime_visual_ready();
+		return ((bool)data.get("awaiting_runtime_ready", false) && _is_runtime_visual_ready()) ||
+				(!(bool)data.get("awaiting_runtime_frame", false) && !(bool)data.get("screenshot_requested", false));
 	}
 	const bool ready = render_post_draw_sequence >= (uint64_t)(int64_t)data.get("ready_post_draw", 0);
 	if (!ready) {
@@ -1882,6 +1907,16 @@ bool SolersObservationService::_request_runtime_screenshot(const String &p_captu
 	return GameViewDebugger::request_root_viewport_screenshot(callable_mp(this, &SolersObservationService::_runtime_screenshot_ready).bind(p_capture_id));
 }
 
+bool SolersObservationService::_request_runtime_frame(const String &p_call_id, const Array &p_focus_paths) {
+	EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
+	ScriptEditorDebugger *debugger = debugger_node ? debugger_node->get_current_debugger() : nullptr;
+	if (!debugger || !debugger->is_session_active() || p_call_id.is_empty()) {
+		return false;
+	}
+	debugger->send_message("solers:observe_frame", { p_call_id, (int64_t)runtime_epoch, p_focus_paths });
+	return true;
+}
+
 void SolersObservationService::_runtime_started() {
 	runtime_epoch++;
 	runtime_query.clear();
@@ -1940,6 +1975,37 @@ static Variant _solers_bounded_runtime_value(const Variant &p_value) {
 void SolersObservationService::_runtime_debug_data(const String &p_message, const Array &p_data) {
 	if (p_message == "solers:input_result" && p_data.size() == 1 && p_data[0].get_type() == Variant::DICTIONARY) {
 		runtime_control_result = Dictionary(p_data[0]).duplicate(true);
+		return;
+	}
+	if (p_message == "solers:frame_result" && p_data.size() == 1 && p_data[0].get_type() == Variant::DICTIONARY) {
+		Dictionary frame = Dictionary(p_data[0]).duplicate(true);
+		if ((uint64_t)(int64_t)frame.get("runtime_epoch", 0) != runtime_epoch) {
+			return;
+		}
+		const String call_id = frame.get("call_id", String());
+		if (String(runtime_query.get("call_id", String())) == call_id && runtime_query.get("target", String()) == "spatial") {
+			frame["available"] = frame.get("ok", false);
+			_finish_runtime_query(frame);
+		}
+		Dictionary *capture = pending_captures.getptr(call_id);
+		if (capture) {
+			Dictionary data = capture->get("data", Dictionary());
+			if (data.get("target", String()) == "runtime" && (bool)data.get("awaiting_runtime_frame", false)) {
+				data["awaiting_runtime_frame"] = false;
+				data["runtime_frame_valid"] = frame.get("ok", false);
+				data["runtime_frame"] = frame.get("runtime_frame", 0);
+				data["spatial"] = frame.get("spatial", Array());
+				data["spatial_sha256"] = frame.get("spatial_sha256", String());
+				data["render_state"] = frame;
+				data["render_state_sha256"] = frame.get("spatial_sha256", String());
+				Dictionary source_state;
+				source_state["runtime_epoch"] = (int64_t)runtime_epoch;
+				source_state["runtime_frame"] = frame.get("runtime_frame", 0);
+				source_state["spatial_sha256"] = frame.get("spatial_sha256", String());
+				data["source_state"] = source_state;
+				(*capture)["data"] = data;
+			}
+		}
 		return;
 	}
 	if (p_message == "error") {
@@ -2008,22 +2074,30 @@ void SolersObservationService::_runtime_debug_data(const String &p_message, cons
 			}
 			Dictionary projected;
 			Dictionary exact;
+			Dictionary property_info;
 			for (const SceneDebuggerObject::SceneDebuggerProperty &property : object.properties) {
 				const StringName name = property.first.name;
 				if (!requested_properties.is_empty() && !requested_properties.has(String(name))) {
 					continue;
 				}
 				exact[name] = property.second;
+				Dictionary info;
+				info["type"] = (int)property.first.type;
+				property_info[name] = info;
 				if (projected.size() < SOLERS_RUNTIME_PROPERTY_LIMIT) {
-					projected[name] = _solers_bounded_runtime_value(property.second);
+					projected[name] = _solers_bounded_runtime_value(solers_summarize_display_value(property.second));
 				}
 			}
+			const String observation_id = (String::num_uint64(runtime_epoch) + "\n" + String(entry.get("node_path", String())) + "\n" + key + "\n" + JSON::stringify(exact, "", false, true)).sha256_text();
 			Dictionary cached;
 			cached["runtime_epoch"] = (int64_t)runtime_epoch;
 			cached["node_path"] = entry.get("node_path", String());
 			cached["properties"] = exact;
+			cached["property_info"] = property_info;
+			cached["observation_id"] = observation_id;
 			runtime_object_cache[key] = cached;
 			entry["properties"] = projected;
+			entry["observation_id"] = observation_id;
 			nodes.push_back(entry);
 			found[key] = true;
 			for (int property_index = 0; property_index < requested_properties.size(); property_index++) {
@@ -2253,19 +2327,7 @@ bool SolersObservationService::is_runtime_observation_ready(const Dictionary &p_
 
 Dictionary SolersObservationService::observe_runtime(const Dictionary &p_args, int p_token_budget) {
 	const String target = p_args.get("target", "events");
-	if (target == "stack") {
-		const Dictionary status = get_runtime_status();
-		Dictionary result;
-		result["target"] = target;
-		result["available"] = status.get("is_breaked", false);
-		result["runtime_epoch"] = (int64_t)runtime_epoch;
-		result["frames"] = runtime_stack_frames;
-		if (!(bool)status.get("is_breaked", false)) {
-			result["reason"] = "runtime_not_breaked";
-		}
-		return result;
-	}
-	if (target == "scene") {
+	if (target == "scene" || target == "spatial") {
 		EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
 		ScriptEditorDebugger *debugger = debugger_node ? debugger_node->get_current_debugger() : nullptr;
 		auto unavailable = [this, &target](const String &p_reason) {
@@ -2288,11 +2350,11 @@ Dictionary SolersObservationService::observe_runtime(const Dictionary &p_args, i
 				runtime_query.clear();
 				return unavailable(!debugger || !debugger->is_session_active() ? "runtime_not_connected" : "query_expired");
 			}
-			Dictionary pending;
-			pending["target"] = target;
-			pending["status"] = "pending";
-			pending["poll_args"] = p_args;
-			return pending;
+			return Dictionary({ { "target", target }, { "status", "pending" }, { "poll_args", p_args } });
+		}
+		const Array focus_paths = p_args.get("focus_paths", Array());
+		if (target == "spatial" && focus_paths.is_empty()) {
+			return unavailable("focus_paths_required");
 		}
 		if (!debugger || !debugger->is_session_active()) {
 			return unavailable("runtime_not_connected");
@@ -2302,19 +2364,34 @@ Dictionary SolersObservationService::observe_runtime(const Dictionary &p_args, i
 		}
 		runtime_query = p_args.duplicate(true);
 		runtime_query["target"] = target;
-		runtime_query["stage"] = "tree";
 		runtime_query["_runtime_request"] = (int64_t)++runtime_query_sequence;
 		runtime_query["_runtime_epoch"] = (int64_t)runtime_epoch;
 		runtime_query["deadline_msec"] = (int64_t)(OS::get_singleton()->get_ticks_msec() + SOLERS_RUNTIME_QUERY_TIMEOUT_MSEC);
-		runtime_result_token_budget = MAX(1, p_token_budget);
-		debugger->request_remote_tree();
-		Dictionary pending;
-		pending["target"] = target;
-		pending["status"] = "pending";
-		pending["poll_args"] = runtime_query.duplicate(true);
-		return pending;
+		if (target == "scene") {
+			runtime_query["stage"] = "tree";
+			runtime_result_token_budget = MAX(1, p_token_budget);
+			debugger->request_remote_tree();
+			return Dictionary({ { "target", target }, { "status", "pending" }, { "poll_args", runtime_query.duplicate(true) } });
+		}
+		runtime_query["call_id"] = "spatial_" + String::num_uint64(runtime_query_sequence);
+		if (!_request_runtime_frame(runtime_query.get("call_id", String()), focus_paths)) {
+			runtime_query.clear();
+			return unavailable("runtime_not_connected");
+		}
+		return Dictionary({ { "target", target }, { "status", "pending" }, { "poll_args", runtime_query.duplicate(true) } });
 	}
-
+	if (target == "stack") {
+		const Dictionary status = get_runtime_status();
+		Dictionary result;
+		result["target"] = target;
+		result["available"] = status.get("is_breaked", false);
+		result["runtime_epoch"] = (int64_t)runtime_epoch;
+		result["frames"] = runtime_stack_frames;
+		if (!(bool)status.get("is_breaked", false)) {
+			result["reason"] = "runtime_not_breaked";
+		}
+		return result;
+	}
 	const uint64_t since_cursor = p_args.has("since_cursor") ? (int64_t)p_args["since_cursor"] : (target == "performance" ? runtime_cursor : 0);
 	const bool include_events = (bool)p_args.get("include_events", false);
 	const int max_events = CLAMP((int)p_args.get("max_events", include_events ? 32 : 0), 0, 256);
@@ -2399,13 +2476,17 @@ Dictionary SolersObservationService::observe_runtime(const Dictionary &p_args, i
 	return result;
 }
 
-bool SolersObservationService::get_runtime_property(uint64_t p_epoch, const NodePath &p_node_path, ObjectID p_object_id, const StringName &p_property, Variant &r_value) const {
+bool SolersObservationService::get_runtime_property(uint64_t p_epoch, const NodePath &p_node_path, ObjectID p_object_id, const StringName &p_property, Variant &r_value, PropertyInfo &r_info, String &r_observation_id) const {
 	const Dictionary cached = runtime_object_cache.get(solers_object_id_to_string(p_object_id), Dictionary());
 	const Dictionary properties = cached.get("properties", Dictionary());
-	if (p_epoch != runtime_epoch || p_epoch != (uint64_t)(int64_t)cached.get("runtime_epoch", 0) || NodePath(cached.get("node_path", String())) != p_node_path || !properties.has(p_property)) {
+	const Dictionary property_info = cached.get("property_info", Dictionary());
+	if (p_epoch != runtime_epoch || p_epoch != (uint64_t)(int64_t)cached.get("runtime_epoch", 0) || NodePath(cached.get("node_path", String())) != p_node_path || !properties.has(p_property) || !property_info.has(p_property)) {
 		return false;
 	}
 	r_value = properties[p_property];
+	const Dictionary info = property_info[p_property];
+	r_info = PropertyInfo((Variant::Type)(int)info.get("type", Variant::NIL), p_property);
+	r_observation_id = cached.get("observation_id", String());
 	return true;
 }
 

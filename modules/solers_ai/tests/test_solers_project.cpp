@@ -394,7 +394,9 @@ TEST_CASE("[SolersObservationService] runtime views require native debugger auth
 	}
 	Variant value;
 	const ObjectID object_id((uint64_t)1);
-	CHECK_FALSE(observation_service.get_runtime_property(0, NodePath("/root/Player"), object_id, SNAME("position"), value));
+	PropertyInfo info;
+	String observation_id;
+	CHECK_FALSE(observation_service.get_runtime_property(0, NodePath("/root/Player"), object_id, SNAME("position"), value, info, observation_id));
 }
 
 #ifdef DEBUG_ENABLED

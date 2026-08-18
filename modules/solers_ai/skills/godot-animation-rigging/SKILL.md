@@ -23,6 +23,7 @@ Use for clips, skeletons, retargeting, AnimationTree graphs, IK, one-shots, or r
 - One locomotion authority: root motion **or** CharacterBody velocity.
 - Do not hand-edit importer output as the long-term source of truth.
 - Verify rest pose + bone map before blaming blend graphs.
+- Inspect the imported `AnimationPlayer` inventory first; missing semantic clips are an asset fact, not a state-machine fallback opportunity.
 - AnimationTree advances with the player process mode — match physics/render intent.
 
 ## Recipes
@@ -39,10 +40,12 @@ Use for clips, skeletons, retargeting, AnimationTree graphs, IK, one-shots, or r
 | Broken elbows from bad retarget “fixed” in Tree | Fix BoneMap / rest first |
 | Godot 3 `AnimationTreePlayer` mental model | Current `AnimationTree` node graph |
 | Assuming locomotion clips loop | Verify each imported `Animation.loop_mode` |
+| Mapping every state to the first available clip | Report missing clips; do not fabricate a state machine |
 
 ## Verify
 1. `object.query target=resource|scene` for skeleton, libraries, and Tree parameters.
 2. `runtime.control` — each clip, interrupt, blend; watch feet/hands.
 3. For locomotion transitions: `runtime.control set_input_actions` → observe → capture while moving → release all actions.
+   Use `runtime.observe target=spatial` on model/collider and capture the same `focus_paths`.
 4. `runtime.observe` digest for missing tracks / errors.
 5. Confirm no double translation when root motion enabled.

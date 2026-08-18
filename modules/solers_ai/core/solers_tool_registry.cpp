@@ -1288,6 +1288,21 @@ Dictionary SolersToolRegistry::_transact_objects(const Dictionary &p_args) {
 	}
 
 	const Array operations = p_args.get("operations", Array());
+	const Dictionary expected_state = p_args.get("expected_state", Dictionary());
+	if (!expected_state.has("resources")) {
+		return _error("RESOURCE_STATE_REQUIRED", "Resource transactions require expected_state.resources from object.query; use an empty array only when every target is new.");
+	}
+	const Array expected_resources = expected_state.get("resources", Array());
+	Dictionary expected_by_path;
+	for (int i = 0; i < expected_resources.size(); i++) {
+		const Dictionary receipt = expected_resources[i];
+		const String path = String(receipt.get("path", String())).strip_edges();
+		const String sha256 = String(receipt.get("sha256", String())).strip_edges();
+		if (path.is_empty() || sha256.is_empty() || expected_by_path.has(path)) {
+			return _error("RESOURCE_STATE_INVALID", "expected_state.resources must contain unique object.query path and sha256 receipts.");
+		}
+		expected_by_path[path] = sha256;
+	}
 	HashSet<String> paths;
 	for (int i = 0; i < operations.size(); i++) {
 		const Dictionary operation = operations[i];
@@ -1297,14 +1312,13 @@ Dictionary SolersToolRegistry::_transact_objects(const Dictionary &p_args) {
 		}
 		paths.insert(path);
 		if (String(operation.get("op", String())) == "update") {
-			const Dictionary expected_state = operation.get("expected_state", Dictionary());
-			const String expected = String(expected_state.get("sha256", String())).strip_edges();
+			const String expected = expected_by_path.get(path, String());
 			const String actual = FileAccess::exists(path) ? FileAccess::get_sha256(path) : String();
-			if (String(expected_state.get("path", String())) != path || expected.is_empty() || expected != actual) {
+			if (expected.is_empty() || expected != actual) {
 				Dictionary failure = _error("RESOURCE_STATE_CONFLICT", vformat("Resource '%s' changed since it was inspected.", path));
 				Dictionary data;
 				data["path"] = path;
-				data["expected_state"] = expected_state;
+				data["expected_sha256"] = expected;
 				Dictionary actual_state;
 				actual_state["path"] = path;
 				actual_state["sha256"] = actual;
@@ -1323,7 +1337,6 @@ Dictionary SolersToolRegistry::_transact_objects(const Dictionary &p_args) {
 		Dictionary args = operation.duplicate(true);
 		args["action"] = action;
 		args.erase("op");
-		args.erase("expected_state");
 		const Dictionary result = resource_service->edit_resource(args);
 		Dictionary step;
 		step["index"] = i;
@@ -1421,17 +1434,21 @@ Dictionary SolersToolRegistry::_run_control(const Dictionary &p_args, const Stri
 		ObjectID object_id;
 		const bool valid_object_id = solers_object_id_from_variant(p_args.get("object_id", Variant()), object_id);
 		const StringName property = p_args.get("property", String());
-		if (node_path.is_empty() || !node_path.is_absolute() || !valid_object_id || property.is_empty() || !p_args.has("expected_value") || !p_args.has("value")) {
-			return _error("INVALID_ARGUMENT", "set_property requires the canonical runtime_epoch, absolute node_path, object_id, property, expected_value, and value returned by runtime.observe.");
+		const String observation_id = p_args.get("observation_id", String());
+		if (node_path.is_empty() || !node_path.is_absolute() || !valid_object_id || property.is_empty() || observation_id.is_empty() || !p_args.has("value")) {
+			return _error("INVALID_ARGUMENT", "set_property requires runtime_epoch, absolute node_path, object_id, property, observation_id, and value from runtime.observe.");
 		}
 		Variant before;
-		if (!observation_service->get_runtime_property(epoch, node_path, object_id, property, before)) {
+		PropertyInfo property_info;
+		String cached_observation_id;
+		if (!observation_service->get_runtime_property(epoch, node_path, object_id, property, before, property_info, cached_observation_id) || cached_observation_id != observation_id) {
 			return _error("STALE_RUNTIME_OBSERVATION", "Observe this exact runtime node property in the current epoch before changing it.");
 		}
-		if (before != p_args.get("expected_value", Variant())) {
-			return _error("RUNTIME_PRECONDITION_FAILED", "The runtime property no longer matches expected_value.");
+		Variant value;
+		String coercion_error;
+		if (!solers_coerce_variant_value(property_info, p_args.get("value", Variant()), value, coercion_error)) {
+			return _error("INVALID_PROPERTY_VALUE", coercion_error);
 		}
-		debugger->update_remote_object(object_id, property, p_args.get("value", Variant()));
 		Dictionary query_args;
 		query_args["target"] = "scene";
 		Array node_paths;
@@ -1451,8 +1468,8 @@ Dictionary SolersToolRegistry::_run_control(const Dictionary &p_args, const Stri
 		poll_args["object_id"] = solers_object_id_to_string(object_id);
 		poll_args["property"] = property;
 		poll_args["before"] = before;
-		poll_args["value"] = p_args.get("value", Variant());
-		poll_args["write_deadline_msec"] = poll_args.get("deadline_msec", 0);
+		poll_args["value"] = value;
+		poll_args["phase"] = "prewrite";
 		pending["poll_args"] = poll_args;
 		return _ok(pending);
 	}
@@ -1569,57 +1586,66 @@ Dictionary SolersToolRegistry::_poll_runtime_control(const Dictionary &p_args) c
 		if (observed.get("status", String()) == "pending") {
 			return _ok(observed);
 		}
-		const Array nodes = observed.get("nodes", Array());
-		const uint64_t deadline = (int64_t)p_args.get("write_deadline_msec", 0);
-		const String node_path = p_args.get("node_path", String());
-		const StringName property = p_args.get("property", String());
-		Dictionary node;
-		for (int i = 0; i < nodes.size(); i++) {
-			const Dictionary candidate = nodes[i];
-			if (String(candidate.get("node_path", String())) == node_path && candidate.get("object_id", String()) == p_args.get("object_id", String())) {
-				node = candidate;
-				break;
-			}
+		if (!(bool)observed.get("available", false)) {
+			return _error("RUNTIME_VERIFY_UNAVAILABLE", "The native debugger could not read the runtime property.");
 		}
-		const Dictionary properties = node.get("properties", Dictionary());
-		const Variant after = properties.get(property, Variant());
-		if ((!properties.has(property) || after != p_args.get("value", Variant())) && OS::get_singleton()->get_ticks_msec() < deadline && (int64_t)observation_service->get_runtime_status().get("runtime_epoch", 0) == (int64_t)p_args.get("runtime_epoch", 0)) {
+		const NodePath node_path = NodePath(p_args.get("node_path", String()));
+		ObjectID object_id;
+		if (!solers_object_id_from_variant(p_args.get("object_id", Variant()), object_id)) {
+			return _error("RUNTIME_CONTINUATION_INVALID", "The runtime object_id is invalid.", false);
+		}
+		const StringName property = p_args.get("property", String());
+		Variant current;
+		PropertyInfo property_info;
+		String observation_id;
+		if (!observation_service->get_runtime_property((int64_t)p_args.get("runtime_epoch", 0), node_path, object_id, property, current, property_info, observation_id)) {
+			return _error("RUNTIME_OBJECT_DISAPPEARED", "The canonical runtime node or property disappeared before verification.");
+		}
+		if (String(p_args.get("phase", String())) == "prewrite") {
+			if (current != p_args.get("before", Variant())) {
+				return _error("RUNTIME_STATE_CONFLICT", "The runtime property changed after it was observed; observe it again before writing.");
+			}
+			EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
+			ScriptEditorDebugger *debugger = debugger_node ? debugger_node->get_current_debugger() : nullptr;
+			if (!debugger || !debugger->is_session_active() || (int64_t)observation_service->get_runtime_status().get("runtime_epoch", 0) != (int64_t)p_args.get("runtime_epoch", 0)) {
+				return _error("STALE_RUNTIME_EPOCH", "The runtime changed before the property write.");
+			}
+			debugger->update_remote_object(object_id, property, p_args.get("value", Variant()));
 			Dictionary query_args;
 			query_args["target"] = "scene";
 			Array node_paths;
-			node_paths.push_back(node_path);
+			node_paths.push_back(String(node_path));
 			query_args["node_paths"] = node_paths;
 			Array requested_properties;
 			requested_properties.push_back(property);
 			query_args["properties"] = requested_properties;
 			Dictionary pending = observation_service->observe_runtime(query_args);
-			if (pending.get("status", String()) == "pending") {
-				Dictionary poll_args = pending.get("poll_args", Dictionary());
-				poll_args["deadline_msec"] = MIN((uint64_t)(int64_t)poll_args.get("deadline_msec", 0), deadline);
-				poll_args["write_deadline_msec"] = (int64_t)deadline;
-				poll_args["action"] = action;
-				poll_args["runtime_epoch"] = p_args.get("runtime_epoch", 0);
-				poll_args["node_path"] = node_path;
-				poll_args["object_id"] = p_args.get("object_id", 0);
-				poll_args["property"] = property;
-				poll_args["before"] = p_args.get("before", Variant());
-				poll_args["value"] = p_args.get("value", Variant());
-				pending["poll_args"] = poll_args;
-				return _ok(pending);
+			if (pending.get("status", String()) != "pending") {
+				return _error("RUNTIME_VERIFY_UNAVAILABLE", "The native debugger could not start post-write verification.");
 			}
+			Dictionary poll_args = pending.get("poll_args", Dictionary());
+			for (const char *key : { "action", "runtime_epoch", "node_path", "object_id", "property", "before", "value" }) {
+				poll_args[key] = p_args.get(key, Variant());
+			}
+			poll_args["phase"] = "postwrite";
+			pending["poll_args"] = poll_args;
+			return _ok(pending);
 		}
-		if (node.is_empty()) {
-			return _error("RUNTIME_OBJECT_DISAPPEARED", "The canonical runtime node disappeared before verification.");
+		if (String(p_args.get("phase", String())) != "postwrite") {
+			return _error("RUNTIME_CONTINUATION_INVALID", "Unknown runtime property transaction phase.", false);
+		}
+		if (current != p_args.get("value", Variant())) {
+			return _error("RUNTIME_POSTCONDITION_FAILED", "Godot did not retain the requested runtime property value.");
 		}
 		Dictionary data;
 		data["action"] = action;
 		data["runtime_only"] = true;
 		data["runtime_epoch"] = observed.get("runtime_epoch", 0);
-		data["node_path"] = node_path;
-		data["object_id"] = node.get("object_id", 0);
+		data["node_path"] = String(node_path);
+		data["object_id"] = solers_object_id_to_string(object_id);
 		data["property"] = property;
-		data["before"] = p_args.get("before", Variant());
-		data["after"] = after;
+		data["before"] = solers_summarize_display_value(p_args.get("before", Variant()));
+		data["after"] = solers_summarize_display_value(current);
 		return _ok(data);
 	}
 	return _error("RUNTIME_CONTINUATION_INVALID", "Only runtime property verification has a continuation.", false);
@@ -1656,7 +1682,7 @@ void SolersToolRegistry::_register_observation_tools() {
 					return result;
 				}
 				return _ok(file); }, _access_by_arg("read", "project:", "path"), {}, {}, SolersToolUiKind::READ);
-	_add_observe("runtime.observe", "Observe one canonical snapshot of the running game through Godot's native debugger. Scene filters discover nodes and hydrate requested properties in the same epoch-bound result; cursor continues a bounded result. Stack and performance expose their native debugger facts.", R"({"type":"object","properties":{"target":{"type":"string","enum":["scene","stack","performance"]},"node_paths":{"type":"array","items":{"type":"string","pattern":"^/"},"maxItems":64,"uniqueItems":true},"path_prefix":{"type":"string","pattern":"^/"},"name_contains":{"type":"string"},"class_name":{"type":"string"},"cursor":{"type":"integer","minimum":0},"properties":{"type":"array","items":{"type":"string","minLength":1},"maxItems":64,"uniqueItems":true},"max_results":{"type":"integer","minimum":1}},"required":["target"],"additionalProperties":false})", [this, obs](const SolersToolContext &ctx, const Dictionary &a) { return _ok(obs->observe_runtime(a, ctx.result_token_budget)); }, {}, [this, obs](const SolersToolContext &ctx, const Dictionary &a) { return _ok(obs->observe_runtime(a, ctx.result_token_budget)); }, [obs](const SolersToolContext &, const Dictionary &a) { return obs->is_runtime_observation_ready(a); });
+	_add_observe("runtime.observe", "Observe one canonical runtime snapshot through Godot's native debugger. Scene returns typed property receipts; spatial returns post-draw subtree AABBs, camera projection, and physics ray facts.", R"({"type":"object","properties":{"target":{"type":"string","enum":["scene","spatial","stack","performance"]},"node_paths":{"type":"array","items":{"type":"string","pattern":"^/"},"maxItems":64,"uniqueItems":true},"focus_paths":{"type":"array","items":{"type":"string","pattern":"^/"},"minItems":1,"maxItems":32,"uniqueItems":true},"path_prefix":{"type":"string","pattern":"^/"},"name_contains":{"type":"string"},"class_name":{"type":"string"},"cursor":{"type":"integer","minimum":0},"properties":{"type":"array","items":{"type":"string","minLength":1},"maxItems":64,"uniqueItems":true},"max_results":{"type":"integer","minimum":1}},"required":["target"],"additionalProperties":false})", [this, obs](const SolersToolContext &ctx, const Dictionary &a) { return _ok(obs->observe_runtime(a, ctx.result_token_budget)); }, {}, [this, obs](const SolersToolContext &ctx, const Dictionary &a) { return _ok(obs->observe_runtime(a, ctx.result_token_budget)); }, [obs](const SolersToolContext &, const Dictionary &a) { return obs->is_runtime_observation_ready(a); });
 	_add_observe_exposed("render.capture", "Capture content-addressed visual evidence from an explicit native state. Edited-scene captures require the history/version returned by object.query or object.transaction; the receipt binds the image to the exact World3D render-state fingerprint. debug_draw uses Godot's Viewport enum; inspect it with engine.describe.", R"({"type":"object","properties":{"target":{"type":"string","enum":["editor","camera","top_down","orthographic","runtime"]},"source_state":{"type":"object","properties":{"history_id":{"type":"integer"},"version":{"type":"integer","minimum":0},"root_object_id":{"type":"string","pattern":"^-?[0-9]+$"}},"required":["history_id","version"],"additionalProperties":true},"node_path":{"type":"string"},"axis":{"type":"string","enum":["x","y","z"]},"direction":{"type":"string","enum":["positive","negative"]},"focus_paths":{"type":"array","items":{"type":"string"}},"section_position":{"type":"number"},"debug_draw":{"type":"integer","minimum":0}},"required":["target"],"additionalProperties":false})", SolersToolExposure::DIRECT, [obs](const SolersToolContext &, const Dictionary &a) { return obs->capture_viewport(a); }, {}, [obs](const SolersToolContext &, const Dictionary &a) { return obs->poll_viewport_capture(a); }, [obs](const SolersToolContext &, const Dictionary &a) { return obs->is_viewport_capture_ready(a); }, SolersToolUiKind::CAPTURE);
 
 	if (resource_service) {
@@ -1713,7 +1739,7 @@ void SolersToolRegistry::_register_script_tools() {
 
 void SolersToolRegistry::_register_runtime_tools() {
 	const SolersPermissionManager::Permission run_project = SolersPermissionManager::PERMISSION_RUN_PROJECT;
-	_add("runtime.control", "Control Godot's active debugger, apply the complete Solers-owned input action state, or make one preconditioned runtime-only property change. Omitted input actions are released; an empty actions array releases all.", R"({"type":"object","properties":{"action":{"type":"string","enum":["play_current_scene","stop","suspend","resume","next_frame","debug_break","debug_continue","debug_step","debug_next","debug_out","set_input_actions","set_property"]},"runtime_epoch":{"type":"integer","minimum":0},"actions":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"object","properties":{"name":{"type":"string","minLength":1},"strength":{"type":"number","exclusiveMinimum":0,"maximum":1}},"required":["name","strength"],"additionalProperties":false}},"node_path":{"type":"string","pattern":"^/"},"object_id":{"type":"string","pattern":"^-?[0-9]+$"},"property":{"type":"string","minLength":1},"expected_value":{},"value":{}},"required":["action"],"additionalProperties":false})", run_project, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DIRECT, [this](const SolersToolContext &ctx, const Dictionary &a) { return _run_control(a, ctx.call_id); }, SolersToolExecution::MAIN_THREAD, [](const Dictionary &) {
+	_add("runtime.control", "Control Godot's active debugger, apply the complete Solers-owned input action state, or make one preconditioned runtime-only property change. Omitted input actions are released; an empty actions array releases all.", R"({"type":"object","properties":{"action":{"type":"string","enum":["play_current_scene","stop","suspend","resume","next_frame","debug_break","debug_continue","debug_step","debug_next","debug_out","set_input_actions","set_property"]},"runtime_epoch":{"type":"integer","minimum":0},"actions":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"object","properties":{"name":{"type":"string","minLength":1},"strength":{"type":"number","exclusiveMinimum":0,"maximum":1}},"required":["name","strength"],"additionalProperties":false}},"node_path":{"type":"string","pattern":"^/"},"object_id":{"type":"string","pattern":"^-?[0-9]+$"},"property":{"type":"string","minLength":1},"observation_id":{"type":"string","minLength":64,"maxLength":64},"value":{}},"required":["action"],"additionalProperties":false})", run_project, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DIRECT, [this](const SolersToolContext &ctx, const Dictionary &a) { return _run_control(a, ctx.call_id); }, SolersToolExecution::MAIN_THREAD, [](const Dictionary &) {
 				Array accesses;
 				Dictionary access;
 				access["mode"] = "write";
@@ -2192,7 +2218,7 @@ void SolersToolRegistry::_register_reflection_tools() {
 				}
 				accesses.push_back(access);
 				return accesses; }, {}, {}, SolersToolUiKind::SCENE);
-	_add("object.transaction", "Apply one scene UndoRedo transaction or one checkpointed Resource transaction. Properties accept native handles, res:// paths, or inline Resources shaped as {class_name, properties}; Godot ClassDB validates every class and property.", R"({"type":"object","properties":{"scope":{"type":"string","enum":["scene","resource"]},"save_path":{"type":"string","pattern":"^res://","description":"Required only when creating an unsaved scene root."},"expected_state":{"type":"object","properties":{"history_id":{"type":"integer"},"version":{"type":"integer","minimum":0},"root_object_id":{"type":"string","pattern":"^-?[0-9]+$"},"scene_path":{"type":"string"}},"required":["history_id","version"],"additionalProperties":true},"operations":{"type":"array","minItems":1,"maxItems":256,"items":{"type":"object","properties":{"op":{"type":"string","enum":["create_node","instantiate","reparent","connect_signal","attach_script","remove_node","bake_csg","create","update"]},"class_name":{"type":"string"},"name":{"type":"string"},"parent_path":{"type":"string"},"resource_path":{"type":"string","pattern":"^res://"},"properties":{"type":"object"},"node_path":{"type":"string"},"artifact":{"type":"string","enum":["mesh","collision"]},"hide_source":{"type":"boolean"},"new_parent_path":{"type":"string"},"position":{"type":"integer"},"source_path":{"type":"string"},"signal":{"type":"string"},"target_path":{"type":"string"},"method":{"type":"string"},"flags":{"type":"integer"},"script_path":{"type":"string","pattern":"^res://"},"path":{"type":"string","pattern":"^res://"},"type_hint":{"type":"string"},"expected_state":{"type":"object","properties":{"path":{"type":"string","pattern":"^res://"},"sha256":{"type":"string","pattern":"^[0-9a-fA-F]{64}$"},"uid":{"type":"string"}},"required":["path","sha256"],"additionalProperties":true}},"required":["op"],"additionalProperties":false}}},"required":["scope","operations"],"additionalProperties":false})", edit_scene, SolersToolMutationPolicy::EDITOR_UNDO, Vector<String>(), SolersToolExposure::DIRECT, [this](const SolersToolContext &, const Dictionary &a) { return _transact_objects(a); }, SolersToolExecution::MAIN_THREAD, [ref](const Dictionary &a) {
+	_add("object.transaction", "Apply one preconditioned scene UndoRedo transaction or checkpointed resource transaction. expected_state is the exact object.query scene receipt, or {resources:[resource receipts]}. Properties use Godot PropertyInfo coercion.", R"({"type":"object","properties":{"scope":{"type":"string","enum":["scene","resource"]},"save_path":{"type":"string","pattern":"^res://","description":"Required only when creating an unsaved scene root."},"expected_state":{"type":"object","properties":{"history_id":{"type":"integer"},"version":{"type":"integer","minimum":0},"root_object_id":{"type":"string","pattern":"^-?[0-9]+$"},"scene_path":{"type":"string"},"resources":{"type":"array","maxItems":256,"items":{"type":"object","properties":{"path":{"type":"string","pattern":"^res://"},"sha256":{"type":"string","pattern":"^[0-9a-fA-F]{64}$"},"uid":{"type":"string"}},"required":["path","sha256"],"additionalProperties":true}}},"additionalProperties":false},"operations":{"type":"array","minItems":1,"maxItems":256,"items":{"type":"object","properties":{"op":{"type":"string","enum":["create_node","instantiate","reparent","connect_signal","attach_script","remove_node","bake_csg","create","update"]},"class_name":{"type":"string"},"name":{"type":"string"},"parent_path":{"type":"string"},"properties":{"type":"object"},"node_path":{"type":"string"},"artifact":{"type":"string","enum":["mesh","collision"]},"hide_source":{"type":"boolean"},"new_parent_path":{"type":"string"},"position":{"type":"integer"},"source_path":{"type":"string","pattern":"^res://"},"signal":{"type":"string"},"target_path":{"type":"string"},"method":{"type":"string"},"flags":{"type":"integer"},"script_path":{"type":"string","pattern":"^res://"},"path":{"type":"string","pattern":"^res://"},"type_hint":{"type":"string"}},"required":["op"],"additionalProperties":false}}},"required":["scope","expected_state","operations"],"additionalProperties":false})", edit_scene, SolersToolMutationPolicy::EDITOR_UNDO, Vector<String>(), SolersToolExposure::DIRECT, [this](const SolersToolContext &, const Dictionary &a) { return _transact_objects(a); }, SolersToolExecution::MAIN_THREAD, [ref](const Dictionary &a) {
 				const String scope = a.get("scope", String());
 				if (scope == "scene") {
 					return ref->resolve_batch_resource_access(a);
@@ -2216,7 +2242,7 @@ void SolersToolRegistry::_register_reflection_tools() {
 				}
 				return SolersToolMutationPolicy::EDITOR_UNDO; });
 	_add("scene.open", "Open a res:// scene via EditorInterface and return its native history receipt.",
-			R"({"type":"object","properties":{"path":{"type":"string","pattern":"^res://","description":"Scene file to open."},"set_inherited":{"type":"boolean"}},"required":["path"],"additionalProperties":false})",
+			R"({"type":"object","properties":{"path":{"type":"string","pattern":"^res://","description":"Saved editable PackedScene to open; imported scenes remain read-only resources."}},"required":["path"],"additionalProperties":false})",
 			SolersPermissionManager::PERMISSION_OBSERVE, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DIRECT,
 			[ref](const SolersToolContext &, const Dictionary &a) { return ref->open_scene(a); });
 	_add("mesh.unwrap_uv2", "Prepare UV2 for exact MeshInstance3D paths through Godot's native mesh API. ArrayMesh work runs one mesh at a time off the editor thread, reports progress, and commits one atomic UndoRedo action only after every surface verifies ARRAY_FORMAT_TEX_UV2. Imported static models should normally arrive with UV2 from Godot's Static Lightmaps importer mode.", R"({"type":"object","properties":{"node_paths":{"type":"array","minItems":1,"items":{"type":"string"}}},"required":["node_paths"]})", edit_scene, SolersToolMutationPolicy::EDITOR_UNDO, Vector<String>(), SolersToolExposure::DEFERRED, [ref](const SolersToolContext &ctx, const Dictionary &a) { return ref->unwrap_uv2(a, ctx.call_id); }, SolersToolExecution::MAIN_THREAD, {}, [ref](const SolersToolContext &, const Dictionary &a) { return ref->poll_uv2_unwrap(a); }, [ref](const SolersToolContext &, const Dictionary &a) { return ref->is_uv2_unwrap_ready(a); }, [ref](const SolersToolContext &ctx, const Dictionary &, const Dictionary &result) {

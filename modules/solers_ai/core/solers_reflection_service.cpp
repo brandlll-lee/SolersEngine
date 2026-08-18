@@ -325,23 +325,60 @@ bool SolersReflectionService::_coerce_value(Node *p_node, const StringName &p_pr
 	return solers_coerce_property_value(p_node, p_property, p_value, r_out, r_error);
 }
 
+static Vector<StringName> _property_path_subnames(const String &p_property) {
+	Vector<StringName> out;
+	const Vector<String> parts = p_property.replace(":", "/").split("/");
+	for (const String &part : parts) {
+		if (!part.is_empty()) {
+			out.push_back(StringName(part));
+		}
+	}
+	return out;
+}
+
+bool SolersReflectionService::_prepare_property_change(Node *p_node, const String &p_property, const Variant &p_value, Variant &r_old, Variant &r_value, NodePath &r_indexed_path, String &r_error) const {
+	if (p_property.is_empty()) {
+		r_error = "Property names must not be empty.";
+		return false;
+	}
+	if (!p_property.contains("/") && !p_property.contains(":")) {
+		r_old = p_node->get(StringName(p_property));
+		return _coerce_value(p_node, StringName(p_property), p_value, r_value, r_error);
+	}
+	const Vector<StringName> subnames = _property_path_subnames(p_property);
+	bool valid = false;
+	r_old = p_node->get_indexed(subnames, &valid);
+	if (!valid) {
+		r_error = vformat("Property path '%s' is not valid on %s.", p_property.replace(":", "/"), p_node->get_class());
+		return false;
+	}
+	PropertyInfo info(r_old.get_type(), subnames[subnames.size() - 1]);
+	if (!solers_coerce_variant_value(info, p_value, r_value, r_error)) {
+		r_error = vformat("Property path '%s': %s", p_property.replace(":", "/"), r_error);
+		return false;
+	}
+	r_indexed_path = NodePath(Vector<StringName>(), subnames, false);
+	return true;
+}
+
 bool SolersReflectionService::_apply_initial_properties(Node *p_node, const Dictionary &p_properties, Dictionary &r_applied, String &r_error) const {
 	ERR_FAIL_NULL_V(p_node, false);
 	for (const Variant *key = p_properties.next(nullptr); key; key = p_properties.next(key)) {
-		const String property = String(*key).strip_edges();
-		if (property.is_empty() || property.contains("/") || property.contains(":")) {
-			r_error = vformat("Initial property must be a direct native property name: %s", property);
-			return false;
-		}
-		const StringName property_name(property);
-		Variant coerced;
-		if (!_coerce_value(p_node, property_name, p_properties[*key], coerced, r_error)) {
+		const String property = String(*key).strip_edges().replace(":", "/");
+		Variant old_value;
+		Variant value;
+		NodePath indexed_path;
+		if (!_prepare_property_change(p_node, property, p_properties[*key], old_value, value, indexed_path, r_error)) {
 			return false;
 		}
 		bool valid = false;
-		p_node->set(property_name, coerced, &valid);
-		const Variant actual = p_node->get(property_name);
-		if (!valid || (coerced.get_type() == Variant::OBJECT && actual != coerced)) {
+		if (indexed_path.is_empty()) {
+			p_node->set(StringName(property), value, &valid);
+		} else {
+			p_node->set_indexed(indexed_path.get_subnames(), value, &valid);
+		}
+		const Variant actual = indexed_path.is_empty() ? p_node->get(StringName(property)) : p_node->get_indexed(indexed_path.get_subnames());
+		if (!valid || (value.get_type() == Variant::OBJECT && actual != value)) {
 			r_error = vformat("Setting initial property '%s' failed on %s.", property, p_node->get_class());
 			return false;
 		}
@@ -353,17 +390,6 @@ bool SolersReflectionService::_apply_initial_properties(Node *p_node, const Dict
 		}
 	}
 	return true;
-}
-
-static Vector<StringName> _property_path_subnames(const String &p_property) {
-	Vector<StringName> out;
-	const Vector<String> parts = p_property.replace(":", "/").split("/");
-	for (const String &part : parts) {
-		if (!part.is_empty()) {
-			out.push_back(StringName(part));
-		}
-	}
-	return out;
 }
 
 Dictionary SolersReflectionService::search_classes(const Dictionary &p_args) {
@@ -686,44 +712,35 @@ Dictionary SolersReflectionService::_update_node(const Dictionary &p_args) {
 	const Dictionary properties = properties_value;
 	Dictionary applied;
 	for (const Variant *key = properties.next(nullptr); key; key = properties.next(key)) {
-		const String property = String(*key).strip_edges();
-		if (property.is_empty()) {
-			return _error("INVALID_ARGUMENT", "Property names must not be empty.");
-		}
-		if (property.contains("/") || property.contains(":")) {
-			const String normalized = property.replace(":", "/");
-			const Vector<StringName> subnames = _property_path_subnames(normalized);
-			bool valid = false;
-			const Variant old_value = node->get_indexed(subnames, &valid);
-			if (!valid) {
-				return _error("INVALID_PROPERTY_PATH", vformat("Property path '%s' is not valid on %s.", normalized, node->get_class()));
-			}
-			node->set_indexed(subnames, properties[*key], &valid);
-			if (!valid) {
-				node->set_indexed(subnames, old_value);
-				return _error("PROPERTY_SET_FAILED", vformat("Setting property path '%s' failed on %s.", normalized, node->get_class()));
-			}
-			const NodePath property_path = NodePath(Vector<StringName>(), subnames, false);
-			undo_redo->add_do_method(node, "set_indexed", property_path, properties[*key]);
-			undo_redo->add_undo_method(node, "set_indexed", property_path, old_value);
-			applied[normalized] = solers_summarize_display_value(node->get_indexed(subnames));
-			continue;
-		}
-		const StringName property_name(property);
+		const String property = String(*key).strip_edges().replace(":", "/");
+		Variant old_value;
 		Variant value;
-		if (!_coerce_value(node, property_name, properties[*key], value, error)) {
+		NodePath indexed_path;
+		if (!_prepare_property_change(node, property, properties[*key], old_value, value, indexed_path, error)) {
 			return _error("INVALID_PROPERTY_VALUE", error);
 		}
-		const Variant old_value = node->get(property_name);
 		bool valid = false;
-		node->set(property_name, value, &valid);
-		const Variant actual = node->get(property_name);
+		if (indexed_path.is_empty()) {
+			node->set(StringName(property), value, &valid);
+		} else {
+			node->set_indexed(indexed_path.get_subnames(), value, &valid);
+		}
+		const Variant actual = indexed_path.is_empty() ? node->get(StringName(property)) : node->get_indexed(indexed_path.get_subnames());
 		if (!valid || (value.get_type() == Variant::OBJECT && actual != value)) {
-			node->set(property_name, old_value);
+			if (indexed_path.is_empty()) {
+				node->set(StringName(property), old_value);
+			} else {
+				node->set_indexed(indexed_path.get_subnames(), old_value);
+			}
 			return _error("PROPERTY_SET_FAILED", vformat("Setting property '%s' failed on %s.", property, node->get_class()));
 		}
-		undo_redo->add_do_property(node, property_name, value);
-		undo_redo->add_undo_property(node, property_name, old_value);
+		if (indexed_path.is_empty()) {
+			undo_redo->add_do_property(node, StringName(property), value);
+			undo_redo->add_undo_property(node, StringName(property), old_value);
+		} else {
+			undo_redo->add_do_method(node, "set_indexed", indexed_path, value);
+			undo_redo->add_undo_method(node, "set_indexed", indexed_path, old_value);
+		}
 		applied[property] = solers_summarize_display_value(actual);
 		if (property == "current" && value && Object::cast_to<Camera3D>(node)) {
 			Object::cast_to<Camera3D>(node)->make_current();
@@ -949,11 +966,11 @@ static bool _solers_scene_contains_path(Node *p_node, const String &p_scene_path
 }
 
 Dictionary SolersReflectionService::instantiate_scene(const Dictionary &p_args) {
-	const String resource_path = String(p_args.get("resource_path", String())).strip_edges().replace_char('\\', '/').simplify_path();
+	const String source_path = String(p_args.get("source_path", String())).strip_edges().replace_char('\\', '/').simplify_path();
 	const String parent_path = String(p_args.get("parent_path", ".")).strip_edges();
 	const String requested_name = String(p_args.get("name", String())).strip_edges();
-	if (!resource_path.begins_with("res://")) {
-		return _error("INVALID_RESOURCE_PATH", "resource_path must be a loadable res:// scene or mesh resource.");
+	if (!source_path.begins_with("res://")) {
+		return _error("INVALID_RESOURCE_PATH", "source_path must be a loadable res:// scene or mesh resource.");
 	}
 	const Variant properties_value = p_args.get("properties", Dictionary());
 	if (properties_value.get_type() != Variant::DICTIONARY) {
@@ -973,11 +990,11 @@ Dictionary SolersReflectionService::instantiate_scene(const Dictionary &p_args) 
 	}
 
 	Error load_error = OK;
-	Ref<Resource> resource = ResourceLoader::load(resource_path, String(), ResourceFormatLoader::CACHE_MODE_REUSE, &load_error);
+	Ref<Resource> resource = ResourceLoader::load(source_path, String(), ResourceFormatLoader::CACHE_MODE_REUSE, &load_error);
 	Ref<PackedScene> scene = resource;
 	Ref<Mesh> mesh = resource;
 	if (resource.is_null() || load_error != OK || (scene.is_null() && mesh.is_null())) {
-		return _error("UNSUPPORTED_INSTANTIABLE_RESOURCE", vformat("Failed to load '%s' as a PackedScene or Mesh (error %d).", resource_path, (int)load_error));
+		return _error("UNSUPPORTED_INSTANTIABLE_RESOURCE", vformat("Failed to load '%s' as a PackedScene or Mesh (error %d).", source_path, (int)load_error));
 	}
 	Node *instance = nullptr;
 	if (scene.is_valid()) {
@@ -988,12 +1005,12 @@ Dictionary SolersReflectionService::instantiate_scene(const Dictionary &p_args) 
 		instance = mesh_instance;
 	}
 	if (!instance) {
-		return _error("RESOURCE_INSTANTIATION_FAILED", vformat("Resource produced no scene node: %s", resource_path), false);
+		return _error("RESOURCE_INSTANTIATION_FAILED", vformat("Resource produced no scene node: %s", source_path), false);
 	}
 	const String edited_scene_path = edited_root->get_scene_file_path();
 	if (scene.is_valid() && !edited_scene_path.is_empty() && _solers_scene_contains_path(instance, edited_scene_path)) {
 		memdelete(instance);
-		return _error("CYCLIC_SCENE_DEPENDENCY", vformat("Instantiating '%s' would create a cyclic scene dependency.", resource_path));
+		return _error("CYCLIC_SCENE_DEPENDENCY", vformat("Instantiating '%s' would create a cyclic scene dependency.", source_path));
 	}
 	if (!requested_name.is_empty()) {
 		instance->set_name(requested_name);
@@ -1005,7 +1022,7 @@ Dictionary SolersReflectionService::instantiate_scene(const Dictionary &p_args) 
 		return _error("INVALID_PROPERTY_VALUE", property_error);
 	}
 	if (scene.is_valid()) {
-		instance->set_scene_file_path(ProjectSettings::get_singleton()->localize_path(resource_path));
+		instance->set_scene_file_path(ProjectSettings::get_singleton()->localize_path(source_path));
 	}
 
 	EditorUndoRedoManager *undo_redo = editor_interface->get_editor_undo_redo();
@@ -1014,7 +1031,7 @@ Dictionary SolersReflectionService::instantiate_scene(const Dictionary &p_args) 
 		return _error("UNDO_REDO_UNAVAILABLE", "EditorUndoRedoManager is not available.", false);
 	}
 	if (!batch_action_active) {
-		undo_redo->create_action(vformat("Solers: Instantiate %s", resource_path.get_file()), UndoRedo::MERGE_DISABLE, parent);
+		undo_redo->create_action(vformat("Solers: Instantiate %s", source_path.get_file()), UndoRedo::MERGE_DISABLE, parent);
 	}
 	undo_redo->add_do_method(parent, "add_child", instance, true);
 	undo_redo->add_do_method(instance, "set_owner", edited_root);
@@ -1030,7 +1047,7 @@ Dictionary SolersReflectionService::instantiate_scene(const Dictionary &p_args) 
 	String safe_path;
 	_safe_node_path(instance, safe_path);
 	Dictionary data;
-	data["resource_path"] = resource_path;
+	data["source_path"] = source_path;
 	data["path"] = safe_path;
 	data["name"] = instance->get_name();
 	data["type"] = instance->get_class();
@@ -2030,23 +2047,24 @@ Dictionary SolersReflectionService::open_scene(const Dictionary &p_args) {
 	if (path.is_empty() || !path.begins_with("res://")) {
 		return _error("SCENE_PATH_REQUIRED", "scene.open requires a res:// path.", true);
 	}
-	if (!FileAccess::exists(path)) {
+	if (!ResourceLoader::exists(path)) {
 		return _error("SCENE_NOT_FOUND", vformat("Scene file not found: %s", path), true);
+	}
+	if (ResourceLoader::is_imported(path)) {
+		return _error("IMPORTED_SCENE_READ_ONLY", "Imported scenes are read-only editor resources; inspect or instantiate this resource instead.", true);
+	}
+	if (ResourceLoader::get_resource_type(path) != "PackedScene") {
+		return _error("SCENE_NOT_EDITABLE", vformat("Resource is not an editable PackedScene: %s", path), true);
 	}
 	if (editor->is_changing_scene()) {
 		return _error("SCENE_BUSY", "Editor is already changing scenes; retry shortly.", true);
 	}
-	const bool set_inherited = p_args.get("set_inherited", false);
-	if (!set_inherited && FileAccess::exists(path + ".import")) {
-		return _error("IMPORTED_SCENE_REQUIRES_INHERITED", "Godot imported this scene; set_inherited=true to open its editable inherited state.", true);
-	}
-	const Error err = editor->open_scene(path, false, set_inherited, false);
+	const Error err = editor->open_scene(path, false, false, false);
 	if (err != OK) {
 		return _error("SCENE_OPEN_FAILED", vformat("Godot could not open %s (Error %d).", path, err), true);
 	}
 	Node *root = editor->get_edited_scene();
-	const Ref<SceneState> inherited_state = root ? root->get_scene_inherited_state() : Ref<SceneState>();
-	const bool opened = root && (set_inherited ? inherited_state.is_valid() && inherited_state->get_path() == path : root->get_scene_file_path() == path);
+	const bool opened = root && root->get_scene_file_path() == path;
 	if (!opened) {
 		return _error("SCENE_OPEN_POSTCONDITION_FAILED", "Godot did not make the requested scene state current.", true);
 	}
@@ -2175,7 +2193,7 @@ Array SolersReflectionService::resolve_batch_resource_access(const Dictionary &p
 			case SolersBatchOperationKind::INSTANTIATE_SCENE: {
 				Dictionary resource;
 				resource["mode"] = "read";
-				resource["key"] = "project:" + String(op.get("resource_path", String())).replace_char('\\', '/').simplify_path();
+				resource["key"] = "project:" + String(op.get("source_path", String())).replace_char('\\', '/').simplify_path();
 				accesses.push_back(resource);
 				_solers_add_scene_access(accesses, "write", op.get("parent_path", "."));
 			} break;

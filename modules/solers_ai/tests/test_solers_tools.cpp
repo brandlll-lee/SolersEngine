@@ -35,10 +35,14 @@
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/json.h"
+#include "core/io/resource_loader.h"
 #include "core/io/resource_saver.h"
 #include "editor/editor_node.h"
 #include "scene/3d/mesh_instance_3d.h"
+#include "scene/animation/animation_player.h"
 #include "scene/main/scene_tree.h"
+#include "scene/resources/animation.h"
+#include "scene/resources/animation_library.h"
 #include "scene/resources/packed_scene.h"
 #include "tests/test_macros.h"
 #include "tests/test_utils.h"
@@ -483,6 +487,8 @@ TEST_CASE("[SolersToolRegistry] default tools keep one portable ABI across provi
 	const Array operation_names = Dictionary(operation_properties.get("op", Dictionary())).get("enum", Array());
 	CHECK((operation_names.has("update") && !operation_names.has("set_property")));
 	CHECK((operation_properties.has("properties") && !operation_properties.has("property") && !operation_properties.has("value")));
+	CHECK((operation_properties.has("source_path") && !operation_properties.has("resource_path") && !operation_properties.has("expected_state")));
+	CHECK(Array(Dictionary(transaction.get("input_schema", Dictionary())).get("required", Array())).has("expected_state"));
 
 	Dictionary invalid;
 	invalid["oneOf"] = Array();
@@ -590,6 +596,52 @@ TEST_CASE("[SolersTool] ObjectID wire values are lossless decimal strings") {
 	CHECK(Dictionary(rejected.get("error", Dictionary())).get("code", String()) == "TOOL_ARGUMENT_INVALID");
 }
 
+TEST_CASE("[SolersResourceService] PropertyInfo coercion and animation inventory use native resource facts") {
+	Variant value;
+	String error;
+	REQUIRE(solers_coerce_variant_value(PropertyInfo(Variant::VECTOR3, "position"), Dictionary({ { "x", 1.0 }, { "y", 2.0 }, { "z", 3.0 } }), value, error));
+	CHECK(value.get_type() == Variant::VECTOR3);
+	CHECK(Vector3(value).is_equal_approx(Vector3(1, 2, 3)));
+	CHECK_FALSE(solers_coerce_variant_value(PropertyInfo(Variant::VECTOR3, "position"), "Vector3(1, 2, 3)", value, error));
+
+	const String path = "res://.solers_animation_inventory.tscn";
+	SolersTestPaths cleanup;
+	cleanup.add(path);
+	Node *root = memnew(Node);
+	AnimationPlayer *player = memnew(AnimationPlayer);
+	player->set_name("Player");
+	root->add_child(player);
+	player->set_owner(root);
+	Ref<AnimationLibrary> library;
+	library.instantiate();
+	Ref<Animation> animation;
+	animation.instantiate();
+	animation->set_length(1.25);
+	animation->set_loop_mode(Animation::LOOP_LINEAR);
+	animation->add_track(Animation::TYPE_VALUE);
+	REQUIRE(library->add_animation(SNAME("Idle"), animation) == OK);
+	REQUIRE(player->add_animation_library(SNAME("locomotion"), library) == OK);
+	Ref<PackedScene> packed;
+	packed.instantiate();
+	REQUIRE(packed->pack(root) == OK);
+	memdelete(root);
+	REQUIRE(ResourceSaver::save(packed, path) == OK);
+
+	SolersResourceService resources;
+	const Dictionary result = resources.get_resource_info(Dictionary({ { "path", path }, { "include_dependencies", false } }));
+	REQUIRE((bool)result.get("ok", false));
+	const Array players = Dictionary(result.get("data", Dictionary())).get("animation_players", Array());
+	REQUIRE(players.size() == 1);
+	const Dictionary player_info = players[0];
+	CHECK(Array(player_info.get("libraries", Array())).has("locomotion"));
+	const Array clips = player_info.get("clips", Array());
+	REQUIRE(clips.size() == 1);
+	CHECK(Dictionary(clips[0]).get("name", String()) == "locomotion/Idle");
+	CHECK(Math::is_equal_approx((double)Dictionary(clips[0]).get("length", 0.0), 1.25));
+	CHECK((int)Dictionary(clips[0]).get("loop_mode", -1) == Animation::LOOP_LINEAR);
+	CHECK((int)Dictionary(clips[0]).get("track_count", 0) == 1);
+}
+
 TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked transactions") {
 	const String path = "res://.solers_transaction_contract.tres";
 	SolersTestPaths cleanup;
@@ -619,6 +671,7 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 	create_operations.push_back(create);
 	Dictionary create_args;
 	create_args["scope"] = "resource";
+	create_args["expected_state"] = Dictionary({ { "resources", Array() } });
 	create_args["operations"] = create_operations;
 	const Dictionary created = registry.call_tool_with_context(SNAME("object.transaction"), create_args, context);
 	REQUIRE((bool)created.get("ok", false));
@@ -633,13 +686,12 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 	context.call_id = "query_resource";
 	const Dictionary observed = registry.call_tool_with_context(SNAME("object.query"), query, context);
 	REQUIRE((bool)observed.get("ok", false));
-	Dictionary expected_state = observed.get("data", Dictionary());
+	Dictionary expected_resource = observed.get("data", Dictionary());
 
 	Dictionary update;
 	update["op"] = "update";
 	update["path"] = path;
-	expected_state["sha256"] = String("0000000000000000000000000000000000000000000000000000000000000000");
-	update["expected_state"] = expected_state;
+	expected_resource["sha256"] = String("0000000000000000000000000000000000000000000000000000000000000000");
 	Dictionary properties;
 	properties["background_color"] = solers_summarize_display_value(Color(0.25, 0.5, 0.75, 1.0));
 	update["properties"] = properties;
@@ -647,6 +699,7 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 	update_operations.push_back(update);
 	Dictionary update_args;
 	update_args["scope"] = "resource";
+	update_args["expected_state"] = Dictionary({ { "resources", Array({ expected_resource }) } });
 	update_args["operations"] = update_operations;
 	context.call_id = "stale_resource";
 	const Dictionary stale = registry.call_tool_with_context(SNAME("object.transaction"), update_args, context);
@@ -654,10 +707,10 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 	CHECK(Dictionary(stale.get("error", Dictionary())).get("code", String()) == "RESOURCE_STATE_CONFLICT");
 	CHECK(FileAccess::get_sha256(path) == sha);
 
-	expected_state["sha256"] = sha;
-	update["expected_state"] = expected_state;
+	expected_resource["sha256"] = sha;
 	update["properties"] = properties;
 	update_operations[0] = update;
+	update_args["expected_state"] = Dictionary({ { "resources", Array({ expected_resource }) } });
 	update_args["operations"] = update_operations;
 	context.call_id = "update_resource";
 	const Dictionary updated = registry.call_tool_with_context(SNAME("object.transaction"), update_args, context);
@@ -677,7 +730,7 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 	CHECK(Math::is_equal_approx((double)color.get("r", 0.0), 0.25));
 	CHECK(Math::is_equal_approx((double)color.get("b", 0.0), 0.75));
 
-	update["expected_state"] = verified.get("data", Dictionary());
+	update_args["expected_state"] = Dictionary({ { "resources", Array({ verified.get("data", Dictionary()) }) } });
 	properties["background_color"] = "Color(1, 0, 0, 1)";
 	update["properties"] = properties;
 	update_operations[0] = update;
@@ -1035,7 +1088,7 @@ TEST_CASE("[SolersToolRegistry] scene object transaction access follows its nati
 
 	Dictionary instantiate;
 	instantiate["op"] = "instantiate";
-	instantiate["resource_path"] = "res://props/tree.glb";
+	instantiate["source_path"] = "res://props/tree.glb";
 	instantiate["parent_path"] = "Environment";
 	Array instantiate_operations;
 	instantiate_operations.push_back(instantiate);
@@ -1066,6 +1119,7 @@ TEST_CASE("[SolersToolRegistry][SceneTree][Editor] scene.open follows EditorNode
 	CHECK_FALSE(registry.affects_scene_state(SNAME("scene.open")));
 	const Dictionary schema = tool.get("input_schema", Dictionary());
 	CHECK(Dictionary(schema.get("properties", Dictionary())).has("path"));
+	CHECK_FALSE(Dictionary(schema.get("properties", Dictionary())).has("set_inherited"));
 	CHECK(Array(schema.get("required", Array())).has("path"));
 
 	Dictionary missing_path;
@@ -1086,10 +1140,8 @@ TEST_CASE("[SolersToolRegistry][SceneTree][Editor] scene.open follows EditorNode
 	}
 
 	const String scene_path = "res://.solers_scene_open_contract.tscn";
-	const String import_path = scene_path + ".import";
 	SolersTestPaths cleanup;
 	cleanup.add(scene_path);
-	cleanup.add(import_path);
 	Node *source_root = memnew(Node);
 	source_root->set_name("SceneOpenContract");
 	Ref<PackedScene> packed;
@@ -1107,21 +1159,12 @@ TEST_CASE("[SolersToolRegistry][SceneTree][Editor] scene.open follows EditorNode
 	CHECK(opened_data.get("scene_path", String()) == scene_path);
 	CHECK(opened_data.get("root_object_id", Variant()).get_type() == Variant::STRING);
 
-	Ref<FileAccess> import_marker = FileAccess::open(import_path, FileAccess::WRITE);
-	REQUIRE(import_marker.is_valid());
-	import_marker->store_string("[remap]\n");
-	import_marker.unref();
-	const Dictionary imported_direct = registry.call_tool(SNAME("scene.open"), open_args);
-	CHECK_FALSE((bool)imported_direct.get("ok", true));
-	CHECK(Dictionary(imported_direct.get("error", Dictionary())).get("code", String()) == "IMPORTED_SCENE_REQUIRES_INHERITED");
-
-	open_args["set_inherited"] = true;
-	const Dictionary inherited = registry.call_tool(SNAME("scene.open"), open_args);
-	REQUIRE((bool)inherited.get("ok", false));
-	Node *edited_root = EditorNode::get_singleton()->get_edited_scene();
-	REQUIRE(edited_root != nullptr);
-	REQUIRE(edited_root->get_scene_inherited_state().is_valid());
-	CHECK(edited_root->get_scene_inherited_state()->get_path() == scene_path);
+	const String imported_path = TestUtils::get_data_path("models/suzanne.glb");
+	REQUIRE(ResourceLoader::is_imported(imported_path));
+	open_args["path"] = imported_path;
+	const Dictionary imported = registry.call_tool(SNAME("scene.open"), open_args);
+	CHECK_FALSE((bool)imported.get("ok", true));
+	CHECK(Dictionary(imported.get("error", Dictionary())).get("code", String()) == "IMPORTED_SCENE_READ_ONLY");
 }
 
 TEST_CASE("[SolersPermissionManager] auto approve all resolves without pending") {
@@ -1239,14 +1282,22 @@ TEST_CASE("[SolersRuntimeInput][SceneTree] complete action states validate befor
 	input_map->erase_action(first);
 	input_map->erase_action(second);
 
+	SolersObservationService observation;
 	SolersToolRegistry registry;
+	registry.set_observation_service(&observation);
 	registry.register_default_tools();
 	const Dictionary tool = solers_test_find_dictionary(registry.list_tools(), SNAME("name"), "runtime.control");
 	const Dictionary properties = Dictionary(tool.get("input_schema", Dictionary())).get("properties", Dictionary());
 	CHECK(Array(Dictionary(properties.get("action", Dictionary())).get("enum", Array())).has("set_input_actions"));
+	CHECK(properties.has("observation_id"));
+	CHECK_FALSE(properties.has("expected_value"));
 	const Dictionary action_item = Dictionary(properties.get("actions", Dictionary())).get("items", Dictionary());
 	CHECK(Array(action_item.get("required", Array())).has("name"));
 	CHECK(Array(action_item.get("required", Array())).has("strength"));
+	const Dictionary observe_tool = solers_test_find_dictionary(registry.list_tools(), SNAME("name"), "runtime.observe");
+	const Dictionary observe_properties = Dictionary(observe_tool.get("input_schema", Dictionary())).get("properties", Dictionary());
+	CHECK(Array(Dictionary(observe_properties.get("target", Dictionary())).get("enum", Array())).has("spatial"));
+	CHECK((int)Dictionary(observe_properties.get("focus_paths", Dictionary())).get("minItems", 0) == 1);
 }
 
 } // namespace TestSolersTools

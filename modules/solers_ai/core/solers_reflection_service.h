@@ -74,6 +74,7 @@ class SolersReflectionService : public Object {
 	Node *_resolve_node(const String &p_node_path, String &r_error) const;
 
 	bool _coerce_value(Node *p_node, const StringName &p_property, const Variant &p_value, Variant &r_out, String &r_error) const;
+	bool _prepare_property_change(Node *p_node, const String &p_property, const Variant &p_value, Variant &r_old, Variant &r_value, NodePath &r_indexed_path, String &r_error) const;
 	bool _apply_initial_properties(Node *p_node, const Dictionary &p_properties, Dictionary &r_applied, String &r_error) const;
 
 	static bool _safe_node_path(Node *p_node, String &r_out);
