@@ -38,8 +38,8 @@
 #include "core/object/callable_mp.h"
 #include "core/os/os.h"
 #include "core/string/translation_server.h"
-#include "editor/docks/editor_dock_manager.h"
 #include "editor/debugger/editor_debugger_plugin.h"
+#include "editor/docks/editor_dock_manager.h"
 #include "editor/editor_node.h"
 #include "editor/settings/editor_settings.h"
 
