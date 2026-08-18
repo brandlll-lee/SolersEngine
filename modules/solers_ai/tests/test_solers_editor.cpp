@@ -120,8 +120,10 @@ TEST_CASE("[SolersUI][SceneTree][Editor] editor locale and technical tool chrome
 	SceneTree::get_singleton()->get_root()->add_child(unknown);
 	search->start("project.search", "{}", "search");
 	unknown->start("future.tool", "{}", "synthetic");
-	CHECK(search->get_tool_verb() == "Search");
-	CHECK(unknown->get_tool_verb() == "Tool");
+	CHECK(search->get_tool_verb() == "Search · project.search");
+	CHECK(unknown->get_tool_verb() == "Tool · future.tool");
+	search->update("engine.describe", "{}", "search");
+	CHECK(search->get_tool_verb() == "Search · engine.describe");
 	CHECK(search->get_tool_icon() == SNAME("tool_search"));
 	CHECK(unknown->get_tool_icon() == SNAME("sparkle"));
 #ifdef MODULE_SVG_ENABLED

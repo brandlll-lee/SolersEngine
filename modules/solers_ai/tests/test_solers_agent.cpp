@@ -44,6 +44,7 @@
 
 #include "modules/solers_ai/core/solers_agent_session.h"
 #include "modules/solers_ai/core/solers_context_manager.h"
+#include "modules/solers_ai/core/solers_permission_manager.h"
 #include "modules/solers_ai/core/solers_resource_service.h"
 #include "modules/solers_ai/core/solers_tool_registry.h"
 #include "modules/solers_ai/core/solers_trace.h"
@@ -359,28 +360,33 @@ TEST_CASE("[SolersSession] rewind marker projects one active append-only branch"
 	restored.shutdown();
 }
 
-TEST_CASE("[SolersSession][SceneTree][Editor] native Godot errors remain pending across an idle turn boundary") {
+TEST_CASE("[SolersSession][SceneTree][Editor] diagnostics never rewrite a handler result") {
 	const String session_id = "idle-diagnostic-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
 	const String project = "test://" + session_id;
-	const String path = solers_session_dir().path_join("sessions").path_join(session_id.sha256_text() + ".jsonl");
-	SolersTestPaths cleanup;
-	cleanup.add(path);
 	SolersAgentSession session;
 	session.set_session(project, session_id);
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
+	SolersToolRegistry registry;
+	registry.set_permission_manager(&permissions);
+	SolersToolCapability capability;
+	capability.permission = SolersPermissionManager::PERMISSION_OBSERVE;
+	registry.register_tool(memnew(SolersFunctionTool("synthetic.native_success", "Return the handler result after a native diagnostic.", Dictionary({ { "type", "object" }, { "properties", Dictionary() } }), SolersToolExposure::DIRECT, capability,
+			[](const SolersToolContext &, const Dictionary &) {
+				ERR_PRINT("synthetic native diagnostic");
+				Dictionary result;
+				result["ok"] = true;
+				result["data"] = Dictionary({ { "native_postcondition", true } });
+				return result;
+			})));
 	const bool print_ready = CoreGlobals::print_ready;
 	CoreGlobals::print_ready = true;
-	ERR_PRINT("synthetic idle engine failure");
+	const Dictionary result = registry.call_tool(SNAME("synthetic.native_success"), Dictionary());
 	CoreGlobals::print_ready = print_ready;
+	REQUIRE((bool)result.get("ok", false));
+	CHECK((bool)Dictionary(result.get("data", Dictionary())).get("native_postcondition", false));
 	CHECK((int)session.get_status().get("godot_log_errors", -1) == 1);
-	session.poll();
-	solers_transcript_flush(session_id);
 	session.shutdown();
-
-	Ref<FileAccess> file = FileAccess::open(path, FileAccess::READ);
-	REQUIRE(file.is_valid());
-	const String audit = file->get_as_text();
-	CHECK(audit.contains("synthetic idle engine failure"));
-	CHECK(audit.contains("\"event_type\":\"godot_log\""));
 }
 
 TEST_CASE("[SolersAgentSession] validates the Codex update_plan contract") {

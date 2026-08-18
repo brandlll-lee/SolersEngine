@@ -627,7 +627,7 @@ TEST_CASE("[SolersLLMMessage] attachment projection resends retained image bytes
 	CHECK(JSON::stringify(anthropic.build_request_body(request)).count("\"type\":\"image\"") == 1);
 }
 
-TEST_CASE("[SolersLLMMessage] attachment projection keeps only the latest native capture per view") {
+TEST_CASE("[SolersLLMMessage] attachment projection keeps one latest image per semantic view across epochs") {
 	Dictionary old_capture;
 	old_capture["id"] = "capture_old";
 	old_capture["content_sha256"] = "old_pixels";
@@ -636,27 +636,44 @@ TEST_CASE("[SolersLLMMessage] attachment projection keeps only the latest native
 	new_capture["id"] = "capture_new";
 	new_capture["content_sha256"] = "new_pixels";
 	new_capture["source"] = "tool_capture";
+	Dictionary editor_capture;
+	editor_capture["id"] = "capture_editor";
+	editor_capture["content_sha256"] = "editor_pixels";
+	editor_capture["source"] = "tool_capture";
 	Array old_attachments;
 	old_attachments.push_back(old_capture);
 	Array new_attachments;
 	new_attachments.push_back(new_capture);
+	Array editor_attachments;
+	editor_attachments.push_back(editor_capture);
 
 	const String old_result = JSON::stringify(Dictionary({
 			{ "ok", true },
-			{ "data", Dictionary({ { "render_receipt", Dictionary({ { "view_key", "native_view" } }) } }) },
+			{ "data", Dictionary({ { "render_receipt", Dictionary({ { "target", "runtime" }, { "runtime_epoch", 7 }, { "view_key", "runtime_view" } }) } }) },
 	}));
 	const String new_result = JSON::stringify(Dictionary({
 			{ "ok", true },
-			{ "data", Dictionary({ { "render_receipt", Dictionary({ { "view_key", "native_view" } }) } }) },
+			{ "data", Dictionary({ { "render_receipt", Dictionary({ { "target", "runtime" }, { "runtime_epoch", 8 }, { "view_key", "runtime_view" } }) } }) },
+	}));
+	const String editor_result = JSON::stringify(Dictionary({
+			{ "ok", true },
+			{ "data", Dictionary({ { "render_receipt", Dictionary({ { "target", "editor" }, { "view_key", "editor_view" } }) } }) },
 	}));
 	Array messages;
 	messages.push_back(SolersLLMMessage::tool_result("old", "render.capture", old_result, old_attachments));
 	messages.push_back(SolersLLMMessage::tool_result("new", "render.capture", new_result, new_attachments));
+	messages.push_back(SolersLLMMessage::tool_result("editor", "render.capture", editor_result, editor_attachments));
 
 	const Array projected = SolersLLMMessage::project_attachments(messages);
 	CHECK_FALSE(Dictionary(projected[0]).has("attachments"));
 	CHECK(String(Dictionary(projected[0]).get("content", String())).contains("sha256=old_pixels"));
 	CHECK(Array(Dictionary(projected[1]).get("attachments", Array())).size() == 1);
+	CHECK(Array(Dictionary(projected[2]).get("attachments", Array())).size() == 1);
+	int retained_pixels = 0;
+	for (int i = 0; i < projected.size(); i++) {
+		retained_pixels += Array(Dictionary(projected[i]).get("attachments", Array())).size();
+	}
+	CHECK(retained_pixels == 2);
 }
 
 } // namespace TestSolersLlm

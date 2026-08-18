@@ -29,11 +29,17 @@
 /**************************************************************************/
 
 #include "core/config/project_settings.h"
+#include "core/debugger/engine_debugger.h"
+#include "core/input/input.h"
+#include "core/input/input_map.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/json.h"
+#include "core/io/resource_saver.h"
+#include "editor/editor_node.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/main/scene_tree.h"
+#include "scene/resources/packed_scene.h"
 #include "tests/test_macros.h"
 #include "tests/test_utils.h"
 
@@ -46,6 +52,7 @@
 #include "modules/solers_ai/core/solers_reflection_service.h"
 #include "modules/solers_ai/core/solers_resource_service.h"
 #include "modules/solers_ai/core/solers_script_service.h"
+#include "modules/solers_ai/core/solers_tool.h"
 #include "modules/solers_ai/core/solers_tool_registry.h"
 #include "modules/solers_ai/generated/terrain3d_lock.gen.h"
 #include "modules/solers_ai/llm/solers_protocol_anthropic_messages.h"
@@ -59,7 +66,16 @@
 
 TEST_FORCE_LINK(test_solers_tools)
 
+void solers_runtime_input_bridge_initialize();
+
 namespace TestSolersTools {
+
+class TestEngineDebugger : public EngineDebugger {
+public:
+	void send_message(const String &, const Array &) override {}
+	void send_error(const String &, const String &, int, const String &, const String &, bool, ErrorHandlerType) override {}
+	void debug(bool, bool) override {}
+};
 
 class ScopedEditedSceneRoot {
 	SceneTree *tree = nullptr;
@@ -484,10 +500,13 @@ TEST_CASE("[SolersToolRegistry] ClassDB member queries match whitespace-separate
 	registry.set_permission_manager(&permissions);
 	registry.set_reflection_service(&reflection_service);
 	registry.register_default_tools();
+	const Dictionary tool = solers_test_find_dictionary(registry.list_tools(), SNAME("name"), "engine.describe");
+	const Dictionary classes_schema = Dictionary(Dictionary(tool.get("input_schema", Dictionary())).get("properties", Dictionary())).get("classes", Dictionary());
+	const Dictionary class_schema = classes_schema.get("items", Dictionary());
+	CHECK_FALSE(Array(class_schema.get("required", Array())).has("max_members"));
 
 	Dictionary class_request;
 	class_request["class_name"] = "CameraAttributesPhysical";
-	class_request["max_members"] = 16;
 	class_request["include_inherited"] = true;
 	class_request["member_query"] = "exposure_aperture exposure_sensitivity";
 	Array classes;
@@ -505,6 +524,70 @@ TEST_CASE("[SolersToolRegistry] ClassDB member queries match whitespace-separate
 	}
 	CHECK(names.has("exposure_aperture"));
 	CHECK(names.has("exposure_sensitivity"));
+}
+
+TEST_CASE("[SolersToolRegistry] project.search gives empty queries one explicit meaning") {
+	SolersObservationService observation;
+	observation.poll();
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
+	SolersToolRegistry registry;
+	registry.set_observation_service(&observation);
+	registry.set_permission_manager(&permissions);
+	registry.register_default_tools();
+
+	Dictionary args;
+	args["type"] = "path";
+	args["query"] = "";
+	args["max_results"] = 2;
+	const Dictionary listed = registry.call_tool(SNAME("project.search"), args);
+	REQUIRE((bool)listed.get("ok", false));
+	const Dictionary list_data = listed.get("data", Dictionary());
+	CHECK(list_data.get("type", String()) == "path");
+	CHECK(list_data.get("query", String()) == "");
+	CHECK((int)list_data.get("count", 0) <= 2);
+
+	args.erase("max_results");
+	const Dictionary unpaged = registry.call_tool(SNAME("project.search"), args);
+	CHECK((bool)unpaged.get("ok", false));
+	CHECK((int)Dictionary(unpaged.get("data", Dictionary())).get("count", 0) >= (int)list_data.get("count", 0));
+
+	for (const String &type : { String("text"), String("symbol") }) {
+		args["type"] = type;
+		const Dictionary rejected = registry.call_tool(SNAME("project.search"), args);
+		CHECK_FALSE((bool)rejected.get("ok", true));
+		CHECK(Dictionary(rejected.get("error", Dictionary())).get("code", String()) == "INVALID_ARGUMENT");
+	}
+}
+
+TEST_CASE("[SolersTool] ObjectID wire values are lossless decimal strings") {
+	const ObjectID high_bit_id((uint64_t(1) << 63) | 42);
+	const String encoded = solers_object_id_to_string(high_bit_id);
+	CHECK(encoded == "-9223372036854775766");
+	ObjectID decoded;
+	REQUIRE(solers_object_id_from_variant(encoded, decoded));
+	CHECK(decoded == high_bit_id);
+
+	for (const Variant &invalid : { Variant((int64_t)42), Variant(42.0), Variant("4.2"), Variant("4e2"), Variant("+42"), Variant(" 42"), Variant("0") }) {
+		ObjectID ignored;
+		CHECK_FALSE(solers_object_id_from_variant(invalid, ignored));
+	}
+
+	SolersResourceService resources;
+	SolersReflectionService reflection;
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
+	SolersToolRegistry registry;
+	registry.set_permission_manager(&permissions);
+	registry.set_reflection_service(&reflection);
+	registry.set_resource_service(&resources);
+	registry.register_default_tools();
+	Dictionary args;
+	args["target"] = "object";
+	args["object_id"] = 42;
+	const Dictionary rejected = registry.call_tool(SNAME("object.query"), args);
+	CHECK_FALSE((bool)rejected.get("ok", true));
+	CHECK(Dictionary(rejected.get("error", Dictionary())).get("code", String()) == "TOOL_ARGUMENT_INVALID");
 }
 
 TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked transactions") {
@@ -966,10 +1049,10 @@ TEST_CASE("[SolersToolRegistry] scene object transaction access follows its nati
 	CHECK(Dictionary(instantiate_access[1]).get("key", String()) == "scene:Environment");
 }
 
-TEST_CASE("[SolersToolRegistry] scene.open is a thin EditorInterface open surface") {
+TEST_CASE("[SolersToolRegistry][SceneTree][Editor] scene.open follows EditorNode scene state") {
 	SolersReflectionService reflection_service;
 	SolersPermissionManager permissions;
-	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_SCENE, true);
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
 	SolersToolRegistry registry;
 	registry.set_reflection_service(&reflection_service);
 	registry.set_permission_manager(&permissions);
@@ -997,6 +1080,48 @@ TEST_CASE("[SolersToolRegistry] scene.open is a thin EditorInterface open surfac
 	CHECK_FALSE((bool)missing_file_result.get("ok", true));
 	const String missing_code = Dictionary(missing_file_result.get("error", Dictionary())).get("code", String());
 	CHECK((missing_code == "SCENE_NOT_FOUND" || missing_code == "EDITOR_UNAVAILABLE"));
+	if (!EditorNode::get_singleton()) {
+		CHECK(missing_code == "EDITOR_UNAVAILABLE");
+		return;
+	}
+
+	const String scene_path = "res://.solers_scene_open_contract.tscn";
+	const String import_path = scene_path + ".import";
+	SolersTestPaths cleanup;
+	cleanup.add(scene_path);
+	cleanup.add(import_path);
+	Node *source_root = memnew(Node);
+	source_root->set_name("SceneOpenContract");
+	Ref<PackedScene> packed;
+	packed.instantiate();
+	REQUIRE(packed->pack(source_root) == OK);
+	memdelete(source_root);
+	REQUIRE(ResourceSaver::save(packed, scene_path) == OK);
+	packed.unref();
+
+	Dictionary open_args;
+	open_args["path"] = scene_path;
+	const Dictionary opened = registry.call_tool(SNAME("scene.open"), open_args);
+	REQUIRE((bool)opened.get("ok", false));
+	const Dictionary opened_data = opened.get("data", Dictionary());
+	CHECK(opened_data.get("scene_path", String()) == scene_path);
+	CHECK(opened_data.get("root_object_id", Variant()).get_type() == Variant::STRING);
+
+	Ref<FileAccess> import_marker = FileAccess::open(import_path, FileAccess::WRITE);
+	REQUIRE(import_marker.is_valid());
+	import_marker->store_string("[remap]\n");
+	import_marker.unref();
+	const Dictionary imported_direct = registry.call_tool(SNAME("scene.open"), open_args);
+	CHECK_FALSE((bool)imported_direct.get("ok", true));
+	CHECK(Dictionary(imported_direct.get("error", Dictionary())).get("code", String()) == "IMPORTED_SCENE_REQUIRES_INHERITED");
+
+	open_args["set_inherited"] = true;
+	const Dictionary inherited = registry.call_tool(SNAME("scene.open"), open_args);
+	REQUIRE((bool)inherited.get("ok", false));
+	Node *edited_root = EditorNode::get_singleton()->get_edited_scene();
+	REQUIRE(edited_root != nullptr);
+	REQUIRE(edited_root->get_scene_inherited_state().is_valid());
+	CHECK(edited_root->get_scene_inherited_state()->get_path() == scene_path);
 }
 
 TEST_CASE("[SolersPermissionManager] auto approve all resolves without pending") {
@@ -1076,6 +1201,52 @@ TEST_CASE("[SolersToolRegistry] transcript audit preserves full redacted tool ar
 	args["operations"] = operations;
 	const Dictionary audit = registry.redact_tool_args_for_audit(SNAME("object.transaction"), args);
 	CHECK(Array(audit.get("operations", Array())).size() == 40);
+}
+
+TEST_CASE("[SolersRuntimeInput][SceneTree] complete action states validate before mutation and release omissions") {
+	solers_runtime_input_bridge_initialize();
+	InputMap *input_map = InputMap::get_singleton();
+	Input *input = Input::get_singleton();
+	REQUIRE(input_map != nullptr);
+	REQUIRE(input != nullptr);
+	const StringName first = SNAME("solers_test_move");
+	const StringName second = SNAME("solers_test_run");
+	input_map->add_action(first);
+	input_map->add_action(second);
+
+	TestEngineDebugger debugger;
+	auto apply = [&](const Array &p_actions) {
+		bool captured = false;
+		const Error err = debugger.capture_parse(SNAME("solers"), "set_input_actions", { "input-contract", 7, p_actions }, captured);
+		CHECK(err == OK);
+		CHECK(captured);
+	};
+	apply(Array({ Dictionary({ { "name", first }, { "strength", 0.75 } }) }));
+	CHECK(input->is_action_pressed(first));
+	CHECK(Math::is_equal_approx(input->get_action_strength(first), 0.75f));
+	CHECK_FALSE(input->is_action_pressed(second));
+
+	apply(Array({ Dictionary({ { "name", first }, { "strength", 0.25 } }), Dictionary({ { "name", "solers_missing_action" }, { "strength", 1.0 } }) }));
+	CHECK(input->is_action_pressed(first));
+	CHECK(Math::is_equal_approx(input->get_action_strength(first), 0.75f));
+
+	apply(Array({ Dictionary({ { "name", second }, { "strength", 1.0 } }) }));
+	CHECK_FALSE(input->is_action_pressed(first));
+	CHECK(input->is_action_pressed(second));
+	apply(Array());
+	CHECK_FALSE(input->is_action_pressed(first));
+	CHECK_FALSE(input->is_action_pressed(second));
+	input_map->erase_action(first);
+	input_map->erase_action(second);
+
+	SolersToolRegistry registry;
+	registry.register_default_tools();
+	const Dictionary tool = solers_test_find_dictionary(registry.list_tools(), SNAME("name"), "runtime.control");
+	const Dictionary properties = Dictionary(tool.get("input_schema", Dictionary())).get("properties", Dictionary());
+	CHECK(Array(Dictionary(properties.get("action", Dictionary())).get("enum", Array())).has("set_input_actions"));
+	const Dictionary action_item = Dictionary(properties.get("actions", Dictionary())).get("items", Dictionary());
+	CHECK(Array(action_item.get("required", Array())).has("name"));
+	CHECK(Array(action_item.get("required", Array())).has("strength"));
 }
 
 } // namespace TestSolersTools
