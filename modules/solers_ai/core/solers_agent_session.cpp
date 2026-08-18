@@ -1320,13 +1320,9 @@ bool SolersAgentSession::_refresh_active_model_limits() {
 
 	const bool explicit_context = active_provider.has("context_window");
 	const bool explicit_output = active_provider.has("max_tokens");
-	const Dictionary model_limits = Dictionary(profile.get("model_limits", Dictionary())).get(model_id, Dictionary());
 	int resolved_context = (int)profile.get("context_window", 0);
 	if ((int)model.get("context", 0) > 0) {
 		resolved_context = model.get("context", 0);
-	}
-	if ((int)model_limits.get("context", 0) > 0) {
-		resolved_context = model_limits.get("context", 0);
 	}
 	if (explicit_context) {
 		resolved_context = (int)active_provider["context_window"];
@@ -1335,9 +1331,6 @@ bool SolersAgentSession::_refresh_active_model_limits() {
 	resolved_output = (int)profile.get("max_output_tokens", resolved_output);
 	if ((int)model.get("output", 0) > 0) {
 		resolved_output = model.get("output", 0);
-	}
-	if ((int)model_limits.get("output", 0) > 0) {
-		resolved_output = model_limits.get("output", 0);
 	}
 	if (explicit_output) {
 		resolved_output = (int)active_provider["max_tokens"];

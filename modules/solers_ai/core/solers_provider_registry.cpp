@@ -154,7 +154,6 @@ void SolersProviderRegistry::_register_auth_hooks() {
 	codex["label"] = "ChatGPT Codex";
 	codex["protocol"] = "openai-responses";
 	codex["default_base_url"] = "https://chatgpt.com/backend-api/codex";
-	codex["default_model"] = "gpt-5.5";
 	codex["catalog_provider"] = "openai";
 	codex["local"] = false;
 	codex["auth_type"] = "oauth";
@@ -176,24 +175,6 @@ void SolersProviderRegistry::_register_auth_hooks() {
 	codex_headers["originator"] = "solers";
 	codex_headers["User-Agent"] = "Solers";
 	codex["headers"] = codex_headers;
-	Array codex_models;
-	codex_models.push_back("gpt-5.5");
-	codex_models.push_back("gpt-5.4");
-	codex_models.push_back("gpt-5.4-mini");
-	codex_models.push_back("gpt-5.3-codex-spark");
-	codex["allowed_models"] = codex_models;
-	Dictionary codex_model_labels;
-	codex_model_labels["gpt-5.5"] = "GPT-5.5";
-	codex_model_labels["gpt-5.4"] = "GPT-5.4";
-	codex_model_labels["gpt-5.4-mini"] = "GPT-5.4 Mini";
-	codex_model_labels["gpt-5.3-codex-spark"] = "GPT-5.3 Codex Spark";
-	codex["model_labels"] = codex_model_labels;
-	Dictionary codex_model_limits;
-	Dictionary gpt55_limits;
-	gpt55_limits["context"] = 400000;
-	gpt55_limits["output"] = 128000;
-	codex_model_limits["gpt-5.5"] = gpt55_limits;
-	codex["model_limits"] = codex_model_limits;
 	overlays["openai_codex"] = codex;
 	overlay_order.push_back("openai_codex");
 
@@ -215,7 +196,15 @@ Dictionary SolersProviderRegistry::get_provider_profile(const String &p_provider
 		return Dictionary();
 	}
 	if (overlays.has(p_provider)) {
-		return overlays[p_provider];
+		Dictionary profile = overlays[p_provider];
+		if (models_dev) {
+			const Dictionary catalog = models_dev->get_provider(StringName(profile.get("catalog_provider", p_provider)));
+			const String default_model = _default_model_for_catalog(catalog);
+			if (!default_model.is_empty()) {
+				profile["default_model"] = default_model;
+			}
+		}
+		return profile;
 	}
 	if (models_dev) {
 		const Dictionary catalog = models_dev->get_provider(StringName(p_provider));
@@ -294,19 +283,20 @@ Array SolersProviderRegistry::list_overlay_provider_ids() const {
 }
 
 bool SolersProviderRegistry::is_model_allowed(const String &p_provider, const String &p_model) const {
-	// AuthHook overlays may declare an allowlist. Catalog providers have none —
-	// do not pull a full provider profile (and formerly a models table) per id.
-	if (overlays.has(p_provider)) {
-		const Dictionary overlay = overlays[p_provider];
-		const Array allowed_models = overlay.get("allowed_models", Array());
-		return allowed_models.is_empty() || allowed_models.has(p_model.strip_edges());
-	}
 	if (!models_dev) {
 		return true;
 	}
 	const Dictionary profile = get_provider_profile(p_provider);
+	if (profile.is_empty()) {
+		return true;
+	}
 	const Dictionary model = models_dev->get_model(StringName(profile.get("catalog_provider", p_provider)), p_model);
-	return model.is_empty() || (String(model.get("status", "active")) != "deprecated" && !String(resolve_provider_profile(p_provider, String(), p_model).get("protocol", String())).is_empty());
+	if (model.is_empty()) {
+		return profile.get("local", false) || String(profile.get("source_kind", String())) == "custom";
+	}
+	return String(model.get("status", "active")) != "deprecated" &&
+			(bool)model.get("tool_call", true) &&
+			!String(resolve_provider_profile(p_provider, String(), p_model).get("protocol", String())).is_empty();
 }
 
 Dictionary SolersProviderRegistry::validate_config(const Dictionary &p_config) const {

@@ -41,6 +41,7 @@
 #endif
 
 static constexpr uint64_t SOLERS_MODELS_DEV_FETCH_BUDGET_MSEC = 30000;
+static constexpr uint64_t SOLERS_MODELS_DEV_REFRESH_TTL_MSEC = 10 * 60 * 1000;
 
 static Dictionary _seed_model(const String &p_id, const String &p_name, int p_context, int p_output, bool p_reasoning, bool p_tool_call, bool p_image_input) {
 	Dictionary m;
@@ -138,6 +139,7 @@ void SolersModelsDev::_load_seed() {
 		p["models"] = anthropic_models;
 		providers[StringName("anthropic")] = p;
 	}
+	catalog_revision++;
 }
 
 void SolersModelsDev::_ingest(const Dictionary &p_root) {
@@ -211,6 +213,7 @@ void SolersModelsDev::_ingest(const Dictionary &p_root) {
 	}
 	MutexLock lock(providers_mutex);
 	providers = next;
+	catalog_revision++;
 }
 
 void SolersModelsDev::_load_cache() {
@@ -240,14 +243,32 @@ void SolersModelsDev::initialize() {
 }
 
 void SolersModelsDev::refresh() {
-	if (!refresh_started.is_set()) {
-		refresh_started.set();
-		refresh_thread.start(&SolersModelsDev::_refresh_func, this);
+	if (refresh_started.is_set()) {
+		return;
+	}
+	{
+		MutexLock lock(providers_mutex);
+		const uint64_t now = OS::get_singleton()->get_ticks_msec();
+		if (last_refresh_msec > 0 && now - last_refresh_msec < SOLERS_MODELS_DEV_REFRESH_TTL_MSEC) {
+			return;
+		}
+		last_refresh_msec = now;
+	}
+	if (refresh_thread.is_started()) {
+		refresh_thread.wait_to_finish();
+	}
+	refresh_started.set();
+	if (refresh_thread.start(&SolersModelsDev::_refresh_func, this) == Thread::UNASSIGNED_ID) {
+		refresh_started.clear();
+		MutexLock lock(providers_mutex);
+		last_refresh_msec = 0;
 	}
 }
 
 void SolersModelsDev::_refresh_func(void *p_userdata) {
-	static_cast<SolersModelsDev *>(p_userdata)->_run_refresh();
+	SolersModelsDev *models_dev = static_cast<SolersModelsDev *>(p_userdata);
+	models_dev->_run_refresh();
+	models_dev->refresh_started.clear();
 }
 
 void SolersModelsDev::_run_refresh() {
@@ -329,6 +350,11 @@ void SolersModelsDev::_run_refresh() {
 	if (file.is_valid()) {
 		file->store_string(json);
 	}
+}
+
+uint64_t SolersModelsDev::get_catalog_revision() const {
+	MutexLock lock(providers_mutex);
+	return catalog_revision;
 }
 
 bool SolersModelsDev::has_provider(const StringName &p_id) const {

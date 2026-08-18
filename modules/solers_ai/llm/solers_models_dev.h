@@ -45,6 +45,8 @@ class SolersModelsDev {
 	HashMap<StringName, Dictionary> providers;
 	mutable Mutex providers_mutex;
 	String cache_path;
+	uint64_t catalog_revision = 0;
+	uint64_t last_refresh_msec = 0;
 
 	Thread refresh_thread;
 	SafeFlag refresh_started;
@@ -63,6 +65,7 @@ public:
 	// refresh() so editor startup can finish loading TLS certificates first.
 	void initialize();
 	void refresh();
+	uint64_t get_catalog_revision() const;
 
 	bool has_provider(const StringName &p_id) const;
 	Dictionary get_provider(const StringName &p_id) const;

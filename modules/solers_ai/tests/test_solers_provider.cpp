@@ -236,6 +236,24 @@ TEST_CASE("[SolersCodexAuth] Godot Thread returns an assigned ID on success") {
 	CHECK(ran);
 }
 
+TEST_CASE("[SolersProviderRegistry] overlay models follow catalog semantics") {
+	SolersProviderRegistry registry;
+	const Dictionary profile = registry.get_provider_profile("openai_codex");
+	SolersModelsDev *catalog = registry.get_models_dev();
+	REQUIRE(catalog != nullptr);
+	const Array model_ids = catalog->list_model_ids("openai");
+	REQUIRE_FALSE(model_ids.is_empty());
+
+	const String model_id = model_ids[0];
+	CHECK_FALSE(profile.has("allowed_models"));
+	CHECK_FALSE(profile.has("model_labels"));
+	CHECK_FALSE(profile.has("model_limits"));
+	CHECK(profile.get("default_model", String()) == model_id);
+	CHECK(registry.is_model_allowed("openai_codex", model_id));
+	CHECK_FALSE(registry.is_model_allowed("openai_codex", "synthetic-model-not-in-catalog"));
+	CHECK(catalog->get_catalog_revision() > 0);
+}
+
 TEST_CASE("[SolersProviderRegistry] requires an explicit connection profile") {
 	SolersProviderRegistry registry;
 
