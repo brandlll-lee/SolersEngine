@@ -39,6 +39,7 @@
 #include "core/os/os.h"
 #include "core/string/translation_server.h"
 #include "editor/docks/editor_dock_manager.h"
+#include "editor/debugger/editor_debugger_plugin.h"
 #include "editor/editor_node.h"
 #include "editor/settings/editor_settings.h"
 
@@ -48,6 +49,12 @@
 #include "modules/solers_ai/generated/solers_translations.gen.h"
 
 static constexpr int SOLERS_WORKSPACE_LAYOUT_VERSION = 1;
+
+class SolersRuntimeDebuggerCapture : public EditorDebuggerPlugin {
+public:
+	bool has_capture(const String &p_capture) const override { return p_capture == "solers"; }
+	bool capture(const String &p_message, const Array &, int) override { return p_message == "solers:input_result"; }
+};
 
 void solers_load_editor_translation() {
 	Ref<TranslationDomain> domain = TranslationServer::get_singleton()->get_editor_domain();
@@ -89,11 +96,19 @@ void SolersEditorPlugin::_translation_changed() {
 }
 
 void SolersEditorPlugin::_notification(int p_what) {
-	if (p_what == NOTIFICATION_PROCESS) {
-		runtime->poll();
-		if (runtime->is_running()) {
-			dock->queue_redraw();
-		}
+	switch (p_what) {
+		case NOTIFICATION_ENTER_TREE:
+			add_debugger_plugin(runtime_debugger_capture);
+			break;
+		case NOTIFICATION_EXIT_TREE:
+			remove_debugger_plugin(runtime_debugger_capture);
+			break;
+		case NOTIFICATION_PROCESS:
+			runtime->poll();
+			if (runtime->is_running()) {
+				dock->queue_redraw();
+			}
+			break;
 	}
 }
 
@@ -109,6 +124,7 @@ void SolersEditorPlugin::get_window_layout(Ref<ConfigFile> p_layout) {
 }
 
 SolersEditorPlugin::SolersEditorPlugin() {
+	runtime_debugger_capture = Ref<EditorDebuggerPlugin>(memnew(SolersRuntimeDebuggerCapture));
 	solers_load_editor_translation();
 	EditorSettings::get_singleton()->connect(SNAME("_translation_changed"), callable_mp(this, &SolersEditorPlugin::_translation_changed));
 	project_path = ProjectSettings::get_singleton()->get_resource_path();

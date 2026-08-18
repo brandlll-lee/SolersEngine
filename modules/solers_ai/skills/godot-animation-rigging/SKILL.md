@@ -38,11 +38,11 @@ Use for clips, skeletons, retargeting, AnimationTree graphs, IK, one-shots, or r
 | Script `position` + root motion together | Pick one authority |
 | Broken elbows from bad retarget “fixed” in Tree | Fix BoneMap / rest first |
 | Godot 3 `AnimationTreePlayer` mental model | Current `AnimationTree` node graph |
-| Ignoring loop end pops | Check track interpolation and loop wrap |
+| Assuming locomotion clips loop | Verify each imported `Animation.loop_mode` |
 
 ## Verify
 1. `object.query target=resource|scene` for skeleton, libraries, and Tree parameters.
 2. `runtime.control` — each clip, interrupt, blend; watch feet/hands.
-3. For locomotion transitions (Idle/Walk/Run): drive state through the gameplay API or a project test script, then `render.capture` while moving — do not claim transitions from a static Idle frame alone.
+3. For locomotion transitions: `runtime.control set_input_actions` → observe → capture while moving → release all actions.
 4. `runtime.observe` digest for missing tracks / errors.
 5. Confirm no double translation when root motion enabled.

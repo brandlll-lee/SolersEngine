@@ -120,7 +120,7 @@ class SolersToolRegistry : public Object {
 	Dictionary _inspect_engine(const Dictionary &p_args);
 	Dictionary _transact_objects(const Dictionary &p_args);
 	Dictionary _compact_addon_contract(const SolersToolContext &p_context, const Dictionary &p_result);
-	Dictionary _run_control(const Dictionary &p_args) const;
+	Dictionary _run_control(const Dictionary &p_args, const String &p_call_id) const;
 	Dictionary _poll_runtime_control(const Dictionary &p_args) const;
 	bool _is_runtime_control_ready(const Dictionary &p_args) const;
 	Dictionary _revert_latest(const SolersToolContext &p_context, const Dictionary &p_args);

@@ -62,8 +62,14 @@
 
 #endif // TOOLS_ENABLED
 
+void solers_runtime_input_bridge_initialize();
+void solers_runtime_input_bridge_uninitialize();
+
 void initialize_solers_ai_module(ModuleInitializationLevel p_level) {
 #ifdef TOOLS_ENABLED
+	if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
+		solers_runtime_input_bridge_initialize();
+	}
 	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
 		GDREGISTER_CLASS(SolersActionTimeline);
 		GDREGISTER_CLASS(SolersAgentSession);
@@ -107,6 +113,9 @@ void uninitialize_solers_ai_module(ModuleInitializationLevel p_level) {
 	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
 		SolersPluginRegistry::unregister_builtins();
 		solers_transcript_close();
+	}
+	if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
+		solers_runtime_input_bridge_uninitialize();
 	}
 #endif // TOOLS_ENABLED
 }

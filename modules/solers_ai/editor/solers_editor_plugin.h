@@ -34,6 +34,7 @@
 
 class SolersAgentRuntime;
 class SolersDock;
+class EditorDebuggerPlugin;
 
 void solers_load_editor_translation();
 
@@ -42,6 +43,7 @@ class SolersEditorPlugin : public EditorPlugin {
 
 	SolersAgentRuntime *runtime = nullptr;
 	SolersDock *dock = nullptr;
+	Ref<EditorDebuggerPlugin> runtime_debugger_capture;
 	String project_path;
 
 	void _select_session(const String &p_session_id);

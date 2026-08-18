@@ -1377,7 +1377,7 @@ static GameViewDebugger *_solers_game_view_debugger() {
 	return nullptr;
 }
 
-Dictionary SolersToolRegistry::_run_control(const Dictionary &p_args) const {
+Dictionary SolersToolRegistry::_run_control(const Dictionary &p_args, const String &p_call_id) const {
 	EditorInterface *editor_interface = EditorInterface::get_singleton();
 	ERR_FAIL_NULL_V(editor_interface, _error("EDITOR_INTERFACE_UNAVAILABLE", "EditorInterface is not available.", false));
 	EditorRunBar *run_bar = EditorRunBar::get_singleton();
@@ -1387,6 +1387,27 @@ Dictionary SolersToolRegistry::_run_control(const Dictionary &p_args) const {
 	const String action = p_args.get("action", String());
 	const bool was_playing = run_bar->is_playing();
 	bool command_accepted = false;
+	if (action == "set_input_actions") {
+		ERR_FAIL_NULL_V(observation_service, _error("RUNTIME_OBSERVATION_UNAVAILABLE", "Runtime observation is not available.", false));
+		if (!debugger || !debugger->is_session_active()) {
+			return _error("RUNTIME_NOT_CONNECTED", "Start the project before setting runtime input.");
+		}
+		const int64_t epoch = p_args.get("runtime_epoch", 0);
+		const int64_t current_epoch = observation_service->get_runtime_status().get("runtime_epoch", 0);
+		if (p_call_id.is_empty() || epoch <= 0 || epoch != current_epoch || !p_args.has("actions")) {
+			return _error("STALE_RUNTIME_EPOCH", "set_input_actions requires actions and the current runtime_epoch returned by runtime.observe.");
+		}
+		observation_service->clear_runtime_control_result();
+		debugger->send_message("solers:set_input_actions", { p_call_id, epoch, p_args["actions"] });
+		Dictionary poll_args;
+		poll_args["action"] = action;
+		poll_args["call_id"] = p_call_id;
+		poll_args["runtime_epoch"] = epoch;
+		Dictionary pending;
+		pending["status"] = "pending";
+		pending["poll_args"] = poll_args;
+		return _ok(pending);
+	}
 	if (action == "set_property") {
 		ERR_FAIL_NULL_V(observation_service, _error("RUNTIME_OBSERVATION_UNAVAILABLE", "Runtime observation is not available.", false));
 		if (!debugger || !debugger->is_session_active()) {
@@ -1497,6 +1518,16 @@ Dictionary SolersToolRegistry::_run_control(const Dictionary &p_args) const {
 
 bool SolersToolRegistry::_is_runtime_control_ready(const Dictionary &p_args) const {
 	const String action = p_args.get("action", String());
+	if (action == "set_input_actions") {
+		if (!observation_service) {
+			return true;
+		}
+		EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
+		ScriptEditorDebugger *debugger = debugger_node ? debugger_node->get_current_debugger() : nullptr;
+		return !debugger || !debugger->is_session_active() ||
+				(int64_t)observation_service->get_runtime_status().get("runtime_epoch", 0) != (int64_t)p_args.get("runtime_epoch", 0) ||
+				!observation_service->get_runtime_control_result(p_args.get("call_id", String())).is_empty();
+	}
 	if (action == "set_property") {
 		return !observation_service || observation_service->is_runtime_observation_ready(p_args);
 	}
@@ -1505,6 +1536,33 @@ bool SolersToolRegistry::_is_runtime_control_ready(const Dictionary &p_args) con
 
 Dictionary SolersToolRegistry::_poll_runtime_control(const Dictionary &p_args) const {
 	const String action = p_args.get("action", String());
+	if (action == "set_input_actions") {
+		ERR_FAIL_NULL_V(observation_service, _error("RUNTIME_OBSERVATION_UNAVAILABLE", "Runtime observation is not available.", false));
+		EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
+		ScriptEditorDebugger *debugger = debugger_node ? debugger_node->get_current_debugger() : nullptr;
+		const int64_t epoch = p_args.get("runtime_epoch", 0);
+		if (!debugger || !debugger->is_session_active()) {
+			return _error("RUNTIME_NOT_CONNECTED", "The runtime stopped before applying input.");
+		}
+		if ((int64_t)observation_service->get_runtime_status().get("runtime_epoch", 0) != epoch) {
+			return _error("STALE_RUNTIME_EPOCH", "The runtime epoch changed before applying input.");
+		}
+		const Dictionary result = observation_service->get_runtime_control_result(p_args.get("call_id", String()));
+		if (result.is_empty()) {
+			Dictionary pending;
+			pending["status"] = "pending";
+			pending["poll_args"] = p_args;
+			return _ok(pending);
+		}
+		if (!(bool)result.get("ok", false)) {
+			return _error(result.get("code", "RUNTIME_INPUT_REJECTED"), result.get("message", "The runtime rejected the input state."));
+		}
+		Dictionary data;
+		data["action"] = action;
+		data["runtime_epoch"] = epoch;
+		data["input_state_applied"] = true;
+		return _ok(data);
+	}
 	if (action == "set_property") {
 		ERR_FAIL_NULL_V(observation_service, _error("RUNTIME_OBSERVATION_UNAVAILABLE", "Runtime observation is not available.", false));
 		Dictionary observed = observation_service->observe_runtime(p_args);
@@ -1655,7 +1713,7 @@ void SolersToolRegistry::_register_script_tools() {
 
 void SolersToolRegistry::_register_runtime_tools() {
 	const SolersPermissionManager::Permission run_project = SolersPermissionManager::PERMISSION_RUN_PROJECT;
-	_add("runtime.control", "Control Godot's active debugger or make one preconditioned, runtime-only property change using the complete canonical handle returned by runtime.observe. Persist verified changes separately through object.transaction.", R"({"type":"object","properties":{"action":{"type":"string","enum":["play_current_scene","stop","suspend","resume","next_frame","debug_break","debug_continue","debug_step","debug_next","debug_out","set_property"]},"runtime_epoch":{"type":"integer","minimum":0},"node_path":{"type":"string","pattern":"^/"},"object_id":{"type":"string","pattern":"^-?[0-9]+$"},"property":{"type":"string","minLength":1},"expected_value":{},"value":{}},"required":["action"],"additionalProperties":false})", run_project, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DIRECT, [this](const SolersToolContext &, const Dictionary &a) { return _run_control(a); }, SolersToolExecution::MAIN_THREAD, [](const Dictionary &) {
+	_add("runtime.control", "Control Godot's active debugger, apply the complete Solers-owned input action state, or make one preconditioned runtime-only property change. Omitted input actions are released; an empty actions array releases all.", R"({"type":"object","properties":{"action":{"type":"string","enum":["play_current_scene","stop","suspend","resume","next_frame","debug_break","debug_continue","debug_step","debug_next","debug_out","set_input_actions","set_property"]},"runtime_epoch":{"type":"integer","minimum":0},"actions":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"object","properties":{"name":{"type":"string","minLength":1},"strength":{"type":"number","exclusiveMinimum":0,"maximum":1}},"required":["name","strength"],"additionalProperties":false}},"node_path":{"type":"string","pattern":"^/"},"object_id":{"type":"string","pattern":"^-?[0-9]+$"},"property":{"type":"string","minLength":1},"expected_value":{},"value":{}},"required":["action"],"additionalProperties":false})", run_project, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DIRECT, [this](const SolersToolContext &ctx, const Dictionary &a) { return _run_control(a, ctx.call_id); }, SolersToolExecution::MAIN_THREAD, [](const Dictionary &) {
 				Array accesses;
 				Dictionary access;
 				access["mode"] = "write";

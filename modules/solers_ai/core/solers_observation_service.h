@@ -60,6 +60,7 @@ class SolersObservationService : public Object {
 	uint64_t runtime_query_sequence = 0;
 	int runtime_result_token_budget = INT32_MAX;
 	Dictionary runtime_query;
+	Dictionary runtime_control_result;
 	Dictionary runtime_object_cache;
 	Array runtime_stack_frames;
 	bool performance_capture_active = false;
@@ -121,6 +122,8 @@ public:
 	Dictionary observe_runtime(const Dictionary &p_args, int p_token_budget = INT32_MAX);
 	bool is_runtime_observation_ready(const Dictionary &p_args) const;
 	bool has_runtime_query() const { return !runtime_query.is_empty(); }
+	void clear_runtime_control_result();
+	Dictionary get_runtime_control_result(const String &p_call_id) const;
 	bool get_runtime_property(uint64_t p_epoch, const NodePath &p_node_path, ObjectID p_object_id, const StringName &p_property, Variant &r_value) const;
 	Dictionary capture_viewport(const Dictionary &p_args);
 	Dictionary poll_viewport_capture(const Dictionary &p_args);

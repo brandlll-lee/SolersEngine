@@ -847,7 +847,7 @@ SolersToolCell::SolersToolCell() {
 void SolersToolCell::start(const String &p_tool_name, const String &p_arguments_json, const String &p_ui_kind) {
 	tool_name = p_tool_name.is_empty() ? String("tool") : p_tool_name;
 	tool_icon = solers_tool_icon_for_ui_kind(p_ui_kind);
-	tool_verb = solers_tool_verb_for_ui_kind(p_ui_kind);
+	tool_verb = solers_tool_verb_for_ui_kind(p_ui_kind) + " · " + tool_name;
 	args_summary = solers_summarize_tool_args(p_arguments_json);
 	set_tooltip_text(tool_name);
 	status = STATUS_RUNNING;
@@ -861,7 +861,7 @@ void SolersToolCell::update(const String &p_tool_name, const String &p_arguments
 	const String next_name = p_tool_name.is_empty() ? tool_name : p_tool_name;
 	const String next_summary = solers_summarize_tool_args(p_arguments_json);
 	const StringName next_icon = solers_tool_icon_for_ui_kind(p_ui_kind);
-	const String next_verb = solers_tool_verb_for_ui_kind(p_ui_kind);
+	const String next_verb = solers_tool_verb_for_ui_kind(p_ui_kind) + " · " + next_name;
 	if (tool_name == next_name && args_summary == next_summary && tool_icon == next_icon && tool_verb == next_verb) {
 		return;
 	}

@@ -502,8 +502,6 @@ Dictionary SolersObservationService::_attach_render_receipt(Dictionary p_result,
 	}
 	if (target == "editor") {
 		view_key += ":" + String::num_int64((int64_t)p_pending.get("viewport_rid", 0));
-	} else if (target == "runtime") {
-		view_key += ":" + String::num_int64((int64_t)p_pending.get("runtime_epoch", 0));
 	}
 	receipt["view_key"] = view_key.sha256_text();
 	const Dictionary *previous = last_render_by_view.getptr(view_key);
@@ -1887,6 +1885,7 @@ bool SolersObservationService::_request_runtime_screenshot(const String &p_captu
 void SolersObservationService::_runtime_started() {
 	runtime_epoch++;
 	runtime_query.clear();
+	runtime_control_result.clear();
 	runtime_object_cache.clear();
 	runtime_stack_frames.clear();
 	performance_sample_cursor = 0;
@@ -1898,6 +1897,7 @@ void SolersObservationService::_runtime_stopped() {
 	performance_monitor_names.clear();
 	performance_monitor_types.clear();
 	runtime_query.clear();
+	runtime_control_result.clear();
 	runtime_object_cache.clear();
 	runtime_stack_frames.clear();
 	performance_sample_cursor = 0;
@@ -1938,6 +1938,10 @@ static Variant _solers_bounded_runtime_value(const Variant &p_value) {
 }
 
 void SolersObservationService::_runtime_debug_data(const String &p_message, const Array &p_data) {
+	if (p_message == "solers:input_result" && p_data.size() == 1 && p_data[0].get_type() == Variant::DICTIONARY) {
+		runtime_control_result = Dictionary(p_data[0]).duplicate(true);
+		return;
+	}
 	if (p_message == "error") {
 		DebuggerMarshalls::OutputError output_error;
 		if (output_error.deserialize(p_data)) {
@@ -2403,6 +2407,17 @@ bool SolersObservationService::get_runtime_property(uint64_t p_epoch, const Node
 	}
 	r_value = properties[p_property];
 	return true;
+}
+
+void SolersObservationService::clear_runtime_control_result() {
+	runtime_control_result.clear();
+}
+
+Dictionary SolersObservationService::get_runtime_control_result(const String &p_call_id) const {
+	if (String(runtime_control_result.get("call_id", String())) != p_call_id) {
+		return Dictionary();
+	}
+	return runtime_control_result.duplicate(true);
 }
 
 SolersObservationService::SolersObservationService() {
