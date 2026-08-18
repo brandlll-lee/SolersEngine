@@ -137,22 +137,36 @@ TEST_CASE("[SolersContextManager] completed-turn projection preserves the exact 
 	CHECK(continued.contains("Continue exactly."));
 }
 
-TEST_CASE("[SolersContextManager] prune clears old tool payloads but keeps recent evidence and mutation receipts") {
+TEST_CASE("[SolersContextManager] consumed calls project arguments without rewriting tool evidence") {
 	Array history;
 	history.push_back(make_user_message("Inspect the scene.", 1));
-	for (int i = 0; i < 3; i++) {
-		history.push_back(SolersLLMMessage::tool_result("old_" + String::num_int64(i), "object.query", String("old payload ").repeat(7000)));
-	}
-	history.push_back(SolersLLMMessage::tool_result("receipt", "object.transaction", R"({"ok":true,"data":{"mutation":{"receipt":{"scene_after":{"version":9}}}}})"));
-	history.push_back(SolersLLMMessage::tool_result("recent", "render.capture", String("recent payload ").repeat(12000)));
+	Array consumed_calls = make_tool_calls("consumed", "object.transaction");
+	Dictionary consumed_call = consumed_calls[0];
+	const String consumed_arguments = JSON::stringify(Dictionary({ { "operations", Array({ Dictionary({ { "op", "update" }, { "properties", Dictionary({ { "large", String("argument ").repeat(2000) } }) } }) }) } }));
+	consumed_call["arguments"] = consumed_arguments;
+	consumed_calls[0] = consumed_call;
+	history.push_back(SolersLLMMessage::assistant("Applying the observed state.", consumed_calls));
+	history.push_back(SolersLLMMessage::tool_result("consumed", "object.transaction", R"({"ok":true,"data":{"mutation":{"receipt":{"scene_after":{"version":9}}}}})"));
+	history.push_back(SolersLLMMessage::assistant("The scene receipt is now version 9.", Array()));
+	Array live_calls = make_tool_calls("live", "render.capture");
+	Dictionary live_call = live_calls[0];
+	const String live_arguments = JSON::stringify(Dictionary({ { "focus_paths", Array({ String("/root/Player").repeat(200) }) } }));
+	live_call["arguments"] = live_arguments;
+	live_calls[0] = live_call;
+	history.push_back(SolersLLMMessage::assistant("Verifying pixels.", live_calls));
+	history.push_back(SolersLLMMessage::tool_result("live", "render.capture", "exact image receipt"));
 
 	SolersContextManager manager;
-	CHECK(manager.prune_old_tool_outputs(history) > 20000);
+	CHECK(manager.project_consumed_tool_arguments(history) > 0);
 	const String wire = JSON::stringify(history);
-	CHECK_FALSE(wire.contains("old payload"));
-	CHECK(wire.contains("recent payload"));
+	const String projected_arguments = Dictionary(Array(Dictionary(history[1]).get("tool_calls", Array()))[0]).get("arguments", String());
+	const Dictionary projection = JSON::parse_string(projected_arguments);
+	CHECK(projection.get("consumed", false));
+	CHECK(projection.get("original_sha256", String()) == consumed_arguments.sha256_text());
+	CHECK(Dictionary(Array(Dictionary(history[4]).get("tool_calls", Array()))[0]).get("arguments", String()) == live_arguments);
 	CHECK(wire.contains("scene_after"));
-	CHECK(wire.contains("original_sha256"));
+	CHECK(wire.contains("exact image receipt"));
+	CHECK(manager.project_consumed_tool_arguments(history) == 0);
 }
 
 TEST_CASE("[SolersContextManager] envelope clamp keeps head and tail under the token budget") {

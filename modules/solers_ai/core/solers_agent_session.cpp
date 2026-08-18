@@ -1051,7 +1051,7 @@ String SolersAgentSession::_default_system_prompt() const {
 			"- Inspect unfamiliar classes with engine.describe; ClassDB property metadata and native documentation are the authority for names, types, units, and usage.\n"
 			"- Read live state with object.query. Edit scenes/resources with object.transaction and its native state/hash preconditions. Use script.compute for isolated bulk generation with declared file outputs.\n"
 			"- Scene transactions are one EditorUndoRedo action and Solers persists successful live-scene changes. Resource transactions are file-checkpointed. Tool results carry native state receipts and persisted file hashes; do not issue a separate save.\n"
-			"- The 3D editor viewport is the live edited scene tree. Use object.transaction for visible scene construction; scripts own runtime behavior. For runnable gameplay, set inputs with runtime.control, observe state, capture the runtime view, then release all inputs before finishing. Use object.query target=relations for world-space relations; a screenshot is not a geometry measurement.\n"
+			"- The edited scene and running game are distinct native states. For runnable gameplay, set InputMap actions, inspect runtime.observe target=scene and target=spatial, capture runtime focus_paths, then release all actions. Spatial facts precede pixels; neither logs nor screenshots are geometry measurements.\n"
 			"- Background tools return stable job ids immediately. Continue independent work; when nothing else is runnable, call job.wait once with the required ids and stop issuing tools. Solers parks this turn and resumes it with a background job delta when any requested job reaches a project-import terminal state; do not poll asset.status for progress.\n"
 			"- Tool errors carry the native cause; read it, change what it names, and retry. Repeating an identical failed call wastes a step.\n"
 			"- Keep progress narration to changed decisions or new evidence. Do not repeat what you will inspect before routine tool calls; the tool timeline already shows execution.\n"
@@ -1259,7 +1259,7 @@ Error SolersAgentSession::_dispatch_model_request() {
 	_append_background_asset_deltas(false);
 	_flush_pending_steering();
 	if (context_manager) {
-		context_manager->prune_old_tool_outputs(messages);
+		context_manager->project_consumed_tool_arguments(messages);
 	}
 	// Drop prior-turn usage so compaction headroom is not computed from a
 	// stale prompt total that already included the previous max_output reserve.

@@ -32,6 +32,7 @@
 
 #include "core/io/json.h"
 #include "core/templates/hash_map.h"
+#include "core/templates/hash_set.h"
 
 #include "modules/solers_ai/core/solers_mention.h"
 #include "modules/solers_ai/llm/solers_llm_message.h"
@@ -41,8 +42,6 @@ const char *SolersContextManager::COMPACTION_SUMMARY_PREFIX =
 const char *SolersContextManager::CANCELLED_TOOL_RESULT =
 		"{\"ok\":false,\"error\":{\"code\":\"TOOL_CANCELLED\",\"message\":\"This call never produced a result: the turn ended before it finished. Re-run it if its output is still needed.\",\"recoverable\":true}}";
 const char *SolersContextManager::MODEL_CONTEXT_ROLE = "model_context";
-static constexpr int SOLERS_PRUNE_PROTECT_TOKENS = 40000;
-static constexpr int SOLERS_PRUNE_MINIMUM_TOKENS = 20000;
 
 int SolersContextManager::estimate_tokens(const String &p_text) {
 	int ascii_count = 0;
@@ -215,48 +214,59 @@ Array SolersContextManager::project_completed_turns(const Array &p_messages) {
 	return projected;
 }
 
-int SolersContextManager::prune_old_tool_outputs(Array &r_messages) {
-	Array candidates;
-	int protected_tokens = 0;
-	int saved_tokens = 0;
+int SolersContextManager::project_consumed_tool_arguments(Array &r_messages) {
+	HashSet<String> consumed_calls;
+	bool has_later_assistant = false;
 	for (int i = r_messages.size() - 1; i >= 0; i--) {
 		const Dictionary message = r_messages[i];
-		if (String(message.get("role", String())) != String(SolersLLMRole::TOOL) || String(message.get("name", String())) == "skill.read") {
+		const String role = message.get("role", String());
+		if (role == String(SolersLLMRole::ASSISTANT)) {
+			has_later_assistant = true;
+		} else if (role == String(SolersLLMRole::TOOL) && has_later_assistant) {
+			const String call_id = message.get("tool_call_id", String());
+			if (!call_id.is_empty()) {
+				consumed_calls.insert(call_id);
+			}
+		}
+	}
+
+	int saved_tokens = 0;
+	for (int i = 0; i < r_messages.size(); i++) {
+		Dictionary message = r_messages[i];
+		if (String(message.get("role", String())) != String(SolersLLMRole::ASSISTANT)) {
 			continue;
 		}
-		const String content = message.get("content", String());
-		const int tokens = estimate_tokens(content);
-		if (protected_tokens < SOLERS_PRUNE_PROTECT_TOKENS) {
-			protected_tokens += tokens;
-			continue;
-		}
-		Ref<JSON> json;
-		json.instantiate();
-		const Dictionary result = json->parse(content) == OK && json->get_data().get_type() == Variant::DICTIONARY ? Dictionary(json->get_data()) : Dictionary();
-		const Dictionary receipt = Dictionary(Dictionary(result.get("data", Dictionary())).get("mutation", Dictionary())).get("receipt", Dictionary());
-		if (!receipt.is_empty()) {
-			continue;
-		}
-		const String replacement = JSON::stringify(Dictionary({ { "pruned", true }, { "original_sha256", content.sha256_text() } }));
-		const int saving = tokens - estimate_tokens(replacement);
-		if (saving > 0) {
-			candidates.push_back(Dictionary({ { "index", i }, { "content", replacement } }));
+		Array calls = Array(message.get("tool_calls", Array())).duplicate(true);
+		bool changed = false;
+		for (int call_index = 0; call_index < calls.size(); call_index++) {
+			Dictionary call = calls[call_index];
+			if (!consumed_calls.has(call.get("id", String()))) {
+				continue;
+			}
+			const String arguments = call.get("arguments", String("{}"));
+			const Variant parsed = JSON::parse_string(arguments);
+			if (parsed.get_type() == Variant::DICTIONARY && (bool)Dictionary(parsed).get("consumed", false)) {
+				continue;
+			}
+			const String replacement = JSON::stringify(Dictionary({ { "consumed", true }, { "original_sha256", arguments.sha256_text() }, { "original_bytes", arguments.utf8().length() } }));
+			const int saving = estimate_tokens(arguments) - estimate_tokens(replacement);
+			if (saving <= 0) {
+				continue;
+			}
+			call["arguments"] = replacement;
+			calls[call_index] = call;
 			saved_tokens += saving;
+			changed = true;
+		}
+		if (changed) {
+			message["tool_calls"] = calls;
+			r_messages[i] = message;
 		}
 	}
-	if (saved_tokens < SOLERS_PRUNE_MINIMUM_TOKENS) {
-		return 0;
+	if (saved_tokens > 0) {
+		authoritative_tokens = 0;
+		covered_message_count = 0;
 	}
-	for (int i = 0; i < candidates.size(); i++) {
-		const Dictionary candidate = candidates[i];
-		const int index = candidate.get("index", -1);
-		Dictionary message = r_messages[index];
-		message["content"] = candidate.get("content", String());
-		message.erase("attachments");
-		r_messages[index] = message;
-	}
-	authoritative_tokens = 0;
-	covered_message_count = 0;
 	return saved_tokens;
 }
 
