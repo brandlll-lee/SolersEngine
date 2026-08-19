@@ -36,6 +36,7 @@
 
 bool solers_coerce_property_value(Object *p_object, const StringName &p_property, const Variant &p_value, Variant &r_out, String &r_error);
 bool solers_coerce_variant_value(const PropertyInfo &p_info, const Variant &p_value, Variant &r_out, String &r_error);
+Dictionary solers_variant_wire_shape(Variant::Type p_type);
 Dictionary solers_native_object_handle(Object *p_object);
 Variant solers_summarize_display_value(const Variant &p_value);
 PackedStringArray solers_nearest_names(const String &p_needle, const PackedStringArray &p_candidates, int p_max = 5);

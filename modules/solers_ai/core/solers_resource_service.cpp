@@ -442,6 +442,21 @@ static bool _solers_construct_variant_value(Variant::Type p_type, const Variant 
 	return true;
 }
 
+Dictionary solers_variant_wire_shape(Variant::Type p_type) {
+	List<StringName> member_names;
+	Variant::get_member_list(p_type, &member_names);
+	Dictionary members;
+	for (const StringName &member_name : member_names) {
+		if (Variant::get_member_validated_setter(p_type, member_name)) {
+			members[member_name] = Variant::get_type_name(Variant::get_member_type(p_type, member_name));
+		}
+	}
+	if (members.is_empty()) {
+		return Dictionary();
+	}
+	return Dictionary({ { "encoding", "named_members" }, { "members", members } });
+}
+
 static bool _solers_coerce_value(const PropertyInfo &p_info, const Variant &p_value, Variant &r_out, String &r_error) {
 	if (p_info.type == Variant::NIL || (p_info.type != Variant::OBJECT && p_value.get_type() == p_info.type)) {
 		r_out = p_value;

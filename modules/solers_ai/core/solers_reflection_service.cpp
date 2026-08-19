@@ -586,6 +586,10 @@ Dictionary SolersReflectionService::introspect_class(const Dictionary &p_args) {
 		pd["hint"] = (int)property.hint;
 		pd["hint_string"] = property.hint_string;
 		pd["usage"] = (int64_t)property.usage;
+		const Dictionary wire_shape = solers_variant_wire_shape(property.type);
+		if (!wire_shape.is_empty()) {
+			pd["wire_shape"] = wire_shape;
+		}
 		if (!description.is_empty()) {
 			pd["description"] = description;
 		}

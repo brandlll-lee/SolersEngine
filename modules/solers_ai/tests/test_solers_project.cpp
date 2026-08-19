@@ -602,6 +602,17 @@ TEST_CASE("[SolersReflectionService] lean introspect returns member_names withou
 	const Dictionary expand_data = expanded.get("data", Dictionary());
 	CHECK(expand_data.has("properties"));
 	CHECK(Array(expand_data.get("properties", Array())).size() >= 1);
+
+	Dictionary color_args;
+	color_args["class_name"] = "DirectionalLight3D";
+	color_args["member_query"] = "light_color";
+	const Dictionary color_result = reflection_service.introspect_class(color_args);
+	REQUIRE((bool)color_result.get("ok", false));
+	const Array color_properties = Dictionary(color_result.get("data", Dictionary())).get("properties", Array());
+	REQUIRE(color_properties.size() == 1);
+	const Dictionary wire_shape = Dictionary(color_properties[0]).get("wire_shape", Dictionary());
+	CHECK(wire_shape.get("encoding", String()) == "named_members");
+	CHECK(Dictionary(wire_shape.get("members", Dictionary())).get("r", String()) == "float");
 }
 
 TEST_CASE("[SolersReflectionService] member_query reports unmatched tokens from ClassDB") {

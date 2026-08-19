@@ -1242,15 +1242,27 @@ Dictionary SolersToolRegistry::_inspect_engine(const Dictionary &p_args) {
 		return reflection_service->search_classes(search_args);
 	}
 	Array inspected_classes;
-	for (const Variant &value : classes) {
+	Array errors;
+	for (int i = 0; i < classes.size(); i++) {
+		const Variant value = classes[i];
 		const Dictionary inspected = reflection_service->introspect_class(Dictionary(value));
 		if (!(bool)inspected.get("ok", false)) {
-			return inspected;
+			Dictionary error;
+			error["request_index"] = i;
+			error["class_name"] = Dictionary(value).get("class_name", String());
+			error["error"] = inspected.get("error", Dictionary());
+			errors.push_back(error);
+			continue;
 		}
-		inspected_classes.push_back(inspected.get("data", Dictionary()));
+		Dictionary class_data = inspected.get("data", Dictionary());
+		class_data["request_index"] = i;
+		inspected_classes.push_back(class_data);
 	}
 	Dictionary data;
 	data["classes"] = inspected_classes;
+	data["errors"] = errors;
+	data["requested_count"] = classes.size();
+	data["complete"] = errors.is_empty();
 	return _ok(data);
 }
 
@@ -1683,7 +1695,7 @@ void SolersToolRegistry::_register_observation_tools() {
 				}
 				return _ok(file); }, _access_by_arg("read", "project:", "path"), {}, {}, SolersToolUiKind::READ);
 	_add_observe("runtime.observe", "Observe one canonical runtime snapshot through Godot's native debugger. Scene returns typed property receipts; spatial returns post-draw subtree AABBs, camera projection, and physics ray facts.", R"({"type":"object","properties":{"target":{"type":"string","enum":["scene","spatial","stack","performance"]},"node_paths":{"type":"array","items":{"type":"string","pattern":"^/"},"maxItems":64,"uniqueItems":true},"focus_paths":{"type":"array","items":{"type":"string","pattern":"^/"},"minItems":1,"maxItems":32,"uniqueItems":true},"path_prefix":{"type":"string","pattern":"^/"},"name_contains":{"type":"string"},"class_name":{"type":"string"},"cursor":{"type":"integer","minimum":0},"properties":{"type":"array","items":{"type":"string","minLength":1},"maxItems":64,"uniqueItems":true},"max_results":{"type":"integer","minimum":1}},"required":["target"],"additionalProperties":false})", [this, obs](const SolersToolContext &ctx, const Dictionary &a) { return _ok(obs->observe_runtime(a, ctx.result_token_budget)); }, {}, [this, obs](const SolersToolContext &ctx, const Dictionary &a) { return _ok(obs->observe_runtime(a, ctx.result_token_budget)); }, [obs](const SolersToolContext &, const Dictionary &a) { return obs->is_runtime_observation_ready(a); });
-	_add_observe_exposed("render.capture", "Capture content-addressed visual evidence from an explicit native state. Edited-scene captures require the history/version returned by object.query or object.transaction; the receipt binds the image to the exact World3D render-state fingerprint. debug_draw uses Godot's Viewport enum; inspect it with engine.describe.", R"({"type":"object","properties":{"target":{"type":"string","enum":["editor","camera","top_down","orthographic","runtime"]},"source_state":{"type":"object","properties":{"history_id":{"type":"integer"},"version":{"type":"integer","minimum":0},"root_object_id":{"type":"string","pattern":"^-?[0-9]+$"}},"required":["history_id","version"],"additionalProperties":true},"node_path":{"type":"string"},"axis":{"type":"string","enum":["x","y","z"]},"direction":{"type":"string","enum":["positive","negative"]},"focus_paths":{"type":"array","items":{"type":"string"}},"section_position":{"type":"number"},"debug_draw":{"type":"integer","minimum":0}},"required":["target"],"additionalProperties":false})", SolersToolExposure::DIRECT, [obs](const SolersToolContext &, const Dictionary &a) { return obs->capture_viewport(a); }, {}, [obs](const SolersToolContext &, const Dictionary &a) { return obs->poll_viewport_capture(a); }, [obs](const SolersToolContext &, const Dictionary &a) { return obs->is_viewport_capture_ready(a); }, SolersToolUiKind::CAPTURE);
+	_add_observe_exposed("render.capture", "Capture content-addressed visual evidence from an explicit native state. Edited-scene receipts bind pixels to the World3D fingerprint; runtime receipts bind pixels to the runtime epoch. Spatial facts are observed independently. debug_draw uses Godot's Viewport enum; inspect it with engine.describe.", R"({"type":"object","properties":{"target":{"type":"string","enum":["editor","camera","top_down","orthographic","runtime"]},"source_state":{"type":"object","properties":{"history_id":{"type":"integer"},"version":{"type":"integer","minimum":0},"root_object_id":{"type":"string","pattern":"^-?[0-9]+$"}},"required":["history_id","version"],"additionalProperties":true},"node_path":{"type":"string"},"axis":{"type":"string","enum":["x","y","z"]},"direction":{"type":"string","enum":["positive","negative"]},"focus_paths":{"type":"array","items":{"type":"string"}},"section_position":{"type":"number"},"debug_draw":{"type":"integer","minimum":0}},"required":["target"],"additionalProperties":false})", SolersToolExposure::DIRECT, [obs](const SolersToolContext &, const Dictionary &a) { return obs->capture_viewport(a); }, {}, [obs](const SolersToolContext &, const Dictionary &a) { return obs->poll_viewport_capture(a); }, [obs](const SolersToolContext &, const Dictionary &a) { return obs->is_viewport_capture_ready(a); }, SolersToolUiKind::CAPTURE);
 
 	if (resource_service) {
 		SolersResourceService *svc = resource_service;
