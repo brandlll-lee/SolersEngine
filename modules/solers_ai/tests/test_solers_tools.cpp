@@ -38,9 +38,12 @@
 #include "core/io/resource_loader.h"
 #include "core/io/resource_saver.h"
 #include "editor/editor_node.h"
+#include "scene/3d/light_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/animation/animation_player.h"
 #include "scene/main/scene_tree.h"
+#include "scene/main/window.h"
+#include "scene/resources/3d/primitive_meshes.h"
 #include "scene/resources/animation.h"
 #include "scene/resources/animation_library.h"
 #include "scene/resources/packed_scene.h"
@@ -70,13 +73,21 @@
 
 TEST_FORCE_LINK(test_solers_tools)
 
-void solers_runtime_input_bridge_initialize();
+void solers_runtime_bridge_initialize();
 
 namespace TestSolersTools {
 
 class TestEngineDebugger : public EngineDebugger {
 public:
-	void send_message(const String &, const Array &) override {}
+	String last_message;
+	Array last_data;
+
+	TestEngineDebugger() { singleton = this; }
+
+	void send_message(const String &p_message, const Array &p_data) override {
+		last_message = p_message;
+		last_data = p_data;
+	}
 	void send_error(const String &, const String &, int, const String &, const String &, bool, ErrorHandlerType) override {}
 	void debug(bool, bool) override {}
 };
@@ -399,6 +410,14 @@ TEST_CASE("[SolersBuiltinSkills] registry catalog and content stay consistent wi
 	CHECK_FALSE(assets.content.contains("meshy-6"));
 	CHECK_FALSE(assets.content.contains("job.wait"));
 
+	SolersBuiltinSkillView animation;
+	REQUIRE(SolersBuiltinSkills::find_by_name("godot-animation-rigging", animation));
+	CHECK(animation.content.contains("Correlate both receipts by `runtime_epoch`"));
+	CHECK(animation.content.contains("must not suppress valid pixels"));
+	SolersBuiltinSkillView gameplay;
+	REQUIRE(SolersBuiltinSkills::find_by_name("godot-scripting-input-gameplay", gameplay));
+	CHECK(gameplay.content.contains("independently observe scene/spatial state and capture runtime pixels"));
+
 	SolersBuiltinSkillView missing;
 	CHECK_FALSE(SolersBuiltinSkills::find_by_name("synthetic-never-registered-skill", missing));
 	CHECK_FALSE(SolersBuiltinSkills::find_by_name("photorealism-pipeline", missing));
@@ -502,31 +521,57 @@ TEST_CASE("[SolersToolRegistry] ClassDB member queries match whitespace-separate
 	SolersPermissionManager permissions;
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
 	SolersReflectionService reflection_service;
+	SolersObservationService observation_service;
 	SolersToolRegistry registry;
 	registry.set_permission_manager(&permissions);
 	registry.set_reflection_service(&reflection_service);
+	registry.set_observation_service(&observation_service);
 	registry.register_default_tools();
 	const Dictionary tool = solers_test_find_dictionary(registry.list_tools(), SNAME("name"), "engine.describe");
 	const Dictionary classes_schema = Dictionary(Dictionary(tool.get("input_schema", Dictionary())).get("properties", Dictionary())).get("classes", Dictionary());
 	const Dictionary class_schema = classes_schema.get("items", Dictionary());
 	CHECK_FALSE(Array(class_schema.get("required", Array())).has("max_members"));
+	const Dictionary capture_tool = solers_test_find_dictionary(registry.list_tools(), SNAME("name"), "render.capture");
+	CHECK(String(capture_tool.get("description", String())).contains("Spatial facts are observed independently"));
+	CHECK(Dictionary(Dictionary(capture_tool.get("input_schema", Dictionary())).get("properties", Dictionary())).has("focus_paths"));
 
 	Dictionary class_request;
 	class_request["class_name"] = "CameraAttributesPhysical";
 	class_request["include_inherited"] = true;
 	class_request["member_query"] = "exposure_aperture exposure_sensitivity";
-	Array classes;
-	classes.push_back(class_request);
+	Array classes({ class_request, Dictionary({ { "class_name", "SolersMissingNativeClass" } }), Dictionary({ { "class_name", "Node3D" } }) });
 	Dictionary args;
 	args["classes"] = classes;
 	const Dictionary result = registry.call_tool(SNAME("engine.describe"), args);
 	REQUIRE((bool)result.get("ok", false));
-	const Array described = Dictionary(result.get("data", Dictionary())).get("classes", Array());
-	REQUIRE(described.size() == 1);
+	const Dictionary data = result.get("data", Dictionary());
+	const Array described = data.get("classes", Array());
+	REQUIRE(described.size() == 2);
+	CHECK((int)Dictionary(described[0]).get("request_index", -1) == 0);
+	CHECK((int)Dictionary(described[1]).get("request_index", -1) == 2);
+	const Array errors = data.get("errors", Array());
+	REQUIRE(errors.size() == 1);
+	CHECK((int)Dictionary(errors[0]).get("request_index", -1) == 1);
+	CHECK(Dictionary(Dictionary(errors[0]).get("error", Dictionary())).get("code", String()) == "UNKNOWN_CLASS");
+	CHECK_FALSE((bool)data.get("complete", true));
+	CHECK((int)data.get("requested_count", 0) == 3);
+	args["classes"] = Array({ Dictionary({ { "class_name", "SolersMissingOne" } }), Dictionary({ { "class_name", "SolersMissingTwo" } }) });
+	const Dictionary all_invalid = registry.call_tool(SNAME("engine.describe"), args);
+	REQUIRE((bool)all_invalid.get("ok", false));
+	const Dictionary invalid_data = all_invalid.get("data", Dictionary());
+	CHECK(Array(invalid_data.get("classes", Array())).is_empty());
+	const Array invalid_errors = invalid_data.get("errors", Array());
+	REQUIRE(invalid_errors.size() == 2);
+	CHECK((int)Dictionary(invalid_errors[0]).get("request_index", -1) == 0);
+	CHECK((int)Dictionary(invalid_errors[1]).get("request_index", -1) == 1);
+	CHECK(Dictionary(Dictionary(invalid_errors[1]).get("error", Dictionary())).get("code", String()) == "UNKNOWN_CLASS");
+	CHECK_FALSE((bool)invalid_data.get("complete", true));
 	const Array properties = Dictionary(described[0]).get("properties", Array());
 	HashSet<String> names;
 	for (int i = 0; i < properties.size(); i++) {
-		names.insert(Dictionary(properties[i]).get("name", String()));
+		const Dictionary property = properties[i];
+		names.insert(property.get("name", String()));
+		CHECK_FALSE(property.has("wire_shape"));
 	}
 	CHECK(names.has("exposure_aperture"));
 	CHECK(names.has("exposure_sensitivity"));
@@ -597,8 +642,26 @@ TEST_CASE("[SolersTool] ObjectID wire values are lossless decimal strings") {
 }
 
 TEST_CASE("[SolersResourceService] PropertyInfo coercion and animation inventory use native resource facts") {
+	const Dictionary color_shape = solers_variant_wire_shape(Variant::COLOR);
+	CHECK(color_shape.get("encoding", String()) == "named_members");
+	const Dictionary color_members = color_shape.get("members", Dictionary());
+	CHECK(color_members.get("r", String()) == "float");
+	CHECK(color_members.get("g", String()) == "float");
+	CHECK(color_members.get("b", String()) == "float");
+	CHECK(color_members.get("a", String()) == "float");
+	CHECK(solers_variant_wire_shape(Variant::INT).is_empty());
+
 	Variant value;
 	String error;
+	REQUIRE(solers_coerce_variant_value(PropertyInfo(Variant::COLOR, "light_color"), Dictionary({ { "r", 1.0 }, { "g", 0.5 }, { "b", 0.25 }, { "a", 1.0 } }), value, error));
+	CHECK(value.get_type() == Variant::COLOR);
+	CHECK(Color(value).is_equal_approx(Color(1.0, 0.5, 0.25, 1.0)));
+	DirectionalLight3D *light = memnew(DirectionalLight3D);
+	REQUIRE(solers_coerce_property_value(light, SNAME("light_color"), Dictionary({ { "r", 0.1 }, { "g", 0.2 }, { "b", 0.3 }, { "a", 1.0 } }), value, error));
+	CHECK(Color(value).is_equal_approx(Color(0.1, 0.2, 0.3, 1.0)));
+	CHECK_FALSE(solers_coerce_property_value(light, SNAME("light_color"), "#19334c", value, error));
+	CHECK(error.contains("Could not construct Color from String"));
+	memdelete(light);
 	REQUIRE(solers_coerce_variant_value(PropertyInfo(Variant::VECTOR3, "position"), Dictionary({ { "x", 1.0 }, { "y", 2.0 }, { "z", 3.0 } }), value, error));
 	CHECK(value.get_type() == Variant::VECTOR3);
 	CHECK(Vector3(value).is_equal_approx(Vector3(1, 2, 3)));
@@ -1247,7 +1310,7 @@ TEST_CASE("[SolersToolRegistry] transcript audit preserves full redacted tool ar
 }
 
 TEST_CASE("[SolersRuntimeInput][SceneTree] complete action states validate before mutation and release omissions") {
-	solers_runtime_input_bridge_initialize();
+	solers_runtime_bridge_initialize();
 	InputMap *input_map = InputMap::get_singleton();
 	Input *input = Input::get_singleton();
 	REQUIRE(input_map != nullptr);
@@ -1298,6 +1361,113 @@ TEST_CASE("[SolersRuntimeInput][SceneTree] complete action states validate befor
 	const Dictionary observe_properties = Dictionary(observe_tool.get("input_schema", Dictionary())).get("properties", Dictionary());
 	CHECK(Array(Dictionary(observe_properties.get("target", Dictionary())).get("enum", Array())).has("spatial"));
 	CHECK((int)Dictionary(observe_properties.get("focus_paths", Dictionary())).get("minItems", 0) == 1);
+}
+
+TEST_CASE("[SolersRuntimeBridge][SceneTree] exact object observations use native property usage and ownership") {
+	solers_runtime_bridge_initialize();
+	TestEngineDebugger debugger;
+	bool malformed_captured = false;
+	CHECK(debugger.capture_parse(SNAME("solers"), "observe_objects", { "", 0, Dictionary() }, malformed_captured) == OK);
+	CHECK(malformed_captured);
+	CHECK(debugger.last_message == "solers:objects_result");
+	REQUIRE(debugger.last_data.size() == 1);
+	CHECK_FALSE((bool)Dictionary(debugger.last_data[0]).get("ok", true));
+	CHECK(Dictionary(debugger.last_data[0]).get("code", String()) == "INVALID_OBSERVATION_REQUEST");
+	malformed_captured = false;
+	CHECK(debugger.capture_parse(SNAME("solers"), "observe_frame", { "missing-frame-payload", 11 }, malformed_captured) == OK);
+	CHECK(malformed_captured);
+	CHECK(debugger.last_message == "solers:frame_result");
+	CHECK_FALSE((bool)Dictionary(debugger.last_data[0]).get("ok", true));
+
+	Node *scene = memnew(Node);
+	scene->set_name("SolersRuntimeContract");
+	scene->set_scene_file_path("res://runtime_contract.tscn");
+	SceneTree::get_singleton()->get_root()->add_child(scene);
+	AnimationPlayer *player = memnew(AnimationPlayer);
+	player->set_name("Player");
+	player->set_scene_file_path("res://player_contract.tscn");
+	scene->add_child(player);
+	player->set_owner(scene);
+	MeshInstance3D *mesh_instance = memnew(MeshInstance3D);
+	mesh_instance->set_name("Mesh");
+	Ref<BoxMesh> mesh;
+	mesh.instantiate();
+	mesh_instance->set_mesh(mesh);
+	scene->add_child(mesh_instance);
+	mesh_instance->set_owner(scene);
+
+	const String object_id = solers_object_id_to_string(player->get_instance_id());
+	const String node_path = String(player->get_path());
+	Dictionary request;
+	request["object_id"] = object_id;
+	request["node_path"] = node_path;
+	request["properties"] = Array({ "speed_scale", "current_animation_length" });
+	Dictionary stale_request = request.duplicate(true);
+	stale_request["node_path"] = node_path + "/Moved";
+	Dictionary invalid_id_request = request.duplicate(true);
+	invalid_id_request["object_id"] = 42;
+	Dictionary invalid_property_request = request.duplicate(true);
+	invalid_property_request["properties"] = "speed_scale";
+	Dictionary mesh_request;
+	mesh_request["object_id"] = solers_object_id_to_string(mesh_instance->get_instance_id());
+	mesh_request["node_path"] = String(mesh_instance->get_path());
+	mesh_request["properties"] = Array({ "mesh" });
+	bool captured = false;
+	const Error err = debugger.capture_parse(SNAME("solers"), "observe_objects", { "objects-contract", 11, Array({ request, stale_request, "invalid", invalid_id_request, invalid_property_request, mesh_request }) }, captured);
+	CHECK(err == OK);
+	CHECK(captured);
+	CHECK(debugger.last_message == "solers:objects_result");
+	REQUIRE(debugger.last_data.size() == 1);
+	const Dictionary result = debugger.last_data[0];
+	CHECK((bool)result.get("ok", false));
+	CHECK_FALSE((bool)result.get("complete", true));
+	CHECK((int)result.get("requested_count", 0) == 6);
+	const Array nodes = result.get("nodes", Array());
+	REQUIRE(nodes.size() == 2);
+	const Dictionary observed = nodes[0];
+	CHECK(observed.get("object_id", String()) == object_id);
+	CHECK(observed.get("node_path", String()) == node_path);
+	CHECK(observed.get("owner_path", String()) == String(scene->get_path()));
+	CHECK(observed.get("scene_file_path", String()) == "res://player_contract.tscn");
+	const Dictionary properties = observed.get("properties", Dictionary());
+	CHECK(Math::is_equal_approx((double)properties.get("speed_scale", 0.0), 1.0));
+	CHECK_FALSE(properties.has("current_animation_length"));
+	const Dictionary property_info = observed.get("property_info", Dictionary());
+	const PropertyInfo speed_info = PropertyInfo::from_dict(property_info.get("speed_scale", Dictionary()));
+	CHECK(speed_info.type == Variant::FLOAT);
+	CHECK((speed_info.usage & PROPERTY_USAGE_EDITOR) != 0);
+	const Dictionary observed_mesh = nodes[1];
+	CHECK(observed_mesh.get("owner_path", String()) == String(scene->get_path()));
+	const String mesh_wire = Dictionary(observed_mesh.get("properties", Dictionary())).get("mesh", String());
+	ObjectID decoded_mesh_id;
+	CHECK(solers_object_id_from_variant(mesh_wire, decoded_mesh_id));
+	CHECK(decoded_mesh_id == mesh->get_instance_id());
+	const PropertyInfo mesh_info = PropertyInfo::from_dict(Dictionary(observed_mesh.get("property_info", Dictionary())).get("mesh", Dictionary()));
+	CHECK(mesh_info.type == Variant::OBJECT);
+	CHECK(mesh_info.class_name == Mesh::get_class_static());
+
+	bool saw_hidden = false;
+	bool saw_stale = false;
+	bool saw_invalid_request = false;
+	bool saw_invalid_id = false;
+	bool saw_invalid_properties = false;
+	const Array errors = result.get("errors", Array());
+	CHECK(errors.size() == 5);
+	for (int i = 0; i < errors.size(); i++) {
+		const Dictionary error = errors[i];
+		saw_hidden = saw_hidden || (String(error.get("property", String())) == "current_animation_length" && String(error.get("reason", String())) == "property_not_observable");
+		saw_stale = saw_stale || String(error.get("reason", String())) == "node_path_changed";
+		saw_invalid_request = saw_invalid_request || String(error.get("reason", String())) == "invalid_object_request";
+		saw_invalid_id = saw_invalid_id || String(error.get("reason", String())) == "invalid_object_id";
+		saw_invalid_properties = saw_invalid_properties || String(error.get("reason", String())) == "invalid_property_request";
+	}
+	CHECK(saw_hidden);
+	CHECK(saw_stale);
+	CHECK(saw_invalid_request);
+	CHECK(saw_invalid_id);
+	CHECK(saw_invalid_properties);
+	SceneTree::get_singleton()->get_root()->remove_child(scene);
+	memdelete(scene);
 }
 
 } // namespace TestSolersTools
