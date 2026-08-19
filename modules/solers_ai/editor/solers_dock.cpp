@@ -461,10 +461,13 @@ void SolersDock::_sync_layout_widths() {
 }
 
 void SolersDock::_refresh_status() {
-	// The only live status surfaces are the inline approval prompt and the
-	// model chip; everything else here was wiring for the removed diagnostics.
 	_sync_approval_panel();
 	_refresh_model_chip();
+	if (context_ring) {
+		const Dictionary status = agent_session ? agent_session->get_status() : Dictionary();
+		const Dictionary usage = status.get("window_usage", Dictionary());
+		context_ring->set_usage(usage.get("used_tokens", 0), usage.get("context_window", 0));
+	}
 }
 
 void SolersDock::_refresh_model_chip() {
@@ -2771,6 +2774,10 @@ SolersDock::SolersDock() {
 	toolbar_spacer->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	composer_toolbar->add_child(toolbar_spacer);
 
+	context_ring = memnew(SolersContextRing);
+	context_ring->set_name("ContextUsageRing");
+	composer_toolbar->add_child(context_ring);
+
 	send_chat_button = memnew(SolersGlyphButton);
 	send_chat_button->configure(SNAME("send_up"), SolersGlyphButton::SKIN_PRIMARY, TTR("Send"), 16);
 	send_chat_button->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
@@ -2951,6 +2958,7 @@ void SolersDock::set_agent_session(SolersAgentSession *p_agent_session) {
 	agent_session->connect(SNAME("turn_retrying"), callable_mp(this, &SolersDock::_on_agent_turn_retrying));
 	agent_session->connect(SNAME("turn_waiting"), callable_mp(this, &SolersDock::_on_agent_turn_waiting));
 	agent_session->connect(SNAME("plan_updated"), callable_mp(this, &SolersDock::_on_agent_plan_updated));
+	_refresh_status();
 }
 
 void SolersDock::_on_agent_model_request_started() {

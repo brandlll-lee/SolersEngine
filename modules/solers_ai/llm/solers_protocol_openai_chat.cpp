@@ -31,6 +31,7 @@
 #include "solers_protocol_openai_chat.h"
 
 #include "core/io/json.h"
+
 #include "modules/solers_ai/llm/solers_llm_message.h"
 
 static Dictionary _openai_image_part(const Dictionary &p_attachment) {
@@ -285,11 +286,11 @@ Array SolersOpenAIChatProtocol::parse_event(Dictionary &r_state, const String &p
 	// requested it; surface them regardless of position.
 	if (obj.has("usage") && Dictionary(obj["usage"]).size() > 0) {
 		const Dictionary u = obj["usage"];
-		// Canonical usage separates cached from fresh input tokens; OpenAI's
-		// prompt_tokens already includes the cached share, so split it out.
 		const int prompt_tokens = u.get("prompt_tokens", 0);
 		const int cached_tokens = Dictionary(u.get("prompt_tokens_details", Dictionary())).get("cached_tokens", 0);
-		events.push_back(SolersLLMEvent::usage(MAX(0, prompt_tokens - cached_tokens), u.get("completion_tokens", 0), cached_tokens > 0 ? cached_tokens : -1));
+		const int completion_tokens = u.get("completion_tokens", 0);
+		const int reasoning_tokens = Dictionary(u.get("completion_tokens_details", Dictionary())).get("reasoning_tokens", 0);
+		events.push_back(SolersLLMEvent::usage(MAX(0, prompt_tokens - cached_tokens), MAX(0, completion_tokens - reasoning_tokens), cached_tokens, -1, reasoning_tokens));
 	}
 
 	const Array choices = obj.get("choices", Array());

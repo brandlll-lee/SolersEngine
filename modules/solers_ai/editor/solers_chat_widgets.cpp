@@ -312,6 +312,61 @@ void SolersGlyphButton::_notification(int p_what) {
 	}
 }
 
+SolersContextRing::SolersContextRing() {
+	set_custom_minimum_size(Size2(28, 28) * EDSCALE);
+	set_v_size_flags(SIZE_SHRINK_CENTER);
+	set_focus_mode(FOCUS_NONE);
+	set_usage(0, 0);
+}
+
+String SolersContextRing::_format_tokens(int64_t p_tokens) {
+	const int64_t tokens = MAX((int64_t)0, p_tokens);
+	if (tokens >= 1000000) {
+		return String::num_int64((tokens + 500000) / 1000000) + "M";
+	}
+	if (tokens >= 1000) {
+		return String::num_int64((tokens + 500) / 1000) + "K";
+	}
+	return String::num_int64(tokens);
+}
+
+void SolersContextRing::set_usage(int64_t p_used_tokens, int64_t p_total_tokens) {
+	used_tokens = MAX((int64_t)0, p_used_tokens);
+	total_tokens = MAX((int64_t)0, p_total_tokens);
+	usage_ratio = total_tokens > 0 ? CLAMP(float(used_tokens) / float(total_tokens), 0.0f, 1.0f) : -1.0f;
+	if (usage_ratio >= 0.0f) {
+		set_tooltip_text(vformat(TTR("%d%% context used"), int(Math::round(usage_ratio * 100.0f))) + "\n" + vformat(TTR("%s / %s tokens"), _format_tokens(used_tokens), _format_tokens(total_tokens)));
+	} else {
+		set_tooltip_text(vformat(TTR("%s tokens"), _format_tokens(used_tokens)) + "\n" + TTR("Context window unknown"));
+	}
+	queue_redraw();
+}
+
+void SolersContextRing::_notification(int p_what) {
+	switch (p_what) {
+		case NOTIFICATION_MOUSE_ENTER:
+			hovering = true;
+			queue_redraw();
+			break;
+		case NOTIFICATION_MOUSE_EXIT:
+			hovering = false;
+			queue_redraw();
+			break;
+		case NOTIFICATION_DRAW: {
+			const Point2 center = get_size() * 0.5f;
+			const float radius = 7.5f * EDSCALE;
+			const float width = 1.7f * EDSCALE;
+			Color track = SOLERS_GLYPH_IDLE;
+			track.a = 0.24f;
+			draw_arc(center, radius, -Math::PI * 0.5f, Math::PI * 1.5f, 40, track, width, true);
+			if (usage_ratio > 0.0f) {
+				const Color progress = hovering ? SOLERS_GLYPH_HOVER : SOLERS_GLYPH_IDLE;
+				draw_arc(center, radius, -Math::PI * 0.5f, -Math::PI * 0.5f + Math::TAU * usage_ratio, 40, progress, width, true);
+			}
+		} break;
+	}
+}
+
 /* ------------------------------------------------------------------ */
 /* SolersSelectChip                                                    */
 /* ------------------------------------------------------------------ */

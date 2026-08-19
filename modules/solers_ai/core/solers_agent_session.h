@@ -91,6 +91,7 @@ class SolersAgentSession : public Object {
 	Dictionary streamed_tool_calls; // call id -> surfaced tool call state for this model step
 	String last_stop_reason;
 	Dictionary last_usage;
+	Dictionary window_usage;
 	Dictionary current_plan;
 	String last_outcome;
 	Dictionary active_provider; // { provider, model, base_url, api_key, features }
@@ -147,6 +148,7 @@ class SolersAgentSession : public Object {
 	int64_t turn_cache_read_tokens = 0;
 	int64_t turn_cache_write_tokens = 0;
 	int64_t turn_output_tokens = 0;
+	int64_t turn_reasoning_tokens = 0;
 	int64_t turn_wire_body_bytes = 0;
 	int turn_tool_calls = 0;
 	int turn_duplicate_observations = 0;

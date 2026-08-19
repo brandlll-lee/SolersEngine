@@ -56,6 +56,7 @@ class SolersActionTimeline;
 class SolersAgentSession;
 class SolersAssistantCell;
 class SolersGlyphButton;
+class SolersContextRing;
 class SolersMCPAdapter;
 class SolersPermissionManager;
 class SolersPMAIView;
@@ -92,6 +93,7 @@ class SolersDock : public PanelContainer {
 	SolersGlyphButton *session_button = nullptr;
 	SolersGlyphButton *add_context_button = nullptr;
 	SolersGlyphButton *send_chat_button = nullptr;
+	SolersContextRing *context_ring = nullptr;
 	HBoxContainer *attachment_bar = nullptr;
 	AcceptDialog *provider_settings_dialog = nullptr;
 	ConfirmationDialog *rewind_dialog = nullptr;

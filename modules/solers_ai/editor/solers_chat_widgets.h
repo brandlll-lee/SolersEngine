@@ -106,6 +106,27 @@ public:
 	SolersGlyphButton();
 };
 
+class SolersContextRing : public Control {
+	GDCLASS(SolersContextRing, Control);
+
+	int64_t used_tokens = 0;
+	int64_t total_tokens = 0;
+	float usage_ratio = -1.0f;
+	bool hovering = false;
+
+	static String _format_tokens(int64_t p_tokens);
+
+protected:
+	void _notification(int p_what);
+	static void _bind_methods() {}
+
+public:
+	void set_usage(int64_t p_used_tokens, int64_t p_total_tokens);
+	float get_usage_ratio() const { return usage_ratio; }
+
+	SolersContextRing();
+};
+
 // Self-drawn select chip: [glyph] strong-text muted-text chevron.
 class SolersSelectChip : public Control {
 	GDCLASS(SolersSelectChip, Control);

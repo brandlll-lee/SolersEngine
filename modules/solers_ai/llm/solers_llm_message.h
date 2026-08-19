@@ -134,7 +134,7 @@ public:
 		return e;
 	}
 
-	static Dictionary usage(int p_input_tokens, int p_output_tokens, int p_cache_read_tokens = -1, int p_cache_write_tokens = -1) {
+	static Dictionary usage(int p_input_tokens, int p_output_tokens, int p_cache_read_tokens = -1, int p_cache_write_tokens = -1, int p_reasoning_tokens = -1) {
 		Dictionary e;
 		e["kind"] = SolersLLMEventKind::USAGE;
 		e["input_tokens"] = p_input_tokens;
@@ -144,6 +144,9 @@ public:
 		}
 		if (p_cache_write_tokens >= 0) {
 			e["cache_write_tokens"] = p_cache_write_tokens;
+		}
+		if (p_reasoning_tokens >= 0) {
+			e["reasoning_tokens"] = p_reasoning_tokens;
 		}
 		return e;
 	}

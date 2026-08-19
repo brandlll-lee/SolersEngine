@@ -281,6 +281,13 @@ TEST_CASE("[SolersOpenAIResponsesProtocol] lowers encrypted reasoning and tool c
 }
 
 TEST_CASE("[SolersOpenAIResponsesProtocol] lifts streamed tool calls usage and continuation metadata") {
+	const Dictionary canonical = SolersLLMEvent::usage(300, 100, 25, 25, 50);
+	CHECK((int)canonical.get("input_tokens", 0) == 300);
+	CHECK((int)canonical.get("output_tokens", 0) == 100);
+	CHECK((int)canonical.get("reasoning_tokens", 0) == 50);
+	CHECK((int)canonical.get("cache_read_tokens", 0) == 25);
+	CHECK((int)canonical.get("cache_write_tokens", 0) == 25);
+
 	SolersOpenAIResponsesProtocol protocol;
 	Dictionary state = protocol.begin_stream(Dictionary());
 	protocol.parse_event(state, "response.output_item.done", R"json({"type":"response.output_item.done","item":{"id":"rs_1","type":"reasoning","summary":[],"encrypted_content":"cipher"}})json");
@@ -292,8 +299,12 @@ TEST_CASE("[SolersOpenAIResponsesProtocol] lifts streamed tool calls usage and c
 	events = protocol.parse_event(state, "response.output_item.done", R"json({"type":"response.output_item.done","item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"project_get_info","arguments":"{}"}})json");
 	CHECK(find_event_kind(events, SolersLLMEventKind::TOOL_CALL).get("id", String()) == "call_1");
 
-	events = protocol.parse_event(state, "response.completed", R"json({"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":12,"output_tokens":4}}})json");
-	CHECK((int)find_event_kind(events, SolersLLMEventKind::USAGE).get("input_tokens", 0) == 12);
+	events = protocol.parse_event(state, "response.completed", R"json({"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":325,"input_tokens_details":{"cached_tokens":25},"output_tokens":150,"output_tokens_details":{"reasoning_tokens":50}}}})json");
+	const Dictionary usage = find_event_kind(events, SolersLLMEventKind::USAGE);
+	CHECK((int)usage.get("input_tokens", 0) == 300);
+	CHECK((int)usage.get("cache_read_tokens", 0) == 25);
+	CHECK((int)usage.get("output_tokens", 0) == 100);
+	CHECK((int)usage.get("reasoning_tokens", 0) == 50);
 	const Dictionary finish = find_event_kind(events, SolersLLMEventKind::FINISH);
 	CHECK(finish.get("stop_reason", String()) == SolersLLMStopReason::TOOL_USE);
 	const Dictionary finish_metadata = finish.get("provider_metadata", Dictionary());
@@ -323,6 +334,14 @@ TEST_CASE("[SolersOpenAIChatProtocol] starts chat completions with store disable
 	CHECK(stream_options.get("include_usage", false));
 	CHECK(body.get("reasoning_effort", String()) == "high");
 	CHECK(user.get("role", String()) == "user");
+
+	Dictionary state = protocol.begin_stream(Dictionary());
+	const Array events = protocol.parse_event(state, String(), R"json({"usage":{"prompt_tokens":325,"prompt_tokens_details":{"cached_tokens":25},"completion_tokens":150,"completion_tokens_details":{"reasoning_tokens":50}},"choices":[]})json");
+	const Dictionary usage = find_event_kind(events, SolersLLMEventKind::USAGE);
+	CHECK((int)usage.get("input_tokens", 0) == 300);
+	CHECK((int)usage.get("cache_read_tokens", 0) == 25);
+	CHECK((int)usage.get("output_tokens", 0) == 100);
+	CHECK((int)usage.get("reasoning_tokens", 0) == 50);
 }
 
 TEST_CASE("[SolersAnthropicMessagesProtocol] lowers model effort into output config") {

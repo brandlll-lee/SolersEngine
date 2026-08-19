@@ -107,3 +107,15 @@ msgstr "管理服务商..."
 
 msgid "Send"
 msgstr "发送"
+
+msgid "%d%% context used"
+msgstr "已使用 %d%% 上下文"
+
+msgid "%s / %s tokens"
+msgstr "%s / %s Token"
+
+msgid "%s tokens"
+msgstr "%s Token"
+
+msgid "Context window unknown"
+msgstr "上下文窗口未知"

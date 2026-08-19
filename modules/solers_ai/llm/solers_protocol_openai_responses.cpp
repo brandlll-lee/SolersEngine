@@ -296,10 +296,11 @@ Array SolersOpenAIResponsesProtocol::parse_event(Dictionary &r_state, const Stri
 		const Dictionary response = obj.get("response", Dictionary());
 		const Dictionary usage = response.get("usage", Dictionary());
 		if (!usage.is_empty()) {
-			// Canonical usage separates cached from fresh input tokens.
 			const int input_tokens = usage.get("input_tokens", 0);
 			const int cached_tokens = Dictionary(usage.get("input_tokens_details", Dictionary())).get("cached_tokens", 0);
-			events.push_back(SolersLLMEvent::usage(MAX(0, input_tokens - cached_tokens), usage.get("output_tokens", 0), cached_tokens > 0 ? cached_tokens : -1));
+			const int output_tokens = usage.get("output_tokens", 0);
+			const int reasoning_tokens = Dictionary(usage.get("output_tokens_details", Dictionary())).get("reasoning_tokens", 0);
+			events.push_back(SolersLLMEvent::usage(MAX(0, input_tokens - cached_tokens), MAX(0, output_tokens - reasoning_tokens), cached_tokens, -1, reasoning_tokens));
 		}
 		String stop_reason = r_state.get("has_tool_call", false) ? SolersLLMStopReason::TOOL_USE : SolersLLMStopReason::END_TURN;
 		if (type == "response.incomplete") {

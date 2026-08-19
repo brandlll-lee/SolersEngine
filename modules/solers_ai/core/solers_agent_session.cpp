@@ -419,6 +419,7 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 	HashMap<String, Dictionary> restored_open_tools;
 	Array restored_background_assets;
 	Dictionary restored_plan;
+	Dictionary restored_window_usage;
 	String restored_outcome;
 	int restored_turn_id = 0;
 	uint64_t restored_authored_revision = 0;
@@ -497,6 +498,7 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 		HashMap<String, Dictionary> *restored_open_tools = nullptr;
 		Array *restored_background_assets = nullptr;
 		Dictionary *restored_plan = nullptr;
+		Dictionary *restored_window_usage = nullptr;
 		String *restored_outcome = nullptr;
 		const HashSet<int64_t> *active_event_ids = nullptr;
 		int64_t replay_sequence = 0;
@@ -509,6 +511,7 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 	restore_state.restored_open_tools = &restored_open_tools;
 	restore_state.restored_background_assets = &restored_background_assets;
 	restore_state.restored_plan = &restored_plan;
+	restore_state.restored_window_usage = &restored_window_usage;
 	restore_state.restored_outcome = &restored_outcome;
 	restore_state.active_event_ids = &active_event_ids;
 	restore_state.restored_reversals = &restored_reversals;
@@ -535,6 +538,10 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 		}
 
 		const String event_type = event.get("event_type", String());
+		const Dictionary usage = event.get("usage", Dictionary());
+		if (!usage.is_empty()) {
+			*scan.restored_window_usage = usage.duplicate(true);
+		}
 		_solers_project_timeline_event(event, *scan.restored_timeline, *scan.restored_open_tools);
 		if (event_type == "checkpoint_created") {
 			Dictionary checkpoint = event.get("checkpoint", Dictionary());
@@ -656,6 +663,7 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 	state["messages"] = restored;
 	state["timeline_entries"] = restored_timeline;
 	state["plan"] = restored_plan;
+	state["window_usage"] = restored_window_usage;
 	state["outcome"] = restored_outcome;
 	state["turn_id"] = restored_turn_id;
 	state["background_assets"] = restored_background_assets;
@@ -1045,11 +1053,11 @@ String SolersAgentSession::_default_system_prompt() const {
 	String prompt =
 			"You are Solers, an AI agent living natively inside the Solers game engine editor (a Godot 4 fork).\n\n"
 			"Operating contract:\n"
-			"- Prefer the smallest coherent native change. Inspect live state before editing; do not guess APIs or project contents.\n"
+			"- Prefer the smallest coherent native change. Inspect live state before editing; keep scene data, input, camera, movement, and animation under explicit native owners instead of growing one catch-all script.\n"
 			"- Digests in [Selected Solers context] and Current engine context are authoritative bounded observations. Use tools only for incomplete or live facts.\n"
 			"- Core tools are available. Use tool.search to discover and unlock deferred built-in, plugin, connector, or MCP capabilities. Skills provide knowledge and never activate capabilities.\n"
 			"- Inspect unfamiliar classes with engine.describe; ClassDB property metadata and native documentation are the authority for names, types, units, and usage.\n"
-			"- Read live state with object.query. Edit scenes/resources with object.transaction and its native state/hash preconditions. Use script.compute for isolated bulk generation with declared file outputs.\n"
+			"- Read live state with object.query. Edit scenes/resources with object.transaction and native preconditions. Script replacement requires the latest file SHA and exact bytes; use script.compute for isolated bulk generation with declared outputs.\n"
 			"- Scene transactions are one EditorUndoRedo action and Solers persists successful live-scene changes. Resource transactions are file-checkpointed. Tool results carry native state receipts and persisted file hashes; do not issue a separate save.\n"
 			"- The edited scene and running game are distinct native states. For runnable gameplay, set InputMap actions, independently inspect runtime scene/spatial facts and capture pixels in the same runtime_epoch, then release all actions. Neither evidence channel gates the other.\n"
 			"- Background tools return stable job ids immediately. Continue independent work; when nothing else is runnable, call job.wait once with the required ids and stop issuing tools. Solers parks this turn and resumes it with a background job delta when any requested job reaches a project-import terminal state; do not poll asset.status for progress.\n"
@@ -1462,6 +1470,7 @@ void SolersAgentSession::_poll_compaction() {
 			turn_cache_read_tokens += MAX(0, (int)event.get("cache_read_tokens", 0));
 			turn_cache_write_tokens += MAX(0, (int)event.get("cache_write_tokens", 0));
 			turn_output_tokens += MAX(0, (int)event.get("output_tokens", 0));
+			turn_reasoning_tokens += MAX(0, (int)event.get("reasoning_tokens", 0));
 		} else if (kind == SolersLLMEventKind::FINISH) {
 			last_stop_reason = event.get("stop_reason", String());
 		}
@@ -1722,6 +1731,7 @@ Dictionary SolersAgentSession::rewind_to_event(int64_t p_event_id) {
 	timeline_entries = state.get("timeline_entries", Array());
 	open_timeline_tools.clear();
 	current_plan = state.get("plan", Dictionary());
+	window_usage = state.get("window_usage", Dictionary());
 	last_outcome = state.get("outcome", String());
 	turn_id = state.get("turn_id", turn_id);
 	authored_revision = (int64_t)state.get("session_revision", authored_revision);
@@ -1844,6 +1854,7 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 	turn_cache_read_tokens = 0;
 	turn_cache_write_tokens = 0;
 	turn_output_tokens = 0;
+	turn_reasoning_tokens = 0;
 	turn_wire_body_bytes = 0;
 	turn_tool_calls = 0;
 	turn_duplicate_observations = 0;
@@ -1953,7 +1964,12 @@ void SolersAgentSession::poll() {
 			pending_tool_calls.push_back(call);
 		} else if (kind == SolersLLMEventKind::USAGE) {
 			last_usage = e;
+			last_usage["context_window"] = context_window;
+			last_usage["provider"] = active_provider.get("provider", String());
+			last_usage["model"] = active_provider.get("model", String());
+			window_usage = last_usage.duplicate(true);
 			turn_output_tokens += MAX(0, (int)e.get("output_tokens", 0));
+			turn_reasoning_tokens += MAX(0, (int)e.get("reasoning_tokens", 0));
 			if (context_manager) {
 				// Canonical input_tokens excludes cached shares; the window is
 				// occupied by fresh + cache-read + cache-write together.
@@ -2175,6 +2191,7 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	usage["cache_read_tokens"] = turn_cache_read_tokens;
 	usage["cache_write_tokens"] = turn_cache_write_tokens;
 	usage["output_tokens"] = turn_output_tokens;
+	usage["reasoning_tokens"] = turn_reasoning_tokens;
 	usage["wire_body_bytes"] = turn_wire_body_bytes;
 	usage["effective_mutations"] = turn_successful_mutations;
 	usage["duplicate_observation_rate"] = turn_tool_calls > 0 ? double(turn_duplicate_observations) / turn_tool_calls : 0.0;
@@ -2965,6 +2982,7 @@ void SolersAgentSession::reset_conversation() {
 	last_outcome = String();
 	last_stop_reason = String();
 	last_usage.clear();
+	window_usage.clear();
 	task_deferred_tools.clear();
 	pending_background_assets.clear();
 	delivered_background_assets.clear();
@@ -3009,6 +3027,7 @@ void SolersAgentSession::set_session(const String &p_project_path, const String 
 	timeline_entries = state.get("timeline_entries", Array());
 	open_timeline_tools.clear();
 	current_plan = state.get("plan", Dictionary());
+	window_usage = state.get("window_usage", Dictionary());
 	last_outcome = state.get("outcome", String());
 	turn_id = state.get("turn_id", 0);
 	authored_revision = (int64_t)state.get("session_revision", 0);
@@ -3137,10 +3156,16 @@ Dictionary SolersAgentSession::get_status() const {
 	status["cache_read_tokens"] = turn_cache_read_tokens;
 	status["cache_write_tokens"] = turn_cache_write_tokens;
 	status["output_tokens"] = turn_output_tokens;
+	status["reasoning_tokens"] = turn_reasoning_tokens;
 	status["wire_body_bytes"] = turn_wire_body_bytes;
 	status["context_window"] = context_window;
 	status["max_output_tokens"] = max_output_tokens;
 	status["model_limits_known"] = context_window > 0;
+	Dictionary usage = window_usage.duplicate(true);
+	if (!usage.is_empty()) {
+		usage["used_tokens"] = MAX(0, (int64_t)usage.get("input_tokens", 0)) + MAX(0, (int64_t)usage.get("output_tokens", 0)) + MAX(0, (int64_t)usage.get("reasoning_tokens", 0)) + MAX(0, (int64_t)usage.get("cache_read_tokens", 0)) + MAX(0, (int64_t)usage.get("cache_write_tokens", 0));
+	}
+	status["window_usage"] = usage;
 	status["project_path"] = project_path;
 	status["session_id"] = session_id;
 	status["compacting"] = phase == PHASE_COMPACTING;
