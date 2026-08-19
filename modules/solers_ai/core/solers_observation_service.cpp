@@ -63,7 +63,6 @@
 #include "scene/3d/light_3d.h"
 #include "scene/3d/node_3d.h"
 #include "scene/3d/visual_instance_3d.h"
-#include "scene/debugger/scene_debugger.h"
 #include "scene/debugger/scene_debugger_object.h"
 #include "scene/main/scene_tree.h"
 #include "scene/main/viewport.h"
@@ -480,22 +479,15 @@ Dictionary SolersObservationService::_attach_render_receipt(Dictionary p_result,
 	const String capture_id = data.get("capture_id", p_pending.get("capture_id", String()));
 	receipt["capture_id"] = capture_id;
 	receipt["target"] = target;
-	receipt["render_sequence"] = p_pending.get("render_sequence", 0);
 	receipt["runtime_epoch"] = p_pending.get("runtime_epoch", 0);
-	receipt["requested_frame"] = p_pending.get("start_frame", 0);
-	receipt["captured_frame"] = (int64_t)Engine::get_singleton()->get_frames_drawn();
-	receipt["requested_post_draw_sequence"] = p_pending.get("start_post_draw", 0);
-	receipt["captured_post_draw_sequence"] = (int64_t)render_post_draw_sequence;
-	receipt["viewport_object_id"] = solers_object_id_to_string(ObjectID((int64_t)p_pending.get("viewport_id", 0)));
-	receipt["viewport_rid"] = p_pending.get("viewport_rid", 0);
-	receipt["source_state"] = p_pending.get("source_state", Dictionary());
-	receipt["render_state_sha256"] = p_pending.get("render_state_sha256", String());
-	receipt["runtime_frame"] = p_pending.get("runtime_frame", 0);
-	receipt["spatial_sha256"] = p_pending.get("spatial_sha256", String());
 	receipt["image_sha256"] = data.get("content_sha256", String());
-	data["render_state"] = p_pending.get("render_state", Dictionary());
+	if (target != "runtime") {
+		receipt["source_state"] = p_pending.get("source_state", Dictionary());
+		receipt["render_state_sha256"] = p_pending.get("render_state_sha256", String());
+		data["render_state"] = p_pending.get("render_state", Dictionary());
+	}
 
-	const Dictionary source_state = receipt.get("source_state", Dictionary());
+	const Dictionary source_state = p_pending.get("source_state", Dictionary());
 	String view_key = target + ":" + String(source_state.get("scene_path", String()));
 	for (const char *field : { "camera_path", "view_spec_hash" }) {
 		if (p_pending.has(field)) {
@@ -508,9 +500,10 @@ Dictionary SolersObservationService::_attach_render_receipt(Dictionary p_result,
 	receipt["view_key"] = view_key.sha256_text();
 	const Dictionary *previous = last_render_by_view.getptr(view_key);
 	const bool same_pixels = previous && String(previous->get("image_sha256", String())) == String(receipt.get("image_sha256", String()));
-	const bool same_render_state = previous && String(previous->get("render_state_sha256", String())) == String(receipt.get("render_state_sha256", String()));
 	receipt["same_pixels"] = same_pixels;
-	receipt["same_render_state"] = same_render_state;
+	if (target != "runtime") {
+		receipt["same_render_state"] = previous && String(previous->get("render_state_sha256", String())) == String(receipt.get("render_state_sha256", String()));
+	}
 	if (same_pixels) {
 		receipt["same_as"] = previous->get("capture_id", String());
 		receipt["same_as_source_state"] = previous->get("source_state", Dictionary());
@@ -518,8 +511,10 @@ Dictionary SolersObservationService::_attach_render_receipt(Dictionary p_result,
 	Dictionary current;
 	current["capture_id"] = capture_id;
 	current["image_sha256"] = receipt.get("image_sha256", String());
-	current["render_state_sha256"] = receipt.get("render_state_sha256", String());
-	current["source_state"] = receipt.get("source_state", Dictionary());
+	current["source_state"] = source_state;
+	if (target != "runtime") {
+		current["render_state_sha256"] = receipt.get("render_state_sha256", String());
+	}
 	last_render_by_view[view_key] = current;
 	data["render_receipt"] = receipt;
 	p_result["data"] = data;
@@ -552,12 +547,9 @@ Dictionary SolersObservationService::_render_state_for_pending(const Dictionary 
 	return describe_render_state(viewport, camera, editor ? editor->get_edited_scene_root() : nullptr);
 }
 
-void SolersObservationService::_runtime_screenshot_ready(int64_t p_width, int64_t p_height, const String &p_path, const Rect2i &p_rect, const String &p_capture_id) {
+void SolersObservationService::_runtime_screenshot_ready(int64_t, int64_t, const String &p_path, const Rect2i &, const String &p_capture_id) {
 	const Dictionary *entry = pending_captures.getptr(p_capture_id);
-	// The capture may have been swept at its deadline, or belong to a runtime
-	// that stopped and restarted since the request went out. Either way this
-	// frame is evidence for nothing anyone is still waiting on, and writing it
-	// back would resurrect a dead entry.
+	// Ignore screenshots from expired requests or earlier runtime epochs.
 	const Dictionary pending_data = entry ? Dictionary(entry->get("data", Dictionary())) : Dictionary();
 	const uint64_t requested_epoch = (uint64_t)(int64_t)pending_data.get("runtime_epoch", 0);
 	if (!entry || requested_epoch != runtime_epoch) {
@@ -570,8 +562,7 @@ void SolersObservationService::_runtime_screenshot_ready(int64_t p_width, int64_
 	if (!p_path.is_empty()) {
 		DirAccess::remove_absolute(p_path);
 	}
-	// A truncated or compressed payload cannot be sampled: get_pixel and resize
-	// both fail hard on those, so it is rejected as evidence right here.
+	// Compressed or empty images cannot serve as pixel evidence.
 	if (image.is_null() || image->is_empty() || image->is_compressed()) {
 		pending_captures[p_capture_id] = _capture_error("RUNTIME_CAPTURE_DECODE_FAILED", "The runtime returned an unreadable screenshot.", true);
 		return;
@@ -579,9 +570,7 @@ void SolersObservationService::_runtime_screenshot_ready(int64_t p_width, int64_
 	Dictionary result = _capture_image(image, "runtime", p_capture_id);
 	if ((bool)result.get("ok", false)) {
 		Dictionary data = result.get("data", Dictionary());
-		data["runtime_frame"] = pending_data.get("runtime_frame", 0);
-		data["spatial"] = pending_data.get("spatial", Array());
-		data["frame_valid"] = (bool)pending_data.get("runtime_frame_valid", false) && (int64_t)pending_data.get("runtime_frame", 0) > 0 && !String(pending_data.get("spatial_sha256", String())).is_empty();
+		data["frame_valid"] = true;
 		result["data"] = data;
 	}
 	pending_captures[p_capture_id] = _attach_render_receipt(result, pending_data);
@@ -600,12 +589,9 @@ static void _solers_free_capture_viewport(const Dictionary &p_data) {
 	}
 }
 
-// All captures resolve asynchronously through the pending/poll contract: the
-// image is grabbed only after the renderer has drawn a frame that postdates
-// the request, so the model never receives a stale pre-edit frame.
+// Captures resolve asynchronously through one pending/poll contract.
 Dictionary SolersObservationService::_register_pending_capture(const String &p_target, const Dictionary &p_extra) {
-	// Sweep abandoned entries (an aborted turn may never poll its capture) so
-	// the map and any transient viewports they hold cannot accumulate.
+	// Sweep abandoned captures and their transient viewports.
 	const uint64_t now = OS::get_singleton()->get_ticks_msec();
 	LocalVector<String> expired;
 	for (const KeyValue<String, Dictionary> &entry : pending_captures) {
@@ -622,12 +608,10 @@ Dictionary SolersObservationService::_register_pending_capture(const String &p_t
 	const String capture_id = vformat("%s_%d", p_target, ++capture_sequence);
 	Dictionary data;
 	data["status"] = "pending";
-	data["render_sequence"] = (int64_t)capture_sequence;
 	data["target"] = p_target;
 	data["capture_id"] = capture_id;
 	data["deadline_msec"] = (int64_t)(OS::get_singleton()->get_ticks_msec() + SOLERS_CAPTURE_TIMEOUT_MSEC);
-	// Which runtime this capture belongs to: a screenshot that arrives after a
-	// restart answers a question about a process that no longer exists.
+	// Late screenshots cannot cross runtime epochs.
 	data["runtime_epoch"] = (int64_t)runtime_epoch;
 	for (const Variant *key = p_extra.next(nullptr); key; key = p_extra.next(key)) {
 		data[*key] = p_extra[*key];
@@ -780,10 +764,10 @@ Dictionary SolersObservationService::_poll_pending_capture(const String &p_captu
 			Dictionary source_state;
 			source_state["runtime_epoch"] = (int64_t)runtime_epoch;
 			data["source_state"] = source_state;
-			data["awaiting_runtime_frame"] = true;
+			data["screenshot_requested"] = true;
 			result["data"] = data;
 			pending_captures[p_capture_id] = result;
-			if (!_request_runtime_frame(p_capture_id, data.get("focus_paths", Array()))) {
+			if (!_request_runtime_screenshot(p_capture_id)) {
 				pending_captures.erase(p_capture_id);
 				return _runtime_capture_unavailable();
 			}
@@ -793,13 +777,6 @@ Dictionary SolersObservationService::_poll_pending_capture(const String &p_captu
 		if (deadline_reached) {
 			pending_captures.erase(p_capture_id);
 			return _capture_error("CAPTURE_TIMEOUT", "The runtime viewport was not visually ready before the capture deadline.", true);
-		}
-		return result;
-	}
-	if (target == "runtime" && (bool)data.get("awaiting_runtime_frame", false)) {
-		if (deadline_reached) {
-			pending_captures.erase(p_capture_id);
-			return _capture_error("CAPTURE_TIMEOUT", "The runtime did not produce post-draw spatial facts before the capture deadline.", true);
 		}
 		return result;
 	}
@@ -1032,15 +1009,13 @@ Dictionary SolersObservationService::capture_viewport(const Dictionary &p_args) 
 			Dictionary extra;
 			extra["awaiting_runtime_ready"] = true;
 			extra["runtime"] = get_runtime_status();
-			extra["focus_paths"] = p_args.get("focus_paths", Array());
 			return _register_pending_capture("runtime", extra);
 		}
 		Dictionary extra;
-		extra["awaiting_runtime_frame"] = true;
-		extra["focus_paths"] = p_args.get("focus_paths", Array());
+		extra["screenshot_requested"] = true;
 		const Dictionary pending = _register_pending_capture("runtime", extra);
 		const String capture_id = Dictionary(pending.get("data", Dictionary())).get("capture_id", String());
-		if (!_request_runtime_frame(capture_id, extra.get("focus_paths", Array()))) {
+		if (!_request_runtime_screenshot(capture_id)) {
 			pending_captures.erase(capture_id);
 			return _runtime_capture_unavailable();
 		}
@@ -1072,8 +1047,7 @@ bool SolersObservationService::is_viewport_capture_ready(const Dictionary &p_arg
 	}
 	const String target = data.get("target", String());
 	if (target == "runtime") {
-		return ((bool)data.get("awaiting_runtime_ready", false) && _is_runtime_visual_ready()) ||
-				(!(bool)data.get("awaiting_runtime_frame", false) && !(bool)data.get("screenshot_requested", false));
+		return (bool)data.get("awaiting_runtime_ready", false) ? _is_runtime_visual_ready() : !(bool)data.get("screenshot_requested", false);
 	}
 	const bool ready = render_post_draw_sequence >= (uint64_t)(int64_t)data.get("ready_post_draw", 0);
 	if (!ready) {
@@ -1917,6 +1891,16 @@ bool SolersObservationService::_request_runtime_frame(const String &p_call_id, c
 	return true;
 }
 
+bool SolersObservationService::_request_runtime_objects(const String &p_call_id, const Array &p_requests) {
+	EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
+	ScriptEditorDebugger *debugger = debugger_node ? debugger_node->get_current_debugger() : nullptr;
+	if (!debugger || !debugger->is_session_active() || p_call_id.is_empty()) {
+		return false;
+	}
+	debugger->send_message("solers:observe_objects", { p_call_id, (int64_t)runtime_epoch, p_requests });
+	return true;
+}
+
 void SolersObservationService::_runtime_started() {
 	runtime_epoch++;
 	runtime_query.clear();
@@ -1987,25 +1971,68 @@ void SolersObservationService::_runtime_debug_data(const String &p_message, cons
 			frame["available"] = frame.get("ok", false);
 			_finish_runtime_query(frame);
 		}
-		Dictionary *capture = pending_captures.getptr(call_id);
-		if (capture) {
-			Dictionary data = capture->get("data", Dictionary());
-			if (data.get("target", String()) == "runtime" && (bool)data.get("awaiting_runtime_frame", false)) {
-				data["awaiting_runtime_frame"] = false;
-				data["runtime_frame_valid"] = frame.get("ok", false);
-				data["runtime_frame"] = frame.get("runtime_frame", 0);
-				data["spatial"] = frame.get("spatial", Array());
-				data["spatial_sha256"] = frame.get("spatial_sha256", String());
-				data["render_state"] = frame;
-				data["render_state_sha256"] = frame.get("spatial_sha256", String());
-				Dictionary source_state;
-				source_state["runtime_epoch"] = (int64_t)runtime_epoch;
-				source_state["runtime_frame"] = frame.get("runtime_frame", 0);
-				source_state["spatial_sha256"] = frame.get("spatial_sha256", String());
-				data["source_state"] = source_state;
-				(*capture)["data"] = data;
+		return;
+	}
+	if (p_message == "solers:objects_result" && p_data.size() == 1 && p_data[0].get_type() == Variant::DICTIONARY) {
+		const Dictionary observed = p_data[0];
+		if ((uint64_t)(int64_t)observed.get("runtime_epoch", 0) != runtime_epoch || String(observed.get("call_id", String())) != String(runtime_query.get("call_id", String())) || runtime_query.get("target", String()) != "scene" || runtime_query.get("stage", String()) != "objects") {
+			return;
+		}
+		if (!(bool)observed.get("ok", false)) {
+			Dictionary result;
+			result["available"] = false;
+			result["reason"] = observed.get("code", "runtime_observation_failed");
+			result["errors"] = Array({ observed });
+			_finish_runtime_query(result);
+			return;
+		}
+		const Dictionary handles = runtime_query.get("handles", Dictionary());
+		const Array requested_ids = runtime_query.get("object_ids", Array());
+		Array nodes;
+		Array errors = runtime_query.get("errors", Array());
+		const Array native_errors = observed.get("errors", Array());
+		errors.append_array(native_errors);
+		Dictionary found;
+		for (int i = 0; i < native_errors.size(); i++) {
+			const String key = Dictionary(native_errors[i]).get("object_id", String());
+			if (!key.is_empty()) {
+				found[key] = true;
 			}
 		}
+		const Array observed_nodes = observed.get("nodes", Array());
+		for (int i = 0; i < observed_nodes.size(); i++) {
+			const Dictionary native_node = observed_nodes[i];
+			const String key = native_node.get("object_id", String());
+			Dictionary entry = handles.get(key, Dictionary());
+			if (entry.is_empty()) {
+				continue;
+			}
+			const Dictionary exact = native_node.get("properties", Dictionary());
+			const Dictionary property_info = native_node.get("property_info", Dictionary());
+			const String observation_id = (String::num_uint64(runtime_epoch) + "\n" + String(entry.get("node_path", String())) + "\n" + key + "\n" + JSON::stringify(exact, "", false, true)).sha256_text();
+			runtime_object_cache[key] = Dictionary({ { "runtime_epoch", (int64_t)runtime_epoch }, { "node_path", entry.get("node_path", String()) }, { "properties", exact }, { "property_info", property_info }, { "observation_id", observation_id } });
+			Dictionary projected;
+			const Array property_names = exact.keys();
+			for (int property_index = 0; property_index < MIN(property_names.size(), SOLERS_RUNTIME_PROPERTY_LIMIT); property_index++) {
+				const Variant property = property_names[property_index];
+				projected[property] = _solers_bounded_runtime_value(solers_summarize_display_value(exact[property]));
+			}
+			entry["properties"] = projected;
+			entry["property_info"] = property_info;
+			entry["owner_path"] = native_node.get("owner_path", String());
+			entry["scene_file_path"] = native_node.get("scene_file_path", String());
+			entry["observation_id"] = observation_id;
+			nodes.push_back(entry);
+			found[key] = true;
+		}
+		for (int i = 0; i < requested_ids.size(); i++) {
+			const String key = requested_ids[i];
+			if (!found.has(key)) {
+				const Dictionary handle = handles.get(key, Dictionary());
+				errors.push_back(Dictionary({ { "node_path", handle.get("node_path", String()) }, { "object_id", key }, { "reason", "object_not_returned" } }));
+			}
+		}
+		_finish_runtime_query(Dictionary({ { "available", true }, { "nodes", nodes }, { "errors", errors } }));
 		return;
 	}
 	if (p_message == "error") {
@@ -2052,84 +2079,6 @@ void SolersObservationService::_runtime_debug_data(const String &p_message, cons
 		performance_capture_active = false;
 		return;
 	}
-#ifdef DEBUG_ENABLED
-	if (p_message == "scene:inspect_objects" && runtime_query.get("target", String()) == "scene" && runtime_query.get("stage", String()) == "objects") {
-		const Array requested_ids = runtime_query.get("object_ids", Array());
-		const Array requested_properties = runtime_query.get("properties", Array());
-		const Dictionary handles = runtime_query.get("handles", Dictionary());
-		Array nodes;
-		Array errors = runtime_query.get("errors", Array());
-		Dictionary found;
-		for (int i = 0; i < p_data.size(); i++) {
-			SceneDebuggerObject object;
-			object.deserialize(p_data[i]);
-			const int64_t object_id = (uint64_t)object.id;
-			if (!requested_ids.has(object_id)) {
-				continue;
-			}
-			const String key = solers_object_id_to_string(ObjectID(object.id));
-			Dictionary entry = handles.get(key, Dictionary());
-			if (entry.is_empty()) {
-				continue;
-			}
-			Dictionary projected;
-			Dictionary exact;
-			Dictionary property_info;
-			for (const SceneDebuggerObject::SceneDebuggerProperty &property : object.properties) {
-				const StringName name = property.first.name;
-				if (!requested_properties.is_empty() && !requested_properties.has(String(name))) {
-					continue;
-				}
-				exact[name] = property.second;
-				Dictionary info;
-				info["type"] = (int)property.first.type;
-				property_info[name] = info;
-				if (projected.size() < SOLERS_RUNTIME_PROPERTY_LIMIT) {
-					projected[name] = _solers_bounded_runtime_value(solers_summarize_display_value(property.second));
-				}
-			}
-			const String observation_id = (String::num_uint64(runtime_epoch) + "\n" + String(entry.get("node_path", String())) + "\n" + key + "\n" + JSON::stringify(exact, "", false, true)).sha256_text();
-			Dictionary cached;
-			cached["runtime_epoch"] = (int64_t)runtime_epoch;
-			cached["node_path"] = entry.get("node_path", String());
-			cached["properties"] = exact;
-			cached["property_info"] = property_info;
-			cached["observation_id"] = observation_id;
-			runtime_object_cache[key] = cached;
-			entry["properties"] = projected;
-			entry["observation_id"] = observation_id;
-			nodes.push_back(entry);
-			found[key] = true;
-			for (int property_index = 0; property_index < requested_properties.size(); property_index++) {
-				const StringName property = requested_properties[property_index];
-				if (!exact.has(property)) {
-					Dictionary error;
-					error["node_path"] = entry.get("node_path", String());
-					error["object_id"] = key;
-					error["property"] = property;
-					error["reason"] = "property_not_returned";
-					errors.push_back(error);
-				}
-			}
-		}
-		for (int i = 0; i < requested_ids.size(); i++) {
-			const String key = solers_object_id_to_string(ObjectID((int64_t)requested_ids[i]));
-			if (!found.has(key)) {
-				const Dictionary handle = handles.get(key, Dictionary());
-				Dictionary error;
-				error["node_path"] = handle.get("node_path", String());
-				error["object_id"] = key;
-				error["reason"] = "object_not_returned";
-				errors.push_back(error);
-			}
-		}
-		Dictionary result;
-		result["available"] = true;
-		result["nodes"] = nodes;
-		result["errors"] = errors;
-		_finish_runtime_query(result);
-	}
-#endif
 }
 
 #ifdef DEBUG_ENABLED
@@ -2236,17 +2185,19 @@ void SolersObservationService::_runtime_tree_updated() {
 	runtime_query["handles"] = handles;
 	runtime_query["errors"] = errors;
 	Array object_ids;
-	TypedArray<uint64_t> ids;
+	Array requests;
+	const Array properties = runtime_query.get("properties", Array());
 	for (int i = 0; i < nodes.size(); i++) {
-		ObjectID object_id;
-		if (!solers_object_id_from_variant(Dictionary(nodes[i]).get("object_id", Variant()), object_id)) {
-			continue;
-		}
-		object_ids.push_back((int64_t)object_id);
-		ids.push_back((uint64_t)object_id);
+		const Dictionary node = nodes[i];
+		const String object_id = node.get("object_id", String());
+		object_ids.push_back(object_id);
+		requests.push_back(Dictionary({ { "object_id", object_id }, { "node_path", node.get("node_path", String()) }, { "properties", properties } }));
 	}
 	runtime_query["object_ids"] = object_ids;
-	debugger->request_remote_objects(ids, false);
+	runtime_query["call_id"] = "objects_" + String::num_uint64(runtime_query_sequence);
+	if (!_request_runtime_objects(runtime_query.get("call_id", String()), requests)) {
+		_finish_runtime_query(Dictionary({ { "available", false }, { "nodes", Array() }, { "errors", errors }, { "reason", "runtime_not_connected" } }));
+	}
 #endif
 }
 
@@ -2484,8 +2435,7 @@ bool SolersObservationService::get_runtime_property(uint64_t p_epoch, const Node
 		return false;
 	}
 	r_value = properties[p_property];
-	const Dictionary info = property_info[p_property];
-	r_info = PropertyInfo((Variant::Type)(int)info.get("type", Variant::NIL), p_property);
+	r_info = PropertyInfo::from_dict(property_info[p_property]);
 	r_observation_id = cached.get("observation_id", String());
 	return true;
 }

@@ -95,6 +95,7 @@ class SolersObservationService : public Object {
 	bool _is_runtime_visual_ready() const;
 	bool _request_runtime_screenshot(const String &p_capture_id);
 	bool _request_runtime_frame(const String &p_call_id, const Array &p_focus_paths);
+	bool _request_runtime_objects(const String &p_call_id, const Array &p_requests);
 
 protected:
 	static void _bind_methods();

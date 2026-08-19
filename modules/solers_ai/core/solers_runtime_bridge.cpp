@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  solers_runtime_input_bridge.cpp                                       */
+/*  solers_runtime_bridge.cpp                                             */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -33,6 +33,7 @@
 #include "core/input/input.h"
 #include "core/input/input_map.h"
 #include "core/io/json.h"
+#include "core/io/resource.h"
 #include "core/math/math_funcs.h"
 #include "core/object/callable_mp.h"
 #include "core/templates/hash_set.h"
@@ -49,6 +50,12 @@
 #include "modules/solers_ai/core/solers_tool.h"
 
 static HashSet<StringName> solers_owned_input_actions;
+
+static void _solers_send_runtime_result(const String &p_message, const Dictionary &p_result) {
+	if (EngineDebugger *debugger = EngineDebugger::get_singleton()) {
+		debugger->send_message(p_message, { p_result });
+	}
+}
 
 static Array _solers_vector3_wire(const Vector3 &p_value) {
 	return Array({ p_value.x, p_value.y, p_value.z });
@@ -185,22 +192,29 @@ static Dictionary _solers_runtime_spatial_facts(Node *p_focus, Camera3D *p_camer
 	return facts;
 }
 
-class SolersRuntimeFrameBridge : public Object {
-	Array pending;
+class SolersRuntimeBridge : public Object {
+	Array pending_frames;
+	bool frame_callback_requested = false;
 
 public:
-	void request(const String &p_call_id, int64_t p_runtime_epoch, const Array &p_focus_paths) {
-		pending.push_back(Dictionary({ { "call_id", p_call_id }, { "runtime_epoch", p_runtime_epoch }, { "focus_paths", p_focus_paths } }));
+	void request_frame(const String &p_call_id, int64_t p_runtime_epoch, const Array &p_focus_paths) {
 		RenderingServer *rendering = RenderingServer::get_singleton();
-		const Callable callback = callable_mp(this, &SolersRuntimeFrameBridge::frame_post_draw);
-		if (rendering && !rendering->is_connected(SNAME("frame_post_draw"), callback)) {
-			rendering->connect(SNAME("frame_post_draw"), callback, Object::CONNECT_ONE_SHOT);
+		if (!rendering) {
+			Dictionary result({ { "call_id", p_call_id }, { "runtime_epoch", p_runtime_epoch }, { "ok", false }, { "code", "RENDERING_UNAVAILABLE" }, { "message", "RenderingServer is unavailable." } });
+			_solers_send_runtime_result("solers:frame_result", result);
+			return;
+		}
+		pending_frames.push_back(Dictionary({ { "call_id", p_call_id }, { "runtime_epoch", p_runtime_epoch }, { "focus_paths", p_focus_paths } }));
+		if (!frame_callback_requested) {
+			frame_callback_requested = true;
+			rendering->request_frame_drawn_callback(callable_mp(this, &SolersRuntimeBridge::frame_drawn));
 		}
 	}
 
-	void frame_post_draw() {
-		const Array requests = pending;
-		pending.clear();
+	void frame_drawn() {
+		frame_callback_requested = false;
+		const Array requests = pending_frames;
+		pending_frames.clear();
 		Window *root = SceneTree::get_singleton() ? SceneTree::get_singleton()->get_root() : nullptr;
 		Camera3D *camera = root ? root->get_camera_3d() : nullptr;
 		for (int request_index = 0; request_index < requests.size(); request_index++) {
@@ -224,14 +238,105 @@ public:
 			}
 			result["spatial"] = spatial;
 			result["spatial_sha256"] = JSON::stringify(spatial, "", false, true).sha256_text();
-			if (EngineDebugger::is_active()) {
-				EngineDebugger::get_singleton()->send_message("solers:frame_result", { result });
-			}
+			_solers_send_runtime_result("solers:frame_result", result);
 		}
 	}
 };
 
-static SolersRuntimeFrameBridge *solers_runtime_frame_bridge = nullptr;
+static SolersRuntimeBridge *solers_runtime_bridge = nullptr;
+
+static Variant _solers_runtime_wire_value(const Variant &p_value) {
+	if (p_value.get_type() != Variant::OBJECT) {
+		return p_value;
+	}
+	Object *object = p_value;
+	if (!object) {
+		return Variant();
+	}
+	Resource *resource = Object::cast_to<Resource>(object);
+	return resource && !resource->get_path().is_empty() ? Variant(resource->get_path()) : Variant(solers_object_id_to_string(object->get_instance_id()));
+}
+
+static void _solers_observe_runtime_objects(const String &p_call_id, int64_t p_runtime_epoch, const Array &p_requests) {
+	Array nodes;
+	Array errors;
+	for (int request_index = 0; request_index < p_requests.size(); request_index++) {
+		if (p_requests[request_index].get_type() != Variant::DICTIONARY) {
+			errors.push_back(Dictionary({ { "request_index", request_index }, { "reason", "invalid_object_request" } }));
+			continue;
+		}
+		const Dictionary request = p_requests[request_index];
+		const Variant object_id_value = request.get("object_id", Variant());
+		const String object_id_string = String(object_id_value);
+		const String node_path = request.get("node_path", String());
+		ObjectID object_id;
+		if (!solers_object_id_from_variant(object_id_value, object_id)) {
+			errors.push_back(Dictionary({ { "request_index", request_index }, { "object_id", object_id_string }, { "node_path", node_path }, { "reason", "invalid_object_id" } }));
+			continue;
+		}
+		Object *object = ObjectDB::get_instance(object_id);
+		Node *node = Object::cast_to<Node>(object);
+		if (!node || !node->is_inside_tree() || String(node->get_path()) != node_path) {
+			Dictionary error({ { "request_index", request_index }, { "object_id", object_id_string }, { "node_path", node_path }, { "reason", node ? "node_path_changed" : "object_not_found" } });
+			errors.push_back(error);
+			continue;
+		}
+
+		Dictionary entry;
+		entry["request_index"] = request_index;
+		entry["object_id"] = object_id_string;
+		entry["node_path"] = node_path;
+		entry["class_name"] = node->get_class();
+		Node *owner = node->get_owner();
+		entry["owner_path"] = owner && owner->is_inside_tree() ? String(owner->get_path()) : String();
+		entry["scene_file_path"] = node->get_scene_file_path();
+
+		List<PropertyInfo> property_list;
+		object->get_property_list(&property_list);
+		Dictionary observable;
+		for (const PropertyInfo &property : property_list) {
+			if ((property.usage & (PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_STORAGE)) && !(property.usage & PROPERTY_USAGE_SECRET)) {
+				observable[property.name] = Dictionary(property);
+			}
+		}
+
+		Dictionary properties;
+		Dictionary property_info;
+		const Variant requested_value = request.get("properties", Array());
+		if (requested_value.get_type() != Variant::ARRAY) {
+			errors.push_back(Dictionary({ { "request_index", request_index }, { "object_id", object_id_string }, { "node_path", node_path }, { "reason", "invalid_property_request" } }));
+			continue;
+		}
+		const Array requested_properties = requested_value;
+		for (int property_index = 0; property_index < requested_properties.size(); property_index++) {
+			const StringName property = requested_properties[property_index];
+			if (!observable.has(property)) {
+				errors.push_back(Dictionary({ { "request_index", request_index }, { "object_id", object_id_string }, { "node_path", node_path }, { "property", property }, { "reason", "property_not_observable" } }));
+				continue;
+			}
+			bool valid = false;
+			const Variant value = _solers_runtime_wire_value(object->get(property, &valid));
+			if (!valid) {
+				errors.push_back(Dictionary({ { "request_index", request_index }, { "object_id", object_id_string }, { "node_path", node_path }, { "property", property }, { "reason", "property_read_failed" } }));
+				continue;
+			}
+			properties[property] = value;
+			property_info[property] = observable[property];
+		}
+		entry["properties"] = properties;
+		entry["property_info"] = property_info;
+		nodes.push_back(entry);
+	}
+	Dictionary result;
+	result["call_id"] = p_call_id;
+	result["runtime_epoch"] = p_runtime_epoch;
+	result["ok"] = true;
+	result["nodes"] = nodes;
+	result["errors"] = errors;
+	result["requested_count"] = p_requests.size();
+	result["complete"] = errors.is_empty();
+	_solers_send_runtime_result("solers:objects_result", result);
+}
 
 static void _solers_send_input_result(const String &p_call_id, int64_t p_runtime_epoch, bool p_ok, const String &p_code = String(), const String &p_message = String()) {
 	Dictionary result;
@@ -242,23 +347,27 @@ static void _solers_send_input_result(const String &p_call_id, int64_t p_runtime
 		result["code"] = p_code;
 		result["message"] = p_message;
 	}
-	if (EngineDebugger::is_active()) {
-		EngineDebugger::get_singleton()->send_message("solers:input_result", { result });
-	}
+	_solers_send_runtime_result("solers:input_result", result);
 }
 
-static Error _solers_capture_runtime_input(void *, const String &p_message, const Array &p_args, bool &r_captured) {
-	r_captured = p_message == "set_input_actions" || p_message == "observe_frame";
+static Error _solers_capture_runtime(void *, const String &p_message, const Array &p_args, bool &r_captured) {
+	r_captured = p_message == "set_input_actions" || p_message == "observe_frame" || p_message == "observe_objects";
 	if (!r_captured) {
 		return OK;
 	}
 	const String call_id = p_args.size() > 0 ? String(p_args[0]) : String();
 	const int64_t runtime_epoch = p_args.size() > 1 ? (int64_t)p_args[1] : 0;
-	if (p_message == "observe_frame") {
-		if (p_args.size() != 3 || call_id.is_empty() || runtime_epoch <= 0 || p_args[2].get_type() != Variant::ARRAY || !solers_runtime_frame_bridge) {
-			return ERR_INVALID_PARAMETER;
+	if (p_message == "observe_frame" || p_message == "observe_objects") {
+		if (p_args.size() != 3 || call_id.is_empty() || runtime_epoch <= 0 || p_args[2].get_type() != Variant::ARRAY || !solers_runtime_bridge) {
+			Dictionary result({ { "call_id", call_id }, { "runtime_epoch", runtime_epoch }, { "ok", false }, { "code", "INVALID_OBSERVATION_REQUEST" }, { "message", "Runtime observations require call_id, runtime_epoch, and an array payload." } });
+			_solers_send_runtime_result(p_message == "observe_frame" ? "solers:frame_result" : "solers:objects_result", result);
+			return OK;
 		}
-		solers_runtime_frame_bridge->request(call_id, runtime_epoch, p_args[2]);
+		if (p_message == "observe_frame") {
+			solers_runtime_bridge->request_frame(call_id, runtime_epoch, p_args[2]);
+		} else {
+			_solers_observe_runtime_objects(call_id, runtime_epoch, p_args[2]);
+		}
 		return OK;
 	}
 	if (p_args.size() != 3 || call_id.is_empty() || runtime_epoch <= 0 || p_args[2].get_type() != Variant::ARRAY) {
@@ -309,16 +418,16 @@ static Error _solers_capture_runtime_input(void *, const String &p_message, cons
 	return OK;
 }
 
-void solers_runtime_input_bridge_initialize() {
-	if (!solers_runtime_frame_bridge) {
-		solers_runtime_frame_bridge = memnew(SolersRuntimeFrameBridge);
+void solers_runtime_bridge_initialize() {
+	if (!solers_runtime_bridge) {
+		solers_runtime_bridge = memnew(SolersRuntimeBridge);
 	}
 	if (!EngineDebugger::has_capture(SNAME("solers"))) {
-		EngineDebugger::register_message_capture(SNAME("solers"), EngineDebugger::Capture(nullptr, _solers_capture_runtime_input));
+		EngineDebugger::register_message_capture(SNAME("solers"), EngineDebugger::Capture(nullptr, _solers_capture_runtime));
 	}
 }
 
-void solers_runtime_input_bridge_uninitialize() {
+void solers_runtime_bridge_uninitialize() {
 	Input *input = Input::get_singleton();
 	InputMap *input_map = InputMap::get_singleton();
 	for (const StringName &action : solers_owned_input_actions) {
@@ -327,9 +436,9 @@ void solers_runtime_input_bridge_uninitialize() {
 		}
 	}
 	solers_owned_input_actions.clear();
-	if (solers_runtime_frame_bridge) {
-		memdelete(solers_runtime_frame_bridge);
-		solers_runtime_frame_bridge = nullptr;
+	if (solers_runtime_bridge) {
+		memdelete(solers_runtime_bridge);
+		solers_runtime_bridge = nullptr;
 	}
 	if (EngineDebugger::has_capture(SNAME("solers"))) {
 		EngineDebugger::unregister_message_capture(SNAME("solers"));

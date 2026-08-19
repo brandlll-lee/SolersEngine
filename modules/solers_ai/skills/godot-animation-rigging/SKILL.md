@@ -45,7 +45,7 @@ Use for clips, skeletons, retargeting, AnimationTree graphs, IK, one-shots, or r
 ## Verify
 1. `object.query target=resource|scene` for skeleton, libraries, and Tree parameters.
 2. `runtime.control` — each clip, interrupt, blend; watch feet/hands.
-3. For locomotion transitions: `runtime.control set_input_actions` → observe → capture while moving → release all actions.
-   Use `runtime.observe target=spatial` on model/collider and capture the same `focus_paths`.
+3. For locomotion transitions: `runtime.control set_input_actions` → independently observe spatial facts and capture while moving → release all actions.
+   Correlate both receipts by `runtime_epoch`; a missing spatial receipt must not suppress valid pixels.
 4. `runtime.observe` digest for missing tracks / errors.
 5. Confirm no double translation when root motion enabled.
