@@ -266,6 +266,7 @@ Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
 	const String path_arg = p_args.get("path", String());
 	const String content = p_args.get("content", String());
 	const String content_base64 = p_args.get("content_base64", String());
+	const String expected_sha256 = p_args.get("expected_sha256", String());
 	const bool has_text_content = p_args.has("content");
 	const bool has_binary_content = !content_base64.strip_edges().is_empty();
 	if (has_text_content == has_binary_content) {
@@ -292,6 +293,11 @@ Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
 	}
 	if (!existed_before && !create) {
 		return _error("FILE_NOT_FOUND", vformat("File does not exist and create=false: %s", res_path));
+	}
+	if (!expected_sha256.is_empty() && (!existed_before || FileAccess::get_sha256(res_path) != expected_sha256)) {
+		Dictionary failure = _error("STATE_CONFLICT", vformat("File '%s' changed since it was inspected.", res_path));
+		failure["data"] = Dictionary({ { "path", res_path }, { "expected_sha256", expected_sha256 }, { "actual_sha256", existed_before ? FileAccess::get_sha256(res_path) : String() } });
+		return failure;
 	}
 	const bool is_script_text = has_text_content && _solers_is_script_source_path(res_path);
 	Dictionary validation_data;
@@ -333,6 +339,12 @@ Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
 		return _error("FILE_WRITE_FAILED", "Failed to store file content.");
 	}
 	file.unref();
+	if (!expected_sha256.is_empty() && FileAccess::get_sha256(res_path) != expected_sha256) {
+		DirAccess::remove_absolute(temporary_path);
+		Dictionary failure = _error("STATE_CONFLICT", vformat("File '%s' changed while the edit was being validated.", res_path));
+		failure["data"] = Dictionary({ { "path", res_path }, { "expected_sha256", expected_sha256 }, { "actual_sha256", FileAccess::get_sha256(res_path) } });
+		return failure;
+	}
 	const Error replace_err = DirAccess::rename_absolute(temporary_path, absolute_path);
 	if (replace_err != OK) {
 		DirAccess::remove_absolute(temporary_path);
@@ -364,282 +376,14 @@ Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
 
 	return _ok(data);
 }
-
-// --- Tolerant old_text location ----------------------------------------------
-// The current file content is the only authoritative match target. The model's
-// old_text routinely drifts from it in ways that never change meaning for
-// source code: trailing whitespace, indentation depth, collapsed spacing, and
-// typographic lookalike characters. Strategies run strictest-first over the
-// ORIGINAL content and the first one that matches uniquely decides; ambiguity
-// is an error, never a guess. This mirrors opencode's replacer cascade and
-// codex's seek_sequence.
-
-static char32_t _solers_ascii_fold(char32_t p_char) {
-	switch (p_char) {
-		case 0x2018: // ' variants
-		case 0x2019:
-		case 0x201A:
-		case 0x201B:
-		case 0x2032:
-			return '\'';
-		case 0x201C: // " variants
-		case 0x201D:
-		case 0x201E:
-		case 0x201F:
-		case 0x2033:
-			return '"';
-		case 0x2010: // dash variants
-		case 0x2011:
-		case 0x2012:
-		case 0x2013:
-		case 0x2014:
-		case 0x2015:
-		case 0x2212:
-			return '-';
-		case 0x00A0: // space variants
-		case 0x2002:
-		case 0x2003:
-		case 0x2004:
-		case 0x2005:
-		case 0x2006:
-		case 0x2007:
-		case 0x2008:
-		case 0x2009:
-		case 0x200A:
-		case 0x202F:
-		case 0x3000:
-			return ' ';
-		default:
-			return p_char;
-	}
-}
-
-static String _solers_fold_typography(const String &p_text) {
-	String out = p_text;
-	char32_t *ptr = out.ptrw();
-	for (int i = 0; i < out.length(); i++) {
-		ptr[i] = _solers_ascii_fold(ptr[i]);
-	}
-	return out;
-}
-
-// Edge trim + typography fold; interior whitespace runs optionally collapse.
-static String _solers_line_key(const String &p_line, bool p_collapse_interior) {
-	const String folded = _solers_fold_typography(p_line.strip_edges());
-	if (!p_collapse_interior) {
-		return folded;
-	}
-	String out;
-	bool in_whitespace = false;
-	for (int i = 0; i < folded.length(); i++) {
-		const char32_t c = folded[i];
-		if (c == ' ' || c == '\t') {
-			in_whitespace = true;
-			continue;
-		}
-		if (in_whitespace && !out.is_empty()) {
-			out += ' ';
-		}
-		in_whitespace = false;
-		out += c;
-	}
-	return out;
-}
-
-struct SolersSourceLine {
-	int start = 0; // first character offset in content
-	int end = 0; // offset past this line's newline (== next line's start)
-	int text_end = 0; // offset past the last character before the newline
-	String text; // without the trailing newline, without trailing '\r'
-};
-
-static Vector<SolersSourceLine> _solers_split_lines(const String &p_text) {
-	Vector<SolersSourceLine> lines;
-	int start = 0;
-	while (start <= p_text.length()) {
-		const int newline = p_text.find_char('\n', start);
-		SolersSourceLine line;
-		line.start = start;
-		if (newline == -1) {
-			line.text_end = p_text.length();
-			line.end = p_text.length();
-		} else {
-			line.text_end = newline;
-			line.end = newline + 1;
-		}
-		line.text = p_text.substr(line.start, line.text_end - line.start).trim_suffix("\r");
-		lines.push_back(line);
-		if (newline == -1) {
-			break;
-		}
-		start = newline + 1;
-	}
-	return lines;
-}
-
-static String _solers_leading_whitespace(const String &p_line) {
-	int indent = 0;
-	while (indent < p_line.length() && (p_line[indent] == ' ' || p_line[indent] == '\t')) {
-		indent++;
-	}
-	return p_line.substr(0, indent);
-}
-
-struct SolersPatchMatch {
-	int start = -1;
-	int end = -1;
-	int match_count = 0;
-	String strategy;
-	// First matched content line's indentation, for re-indenting new_text
-	// when the anchor tolerated an indentation shift.
-	String matched_indent;
-	String needle_indent;
-};
-
-static SolersPatchMatch _solers_locate_old_text(const String &p_content, const String &p_old_text, int p_occurrence) {
-	SolersPatchMatch match;
-
-	// Strategy 1: exact substring; the only strategy where an explicit
-	// occurrence index is meaningful.
-	{
-		int found = -1;
-		int count = 0;
-		int pos = p_content.find(p_old_text);
-		while (pos != -1) {
-			count++;
-			if (count == p_occurrence) {
-				found = pos;
-			}
-			pos = p_content.find(p_old_text, pos + MAX(1, (int)p_old_text.length()));
-		}
-		if (found != -1) {
-			match.start = found;
-			match.end = found + p_old_text.length();
-			match.match_count = count;
-			match.strategy = "exact";
-			return match;
-		}
-		if (count > 0) {
-			// The text exists but the requested occurrence does not; tolerant
-			// tiers must not silently retarget a different occurrence.
-			match.match_count = count;
-			match.strategy = "exact";
-			return match;
-		}
-	}
-	if (p_occurrence != 1) {
-		return match;
-	}
-
-	const Vector<SolersSourceLine> content_lines = _solers_split_lines(p_content);
-	const bool needle_ends_with_newline = p_old_text.ends_with("\n");
-	const Vector<SolersSourceLine> needle_lines = _solers_split_lines(needle_ends_with_newline ? p_old_text.substr(0, p_old_text.length() - 1) : p_old_text);
-	if (needle_lines.is_empty() || content_lines.size() < needle_lines.size()) {
-		return match;
-	}
-
-	// Strategy 2: per-line edge trim absorbs indentation and edge-whitespace
-	// drift. Strategy 3 additionally collapses interior whitespace runs.
-	for (int tier = 0; tier < 2; tier++) {
-		const bool collapse_interior = tier == 1;
-		Vector<String> needle_keys;
-		for (const SolersSourceLine &line : needle_lines) {
-			needle_keys.push_back(_solers_line_key(line.text, collapse_interior));
-		}
-		int found_window = -1;
-		int window_count = 0;
-		for (int i = 0; i + needle_keys.size() <= content_lines.size(); i++) {
-			bool matched = true;
-			for (int j = 0; j < needle_keys.size(); j++) {
-				if (_solers_line_key(content_lines[i + j].text, collapse_interior) != needle_keys[j]) {
-					matched = false;
-					break;
-				}
-			}
-			if (matched) {
-				window_count++;
-				if (found_window == -1) {
-					found_window = i;
-				}
-			}
-		}
-		if (window_count == 0) {
-			continue;
-		}
-		match.match_count = window_count;
-		match.strategy = collapse_interior ? "whitespace_normalized" : "line_trimmed";
-		if (window_count == 1) {
-			const SolersSourceLine &last = content_lines[found_window + needle_keys.size() - 1];
-			match.start = content_lines[found_window].start;
-			match.end = needle_ends_with_newline ? last.end : last.text_end;
-			match.matched_indent = _solers_leading_whitespace(content_lines[found_window].text);
-			match.needle_indent = _solers_leading_whitespace(needle_lines[0].text);
-		}
-		return match;
-	}
-	return match;
-}
-
-// When a tolerant tier anchored the block at a different indentation depth,
-// shift new_text by the same offset so the replacement sits at the file's
-// real depth (GDScript is indentation-sensitive).
-static String _solers_reindent_replacement(const String &p_new_text, const String &p_needle_indent, const String &p_matched_indent) {
-	if (p_needle_indent == p_matched_indent) {
-		return p_new_text;
-	}
-	const Vector<SolersSourceLine> lines = _solers_split_lines(p_new_text);
-	String out;
-	for (int i = 0; i < lines.size(); i++) {
-		String text = p_new_text.substr(lines[i].start, lines[i].text_end - lines[i].start);
-		if (text.begins_with(p_needle_indent)) {
-			text = p_matched_indent + text.substr(p_needle_indent.length());
-		}
-		out += text;
-		if (lines[i].end != lines[i].text_end) {
-			out += "\n";
-		}
-	}
-	return out;
-}
-
-// The lines of p_content around the first line whose trimmed text equals the
-// needle's first non-empty trimmed line; gives the model real bytes to anchor
-// its next attempt instead of guessing.
-static String _solers_closest_context(const String &p_content, const String &p_old_text, int p_context_lines = 8) {
-	String anchor;
-	for (const SolersSourceLine &line : _solers_split_lines(p_old_text)) {
-		anchor = _solers_fold_typography(line.text.strip_edges());
-		if (!anchor.is_empty()) {
-			break;
-		}
-	}
-	if (anchor.is_empty()) {
-		return String();
-	}
-	const Vector<SolersSourceLine> lines = _solers_split_lines(p_content);
-	for (int i = 0; i < lines.size(); i++) {
-		if (_solers_fold_typography(lines[i].text.strip_edges()) == anchor) {
-			String out;
-			for (int j = i; j < MIN((int)lines.size(), i + p_context_lines); j++) {
-				out += lines[j].text + "\n";
-			}
-			return out;
-		}
-	}
-	return String();
-}
-
 Dictionary SolersScriptService::patch_file(const Dictionary &p_args) {
 	const String path_arg = p_args.get("path", String());
 	const String old_text = p_args.get("old_text", String());
 	const String new_text = p_args.get("new_text", String());
-	const int occurrence = p_args.get("occurrence", 1);
+	const String expected_sha256 = p_args.get("expected_sha256", String());
 
-	if (old_text.is_empty()) {
-		return _error("INVALID_ARGUMENT", "old_text is required for script.edit replace.");
-	}
-	if (occurrence < 1) {
-		return _error("INVALID_ARGUMENT", "occurrence must be 1 or greater.");
+	if (old_text.is_empty() || expected_sha256.is_empty() || !p_args.has("new_text")) {
+		return _error("INVALID_ARGUMENT", "old_text, new_text, and expected_sha256 are required for script.edit replace.");
 	}
 
 	String res_path;
@@ -662,62 +406,33 @@ Dictionary SolersScriptService::patch_file(const Dictionary &p_args) {
 	if (read_err != OK) {
 		return _error("FILE_READ_FAILED", vformat("Failed to read file, error code %d.", read_err));
 	}
-
-	const SolersPatchMatch match = _solers_locate_old_text(content, old_text, occurrence);
-	if (match.start == -1) {
-		if (match.strategy == "exact" && match.match_count >= 1) {
-			return _error("PATCH_TEXT_NOT_FOUND", vformat("old_text occurrence %d was requested but only %d exact occurrence(s) exist in %s.", occurrence, match.match_count, res_path));
-		}
-		if (match.match_count > 1) {
-			return _error("PATCH_TEXT_AMBIGUOUS", vformat("old_text matches %d places in %s (via %s matching). Include more surrounding lines so the target is unique.", match.match_count, res_path, match.strategy));
-		}
-		Dictionary failure = _error("PATCH_TEXT_NOT_FOUND", "old_text was not found in the current file content, even with whitespace-tolerant matching. The file's current bytes are authoritative; re-read the region and copy it exactly.");
-		const String closest = _solers_closest_context(content, old_text);
-		if (!closest.is_empty()) {
-			Dictionary failure_data;
-			failure_data["closest_context"] = closest;
-			failure["data"] = failure_data;
-		}
+	const String actual_sha256 = FileAccess::get_sha256(res_path);
+	if (actual_sha256 != expected_sha256) {
+		Dictionary failure = _error("STATE_CONFLICT", vformat("File '%s' changed since it was inspected.", res_path));
+		failure["data"] = Dictionary({ { "path", res_path }, { "expected_sha256", expected_sha256 }, { "actual_sha256", actual_sha256 } });
 		return failure;
 	}
-
-	const String replacement = match.strategy == "exact" ? new_text : _solers_reindent_replacement(new_text, match.needle_indent, match.matched_indent);
-	const String patched = content.substr(0, match.start) + replacement + content.substr(match.end);
+	const int offset = content.find(old_text);
+	if (offset < 0) {
+		return _error("PATCH_TEXT_NOT_FOUND", "old_text was not found byte-for-byte in the authoritative file. Re-read the file and copy the exact current text.");
+	}
+	if (content.find(old_text, offset + old_text.length()) >= 0) {
+		return _error("PATCH_TEXT_AMBIGUOUS", "old_text occurs more than once in the authoritative file. Include enough exact surrounding text to identify one block.");
+	}
+	const String patched = content.substr(0, offset) + new_text + content.substr(offset + old_text.length());
 	Dictionary write_args;
 	write_args["path"] = res_path;
 	write_args["content"] = patched;
 	write_args["create"] = false;
 	write_args["overwrite"] = true;
+	write_args["expected_sha256"] = expected_sha256;
 	Dictionary write_result = write_file(write_args);
 	if (!(bool)write_result.get("ok", false)) {
 		return write_result;
 	}
 
 	Dictionary data = write_result.get("data", Dictionary());
-	data["match_strategy"] = match.strategy;
-	data["patched_offset"] = match.start;
-	// The patched region as it now exists on disk (plus three lines each
-	// side): the model anchors follow-up edits on real bytes instead of its
-	// memory of what it sent.
-	{
-		const Vector<SolersSourceLine> patched_lines = _solers_split_lines(patched);
-		int first_line = 0;
-		int last_line = 0;
-		const int new_end = match.start + replacement.length();
-		for (int i = 0; i < patched_lines.size(); i++) {
-			if (patched_lines[i].start <= match.start) {
-				first_line = i;
-			}
-			if (patched_lines[i].start <= new_end) {
-				last_line = i;
-			}
-		}
-		String context_after;
-		for (int i = MAX(0, first_line - 3); i <= MIN((int)patched_lines.size() - 1, last_line + 3); i++) {
-			context_after += patched_lines[i].text + "\n";
-		}
-		data["context_after"] = context_after;
-	}
+	data["patched_offset"] = offset;
 	return _ok(data);
 }
 
@@ -869,7 +584,7 @@ Dictionary SolersScriptService::edit_script(const Dictionary &p_args) {
 		patch_args["path"] = path;
 		patch_args["old_text"] = p_args.get("old_text", String());
 		patch_args["new_text"] = p_args.get("new_text", String());
-		patch_args["occurrence"] = p_args.get("occurrence", 1);
+		patch_args["expected_sha256"] = p_args.get("expected_sha256", String());
 		return patch_file(patch_args);
 	}
 	return _error("INVALID_ARGUMENT", "script.edit operation must be create or replace.");

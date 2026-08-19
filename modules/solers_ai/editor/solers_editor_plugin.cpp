@@ -53,7 +53,7 @@ static constexpr int SOLERS_WORKSPACE_LAYOUT_VERSION = 1;
 class SolersRuntimeDebuggerCapture : public EditorDebuggerPlugin {
 public:
 	bool has_capture(const String &p_capture) const override { return p_capture == "solers"; }
-	bool capture(const String &p_message, const Array &, int) override { return p_message == "solers:input_result"; }
+	bool capture(const String &p_message, const Array &, int) override { return p_message.begins_with("solers:"); }
 };
 
 void solers_load_editor_translation() {

@@ -291,15 +291,6 @@ static void _solers_observe_runtime_objects(const String &p_call_id, int64_t p_r
 		entry["owner_path"] = owner && owner->is_inside_tree() ? String(owner->get_path()) : String();
 		entry["scene_file_path"] = node->get_scene_file_path();
 
-		List<PropertyInfo> property_list;
-		object->get_property_list(&property_list);
-		Dictionary observable;
-		for (const PropertyInfo &property : property_list) {
-			if ((property.usage & (PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_STORAGE)) && !(property.usage & PROPERTY_USAGE_SECRET)) {
-				observable[property.name] = Dictionary(property);
-			}
-		}
-
 		Dictionary properties;
 		Dictionary property_info;
 		const Variant requested_value = request.get("properties", Array());
@@ -308,6 +299,16 @@ static void _solers_observe_runtime_objects(const String &p_call_id, int64_t p_r
 			continue;
 		}
 		const Array requested_properties = requested_value;
+		Dictionary observable;
+		if (!requested_properties.is_empty()) {
+			List<PropertyInfo> property_list;
+			object->get_property_list(&property_list);
+			for (const PropertyInfo &property : property_list) {
+				if ((property.usage & (PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_STORAGE)) && !(property.usage & PROPERTY_USAGE_SECRET)) {
+					observable[property.name] = Dictionary(property);
+				}
+			}
+		}
 		for (int property_index = 0; property_index < requested_properties.size(); property_index++) {
 			const StringName property = requested_properties[property_index];
 			if (!observable.has(property)) {

@@ -2177,7 +2177,7 @@ void SolersObservationService::_runtime_tree_updated() {
 	result["available"] = tree != nullptr;
 	result["nodes"] = nodes;
 	result["errors"] = errors;
-	if (!tree || nodes.is_empty() || Array(runtime_query.get("properties", Array())).is_empty()) {
+	if (!tree || nodes.is_empty()) {
 		_finish_runtime_query(result);
 		return;
 	}

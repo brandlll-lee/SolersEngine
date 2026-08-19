@@ -21,6 +21,7 @@ Use for clips, skeletons, retargeting, AnimationTree graphs, IK, one-shots, or r
 
 ## Laws
 - One locomotion authority: root motion **or** CharacterBody velocity.
+- Keep imported clips, the blend graph, locomotion state, and camera motion under distinct native owners; connect them through explicit parameters instead of one catch-all player script.
 - Do not hand-edit importer output as the long-term source of truth.
 - Verify rest pose + bone map before blaming blend graphs.
 - Inspect the imported `AnimationPlayer` inventory first; missing semantic clips are an asset fact, not a state-machine fallback opportunity.

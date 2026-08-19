@@ -508,6 +508,11 @@ TEST_CASE("[SolersToolRegistry] default tools keep one portable ABI across provi
 	CHECK((operation_properties.has("properties") && !operation_properties.has("property") && !operation_properties.has("value")));
 	CHECK((operation_properties.has("source_path") && !operation_properties.has("resource_path") && !operation_properties.has("expected_state")));
 	CHECK(Array(Dictionary(transaction.get("input_schema", Dictionary())).get("required", Array())).has("expected_state"));
+	const Dictionary script_edit = solers_test_find_dictionary(tools, SNAME("name"), "script.edit");
+	const Dictionary script_properties = Dictionary(script_edit.get("input_schema", Dictionary())).get("properties", Dictionary());
+	CHECK(script_properties.has("expected_sha256"));
+	CHECK(Dictionary(script_properties.get("expected_sha256", Dictionary())).get("pattern", String()) == "^[0-9a-f]{64}$");
+	CHECK_FALSE(script_properties.has("occurrence"));
 
 	Dictionary invalid;
 	invalid["oneOf"] = Array();
@@ -1412,8 +1417,10 @@ TEST_CASE("[SolersRuntimeBridge][SceneTree] exact object observations use native
 	mesh_request["object_id"] = solers_object_id_to_string(mesh_instance->get_instance_id());
 	mesh_request["node_path"] = String(mesh_instance->get_path());
 	mesh_request["properties"] = Array({ "mesh" });
+	Dictionary identity_request = request.duplicate(true);
+	identity_request["properties"] = Array();
 	bool captured = false;
-	const Error err = debugger.capture_parse(SNAME("solers"), "observe_objects", { "objects-contract", 11, Array({ request, stale_request, "invalid", invalid_id_request, invalid_property_request, mesh_request }) }, captured);
+	const Error err = debugger.capture_parse(SNAME("solers"), "observe_objects", { "objects-contract", 11, Array({ request, stale_request, "invalid", invalid_id_request, invalid_property_request, mesh_request, identity_request }) }, captured);
 	CHECK(err == OK);
 	CHECK(captured);
 	CHECK(debugger.last_message == "solers:objects_result");
@@ -1421,9 +1428,9 @@ TEST_CASE("[SolersRuntimeBridge][SceneTree] exact object observations use native
 	const Dictionary result = debugger.last_data[0];
 	CHECK((bool)result.get("ok", false));
 	CHECK_FALSE((bool)result.get("complete", true));
-	CHECK((int)result.get("requested_count", 0) == 6);
+	CHECK((int)result.get("requested_count", 0) == 7);
 	const Array nodes = result.get("nodes", Array());
-	REQUIRE(nodes.size() == 2);
+	REQUIRE(nodes.size() == 3);
 	const Dictionary observed = nodes[0];
 	CHECK(observed.get("object_id", String()) == object_id);
 	CHECK(observed.get("node_path", String()) == node_path);
@@ -1445,6 +1452,11 @@ TEST_CASE("[SolersRuntimeBridge][SceneTree] exact object observations use native
 	const PropertyInfo mesh_info = PropertyInfo::from_dict(Dictionary(observed_mesh.get("property_info", Dictionary())).get("mesh", Dictionary()));
 	CHECK(mesh_info.type == Variant::OBJECT);
 	CHECK(mesh_info.class_name == Mesh::get_class_static());
+	const Dictionary observed_identity = nodes[2];
+	CHECK(observed_identity.get("owner_path", String()) == String(scene->get_path()));
+	CHECK(observed_identity.get("scene_file_path", String()) == "res://player_contract.tscn");
+	CHECK(Dictionary(observed_identity.get("properties", Dictionary())).is_empty());
+	CHECK(Dictionary(observed_identity.get("property_info", Dictionary())).is_empty());
 
 	bool saw_hidden = false;
 	bool saw_stale = false;

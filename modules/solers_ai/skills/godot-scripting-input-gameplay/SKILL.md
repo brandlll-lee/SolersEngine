@@ -34,7 +34,7 @@ Use for game rules, interaction, input, lifecycle, state ownership, Autoloads, o
 var v := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 velocity = (transform.basis * Vector3(v.x, 0, v.y)).normalized() * speed
 ```
-**Persist InputMap before first Play:** write actions via `project.edit` / `project.godot` `[input]` (or a script that both registers and documents the same actions). Optional runtime `_ensure_*` is only a safety net — not a substitute for project persistence.
+**Persist InputMap before first Play:** write actions through `project.edit`; gameplay scripts consume that one project-owned action map and never duplicate it with raw keys or runtime `_ensure_*` registration.
 **Awaitable signal once:**
 ```gdscript
 await $Button.pressed

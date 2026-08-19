@@ -132,6 +132,7 @@ TEST_CASE("[SolersScriptService] invalid source never replaces the authoritative
 	patch_args["path"] = path;
 	patch_args["old_text"] = "\treturn 1";
 	patch_args["new_text"] = "\treturn +";
+	patch_args["expected_sha256"] = valid_sha256;
 	Dictionary patched = script_service.patch_file(patch_args);
 	CHECK_FALSE((bool)patched.get("ok", true));
 	CHECK(Dictionary(patched.get("error", Dictionary())).get("code", String()) == "SCRIPT_VALIDATION_FAILED");
@@ -147,71 +148,63 @@ TEST_CASE("[SolersScriptService] invalid source never replaces the authoritative
 	CHECK_FALSE(FileAccess::exists(shader_path));
 }
 
-TEST_CASE("[SolersScriptService] patch matching tolerates whitespace drift and rejects ambiguity") {
-	const String path = "res://solers_patch_cascade_contract.gd";
+TEST_CASE("[SolersScriptService] replacement requires current identity and exact unique bytes") {
+	const String path = "res://solers_exact_replace_contract.gd";
 	SolersTestPaths cleanup;
 	cleanup.add(path);
 	SolersScriptService script_service;
 	Dictionary write_args;
 	write_args["path"] = path;
-	write_args["content"] = String::utf8("extends Node\n\nfunc alpha() -> int:\n\treturn 1\n\nfunc beta() -> int:\n\tprint(\"hello world\")\n\treturn 2\n\nfunc first_stub() -> void:\n\tpass\n\nfunc second_stub() -> void:\n\tpass\n");
+	write_args["content"] = "extends Node\n\nfunc alpha() -> int:\n\treturn 1\n\nfunc first_stub() -> void:\n\tpass\n\nfunc second_stub() -> void:\n\tpass\n";
 	REQUIRE((bool)script_service.write_file(write_args).get("ok", false));
+	const String initial_sha256 = FileAccess::get_sha256(path);
+	const String initial_source = FileAccess::get_file_as_string(path);
 
-	// Indentation drift: the model sent spaces where the file uses tabs. The
-	// match re-anchors on trimmed lines and the replacement is re-indented to
-	// the file's actual indentation.
-	Dictionary drift;
-	drift["path"] = path;
-	drift["old_text"] = "    return 1";
-	drift["new_text"] = "    return 10";
-	const Dictionary drifted = script_service.patch_file(drift);
-	REQUIRE((bool)drifted.get("ok", false));
-	const Dictionary drift_data = drifted.get("data", Dictionary());
-	CHECK(drift_data.get("match_strategy", String()) == "line_trimmed");
-	CHECK(String(drift_data.get("context_after", String())).contains("return 10"));
-	CHECK(FileAccess::get_file_as_string(path).contains("\treturn 10"));
+	Dictionary unconditioned;
+	unconditioned["path"] = path;
+	unconditioned["old_text"] = "\treturn 1";
+	unconditioned["new_text"] = "\treturn 10";
+	const Dictionary unconditioned_result = script_service.patch_file(unconditioned);
+	CHECK_FALSE(unconditioned_result.get("ok", true));
+	CHECK(Dictionary(unconditioned_result.get("error", Dictionary())).get("code", String()) == "INVALID_ARGUMENT");
+	CHECK(FileAccess::get_file_as_string(path) == initial_source);
 
-	// Typographic quotes fold to their ASCII equivalents before comparison.
-	Dictionary quotes;
-	quotes["path"] = path;
-	quotes["old_text"] = String::utf8("\tprint(\xE2\x80\x9Chello world\xE2\x80\x9D)");
-	quotes["new_text"] = "\tprint(\"hello, world\")";
-	const Dictionary quoted = script_service.patch_file(quotes);
-	REQUIRE((bool)quoted.get("ok", false));
-	CHECK(FileAccess::get_file_as_string(path).contains("hello, world"));
+	Dictionary exact;
+	exact["path"] = path;
+	exact["old_text"] = "\treturn 1";
+	exact["new_text"] = "\treturn 10";
+	exact["expected_sha256"] = initial_sha256;
+	const Dictionary replaced = script_service.patch_file(exact);
+	REQUIRE((bool)replaced.get("ok", false));
+	const String replaced_sha256 = Dictionary(replaced.get("data", Dictionary())).get("sha256", String());
+	CHECK(replaced_sha256 == FileAccess::get_sha256(path));
+	CHECK(replaced_sha256 != initial_sha256);
 
-	// Two stub bodies share the same trimmed key: tolerant matching must ask
-	// for more context instead of guessing which one was meant.
+	Dictionary stale = exact;
+	stale["old_text"] = "\treturn 10";
+	stale["new_text"] = "\treturn 11";
+	const Dictionary stale_result = script_service.patch_file(stale);
+	CHECK_FALSE(stale_result.get("ok", true));
+	CHECK(Dictionary(stale_result.get("error", Dictionary())).get("code", String()) == "STATE_CONFLICT");
+	CHECK(FileAccess::get_sha256(path) == replaced_sha256);
+
+	Dictionary drift = stale;
+	drift["old_text"] = "    return 10";
+	drift["expected_sha256"] = replaced_sha256;
+	const Dictionary drift_result = script_service.patch_file(drift);
+	CHECK_FALSE(drift_result.get("ok", true));
+	CHECK(Dictionary(drift_result.get("error", Dictionary())).get("code", String()) == "PATCH_TEXT_NOT_FOUND");
+
 	Dictionary ambiguous;
 	ambiguous["path"] = path;
-	ambiguous["old_text"] = "    pass";
-	ambiguous["new_text"] = "    breakpoint";
+	ambiguous["old_text"] = "\tpass";
+	ambiguous["new_text"] = "\tbreakpoint";
+	ambiguous["expected_sha256"] = replaced_sha256;
 	const Dictionary ambiguous_result = script_service.patch_file(ambiguous);
 	CHECK_FALSE(ambiguous_result.get("ok", true));
 	CHECK(Dictionary(ambiguous_result.get("error", Dictionary())).get("code", String()) == "PATCH_TEXT_AMBIGUOUS");
-
-	// An explicit occurrence beyond the exact count fails outright; tolerant
-	// tiers never silently retarget a different occurrence.
-	Dictionary occurrence;
-	occurrence["path"] = path;
-	occurrence["old_text"] = "pass";
-	occurrence["new_text"] = "breakpoint";
-	occurrence["occurrence"] = 3;
-	const Dictionary occurrence_result = script_service.patch_file(occurrence);
-	CHECK_FALSE(occurrence_result.get("ok", true));
-	CHECK(Dictionary(occurrence_result.get("error", Dictionary())).get("code", String()) == "PATCH_TEXT_NOT_FOUND");
-	CHECK(FileAccess::get_file_as_string(path).contains("pass"));
-
-	// A genuine miss returns the real bytes around the nearest anchor line so
-	// the next attempt can copy them exactly.
-	Dictionary missing;
-	missing["path"] = path;
-	missing["old_text"] = "func beta() -> int:\n\treturn 999";
-	missing["new_text"] = "func beta() -> int:\n\treturn 3";
-	const Dictionary missing_result = script_service.patch_file(missing);
-	CHECK_FALSE(missing_result.get("ok", true));
-	CHECK(Dictionary(missing_result.get("error", Dictionary())).get("code", String()) == "PATCH_TEXT_NOT_FOUND");
-	CHECK(String(Dictionary(missing_result.get("data", Dictionary())).get("closest_context", String())).contains("return 2"));
+	CHECK(FileAccess::get_sha256(path) == replaced_sha256);
+	CHECK(FileAccess::get_file_as_string(path).contains("\treturn 10"));
 }
 
 TEST_CASE("[SolersScriptService] native serialized resources require native resource APIs") {
