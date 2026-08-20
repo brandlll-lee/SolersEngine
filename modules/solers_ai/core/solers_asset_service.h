@@ -61,6 +61,7 @@ class SolersAssetService : public Object {
 	mutable Mutex project_imports_mutex;
 	mutable Mutex catalog_cache_mutex;
 	Dictionary addon_inspections;
+	SafeNumeric<uint64_t> revision{ 1 };
 
 	static String _asset_root();
 	static String _asset_dir(const String &p_asset_id);
@@ -107,6 +108,9 @@ public:
 	Dictionary run_operation(const Dictionary &p_args);
 	Dictionary run_operation_for_session(const Dictionary &p_args, const String &p_session_id);
 	Dictionary status(const Dictionary &p_args) const;
+	Array list_assets() const;
+	uint64_t get_revision() const { return revision.get(); }
+	bool is_provider_configured(const String &p_kind, const String &p_provider) const;
 	Dictionary start_project_import(const Dictionary &p_args);
 	Dictionary poll_project_import(const Dictionary &p_args);
 	Dictionary get_project_import_coordinator_state() const;

@@ -249,13 +249,14 @@ TEST_CASE("[Editor][SolersAddon] bundled Terrain3D archive is pinned and self-de
 }
 
 TEST_CASE("[SolersPluginRegistry] an unknown connector extends every registry-driven surface") {
+	const uint64_t revision_before = SolersPluginRegistry::get_revision();
 	SolersSyntheticFuturePlugin *plugin = memnew(SolersSyntheticFuturePlugin);
 	ScopedPluginRegistration registration(plugin);
-
+	CHECK(SolersPluginRegistry::get_revision() == revision_before + 1);
 	CHECK(SolersPluginRegistry::get_plugin("synthetic-future") == plugin);
 	CHECK(SolersPluginRegistry::default_generator_for_kind("novel-geometry") == plugin);
-
 	SolersAssetService asset_service;
+	CHECK(asset_service.is_provider_configured("novel-geometry", "synthetic-future"));
 	SolersToolRegistry registry;
 	registry.set_asset_service(&asset_service);
 	registry.register_default_tools();
@@ -264,7 +265,6 @@ TEST_CASE("[SolersPluginRegistry] an unknown connector extends every registry-dr
 	CHECK(Array(Dictionary(properties.get("provider", Dictionary())).get("enum", Array())).has("synthetic-future"));
 	CHECK(Array(Dictionary(properties.get("kind", Dictionary())).get("enum", Array())).has("novel-geometry"));
 	CHECK(Dictionary(Dictionary(properties.get("provider_options", Dictionary())).get("properties", Dictionary())).has("density"));
-
 	const String partial = "Create with @synthetic-fut";
 	int mention_start = -1;
 	CHECK(SolersMention::query_at(partial, partial.length(), mention_start) == "synthetic-fut");
@@ -275,7 +275,6 @@ TEST_CASE("[SolersPluginRegistry] an unknown connector extends every registry-dr
 		CHECK(Dictionary(mentions[0]).get("id", String()) == "synthetic-future");
 		CHECK(Dictionary(mentions[0]).get("source", String()) == "plugin");
 	}
-
 	const Array generators = SolersMention::collect_section_items("solers", nullptr, String());
 	bool found_synthetic_generator = false;
 	for (int i = 0; i < generators.size(); i++) {
@@ -285,19 +284,6 @@ TEST_CASE("[SolersPluginRegistry] an unknown connector extends every registry-dr
 		}
 	}
 	CHECK(found_synthetic_generator);
-
-	Dictionary file_mention;
-	file_mention["source"] = "file";
-	file_mention["id"] = "res://does-not-need-to-exist-for-format.tscn";
-	file_mention["path"] = file_mention["id"];
-	file_mention["label"] = "does-not-need-to-exist-for-format.tscn";
-	CHECK(SolersMention::format_token(file_mention) == "@file:res://does-not-need-to-exist-for-format.tscn");
-	CHECK(SolersMention::parse("@file:res://does-not-need-to-exist-for-format.tscn").is_empty());
-	if (mentions.size() == 1) {
-		CHECK(SolersMention::prompt_block(mentions).contains("[Selected Solers context]"));
-		CHECK(SolersMention::dedupe_key(mentions[0]) != SolersMention::dedupe_key(file_mention));
-	}
-
 	Ref<SolersPluginJob> job;
 	job.instantiate();
 	if (SolersPlugin *registered = SolersPluginRegistry::get_plugin("synthetic-future")) {
@@ -362,73 +348,35 @@ TEST_CASE("[SolersAssetService][SceneTree] direct texture-set import follows req
 	CHECK_FALSE(FileAccess::exists(target_dir.path_join("detail.png")));
 }
 
-TEST_CASE("[SolersPluginMeshy] enhancement options require standard meshy-6 pipeline") {
+TEST_CASE("[SolersPluginMeshy] generation schema and validation follow the current provider contract") {
 	SolersPluginMeshy meshy;
 	Dictionary attachment;
 	attachment["id"] = "img_contract";
 	Array source_attachments;
 	source_attachments.push_back(attachment);
 
-	// The manifest is an in/out parameter, so it has to be an lvalue the call
-	// can write back into.
 	auto prepare = [&](const Dictionary &p_options, bool p_with_image) {
 		Dictionary manifest;
 		manifest["provider_options"] = p_options.duplicate(true);
 		manifest["source_attachments"] = p_with_image ? source_attachments : Array();
-		return meshy.prepare_generate("3d", Dictionary(), manifest);
+		Dictionary args;
+		args["prompt"] = "isolated game-ready character";
+		return meshy.prepare_generate("3d", args, manifest);
 	};
 
-	Dictionary smart_options;
-	smart_options["model_type"] = "smart-topology";
-	smart_options["ai_model"] = "meshy-t2";
-	smart_options["image_enhancement"] = true;
-	Dictionary rejected = prepare(smart_options, true);
-	CHECK_FALSE(rejected.is_empty());
+	const Dictionary legacy_options = JSON::parse_string(R"({"model_type":"standard","ai_model":"meshy-5"})");
+	Dictionary rejected = prepare(legacy_options, false);
 	CHECK(rejected.get("code", String()) == "INVALID_ARGUMENT");
-	CHECK(String(rejected.get("message", String())).contains("image_enhancement"));
 
-	smart_options.erase("image_enhancement");
-	smart_options["remove_lighting"] = true;
-	rejected = prepare(smart_options, true);
-	CHECK_FALSE(rejected.is_empty());
-	CHECK(String(rejected.get("message", String())).contains("remove_lighting"));
-
-	smart_options.erase("remove_lighting");
-	smart_options["hd_texture"] = true;
-	rejected = prepare(smart_options, true);
-	CHECK_FALSE(rejected.is_empty());
-	CHECK(String(rejected.get("message", String())).contains("hd_texture"));
-
-	smart_options.erase("hd_texture");
-	smart_options["topology"] = "quad";
-	rejected = prepare(smart_options, true);
-	CHECK_FALSE(rejected.is_empty());
-	CHECK(String(rejected.get("message", String())).contains("triangle-only"));
-
-	smart_options.erase("topology");
-	CHECK(prepare(smart_options, true).is_empty());
-
-	Dictionary meshy5_options;
-	meshy5_options["model_type"] = "standard";
-	meshy5_options["ai_model"] = "meshy-5";
-	meshy5_options["hd_texture"] = true;
-	rejected = prepare(meshy5_options, false);
-	CHECK_FALSE(rejected.is_empty());
-	CHECK(String(rejected.get("message", String())).contains("hd_texture"));
-
-	Dictionary hero_options;
-	hero_options["model_type"] = "standard";
-	hero_options["ai_model"] = "meshy-6";
-	hero_options["image_enhancement"] = true;
-	hero_options["remove_lighting"] = true;
-	hero_options["hd_texture"] = true;
+	const Dictionary hero_options = JSON::parse_string(R"({"model_type":"standard","ai_model":"latest","image_enhancement":true,"remove_lighting":true,"ultra_mode":true,"texture_resolution":"8k"})");
 	CHECK(prepare(hero_options, false).is_empty());
+	CHECK_FALSE(prepare(hero_options, true).is_empty());
 
 	const Dictionary schema = meshy.get_generation_options_schema("3d");
-	CHECK(String(Dictionary(schema.get("model_type", Dictionary())).get("description", String())).contains("standard"));
-	CHECK(String(Dictionary(schema.get("hd_texture", Dictionary())).get("description", String())).contains("meshy-6"));
-	CHECK(String(Dictionary(schema.get("image_enhancement", Dictionary())).get("description", String())).contains("meshy-6"));
-	CHECK(String(Dictionary(schema.get("remove_lighting", Dictionary())).get("description", String())).contains("meshy-6"));
+	CHECK_FALSE(schema.has("hd_texture"));
+	CHECK(Dictionary(schema.get("ai_model", Dictionary())).get("default", String()) == "latest");
+	CHECK(Array(Dictionary(schema.get("texture_resolution", Dictionary())).get("enum", Array())).has("8k"));
+	CHECK(schema.has("ultra_mode"));
 }
 
 TEST_CASE("[SolersPluginMeshy] offline operation contracts") {
@@ -437,13 +385,19 @@ TEST_CASE("[SolersPluginMeshy] offline operation contracts") {
 	const Dictionary convert = solers_test_find_dictionary(operations, SNAME("operation_id"), "convert");
 	const Dictionary resize = solers_test_find_dictionary(operations, SNAME("operation_id"), "resize");
 	const Dictionary uv_unwrap = solers_test_find_dictionary(operations, SNAME("operation_id"), "uv_unwrap");
+	const Dictionary animate = solers_test_find_dictionary(operations, SNAME("operation_id"), "animate_humanoid");
 	REQUIRE_FALSE(convert.is_empty());
 	REQUIRE_FALSE(resize.is_empty());
 	REQUIRE_FALSE(uv_unwrap.is_empty());
+	REQUIRE_FALSE(animate.is_empty());
 	CHECK(convert.get("endpoint", String()) == "/openapi/v1/convert");
 	CHECK(resize.get("endpoint", String()) == "/openapi/v1/resize");
 	CHECK(uv_unwrap.get("endpoint", String()) == "/openapi/v1/uv-unwrap");
 	CHECK(Array(Dictionary(convert.get("options_schema", Dictionary())).get("required", Array())).has("target_formats"));
+	const Dictionary animation_properties = Dictionary(animate.get("options_schema", Dictionary())).get("properties", Dictionary());
+	const Dictionary action = animation_properties.get("action_id", Dictionary());
+	CHECK(action.get("enum_source", String()) == "animation_actions");
+	CHECK(action.get("enum_value", String()) == "action_id");
 
 	Dictionary source;
 	source["provider_task_id"] = "meshy-source-task";

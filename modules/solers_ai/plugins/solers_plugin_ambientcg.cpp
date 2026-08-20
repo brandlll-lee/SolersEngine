@@ -31,20 +31,9 @@
 #include "solers_plugin_ambientcg.h"
 
 #include "core/io/json.h"
-#include "core/object/worker_thread_pool.h"
 #include "core/os/time.h"
 
 #include "modules/zip/zip_reader.h"
-
-struct SolersAmbientCGPageJob {
-	String url;
-	Dictionary response;
-};
-
-struct SolersAmbientCGPageBatch {
-	SolersAmbientCGPageJob *jobs = nullptr;
-	const SafeFlag *cancel_requested = nullptr;
-};
 
 Dictionary SolersPluginAmbientCG::get_profile() const {
 	Dictionary profile;
@@ -154,12 +143,6 @@ bool SolersPluginAmbientCG::_extract_archive(const Ref<SolersPluginJob> &p_job, 
 	return true;
 }
 
-void SolersPluginAmbientCG::_catalog_fetch_page(uint32_t p_index, void *p_batch) {
-	SolersAmbientCGPageBatch *batch = static_cast<SolersAmbientCGPageBatch *>(p_batch);
-	SolersAmbientCGPageJob &job = batch->jobs[p_index];
-	job.response = http_request("GET", job.url, Vector<String>(), PackedByteArray(), 60000, 8 * 1024 * 1024, batch->cancel_requested);
-}
-
 Dictionary SolersPluginAmbientCG::catalog_search(const Dictionary &p_args, const SafeFlag *p_cancel_requested) {
 	const String query = String(p_args.get("query", String())).strip_edges();
 	const String kind = String(p_args.get("kind", String())).strip_edges().to_lower();
@@ -168,81 +151,31 @@ Dictionary SolersPluginAmbientCG::catalog_search(const Dictionary &p_args, const
 	}
 	const int limit = MAX(1, MIN((int)p_args.get("limit", 20), 50));
 	const int offset = MAX(0, (int)p_args.get("offset", 0));
-	Array catalog_assets;
-	{
-		MutexLock lock(catalog_cache_mutex);
-		catalog_assets = catalog_cache.get(kind, Array());
+	const String api_type = kind == "3d" ? "3d-model" : kind;
+	const String url = "https://ambientcg.com/api/v3/assets?q=" + query.uri_encode() + "&type=" + api_type + "&sort=popular&limit=" + itos(limit) + "&offset=" + itos(offset) + "&include=id,type,title,url,tags,dimensions,thumbnails";
+	const Dictionary response = http_request("GET", url, Vector<String>(), PackedByteArray(), 60000, 4 * 1024 * 1024, p_cancel_requested);
+	if (!(bool)response.get("ok", false)) {
+		const Dictionary error = response.get("error", Dictionary());
+		return error_result(String(error.get("code", String())) == "HTTP_CANCELLED" ? "TOOL_CANCELLED" : "CATALOG_SEARCH_FAILED", String(error.get("message", "ambientCG catalog request failed.")));
 	}
-	if ((bool)p_args.get("refresh", false) || catalog_assets.is_empty()) {
-		const String api_type = kind == "3d" ? "3d-model" : kind;
-		const int page_size = 500;
-		const String base_url = "https://ambientcg.com/api/v3/assets?type=" + api_type + "&sort=popular&limit=" + itos(page_size) + "&include=id,type,title,url,tags,dimensions";
-		const Dictionary first_response = http_request("GET", base_url, Vector<String>(), PackedByteArray(), 60000, 8 * 1024 * 1024, p_cancel_requested);
-		if (!(bool)first_response.get("ok", false)) {
-			const Dictionary error = first_response.get("error", Dictionary());
-			return error_result(String(error.get("code", String())) == "HTTP_CANCELLED" ? "TOOL_CANCELLED" : "CATALOG_SEARCH_FAILED", String(error.get("message", "ambientCG catalog request failed.")));
-		}
-		const Dictionary first_root = parse_json_body(first_response);
-		const int official_total = (int)first_root.get("totalResults", 0);
-		Array pages;
-		pages.push_back(first_root.get("assets", Array()));
-		const int remaining_pages = MAX(0, (official_total + page_size - 1) / page_size - 1);
-		Vector<SolersAmbientCGPageJob> jobs;
-		jobs.resize(remaining_pages);
-		for (int i = 0; i < remaining_pages; i++) {
-			jobs.write[i].url = base_url + "&offset=" + itos((i + 1) * page_size);
-		}
-		if (!jobs.is_empty()) {
-			SolersAmbientCGPageBatch batch;
-			batch.jobs = jobs.ptrw();
-			batch.cancel_requested = p_cancel_requested;
-			WorkerThreadPool *pool = WorkerThreadPool::get_singleton();
-			if (pool) {
-				const WorkerThreadPool::GroupID group = pool->add_template_group_task(this, &SolersPluginAmbientCG::_catalog_fetch_page, (void *)&batch, jobs.size(), MIN(4, jobs.size()), false, "ambientCG catalog pages");
-				pool->wait_for_group_task_completion(group);
-			} else {
-				for (int i = 0; i < jobs.size(); i++) {
-					_catalog_fetch_page(i, &batch);
-				}
-			}
-			for (int i = 0; i < jobs.size(); i++) {
-				if (!(bool)jobs[i].response.get("ok", false)) {
-					const Dictionary error = jobs[i].response.get("error", Dictionary());
-					return error_result(String(error.get("code", String())) == "HTTP_CANCELLED" ? "TOOL_CANCELLED" : "CATALOG_SEARCH_FAILED", String(error.get("message", "ambientCG catalog page request failed.")));
-				}
-				pages.push_back(parse_json_body(jobs[i].response).get("assets", Array()));
-			}
-		}
-		catalog_assets.clear();
-		int popularity_rank = 0;
-		for (int page_index = 0; page_index < pages.size(); page_index++) {
-			const Array page = pages[page_index];
-			for (int i = 0; i < page.size(); i++) {
-				const Dictionary asset = page[i];
-				Dictionary item;
-				item["provider"] = "ambientcg";
-				item["asset_id"] = asset.get("id", String());
-				item["kind"] = kind;
-				item["display_name"] = asset.get("title", String());
-				item["tags"] = asset.get("tags", Array());
-				item["dimensions"] = asset.get("dimensions", Dictionary());
-				item["source_url"] = asset.get("url", String());
-				item["license"] = "CC0-1.0";
-				item["details_required"] = true;
-				item["_popularity_rank"] = popularity_rank++;
-				catalog_assets.push_back(item);
-			}
-		}
-		MutexLock lock(catalog_cache_mutex);
-		catalog_cache[kind] = catalog_assets.duplicate(true);
-	}
-	if (p_cancel_requested && p_cancel_requested->is_set()) {
-		return error_result("TOOL_CANCELLED", "Asset catalog search was cancelled.");
-	}
-	const Array ranked = rank_catalog_assets(catalog_assets, query);
+	const Dictionary root = parse_json_body(response);
+	const Array catalog_assets = root.get("assets", Array());
 	Array assets;
-	for (int i = offset; i < MIN(offset + limit, ranked.size()); i++) {
-		assets.push_back(ranked[i]);
+	for (int i = 0; i < catalog_assets.size(); i++) {
+		const Dictionary asset = catalog_assets[i];
+		Dictionary item;
+		item["provider"] = "ambientcg";
+		item["asset_id"] = asset.get("id", String());
+		item["kind"] = kind;
+		item["display_name"] = asset.get("title", String());
+		item["tags"] = asset.get("tags", Array());
+		item["dimensions"] = asset.get("dimensions", Dictionary());
+		item["source_url"] = asset.get("url", String());
+		const Dictionary thumbnails = asset.get("thumbnails", Dictionary());
+		item["preview_url"] = thumbnails.get("512-JPG-242424", thumbnails.get("512-PNG", String()));
+		item["license"] = "CC0-1.0";
+		item["details_required"] = true;
+		assets.push_back(item);
 	}
 	Dictionary data;
 	data["provider"] = "ambientcg";
@@ -250,7 +183,7 @@ Dictionary SolersPluginAmbientCG::catalog_search(const Dictionary &p_args, const
 	data["assets"] = assets;
 	data["count"] = assets.size();
 	data["offset"] = offset;
-	data["total"] = ranked.size();
+	data["total"] = root.get("totalResults", assets.size());
 	data["next"] = "Call asset.catalog.inspect with one exact provider/kind/asset_id before acquire.";
 	return ok_result(data);
 }

@@ -35,7 +35,6 @@
 class SolersPluginAmbientCG : public SolersPlugin {
 	GDCLASS(SolersPluginAmbientCG, SolersPlugin);
 
-	void _catalog_fetch_page(uint32_t p_index, void *p_batch);
 	static Dictionary _asset_metadata(const String &p_asset_id, const SafeFlag *p_cancel_requested);
 	static bool _extract_archive(const Ref<SolersPluginJob> &p_job, const PackedByteArray &p_archive, Array &r_files, String &r_error);
 

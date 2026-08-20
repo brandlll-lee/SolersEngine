@@ -55,6 +55,7 @@ static Mutex solers_plugin_manifest_mutex;
 
 Vector<SolersPlugin *> SolersPluginRegistry::plugins;
 Vector<SolersPlugin *> SolersPluginRegistry::builtins;
+SafeNumeric<uint64_t> SolersPluginRegistry::revision(1);
 
 void SolersPluginJob::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_asset_id"), &SolersPluginJob::get_asset_id);
@@ -208,10 +209,13 @@ void SolersPluginRegistry::register_plugin(SolersPlugin *p_plugin) {
 	}
 	ERR_FAIL_COND_MSG(get_plugin(id) != nullptr, vformat("A Solers plugin with id '%s' is already registered.", id));
 	plugins.push_back(p_plugin);
+	revision.increment();
 }
 
 void SolersPluginRegistry::unregister_plugin(SolersPlugin *p_plugin) {
-	plugins.erase(p_plugin);
+	if (plugins.erase(p_plugin)) {
+		revision.increment();
+	}
 }
 
 SolersPlugin *SolersPluginRegistry::get_plugin(const String &p_id) {

@@ -37,5 +37,7 @@ class SolersPluginElevenLabs : public SolersPlugin {
 
 public:
 	virtual Dictionary get_profile() const override;
+	virtual Dictionary get_generation_options_schema(const String &p_kind) const override;
+	virtual Dictionary prepare_generate(const String &p_kind, const Dictionary &p_args, Dictionary &r_manifest) const override;
 	virtual void run_job(const Ref<SolersPluginJob> &p_job) override;
 };

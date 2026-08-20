@@ -1992,7 +1992,7 @@ void SolersToolRegistry::_register_asset_tools() {
 	generate_schema["required"] = generate_required;
 	generate_schema["additionalProperties"] = false;
 	const CharString generate_json = JSON::stringify(generate_schema).utf8();
-	const CharString generate_description = vformat("Generate an asset through a registered Solers plugin (%s), stage provider output under user://solers_jobs, then import it directly into the requested res:// project folder. The returned job becomes terminal only after Godot verifies the imported resources. For Meshy Image-to-3D hero quality use provider_options model_type=standard and ai_model=meshy-6 (or latest), optionally should_remesh=false; use smart-topology/meshy-t2 only when an explicit low-poly budget is required. Keep prompts short when input_attachments are set.", generation_labels).utf8();
+	const CharString generate_description = vformat("Generate an asset through a registered Solers plugin (%s), stage its output under user://solers_jobs, and import it into res://. Read the selected plugin's provider_options schema; the job is terminal only after Godot verifies imported resources.", generation_labels).utf8();
 	_add("asset.generate", generate_description.get_data(), generate_json.get_data(), SolersPermissionManager::PERMISSION_EDIT_FILES, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DEFERRED, [svc](const SolersToolContext &ctx, const Dictionary &a) { return svc->generate_for_session(_solers_apply_plugin_mention(ctx, a, "supports_generation"), ctx.session_id); }, SolersToolExecution::MAIN_THREAD, [](const Dictionary &a) {
 				Array accesses;
 				Dictionary job;

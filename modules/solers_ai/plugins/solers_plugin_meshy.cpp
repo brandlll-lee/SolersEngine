@@ -107,8 +107,12 @@ static Dictionary _operation_def(const String &p_operation_id) {
 		Array task_id_fields;
 		task_id_fields.push_back("provider_task_id");
 		requirement["task_id_fields"] = task_id_fields;
-		properties["text_style_prompt"] = _option_schema("string", "Style Prompt");
-		required.push_back("text_style_prompt");
+		const Dictionary style_schema = JSON::parse_string(R"({"properties":{"text_style_prompt":{"type":"string","label":"Style Prompt"},"image_style_url":{"type":"string","label":"Style Image URL"},"multiview_image_urls":{"type":"array","label":"Style Image URLs","items":{"type":"string"},"minItems":1,"maxItems":4},"texture_resolution":{"type":"string","label":"Texture Resolution","enum":["2k","4k","8k"]}},"oneOf":[{"required":["text_style_prompt"]},{"required":["image_style_url"]},{"required":["multiview_image_urls"]}]})");
+		const Dictionary style_properties = style_schema.get("properties", Dictionary());
+		for (const Variant *key = style_properties.next(nullptr); key; key = style_properties.next(key)) {
+			properties[*key] = style_properties[*key];
+		}
+		schema["oneOf"] = style_schema.get("oneOf", Array());
 		result_traits["model_state"] = "static_model";
 	} else if (p_operation_id == "rig_humanoid") {
 		op["label"] = "Rig";
@@ -137,9 +141,9 @@ static Dictionary _operation_def(const String &p_operation_id) {
 		task_id_fields.push_back("rig_task_id");
 		task_id_fields.push_back("provider_task_id");
 		requirement["task_id_fields"] = task_id_fields;
-		Dictionary action_option = _option_schema("integer", "Action ID");
-		action_option["description"] = "Meshy official Animation Library action_id. Use animation_actions from asset.capabilities; do not guess.";
-		properties["action_id"] = action_option;
+		const Dictionary animation_properties = JSON::parse_string(R"({"action_id":{"type":"integer","label":"Action ID","description":"Meshy official Animation Library action_id. Use animation_actions from asset.capabilities; do not guess.","enum_source":"animation_actions","enum_value":"action_id","enum_label":"name"},"post_process":{"type":"object","label":"Post Process","properties":{"operation_type":{"type":"string","label":"Operation","enum":["change_fps"]},"fps":{"type":"integer","label":"Frame Rate","enum":[24,25,30,60]}},"required":["operation_type","fps"]}})");
+		properties["action_id"] = animation_properties["action_id"];
+		properties["post_process"] = animation_properties["post_process"];
 		required.push_back("action_id");
 		result_traits["model_state"] = "animated_model";
 		result_traits["rig"] = "humanoid";
@@ -368,7 +372,12 @@ Dictionary SolersPluginMeshy::get_generation_options_schema(const String &p_kind
 	if (p_kind != "3d") {
 		return Dictionary();
 	}
-	static const char *schema_json = R"({"model_type":{"type":"string","enum":["standard","smart-topology"],"description":"Mesh pipeline. Use standard (with meshy-6/latest) for hero/high-detail Image-to-3D matching Meshy website quality. Use smart-topology only for intentional game low-poly budgets (meshy-t2 caps at 15000 faces); it is not the high-detail path."},"ai_model":{"type":"string","enum":["meshy-5","meshy-6","latest","meshy-t1","meshy-t2"],"description":"Meshy model id. For hero quality use meshy-6 or latest with model_type standard. Smart Topology requires meshy-t1 or meshy-t2."},"pose_mode":{"type":"string","enum":["a-pose","t-pose"],"description":"Humanoid pose control when supported by the provider."},"should_texture":{"type":"boolean","description":"Generate textures. Meshy default is true."},"enable_pbr":{"type":"boolean","description":"Generate PBR maps. Requires should_texture=true."},"hd_texture":{"type":"boolean","description":"4K base-color textures. Requires model_type standard with ai_model meshy-6 or latest."},"texture_prompt":{"type":"string","description":"Guide Meshy texturing with text. Do not use together with texture_image_url."},"texture_image_url":{"type":"string","description":"Guide Meshy texturing with an image URL or data URI. Do not use together with texture_prompt."},"should_remesh":{"type":"boolean","description":"Enable Meshy remesh phase for standard generation. For hero/highest-precision Image-to-3D prefer false; set true when you intentionally want the remesh path. When input_attachments are set, keep the text prompt to one short sentence and put quality/pipeline knobs here -- not in the prompt."},"topology":{"type":"string","enum":["triangle","quad"],"description":"Mesh topology when remeshing."},"target_polycount":{"type":"integer","description":"Target polygon or face count. Smart Topology meshy-t2 accepts 100 to 15000."},"image_enhancement":{"type":"boolean","description":"Enhance the input image before generation. Requires model_type standard with ai_model meshy-6 or latest."},"remove_lighting":{"type":"boolean","description":"Remove baked highlights/shadows from textures. Requires model_type standard with ai_model meshy-6 or latest."},"moderation":{"type":"boolean","description":"Ask Meshy to screen input content before generation."},"auto_size":{"type":"boolean","description":"Ask Meshy to estimate physical size when supported."},"origin_at":{"type":"string","enum":["bottom","center"],"description":"Generated model origin placement when supported."},"save_pre_remeshed_model":{"type":"boolean","description":"Ask Meshy to keep the pre-remesh output when supported."},"alpha_thumbnail":{"type":"boolean","description":"Ask Meshy for transparent thumbnail when supported."},"target_formats":{"type":"array","items":{"type":"string","enum":["glb","obj","fbx","stl","usdz","3mf"]},"description":"Output formats to generate. Solers imports GLB best."}})";
+	static const char *schema_json = R"({
+		"model_type":{"type":"string","enum":["standard","smart-topology"],"default":"standard","label":"Mesh Pipeline"},"ai_model":{"type":"string","enum":["latest","meshy-7","meshy-t1","meshy-t2"],"default":"latest","label":"Model"},"pose_mode":{"type":"string","enum":["a-pose","t-pose"],"label":"Pose"},"ultra_mode":{"type":"boolean","label":"Ultra Detail","description":"Use Meshy 7 ultra detail for Text-to-3D preview."},
+		"should_texture":{"type":"boolean","default":true,"label":"Generate Textures"},"enable_pbr":{"type":"boolean","default":true,"label":"PBR Maps"},"texture_resolution":{"type":"string","enum":["2k","4k","8k"],"default":"4k","label":"Texture Resolution"},"texture_prompt":{"type":"string","label":"Texture Prompt"},"texture_image_url":{"type":"string","label":"Texture Image URL"},"texture_image_urls":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":4,"label":"Texture Image URLs"},
+		"should_remesh":{"type":"boolean","label":"Remesh"},"topology":{"type":"string","enum":["triangle","quad"],"label":"Topology"},"target_polycount":{"type":"integer","minimum":1,"label":"Target Polygons"},"image_enhancement":{"type":"boolean","label":"Enhance Reference"},"remove_lighting":{"type":"boolean","label":"Remove Lighting"},"moderation":{"type":"boolean","label":"Moderation"},"auto_size":{"type":"boolean","label":"Estimate Size"},"origin_at":{"type":"string","enum":["bottom","center"],"label":"Origin"},
+		"save_pre_remeshed_model":{"type":"boolean","label":"Keep Source Mesh"},"alpha_thumbnail":{"type":"boolean","label":"Transparent Preview"},"target_formats":{"type":"array","items":{"type":"string","enum":["glb","obj","fbx","stl","usdz","3mf"]},"default":["glb"],"label":"Output Formats"}
+	})";
 	const Variant parsed = JSON::parse_string(schema_json);
 	return parsed.get_type() == Variant::DICTIONARY ? (Dictionary)parsed : Dictionary();
 }
@@ -468,6 +477,9 @@ static bool _validate_positive_number_option(const Dictionary &p_options, const 
 Dictionary SolersPluginMeshy::prepare_generate(const String &p_kind, const Dictionary &p_args, Dictionary &r_manifest) const {
 	Dictionary provider_options = Dictionary(r_manifest.get("provider_options", Dictionary())).duplicate(true);
 	const Array source_attachments = r_manifest.get("source_attachments", Array());
+	if (String(p_args.get("prompt", String())).strip_edges().is_empty() && source_attachments.is_empty()) {
+		return error_data("INVALID_ARGUMENT", "Meshy generation requires a prompt or reference image.");
+	}
 	if (source_attachments.size() > 4) {
 		return error_data("INVALID_ARGUMENT", "Meshy accepts at most four reference images.");
 	}
@@ -484,8 +496,11 @@ Dictionary SolersPluginMeshy::prepare_generate(const String &p_kind, const Dicti
 			return error_data("INVALID_ARGUMENT", "Smart Topology ai_model must be meshy-t1 or meshy-t2.");
 		}
 		provider_options["ai_model"] = ai_model.is_empty() ? String("meshy-t2") : ai_model;
-	} else if (!ai_model.is_empty() && ai_model != "meshy-5" && ai_model != "meshy-6" && ai_model != "latest") {
-		return error_data("INVALID_ARGUMENT", "Standard Meshy generation ai_model must be meshy-5, meshy-6, or latest.");
+	} else {
+		if (!ai_model.is_empty() && ai_model != "meshy-7" && ai_model != "latest") {
+			return error_data("INVALID_ARGUMENT", "Standard Meshy generation ai_model must be meshy-7 or latest.");
+		}
+		provider_options["ai_model"] = ai_model.is_empty() ? String("latest") : ai_model;
 	}
 	if (provider_options.has("pose_mode")) {
 		const String pose_mode = String(provider_options.get("pose_mode", String())).strip_edges().to_lower();
@@ -495,22 +510,39 @@ Dictionary SolersPluginMeshy::prepare_generate(const String &p_kind, const Dicti
 		provider_options["pose_mode"] = pose_mode;
 	}
 	String option_error;
-	const char *const bool_options[] = { "should_texture", "enable_pbr", "hd_texture", "should_remesh", "image_enhancement", "remove_lighting", "moderation", "auto_size", "save_pre_remeshed_model", "alpha_thumbnail" };
+	const char *const bool_options[] = { "should_texture", "enable_pbr", "ultra_mode", "should_remesh", "image_enhancement", "remove_lighting", "moderation", "auto_size", "save_pre_remeshed_model", "alpha_thumbnail" };
 	for (const char *option : bool_options) {
 		if (!_validate_bool_option(provider_options, option, option_error)) {
 			return error_data("INVALID_ARGUMENT", option_error);
 		}
 	}
-	// Meshy documents these as meshy-6/latest (standard) only. After the
-	// smart-topology ai_model normalize above, t1/t2 never qualify.
 	const String resolved_ai_model = String(provider_options.get("ai_model", String())).to_lower();
 	const bool enhancement_pipeline_ok = model_type == "standard" &&
-			(resolved_ai_model.is_empty() || resolved_ai_model == "meshy-6" || resolved_ai_model == "latest");
-	const char *const enhancement_options[] = { "image_enhancement", "remove_lighting", "hd_texture" };
+			(resolved_ai_model == "meshy-7" || resolved_ai_model == "latest");
+	const char *const enhancement_options[] = { "image_enhancement", "remove_lighting" };
 	for (const char *option : enhancement_options) {
 		if ((bool)provider_options.get(option, false) && !enhancement_pipeline_ok) {
 			return error_data("INVALID_ARGUMENT",
-					vformat("%s requires model_type standard with ai_model meshy-6 or latest", option));
+					vformat("%s requires model_type standard with ai_model meshy-7 or latest", option));
+		}
+	}
+	if ((bool)provider_options.get("ultra_mode", false) && (!enhancement_pipeline_ok || !source_attachments.is_empty())) {
+		return error_data("INVALID_ARGUMENT", "ultra_mode requires Meshy 7 Text-to-3D preview generation.");
+	}
+	if (provider_options.has("texture_resolution")) {
+		const String resolution = String(provider_options["texture_resolution"]).to_lower();
+		if (resolution != "2k" && resolution != "4k" && resolution != "8k") {
+			return error_data("INVALID_ARGUMENT", "texture_resolution must be 2k, 4k, or 8k.");
+		}
+		provider_options["texture_resolution"] = resolution;
+	}
+	if (provider_options.has("texture_image_urls")) {
+		if (provider_options["texture_image_urls"].get_type() != Variant::ARRAY) {
+			return error_data("INVALID_ARGUMENT", "texture_image_urls must be an array.");
+		}
+		const int image_count = Array(provider_options["texture_image_urls"]).size();
+		if (image_count < 1 || image_count > 4) {
+			return error_data("INVALID_ARGUMENT", "texture_image_urls must contain one to four images.");
 		}
 	}
 	if (model_type == "smart-topology" && provider_options.has("topology")) {
@@ -539,8 +571,11 @@ Dictionary SolersPluginMeshy::prepare_generate(const String &p_kind, const Dicti
 	if ((bool)provider_options.get("enable_pbr", false) && provider_options.has("should_texture") && !(bool)provider_options.get("should_texture", true)) {
 		return error_data("INVALID_ARGUMENT", "enable_pbr requires should_texture=true.");
 	}
-	if (provider_options.has("texture_prompt") && provider_options.has("texture_image_url")) {
-		return error_data("INVALID_ARGUMENT", "Use texture_prompt or texture_image_url, not both.");
+	int texture_guides = provider_options.has("texture_prompt") ? 1 : 0;
+	texture_guides += provider_options.has("texture_image_url") ? 1 : 0;
+	texture_guides += provider_options.has("texture_image_urls") ? 1 : 0;
+	if (texture_guides > 1) {
+		return error_data("INVALID_ARGUMENT", "Use one texture prompt, one texture image, or one multiview texture image set.");
 	}
 	if (provider_options.has("target_polycount") && model_type != "smart-topology") {
 		if (provider_options.has("should_remesh") && !(bool)provider_options.get("should_remesh", false)) {
@@ -574,6 +609,16 @@ Dictionary SolersPluginMeshy::prepare_operation(const Dictionary &p_operation, c
 		const int64_t action_id = (int64_t)r_provider_options.get("action_id", -1);
 		if (!animation_action_exists(action_id)) {
 			return error_data("INVALID_ACTION_ID", "action_id must come from Meshy's official animation_actions catalog returned by asset.capabilities.");
+		}
+		if (r_provider_options.has("post_process")) {
+			if (r_provider_options["post_process"].get_type() != Variant::DICTIONARY) {
+				return error_data("INVALID_ARGUMENT", "Animation post_process must be an object.");
+			}
+			const Dictionary post_process = r_provider_options["post_process"];
+			const int fps = post_process.get("fps", 0);
+			if (String(post_process.get("operation_type", String())) != "change_fps" || (fps != 24 && fps != 25 && fps != 30 && fps != 60)) {
+				return error_data("INVALID_ARGUMENT", "Animation post_process must be change_fps with 24, 25, 30, or 60 fps.");
+			}
 		}
 	}
 	r_provider_options.erase("humanoid_confirmed");
@@ -611,6 +656,15 @@ Dictionary SolersPluginMeshy::prepare_operation(const Dictionary &p_operation, c
 			return error_data("INVALID_ARGUMENT", option_error.is_empty() ? String("target_polycount must be positive.") : option_error);
 		}
 	} else if (operation_id == "retexture") {
+		int styles = r_provider_options.has("text_style_prompt") ? 1 : 0;
+		styles += r_provider_options.has("image_style_url") ? 1 : 0;
+		styles += r_provider_options.has("multiview_image_urls") ? 1 : 0;
+		if (styles != 1) {
+			return error_data("INVALID_ARGUMENT", "Retexture requires exactly one text, image, or multiview style input.");
+		}
+		if (r_provider_options.has("multiview_image_urls") && (r_provider_options["multiview_image_urls"].get_type() != Variant::ARRAY || Array(r_provider_options["multiview_image_urls"]).is_empty() || Array(r_provider_options["multiview_image_urls"]).size() > 4)) {
+			return error_data("INVALID_ARGUMENT", "multiview_image_urls must contain one to four images.");
+		}
 		if (!r_provider_options.has("enable_original_uv")) {
 			r_provider_options["enable_original_uv"] = true;
 		}
@@ -729,14 +783,14 @@ static Dictionary _text_preview_options(const Dictionary &p_options) {
 	const char *const names[] = {
 		"model_type", "ai_model", "should_remesh", "topology", "target_polycount",
 		"decimation_mode", "pose_mode", "moderation", "target_formats", "alpha_thumbnail",
-		"auto_size", "origin_at"
+		"auto_size", "origin_at", "ultra_mode"
 	};
 	return _select_options(p_options, names, sizeof(names) / sizeof(names[0]));
 }
 
 static Dictionary _text_refine_options(const Dictionary &p_options) {
 	const char *const names[] = {
-		"enable_pbr", "hd_texture", "texture_prompt", "texture_image_url", "ai_model",
+		"enable_pbr", "texture_resolution", "texture_prompt", "texture_image_url", "texture_image_urls", "ai_model",
 		"moderation", "remove_lighting", "target_formats", "alpha_thumbnail", "auto_size", "origin_at"
 	};
 	return _select_options(p_options, names, sizeof(names) / sizeof(names[0]));
@@ -1019,7 +1073,7 @@ void SolersPluginMeshy::run_job(const Ref<SolersPluginJob> &p_job) {
 			body["model_type"] = "standard";
 		}
 		if (!body.has("ai_model")) {
-			body["ai_model"] = "meshy-6";
+			body["ai_model"] = "latest";
 		}
 		if (!body.has("target_formats")) {
 			Array formats;
@@ -1062,7 +1116,7 @@ void SolersPluginMeshy::run_job(const Ref<SolersPluginJob> &p_job) {
 			preview_body["model_type"] = "standard";
 		}
 		if (!preview_body.has("ai_model")) {
-			preview_body["ai_model"] = "meshy-6";
+			preview_body["ai_model"] = "latest";
 		}
 		if (!preview_body.has("target_formats")) {
 			Array formats;

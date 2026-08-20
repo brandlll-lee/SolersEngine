@@ -686,7 +686,9 @@ void SolersAssetService::_set_task_state(Task *p_task, const Dictionary &p_state
 		p_task->state = p_state.duplicate(true);
 	}
 	String error;
-	SolersPlugin::write_json_atomic(_manifest_path(p_task->asset_id), p_state, error);
+	if (SolersPlugin::write_json_atomic(_manifest_path(p_task->asset_id), p_state, error) && p_task->service) {
+		p_task->service->revision.increment();
+	}
 }
 
 Dictionary SolersAssetService::_task_state(Task *p_task) {
@@ -1168,9 +1170,6 @@ Dictionary SolersAssetService::_generate(const Dictionary &p_args, const String 
 	const Array source_attachments = _solers_selected_attachments(p_args.get("_attachments", Array()), input_attachment_ids);
 	if (!input_attachment_ids.is_empty() && source_attachments.size() != input_attachment_ids.size()) {
 		return _error("INVALID_ATTACHMENT_REFERENCE", "One or more image attachment ids could not be resolved in the current conversation.");
-	}
-	if (prompt.is_empty() && source_attachments.is_empty()) {
-		return _error("INVALID_ARGUMENT", "prompt is required.");
 	}
 	Dictionary provider_options = p_args.get("provider_options", Dictionary());
 	const String asset_id = vformat("%s-%s_%s", itos((int64_t)Time::get_singleton()->get_unix_time_from_system()), String::num_uint64(OS::get_singleton()->get_ticks_usec()), (kind + prompt + provider).md5_text().substr(0, 10));
@@ -2137,6 +2136,28 @@ Dictionary SolersAssetService::status(const Dictionary &p_args) const {
 		return error;
 	}
 	return _ok(manifest);
+}
+
+Array SolersAssetService::list_assets() const {
+	Array assets;
+	PackedStringArray ids = DirAccess::get_directories_at(_asset_root());
+	ids.sort();
+	for (int i = ids.size() - 1; i >= 0; i--) {
+		Dictionary manifest = _manifest_for_asset(ids[i]);
+		if (!manifest.is_empty()) {
+			assets.push_back(manifest);
+		}
+	}
+	return assets;
+}
+
+bool SolersAssetService::is_provider_configured(const String &p_kind, const String &p_provider) const {
+	const Dictionary config = _provider_config(p_kind, p_provider);
+	if (config.is_empty()) {
+		return false;
+	}
+	const Dictionary profile = config.get("profile", Dictionary());
+	return !(bool)profile.get("requires_api_key", false) || !String(config.get("api_key", String())).is_empty();
 }
 
 Dictionary SolersAssetService::start_project_import(const Dictionary &p_args) {

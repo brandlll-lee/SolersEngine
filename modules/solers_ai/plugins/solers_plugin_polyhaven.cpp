@@ -360,6 +360,8 @@ Dictionary SolersPluginPolyHaven::catalog_search(const Dictionary &p_args, const
 		item["description"] = asset.get("description", String());
 		item["tags"] = asset.get("tags", Array());
 		item["categories"] = asset.get("categories", Array());
+		item["category_id"] = asset.get("category_id", String());
+		item["attributes"] = asset.get("attributes", Dictionary());
 		item["dimensions"] = asset.get("dimensions", Array());
 		item["max_resolution"] = asset.get("max_resolution", Array());
 		item["polycount"] = asset.get("polycount", 0);
@@ -429,6 +431,8 @@ Dictionary SolersPluginPolyHaven::catalog_inspect(const Dictionary &p_args, cons
 	item["description"] = asset.get("description", String());
 	item["tags"] = asset.get("tags", Array());
 	item["categories"] = asset.get("categories", Array());
+	item["category_id"] = asset.get("category_id", String());
+	item["attributes"] = asset.get("attributes", Dictionary());
 	item["dimensions"] = asset.get("dimensions", Array());
 	item["polycount"] = asset.get("polycount", 0);
 	item["texel_density"] = asset.get("texel_density", 0);

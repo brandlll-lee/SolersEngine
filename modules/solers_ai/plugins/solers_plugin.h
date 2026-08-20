@@ -161,12 +161,14 @@ public:
 class SolersPluginRegistry {
 	static Vector<SolersPlugin *> plugins;
 	static Vector<SolersPlugin *> builtins;
+	static SafeNumeric<uint64_t> revision;
 
 public:
 	static void register_plugin(SolersPlugin *p_plugin);
 	static void unregister_plugin(SolersPlugin *p_plugin);
 	static SolersPlugin *get_plugin(const String &p_id);
 	static const Vector<SolersPlugin *> &get_plugins();
+	static uint64_t get_revision() { return revision.get(); }
 	// The default generator for a kind: the EditorSettings override when it
 	// names a registered connector, otherwise the first registered connector
 	// that generates this kind.
