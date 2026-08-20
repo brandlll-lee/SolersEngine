@@ -48,6 +48,10 @@ public:
 		Color hairline; // Cursor-flat pane/title edges (light on deep bg).
 		Color text;
 		Color text_dim;
+		Color primary;
+		Color primary_hover;
+		Color primary_pressed;
+		Color on_primary;
 
 		Color home_tile; // PM home action tiles.
 		Color home_tile_hover;
@@ -61,7 +65,8 @@ public:
 
 	static Tokens make_tokens();
 
-	// Sparse subtree theme: explicit Solers fonts, ambient Godot styles.
+	// Complete Solers subtree theme. Godot owns control behavior; this theme
+	// owns the visual contract without changing the editor's global theme.
 	static Ref<Theme> create();
 
 	// Cursor-flat pane edges for ANY Solers-themed tree (Editor + PM + Dock):

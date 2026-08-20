@@ -84,6 +84,17 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	CHECK(theme->get_color(SceneStringName(font_color), SNAME("SolersSessionTitle")).a > theme->get_color(SceneStringName(font_color), SNAME("SolersSessionMeta")).a);
 	CHECK(theme->get_constant(SNAME("separation"), SNAME("HSplitContainer")) > 0);
 	CHECK(theme->get_stylebox(SNAME("split_bar_background"), SNAME("HSplitContainer")).is_valid());
+	CHECK(theme->has_stylebox(SNAME("panel"), SNAME("PanelContainer")));
+	CHECK(theme->has_stylebox(SNAME("normal"), SNAME("Button")));
+	CHECK(theme->has_stylebox(SNAME("normal"), SNAME("OptionButton")));
+	CHECK(theme->has_stylebox(SNAME("normal"), SNAME("LineEdit")));
+	CHECK(theme->has_stylebox(SNAME("normal"), SNAME("TextEdit")));
+	CHECK(theme->has_stylebox(SNAME("panel"), SNAME("ItemList")));
+	CHECK(theme->has_stylebox(SNAME("panel"), SNAME("TabContainer")));
+	CHECK(theme->has_stylebox(SNAME("background"), SNAME("ProgressBar")));
+	CHECK(theme->has_stylebox(SNAME("normal"), SNAME("CheckBox")));
+	CHECK(theme->get_type_variation_base(SNAME("SolersPrimaryButton")) == SNAME("Button"));
+	CHECK(theme->has_stylebox(SNAME("normal"), SNAME("SolersPrimaryButton")));
 
 	Control *host = memnew(Control);
 	Label *ambient = memnew(Label("Godot"));

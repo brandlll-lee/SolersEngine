@@ -1290,7 +1290,7 @@ SolersPMAIView::SolersPMAIView() {
 	oauth_actions->add_theme_constant_override("separation", 8 * EDSCALE);
 	oauth_box->add_child(oauth_actions);
 	oauth_connect_btn = memnew(Button(TTR("Connect Account")));
-	oauth_connect_btn->set_theme_type_variation("PMPrimaryButton");
+	oauth_connect_btn->set_theme_type_variation("SolersPrimaryButton");
 	oauth_connect_btn->connect(SceneStringName(pressed), callable_mp(this, &SolersPMAIView::_on_auth_connect));
 	oauth_actions->add_child(oauth_connect_btn);
 	oauth_cancel_btn = memnew(Button(TTR("Cancel")));
@@ -1328,7 +1328,7 @@ SolersPMAIView::SolersPMAIView() {
 
 	save_btn = memnew(Button);
 	save_btn->set_text(TTR("Save Configuration"));
-	save_btn->set_theme_type_variation("PMPrimaryButton");
+	save_btn->set_theme_type_variation("SolersPrimaryButton");
 	save_btn->connect(SceneStringName(pressed), callable_mp(this, &SolersPMAIView::_save));
 	actions->add_child(save_btn);
 

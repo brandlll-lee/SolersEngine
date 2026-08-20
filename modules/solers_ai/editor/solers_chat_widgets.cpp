@@ -50,6 +50,7 @@
 
 #include "modules/modules_enabled.gen.h"
 #include "modules/solers_ai/core/solers_trace.h"
+#include "modules/solers_ai/editor/solers_ui_theme.h"
 #include "modules/solers_ai/generated/solers_svg_assets.gen.h"
 
 #ifdef MODULE_SVG_ENABLED
@@ -149,10 +150,7 @@ static const Color SOLERS_GLYPH_IDLE = Color(0.64, 0.65, 0.69);
 static const Color SOLERS_GLYPH_HOVER = Color(0.94, 0.95, 0.97);
 static const Color SOLERS_TEXT_STRONG = Color(0.90, 0.91, 0.94);
 static const Color SOLERS_TEXT_MUTED = Color(0.57, 0.58, 0.62);
-static const Color SOLERS_PRIMARY_FILL = Color(0.94, 0.94, 0.92);
-static const Color SOLERS_PRIMARY_FILL_HOVER = Color(1.0, 1.0, 0.98);
-static const Color SOLERS_PRIMARY_FILL_PRESS = Color(0.82, 0.82, 0.80);
-static const Color SOLERS_PRIMARY_GLYPH = Color(0.055, 0.055, 0.052);
+static const SolersUITheme::Tokens SOLERS_UI_TOKENS = SolersUITheme::make_tokens();
 
 static void solers_draw_wash(Control *p_control, const Rect2 &p_rect, float p_alpha, float p_radius) {
 	if (p_alpha <= 0.001f) {
@@ -289,8 +287,8 @@ void SolersGlyphButton::_notification(int p_what) {
 					fill = Color(0.245, 0.245, 0.252);
 					glyph_color = Color(0.70, 0.70, 0.70, 0.62f);
 				} else {
-					fill = pressing ? SOLERS_PRIMARY_FILL_PRESS : SOLERS_PRIMARY_FILL.lerp(SOLERS_PRIMARY_FILL_HOVER, anim);
-					glyph_color = SOLERS_PRIMARY_GLYPH;
+					fill = pressing ? SOLERS_UI_TOKENS.primary_pressed : SOLERS_UI_TOKENS.primary.lerp(SOLERS_UI_TOKENS.primary_hover, anim);
+					glyph_color = SOLERS_UI_TOKENS.on_primary;
 				}
 				const float radius = MIN(r.size.x, r.size.y) * 0.5f;
 				draw_circle(r.get_center(), radius, fill, true, -1.0f, true);

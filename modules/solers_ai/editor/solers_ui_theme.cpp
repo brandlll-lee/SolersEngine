@@ -243,6 +243,93 @@ Ref<Theme> SolersUITheme::create() {
 	const Tokens tokens = make_tokens();
 	theme->set_color(SceneStringName(font_color), "SolersSessionTitle", tokens.text);
 	theme->set_color(SceneStringName(font_color), "SolersSessionMeta", tokens.text_dim);
+
+	const int control_radius = int(tokens.radius_control * EDSCALE);
+	const int card_radius = int(tokens.radius_list_thumb * EDSCALE);
+	const int border_width = MAX(1, int(EDSCALE));
+	const float control_margin = 8.0f * EDSCALE;
+	const Ref<StyleBoxFlat> control_normal = _solers_flat(tokens.card, control_radius, tokens.border, border_width, control_margin);
+	const Ref<StyleBoxFlat> control_hover = _solers_flat(tokens.card_hover, control_radius, tokens.border, border_width, control_margin);
+	const Ref<StyleBoxFlat> control_pressed = _solers_flat(tokens.home_tile_pressed, control_radius, tokens.border_strong, border_width, control_margin);
+	const Ref<StyleBoxFlat> control_disabled = _solers_flat(tokens.surface, control_radius, tokens.border, border_width, control_margin);
+	const Ref<StyleBoxFlat> control_focus = _solers_flat(Color(0, 0, 0, 0), control_radius, tokens.hairline, border_width, control_margin);
+
+	theme->set_stylebox(SceneStringName(panel), "PanelContainer", _solers_flat(tokens.bg, 0, Color(), 0, 0));
+	for (const StringName &type : { SNAME("Button"), SNAME("OptionButton") }) {
+		theme->set_stylebox(CoreStringName(normal), type, control_normal);
+		theme->set_stylebox(SceneStringName(hover), type, control_hover);
+		theme->set_stylebox(SceneStringName(pressed), type, control_pressed);
+		theme->set_stylebox(SNAME("disabled"), type, control_disabled);
+		theme->set_stylebox(SNAME("focus"), type, control_focus);
+		theme->set_color(SceneStringName(font_color), type, tokens.text);
+		theme->set_color(SNAME("font_hover_color"), type, tokens.text);
+		theme->set_color(SNAME("font_pressed_color"), type, tokens.text);
+		theme->set_color(SNAME("font_focus_color"), type, tokens.text);
+		theme->set_color(SNAME("font_disabled_color"), type, tokens.text_dim);
+	}
+	for (const StringName &type : { SNAME("LineEdit"), SNAME("TextEdit") }) {
+		theme->set_stylebox(CoreStringName(normal), type, control_normal);
+		theme->set_stylebox(SNAME("focus"), type, control_focus);
+		theme->set_stylebox(SNAME("read_only"), type, control_disabled);
+		theme->set_color(SceneStringName(font_color), type, tokens.text);
+		theme->set_color(SNAME("font_placeholder_color"), type, tokens.text_dim);
+		theme->set_color(SNAME("caret_color"), type, tokens.text);
+		theme->set_color(SNAME("selection_color"), type, tokens.card_selected);
+	}
+
+	theme->set_stylebox(SceneStringName(panel), "ItemList", _solers_flat(tokens.surface, 0, Color(), 0, 8 * EDSCALE));
+	theme->set_stylebox(SNAME("focus"), "ItemList", control_focus);
+	theme->set_stylebox(SNAME("hovered"), "ItemList", _solers_flat(tokens.card_hover, card_radius, Color(), 0, 6 * EDSCALE));
+	for (const StringName &name : { SNAME("selected"), SNAME("selected_focus"), SNAME("hovered_selected"), SNAME("hovered_selected_focus") }) {
+		theme->set_stylebox(name, "ItemList", _solers_flat(tokens.card_selected, card_radius, Color(), 0, 6 * EDSCALE));
+	}
+	theme->set_stylebox(SNAME("cursor"), "ItemList", control_focus);
+	theme->set_stylebox(SNAME("cursor_unfocused"), "ItemList", control_focus);
+	theme->set_color(SceneStringName(font_color), "ItemList", tokens.text_dim);
+	theme->set_color(SNAME("font_hovered_color"), "ItemList", tokens.text);
+	theme->set_color(SNAME("font_selected_color"), "ItemList", tokens.text);
+	theme->set_color(SNAME("font_hovered_selected_color"), "ItemList", tokens.text);
+	theme->set_constant(SNAME("h_separation"), "ItemList", int(8 * EDSCALE));
+	theme->set_constant(SNAME("v_separation"), "ItemList", int(8 * EDSCALE));
+
+	const Ref<StyleBoxFlat> tab_selected = _solers_flat(tokens.card, control_radius, Color(), 0, 8 * EDSCALE);
+	tab_selected->set_border_width(SIDE_BOTTOM, border_width);
+	tab_selected->set_border_color(tokens.text);
+	const Ref<StyleBoxFlat> tab_unselected = _solers_flat(tokens.surface, control_radius, Color(), 0, 8 * EDSCALE);
+	const Ref<StyleBoxFlat> tab_hovered = _solers_flat(tokens.card_hover, control_radius, Color(), 0, 8 * EDSCALE);
+	for (const StringName &type : { SNAME("TabContainer"), SNAME("TabBar") }) {
+		theme->set_stylebox(SNAME("tab_selected"), type, tab_selected);
+		theme->set_stylebox(SNAME("tab_unselected"), type, tab_unselected);
+		theme->set_stylebox(SNAME("tab_hovered"), type, tab_hovered);
+		theme->set_stylebox(SNAME("tab_disabled"), type, tab_unselected);
+		theme->set_stylebox(SNAME("tab_focus"), type, control_focus);
+		theme->set_color(SNAME("font_selected_color"), type, tokens.text);
+		theme->set_color(SNAME("font_hovered_color"), type, tokens.text);
+		theme->set_color(SNAME("font_unselected_color"), type, tokens.text_dim);
+	}
+	theme->set_stylebox(SceneStringName(panel), "TabContainer", _solers_flat(tokens.surface, 0, Color(), 0, 0));
+	theme->set_stylebox(SNAME("tabbar_background"), "TabContainer", _solers_flat(tokens.surface, 0, Color(), 0, 0));
+
+	theme->set_stylebox(SNAME("background"), "ProgressBar", _solers_flat(tokens.card, card_radius, Color(), 0, 2 * EDSCALE));
+	theme->set_stylebox(SNAME("fill"), "ProgressBar", _solers_flat(tokens.text, card_radius, Color(), 0, 2 * EDSCALE));
+	theme->set_color(SceneStringName(font_color), "ProgressBar", tokens.on_primary);
+	for (const StringName &name : { CoreStringName(normal), SceneStringName(hover), SceneStringName(pressed), SNAME("hover_pressed"), SNAME("disabled") }) {
+		theme->set_stylebox(name, "CheckBox", _solers_flat(Color(0, 0, 0, 0), 0, Color(), 0, 2 * EDSCALE));
+	}
+	theme->set_stylebox(SNAME("focus"), "CheckBox", control_focus);
+	theme->set_color(SceneStringName(font_color), "CheckBox", tokens.text);
+	theme->set_color(SNAME("font_hover_color"), "CheckBox", tokens.text);
+	theme->set_color(SNAME("font_pressed_color"), "CheckBox", tokens.text);
+
+	theme->set_type_variation(SNAME("SolersPrimaryButton"), SNAME("Button"));
+	theme->set_stylebox(CoreStringName(normal), "SolersPrimaryButton", _solers_flat(tokens.primary, control_radius, Color(), 0, 10 * EDSCALE));
+	theme->set_stylebox(SceneStringName(hover), "SolersPrimaryButton", _solers_flat(tokens.primary_hover, control_radius, Color(), 0, 10 * EDSCALE));
+	theme->set_stylebox(SceneStringName(pressed), "SolersPrimaryButton", _solers_flat(tokens.primary_pressed, control_radius, Color(), 0, 10 * EDSCALE));
+	theme->set_stylebox(SNAME("disabled"), "SolersPrimaryButton", _solers_flat(tokens.primary_pressed, control_radius, Color(), 0, 10 * EDSCALE));
+	theme->set_stylebox(SNAME("focus"), "SolersPrimaryButton", control_focus);
+	for (const StringName &name : { SceneStringName(font_color), SNAME("font_hover_color"), SNAME("font_pressed_color"), SNAME("font_focus_color") }) {
+		theme->set_color(name, "SolersPrimaryButton", tokens.on_primary);
+	}
 	apply_chrome_edges(theme, tokens.hairline);
 	return theme;
 }
@@ -269,6 +356,10 @@ SolersUITheme::Tokens SolersUITheme::make_tokens() {
 	t.hairline = Color(0.95f, 0.95f, 0.97f, 0.12f);
 	t.text = Color(0.886f, 0.890f, 0.902f); // ~#E2E3E6 — primary text.
 	t.text_dim = Color(0.886f, 0.890f, 0.902f, 0.55f); // Muted text.
+	t.primary = Color(0.94f, 0.94f, 0.92f);
+	t.primary_hover = Color(1.0f, 1.0f, 0.98f);
+	t.primary_pressed = Color(0.82f, 0.82f, 0.80f);
+	t.on_primary = Color(0.055f, 0.055f, 0.052f);
 
 	t.home_tile = Color(0.090f, 0.090f, 0.096f); // ~#171718
 	t.home_tile_hover = Color(0.125f, 0.125f, 0.132f);
