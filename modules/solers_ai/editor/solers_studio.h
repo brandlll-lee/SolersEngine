@@ -1,0 +1,115 @@
+/**************************************************************************/
+/*  solers_studio.h                                                       */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
+#pragma once
+#include "core/os/thread.h"
+#include "core/templates/safe_refcount.h"
+#include "scene/gui/panel_container.h"
+class Button;
+class FileDialog;
+class ItemList;
+class Label;
+class LineEdit;
+class OptionButton;
+class ProgressBar;
+class SolersAssetService;
+class SolersDock;
+class SolersSchemaForm;
+class TextEdit;
+class Texture2D;
+class TextureRect;
+class VBoxContainer;
+class SolersStudio : public PanelContainer {
+	GDCLASS(SolersStudio, PanelContainer);
+
+	SolersAssetService *assets = nullptr;
+	SolersDock *dock = nullptr;
+	uint64_t plugin_revision = 0;
+	uint64_t asset_revision = 0;
+	uint64_t preview_generation = 0;
+	OptionButton *kind_option = nullptr, *generation_provider = nullptr;
+	TextEdit *prompt_edit = nullptr;
+	Button *reference_button = nullptr, *generate_button = nullptr;
+	SolersSchemaForm *generation_form = nullptr;
+	FileDialog *reference_dialog = nullptr;
+	PackedStringArray reference_paths;
+	TextureRect *preview = nullptr;
+	Label *asset_title = nullptr, *asset_status = nullptr;
+	ProgressBar *asset_progress = nullptr;
+	VBoxContainer *operation_panel = nullptr;
+	OptionButton *operation_option = nullptr;
+	SolersSchemaForm *operation_form = nullptr;
+	Button *operation_button = nullptr, *acquire_button = nullptr, *place_button = nullptr;
+	OptionButton *catalog_variant = nullptr;
+	OptionButton *catalog_provider = nullptr;
+	LineEdit *catalog_query = nullptr;
+	ItemList *catalog_list = nullptr, *project_list = nullptr;
+	Label *attribution_label = nullptr;
+	Dictionary selected_manifest;
+	Dictionary selected_catalog;
+	Dictionary capability_data;
+	Thread catalog_thread;
+	SafeFlag catalog_cancel;
+	SafeFlag catalog_done;
+	String catalog_action;
+	Dictionary catalog_args;
+	Dictionary catalog_result;
+	static void _catalog_thread_func(void *p_userdata);
+	void _start_catalog_work(const String &p_action, const Dictionary &p_args);
+	void _finish_catalog_work();
+	void _refresh_registry();
+	void _refresh_providers();
+	void _refresh_generation_schema();
+	void _refresh_project_assets();
+	void _show_manifest(const Dictionary &p_manifest);
+	void _show_result(const Dictionary &p_result, const String &p_success);
+	String _current_kind() const;
+	String _selected_provider(const OptionButton *p_options) const;
+	String _manifest_resource_path(const Dictionary &p_manifest) const;
+	void _catalog_provider_selected(int p_index);
+	void _reference_files_selected(const PackedStringArray &p_files);
+	void _generate_pressed();
+	void _catalog_search_pressed();
+	void _catalog_selected(int p_index);
+	void _project_selected(int p_index);
+	void _operation_selected(int p_index);
+	void _operation_pressed();
+	void _acquire_pressed();
+	void _place_pressed();
+	void _preview_ready(const String &p_path, const Ref<Texture2D> &p_preview, const Ref<Texture2D> &p_small_preview, uint64_t p_generation);
+
+protected:
+	static void _bind_methods() {}
+	void _notification(int p_what);
+
+public:
+	SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock);
+	~SolersStudio();
+};

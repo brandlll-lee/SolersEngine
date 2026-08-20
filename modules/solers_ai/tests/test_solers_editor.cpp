@@ -28,6 +28,7 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
+#include "core/io/json.h"
 #include "core/object/message_queue.h"
 #include "core/string/translation_server.h"
 #include "editor/settings/editor_settings.h"
@@ -43,6 +44,7 @@
 #include "modules/solers_ai/editor/solers_chat_cells.h"
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
 #include "modules/solers_ai/editor/solers_editor_plugin.h"
+#include "modules/solers_ai/editor/solers_schema_form.h"
 #include "modules/solers_ai/editor/solers_ui_theme.h"
 #include "modules/solers_ai/generated/solers_svg_assets.gen.h"
 
@@ -96,6 +98,24 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	CHECK(body_label->get_theme_default_font() == solers_root->get_theme()->get_default_font());
 	CHECK(ambient->get_theme_default_font() != body_label->get_theme_default_font());
 	host->queue_free();
+	MessageQueue::get_singleton()->flush();
+}
+
+TEST_CASE("[SolersStudio][SceneTree] schema form projects unknown connector fields without provider branches") {
+	const Dictionary properties = JSON::parse_string(R"({"future_mode":{"type":"string","enum_source":"future_choices","enum_value":"wire_value","enum_label":"display_name","default":"beta"},"future_enabled":{"type":"boolean","default":true}})");
+	const Dictionary extras = JSON::parse_string(R"({"future_choices":[{"wire_value":"alpha","display_name":"Alpha"},{"wire_value":"beta","display_name":"Beta"}]})");
+	SolersSchemaForm *form = memnew(SolersSchemaForm);
+	SceneTree::get_singleton()->get_root()->add_child(form);
+	form->set_schema(properties, extras);
+	CHECK(form->get_values().get("future_mode", String()) == "beta");
+	CHECK(form->get_values().get("future_enabled", false));
+	Dictionary changed;
+	changed["future_mode"] = "alpha";
+	changed["future_enabled"] = false;
+	form->set_values(changed);
+	CHECK(form->get_values().get("future_mode", String()) == "alpha");
+	CHECK_FALSE((bool)form->get_values().get("future_enabled", true));
+	form->queue_free();
 	MessageQueue::get_singleton()->flush();
 }
 

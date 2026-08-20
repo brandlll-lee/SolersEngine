@@ -40,11 +40,14 @@
 #include "core/string/translation_server.h"
 #include "editor/debugger/editor_debugger_plugin.h"
 #include "editor/docks/editor_dock_manager.h"
+#include "editor/editor_main_screen.h"
 #include "editor/editor_node.h"
 #include "editor/settings/editor_settings.h"
+#include "scene/gui/box_container.h"
 
 #include "modules/solers_ai/editor/solers_agent_runtime.h"
 #include "modules/solers_ai/editor/solers_dock.h"
+#include "modules/solers_ai/editor/solers_studio.h"
 #include "modules/solers_ai/editor/solers_ui_theme.h"
 #include "modules/solers_ai/generated/solers_translations.gen.h"
 
@@ -95,6 +98,10 @@ void SolersEditorPlugin::_translation_changed() {
 	}
 }
 
+void SolersEditorPlugin::make_visible(bool p_visible) {
+	studio->set_visible(p_visible);
+}
+
 void SolersEditorPlugin::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_ENTER_TREE:
@@ -136,6 +143,11 @@ SolersEditorPlugin::SolersEditorPlugin() {
 	dock->set_new_session_callback(callable_mp(this, &SolersEditorPlugin::_new_session));
 	runtime->bind_dock(dock);
 	add_control_to_container(CONTAINER_EDITOR_SIDE_LEFT, dock);
+	studio = memnew(SolersStudio(runtime->get_asset_service(), dock));
+	studio->set_theme(SolersUITheme::create());
+	studio->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
+	EditorNode::get_singleton()->get_editor_main_screen()->get_control()->add_child(studio);
+	studio->hide();
 
 	const String session_id = OS::get_singleton()->get_environment("SOLERS_SESSION_ID");
 	if (session_id.is_empty()) {
@@ -151,6 +163,10 @@ SolersEditorPlugin::SolersEditorPlugin() {
 }
 
 SolersEditorPlugin::~SolersEditorPlugin() {
+	if (studio && studio->get_parent()) {
+		studio->get_parent()->remove_child(studio);
+	}
+	memdelete(studio);
 	memdelete(runtime);
 	if (dock && dock->get_parent()) {
 		remove_control_from_container(CONTAINER_EDITOR_SIDE_LEFT, dock);

@@ -77,6 +77,7 @@ public:
 	void set_session(const String &p_project_path, const String &p_session_id);
 	Dictionary get_status() const;
 	Array get_timeline_entries() const;
+	SolersAssetService *get_asset_service() const { return asset_service; }
 
 	SolersAgentRuntime();
 	~SolersAgentRuntime();

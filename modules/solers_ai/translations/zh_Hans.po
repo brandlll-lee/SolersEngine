@@ -119,3 +119,30 @@ msgstr "%s Token"
 
 msgid "Context window unknown"
 msgstr "上下文窗口未知"
+
+msgid "Add reference images"
+msgstr "添加参考图像"
+
+msgid "No reference images"
+msgstr "无参考图像"
+
+msgid "What will you create today?"
+msgstr "今天想创作什么？"
+
+msgid "Generate an asset or choose one from your library."
+msgstr "生成资产，或从资产库中选择。"
+
+msgid "Run operation"
+msgstr "执行操作"
+
+msgid "Add to project"
+msgstr "添加到项目"
+
+msgid "Search catalog..."
+msgstr "搜索资产目录..."
+
+msgid "Describe the asset to create..."
+msgstr "描述要创建的资产..."
+
+msgid "Generation queued."
+msgstr "生成任务已排队。"

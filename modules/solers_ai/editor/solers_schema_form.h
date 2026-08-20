@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  solers_editor_plugin.h                                                */
+/*  solers_schema_form.h                                                  */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -29,39 +29,18 @@
 /**************************************************************************/
 
 #pragma once
+#include "scene/gui/box_container.h"
+class SolersSchemaForm : public VBoxContainer {
+	GDCLASS(SolersSchemaForm, VBoxContainer);
 
-#include "editor/plugins/editor_plugin.h"
-
-class SolersAgentRuntime;
-class SolersDock;
-class SolersStudio;
-class EditorDebuggerPlugin;
-
-void solers_load_editor_translation();
-
-class SolersEditorPlugin : public EditorPlugin {
-	GDCLASS(SolersEditorPlugin, EditorPlugin);
-
-	SolersAgentRuntime *runtime = nullptr;
-	SolersDock *dock = nullptr;
-	SolersStudio *studio = nullptr;
-	Ref<EditorDebuggerPlugin> runtime_debugger_capture;
-	String project_path;
-
-	void _select_session(const String &p_session_id);
-	void _new_session();
-	void _translation_changed();
+	HashMap<StringName, Control *> fields;
+	Control *_create_field(const StringName &p_name, const Dictionary &p_schema, const Dictionary &p_extras, const Variant &p_default);
 
 protected:
-	void _notification(int p_what);
+	static void _bind_methods() {}
 
 public:
-	String get_plugin_name() const override { return "Studio"; }
-	bool has_main_screen() const override { return true; }
-	void make_visible(bool p_visible) override;
-	void set_window_layout(Ref<ConfigFile> p_layout) override;
-	void get_window_layout(Ref<ConfigFile> p_layout) override;
-
-	SolersEditorPlugin();
-	~SolersEditorPlugin();
+	void set_schema(const Dictionary &p_schema, const Dictionary &p_extras = Dictionary());
+	Dictionary get_values() const;
+	void set_values(const Dictionary &p_values);
 };
