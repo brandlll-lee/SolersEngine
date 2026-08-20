@@ -96,6 +96,9 @@ void SolersEditorPlugin::_translation_changed() {
 	if (dock) {
 		dock->propagate_notification(NOTIFICATION_TRANSLATION_CHANGED);
 	}
+	if (studio) {
+		studio->propagate_notification(NOTIFICATION_TRANSLATION_CHANGED);
+	}
 }
 
 void SolersEditorPlugin::make_visible(bool p_visible) {
@@ -145,8 +148,9 @@ SolersEditorPlugin::SolersEditorPlugin() {
 	add_control_to_container(CONTAINER_EDITOR_SIDE_LEFT, dock);
 	studio = memnew(SolersStudio(runtime->get_asset_service(), dock));
 	studio->set_theme(SolersUITheme::create());
-	studio->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
+	studio->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	EditorNode::get_singleton()->get_editor_main_screen()->get_control()->add_child(studio);
+	studio->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
 	studio->hide();
 
 	const String session_id = OS::get_singleton()->get_environment("SOLERS_SESSION_ID");

@@ -75,7 +75,6 @@ class SolersAssetService : public Object {
 	static Dictionary _error_data(const String &p_code, const String &p_message);
 	static void _run_task(Task *p_task);
 
-	static bool _is_project_import_terminal_status(const String &p_status);
 	Dictionary _ok(const Variant &p_data) const;
 	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
 	Dictionary _provider_config(const String &p_kind, const String &p_provider) const;
@@ -95,6 +94,7 @@ public:
 	Dictionary generate_for_session(const Dictionary &p_args, const String &p_session_id);
 	Dictionary catalog_search(const Dictionary &p_args, const SafeFlag *p_cancel_requested = nullptr);
 	Dictionary catalog_inspect(const Dictionary &p_args, const SafeFlag *p_cancel_requested = nullptr);
+	Dictionary fetch_provider_preview(const String &p_provider, const String &p_url, const SafeFlag *p_cancel_requested = nullptr) const;
 	Dictionary catalog_acquire(const Dictionary &p_args, const String &p_session_id);
 	Dictionary addon_search(const Dictionary &p_args, const SafeFlag *p_cancel_requested = nullptr);
 	Dictionary addon_inspect(const Dictionary &p_args, const SafeFlag *p_cancel_requested = nullptr);
@@ -109,6 +109,7 @@ public:
 	Dictionary run_operation_for_session(const Dictionary &p_args, const String &p_session_id);
 	Dictionary status(const Dictionary &p_args) const;
 	Array list_assets() const;
+	static bool is_project_import_terminal_status(const String &p_status);
 	uint64_t get_revision() const { return revision.get(); }
 	bool is_provider_configured(const String &p_kind, const String &p_provider) const;
 	Dictionary start_project_import(const Dictionary &p_args);

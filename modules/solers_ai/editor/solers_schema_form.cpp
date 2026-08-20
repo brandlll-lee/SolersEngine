@@ -112,6 +112,7 @@ void SolersSchemaForm::set_schema(const Dictionary &p_schema, const Dictionary &
 		const Dictionary property = properties[name];
 		Label *label = memnew(Label);
 		label->set_text(property.get("label", property.get("title", String(name).capitalize())));
+		label->set_theme_type_variation(SNAME("SolersSessionMeta"));
 		label->set_tooltip_text(property.get("description", String()));
 		add_child(label);
 		Control *field = _create_field(name, property, p_extras, property.get("default", Variant()));

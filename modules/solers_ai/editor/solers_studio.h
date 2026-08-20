@@ -29,10 +29,12 @@
 /**************************************************************************/
 
 #pragma once
+#include "core/os/mutex.h"
 #include "core/os/thread.h"
 #include "core/templates/safe_refcount.h"
 #include "scene/gui/panel_container.h"
 class Button;
+class Control;
 class FileDialog;
 class ItemList;
 class Label;
@@ -42,6 +44,8 @@ class ProgressBar;
 class SolersAssetService;
 class SolersDock;
 class SolersSchemaForm;
+class SolersSurface;
+class TabContainer;
 class TextEdit;
 class Texture2D;
 class TextureRect;
@@ -56,12 +60,13 @@ class SolersStudio : public PanelContainer {
 	uint64_t preview_generation = 0;
 	OptionButton *kind_option = nullptr, *generation_provider = nullptr;
 	TextEdit *prompt_edit = nullptr;
-	Button *reference_button = nullptr, *generate_button = nullptr;
+	Button *reference_button = nullptr, *generate_button = nullptr, *options_toggle = nullptr;
 	SolersSchemaForm *generation_form = nullptr;
+	SolersSurface *generation_options_surface = nullptr;
 	FileDialog *reference_dialog = nullptr;
 	PackedStringArray reference_paths;
-	TextureRect *preview = nullptr;
-	Label *asset_title = nullptr, *asset_status = nullptr;
+	TextureRect *preview = nullptr, *empty_icon = nullptr;
+	Label *creation_title = nullptr, *asset_title = nullptr, *asset_status = nullptr;
 	ProgressBar *asset_progress = nullptr;
 	VBoxContainer *operation_panel = nullptr;
 	OptionButton *operation_option = nullptr;
@@ -71,19 +76,25 @@ class SolersStudio : public PanelContainer {
 	OptionButton *catalog_provider = nullptr;
 	LineEdit *catalog_query = nullptr;
 	ItemList *catalog_list = nullptr, *project_list = nullptr;
+	TabContainer *library_tabs = nullptr;
 	Label *attribution_label = nullptr;
 	Dictionary selected_manifest;
 	Dictionary selected_catalog;
 	Dictionary capability_data;
 	Thread catalog_thread;
 	SafeFlag catalog_cancel;
+	SafeFlag catalog_result_ready;
 	SafeFlag catalog_done;
+	Mutex catalog_previews_mutex;
+	Array catalog_previews;
 	String catalog_action;
 	Dictionary catalog_args;
 	Dictionary catalog_result;
 	static void _catalog_thread_func(void *p_userdata);
 	void _start_catalog_work(const String &p_action, const Dictionary &p_args);
 	void _finish_catalog_work();
+	void _sync_workspace();
+	void _refresh_text();
 	void _refresh_registry();
 	void _refresh_providers();
 	void _refresh_generation_schema();
@@ -95,6 +106,9 @@ class SolersStudio : public PanelContainer {
 	String _manifest_resource_path(const Dictionary &p_manifest) const;
 	void _catalog_provider_selected(int p_index);
 	void _reference_files_selected(const PackedStringArray &p_files);
+	bool _can_drop_reference(const Point2 &p_point, const Variant &p_data, Control *p_from) const;
+	void _drop_reference(const Point2 &p_point, const Variant &p_data, Control *p_from);
+	void _options_toggled(bool p_visible);
 	void _generate_pressed();
 	void _catalog_search_pressed();
 	void _catalog_selected(int p_index);

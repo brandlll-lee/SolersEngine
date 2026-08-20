@@ -418,7 +418,7 @@ Dictionary SolersAssetService::_ok(const Variant &p_data) const {
 	return result;
 }
 
-bool SolersAssetService::_is_project_import_terminal_status(const String &p_status) {
+bool SolersAssetService::is_project_import_terminal_status(const String &p_status) {
 	return p_status == "imported" || p_status == "draft" || p_status == "failed" || p_status == "cancelled" || p_status == "interrupted";
 }
 
@@ -617,37 +617,13 @@ void SolersAssetService::_download_preview(Task *p_task, Dictionary &r_state, co
 	if (p_url.is_empty()) {
 		return;
 	}
-	Vector<String> headers;
-	SolersPlugin *plugin = SolersPluginRegistry::get_plugin(r_state.get("provider", String()));
-	const PackedStringArray profile_headers = plugin ? PackedStringArray(plugin->get_profile().get("download_headers", PackedStringArray())) : PackedStringArray();
-	for (const String &header : profile_headers) {
-		headers.push_back(header);
-	}
-	Dictionary response = SolersPlugin::http_request("GET", p_url, headers, PackedByteArray(), 60000, 2 * 1024 * 1024, &p_task->abort);
+	const Dictionary response = p_task->service->fetch_provider_preview(r_state.get("provider", String()), p_url, &p_task->abort);
 	if (!(bool)response.get("ok", false)) {
 		r_state["preview_error"] = response.get("error", Dictionary());
 		_set_task_state(p_task, r_state);
 		return;
 	}
-
-	const PackedByteArray bytes = response.get("body", PackedByteArray());
-	Ref<Image> image;
-	image.instantiate();
-	const Error err = _load_image_from_signature(bytes, image);
-	if (err != OK || image->is_empty()) {
-		r_state["preview_error"] = _error_data("PREVIEW_DECODE_FAILED", "Provider thumbnail could not be decoded.");
-		_set_task_state(p_task, r_state);
-		return;
-	}
-
-	const int max_side = 512;
-	const int width = image->get_width();
-	const int height = image->get_height();
-	if (width > max_side || height > max_side) {
-		const float scale = MIN((float)max_side / (float)width, (float)max_side / (float)height);
-		image->resize(MAX(1, (int)Math::round(width * scale)), MAX(1, (int)Math::round(height * scale)), Image::INTERPOLATE_LANCZOS);
-	}
-	image->convert(Image::FORMAT_RGB8);
+	const Ref<Image> image = response.get("data", Ref<Image>());
 
 	PackedByteArray preview = image->save_jpg_to_buffer(0.72f);
 	if (preview.size() > 500 * 1024) {
@@ -1723,6 +1699,34 @@ Dictionary SolersAssetService::catalog_inspect(const Dictionary &p_args, const S
 	return plugin->catalog_inspect(p_args, p_cancel_requested);
 }
 
+Dictionary SolersAssetService::fetch_provider_preview(const String &p_provider, const String &p_url, const SafeFlag *p_cancel_requested) const {
+	SolersPlugin *plugin = SolersPluginRegistry::get_plugin(p_provider.strip_edges().to_lower());
+	if (!plugin || p_url.is_empty()) {
+		return _error("INVALID_ARGUMENT", "Provider preview requires a registered provider and preview URL.");
+	}
+	Vector<String> headers;
+	for (const String &header : PackedStringArray(plugin->get_profile().get("download_headers", PackedStringArray()))) {
+		headers.push_back(header);
+	}
+	const Dictionary response = SolersPlugin::http_request("GET", p_url, headers, PackedByteArray(), 60000, 2 * 1024 * 1024, p_cancel_requested);
+	if (!(bool)response.get("ok", false)) {
+		const Dictionary error = response.get("error", Dictionary());
+		return _error(String(error.get("code", String())) == "HTTP_CANCELLED" ? "TOOL_CANCELLED" : "PREVIEW_DOWNLOAD_FAILED", error.get("message", "Provider thumbnail could not be downloaded."));
+	}
+	Ref<Image> image;
+	image.instantiate();
+	if (_load_image_from_signature(response.get("body", PackedByteArray()), image) != OK || image->is_empty()) {
+		return _error("PREVIEW_DECODE_FAILED", "Provider thumbnail could not be decoded.");
+	}
+	const int max_side = 512;
+	if (image->get_width() > max_side || image->get_height() > max_side) {
+		const float scale = MIN((float)max_side / image->get_width(), (float)max_side / image->get_height());
+		image->resize(MAX(1, (int)Math::round(image->get_width() * scale)), MAX(1, (int)Math::round(image->get_height() * scale)), Image::INTERPOLATE_LANCZOS);
+	}
+	image->convert(Image::FORMAT_RGB8);
+	return _ok(image);
+}
+
 Dictionary SolersAssetService::catalog_acquire(const Dictionary &p_args, const String &p_session_id) {
 	const String provider = String(p_args.get("provider", String())).strip_edges().to_lower();
 	const String kind = String(p_args.get("kind", String())).strip_edges().to_lower();
@@ -1803,7 +1807,7 @@ Dictionary SolersAssetService::wait_jobs(const Dictionary &p_args, const String 
 			return _error("JOB_SESSION_MISMATCH", vformat("Background job belongs to another Agent session: %s", id), false);
 		}
 		const String status = String(manifest.get("status", String())).to_lower();
-		if (_is_project_import_terminal_status(status)) {
+		if (is_project_import_terminal_status(status)) {
 			Dictionary state;
 			state["id"] = id;
 			state["status"] = status;
@@ -2119,7 +2123,7 @@ Dictionary SolersAssetService::status(const Dictionary &p_args) const {
 	}
 	_cleanup_finished_task(asset_id);
 	const String status = String(manifest.get("status", String())).to_lower();
-	if (!_is_project_import_terminal_status(status)) {
+	if (!is_project_import_terminal_status(status)) {
 		const String stage = String(manifest.get("stage", String()));
 		const Variant progress = manifest.get("progress", Variant());
 		Dictionary error = _error("ASSET_NOT_READY",

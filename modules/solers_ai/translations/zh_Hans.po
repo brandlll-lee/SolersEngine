@@ -146,3 +146,12 @@ msgstr "描述要创建的资产..."
 
 msgid "Generation queued."
 msgstr "生成任务已排队。"
+
+msgid "Options"
+msgstr "选项"
+
+msgid "Catalog"
+msgstr "资产目录"
+
+msgid "Place"
+msgstr "放入场景"
