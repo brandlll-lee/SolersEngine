@@ -46,6 +46,7 @@
 #include "modules/gltf/gltf_state.h"
 #endif
 
+#ifdef MODULE_GLTF_ENABLED
 static void _solers_preview_merge_aabb(const AABB &p_value, AABB &r_bounds, bool &r_has_bounds) {
 	if (p_value.size.is_zero_approx()) {
 		return;
@@ -81,6 +82,7 @@ static void _solers_preview_bounds(Node *p_node, const Transform3D &p_parent, AA
 		_solers_preview_bounds(p_node->get_child(i), transform, r_bounds, r_has_bounds);
 	}
 }
+#endif
 
 void SolersModelPreview::_update_camera() {
 	const float distance = MAX(model_radius * 2.8f * distance_scale, 0.25f);
