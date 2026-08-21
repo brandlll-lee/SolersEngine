@@ -95,6 +95,9 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	CHECK(theme->has_stylebox(SNAME("normal"), SNAME("CheckBox")));
 	CHECK(theme->get_type_variation_base(SNAME("SolersPrimaryButton")) == SNAME("Button"));
 	CHECK(theme->has_stylebox(SNAME("normal"), SNAME("SolersPrimaryButton")));
+	CHECK(theme->get_type_variation_base(SNAME("SolersStudioPrompt")) == SNAME("TextEdit"));
+	CHECK(theme->get_font_size(SceneStringName(font_size), SNAME("SolersHeroTitle")) > theme->get_font_size(SceneStringName(font_size), SNAME("SolersSessionTitle")));
+	CHECK(theme->has_icon(SNAME("arrow"), SNAME("OptionButton")));
 
 	Control *host = memnew(Control);
 	Label *ambient = memnew(Label("Godot"));
