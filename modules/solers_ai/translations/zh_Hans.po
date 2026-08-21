@@ -177,9 +177,6 @@ msgstr "参考图像"
 msgid "Click, drop, or paste an image"
 msgstr "点击、拖放或粘贴图像"
 
-msgid "Add view"
-msgstr "添加视图"
-
 msgid "Multi-view"
 msgstr "多视图"
 

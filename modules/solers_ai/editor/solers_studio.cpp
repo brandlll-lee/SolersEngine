@@ -286,10 +286,11 @@ void SolersStudio::_refresh_reference_slots() {
 			continue;
 		}
 		const Ref<Image> image = i < reference_images.size() ? Ref<Image>(reference_images[i]) : Ref<Image>();
-		reference_buttons[i]->set_button_icon(image.is_valid() ? Ref<Texture2D>(ImageTexture::create_from_image(image)) : SolersIcons::get(SNAME("tool_capture"), int(24 * EDSCALE)));
+		const Ref<Texture2D> placeholder = i == 0 ? Ref<Texture2D>() : SolersIcons::get(SNAME("tool_capture"), int(24 * EDSCALE));
+		reference_buttons[i]->set_button_icon(image.is_valid() ? Ref<Texture2D>(ImageTexture::create_from_image(image)) : placeholder);
 		reference_buttons[i]->set_expand_icon(image.is_valid());
-		reference_buttons[i]->set_text(image.is_valid() ? String() : (i == 0 ? TTRC("Click, drop, or paste an image") : TTRC("Add view")));
 	}
+	reference_empty_state->set_visible(reference_images.is_empty());
 	reference_aux->set_visible(limit > 1);
 	clear_references_button->set_visible(!reference_attachments.is_empty());
 }
@@ -341,7 +342,7 @@ void SolersStudio::_drop_reference(const Point2 &, const Variant &p_data, Contro
 }
 
 void SolersStudio::_options_toggled(bool p_visible) {
-	generation_options_scroll->set_visible(p_visible);
+	generation_form->set_visible(p_visible);
 	options_toggle->set_button_icon(SolersIcons::get(p_visible ? SNAME("chevron_down") : SNAME("chevron_right"), int(14 * EDSCALE)));
 }
 
@@ -731,6 +732,8 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	set_name("SolersStudio");
 	set_process(true);
 	const SolersUITheme::Tokens tokens = SolersUITheme::make_tokens();
+	List<String> image_extensions;
+	ImageLoader::get_recognized_extensions(&image_extensions);
 	HBoxContainer *shell = _studio_add<HBoxContainer>(this);
 	shell->set_h_size_flags(SIZE_EXPAND_FILL);
 	shell->set_v_size_flags(SIZE_EXPAND_FILL);
@@ -738,8 +741,9 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	SolersSurface *rail_surface = _studio_add<SolersSurface>(shell);
 	rail_surface->set_custom_minimum_size(Size2(78 * EDSCALE, 0));
 	rail_surface->set_v_size_flags(SIZE_EXPAND_FILL);
-	rail_surface->configure(tokens.surface, tokens.border, tokens.radius_home_tile, 4, false);
+	rail_surface->configure(tokens.surface, tokens.border, tokens.radius_home_tile, 5, false);
 	route_list = _studio_add<ItemList>(rail_surface);
+	route_list->set_theme_type_variation(SNAME("SolersStudioRail"));
 	route_list->set_icon_mode(ItemList::ICON_MODE_TOP);
 	route_list->set_fixed_icon_size(Size2i(24, 24) * EDSCALE);
 	route_list->set_fixed_column_width(int(68 * EDSCALE));
@@ -756,9 +760,18 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	creation_surface->set_h_size_flags(SIZE_EXPAND_FILL);
 	creation_surface->set_v_size_flags(SIZE_EXPAND_FILL);
 	creation_surface->configure(tokens.surface, tokens.border, tokens.radius_home_tile, 12, false);
-	VBoxContainer *creation_column = _studio_add<VBoxContainer>(creation_surface);
+	VBoxContainer *creation_frame = _studio_add<VBoxContainer>(creation_surface);
+	creation_frame->set_h_size_flags(SIZE_EXPAND_FILL);
+	creation_frame->set_v_size_flags(SIZE_EXPAND_FILL);
+	creation_frame->add_theme_constant_override(SNAME("separation"), int(12 * EDSCALE));
+	ScrollContainer *creation_scroll = _studio_add<ScrollContainer>(creation_frame);
+	creation_scroll->set_name("CreationScroll");
+	creation_scroll->set_h_size_flags(SIZE_EXPAND_FILL);
+	creation_scroll->set_v_size_flags(SIZE_EXPAND_FILL);
+	creation_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
+	creation_scroll->set_vertical_scroll_mode(ScrollContainer::SCROLL_MODE_AUTO);
+	VBoxContainer *creation_column = _studio_add<VBoxContainer>(creation_scroll);
 	creation_column->set_h_size_flags(SIZE_EXPAND_FILL);
-	creation_column->set_v_size_flags(SIZE_EXPAND_FILL);
 	creation_column->add_theme_constant_override(SNAME("separation"), int(12 * EDSCALE));
 	creation_title = _studio_label(creation_column, String(), SNAME("SolersSessionTitle"));
 	preset_option = _studio_add<OptionButton>(creation_column);
@@ -772,15 +785,37 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	clear_references_button->set_flat(true);
 	clear_references_button->set_button_icon(SolersIcons::get(SNAME("cross"), int(14 * EDSCALE)));
 	SolersSurface *reference_surface = _studio_add<SolersSurface>(creation_column);
-	reference_surface->set_v_size_flags(SIZE_EXPAND_FILL);
 	reference_surface->set_custom_minimum_size(Size2(0, 210 * EDSCALE));
 	reference_surface->configure(tokens.card, tokens.border, tokens.radius_home_tile, 8, false);
 	VBoxContainer *reference_column = _studio_add<VBoxContainer>(reference_surface);
 	reference_column->set_h_size_flags(SIZE_EXPAND_FILL);
 	reference_column->set_v_size_flags(SIZE_EXPAND_FILL);
 	reference_column->add_theme_constant_override(SNAME("separation"), int(6 * EDSCALE));
-	reference_buttons[0] = _studio_add<Button>(reference_column);
+	SolersSurface *reference_well = _studio_add<SolersSurface>(reference_column);
+	reference_well->set_v_size_flags(SIZE_EXPAND_FILL);
+	reference_well->configure(tokens.card, tokens.border, tokens.radius_list_thumb, 0, false);
+	reference_well->set_dashed_border(true);
+	reference_buttons[0] = _studio_add<Button>(reference_well);
+	reference_buttons[0]->set_h_size_flags(SIZE_EXPAND_FILL);
 	reference_buttons[0]->set_v_size_flags(SIZE_EXPAND_FILL);
+	reference_empty_state = _studio_add<CenterContainer>(reference_buttons[0]);
+	reference_empty_state->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
+	reference_empty_state->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
+	VBoxContainer *reference_empty_content = _studio_add<VBoxContainer>(reference_empty_state);
+	reference_empty_content->add_theme_constant_override(SNAME("separation"), int(5 * EDSCALE));
+	TextureRect *reference_empty_icon = _studio_add<TextureRect>(reference_empty_content);
+	reference_empty_icon->set_texture(SolersIcons::get(SNAME("tool_capture"), int(32 * EDSCALE)));
+	reference_empty_icon->set_custom_minimum_size(Size2(32, 32) * EDSCALE);
+	reference_empty_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+	Label *reference_empty_title = _studio_label(reference_empty_content, TTRC("Click, drop, or paste an image"), SNAME("SolersSessionTitle"));
+	reference_empty_title->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+	PackedStringArray image_extension_labels;
+	for (const String &extension : image_extensions) {
+		image_extension_labels.push_back("." + extension);
+	}
+	Label *reference_formats = _studio_label(reference_empty_content, String(", ").join(image_extension_labels), SNAME("SolersSessionMeta"));
+	reference_formats->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+	reference_formats->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
 	reference_aux = _studio_add<HBoxContainer>(reference_column);
 	reference_aux->add_theme_constant_override(SNAME("separation"), int(6 * EDSCALE));
 	for (int i = 1; i < 4; i++) {
@@ -790,7 +825,6 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	}
 	for (Button *button : reference_buttons) {
 		button->set_flat(true);
-		button->set_clip_text(true);
 		button->set_focus_mode(FOCUS_ALL);
 	}
 	multiview_toggle = _studio_add<CheckButton>(creation_column);
@@ -813,14 +847,9 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	options_toggle->set_flat(true);
 	options_toggle->set_toggle_mode(true);
 	options_toggle->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
-	generation_options_scroll = _studio_add<ScrollContainer>(creation_column);
-	generation_options_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
-	generation_options_scroll->set_custom_maximum_size(Size2(-1, 220 * EDSCALE));
-	SolersSurface *generation_options_surface = _studio_add<SolersSurface>(generation_options_scroll);
-	generation_options_surface->set_h_size_flags(SIZE_EXPAND_FILL);
-	generation_options_surface->configure(tokens.card, tokens.border, tokens.radius_list_thumb, 10, false);
-	generation_form = _studio_add<SolersSchemaForm>(generation_options_surface);
-	generate_button = _studio_add<Button>(creation_column);
+	generation_form = _studio_add<SolersSchemaForm>(creation_column);
+	generate_button = _studio_add<Button>(creation_frame);
+	generate_button->set_name("GenerateButton");
 	generate_button->set_theme_type_variation(SNAME("SolersPrimaryButton"));
 	generate_button->set_custom_minimum_size(Size2(0, 44 * EDSCALE));
 
@@ -917,10 +946,8 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	reference_dialog = _studio_add<FileDialog>(this);
 	reference_dialog->set_access(FileDialog::ACCESS_FILESYSTEM);
 	reference_dialog->set_file_mode(FileDialog::FILE_MODE_OPEN_FILES);
-	List<String> extensions;
-	ImageLoader::get_recognized_extensions(&extensions);
 	PackedStringArray patterns;
-	for (const String &extension : extensions) {
+	for (const String &extension : image_extensions) {
 		patterns.push_back("*." + extension);
 	}
 	reference_dialog->add_filter(String(", ").join(patterns), TTRC("Images"));

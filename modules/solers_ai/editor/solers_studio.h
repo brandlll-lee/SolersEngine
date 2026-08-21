@@ -72,11 +72,11 @@ class SolersStudio : public PanelContainer {
 	TextEdit *prompt_edit = nullptr;
 	Button *reference_buttons[4] = {};
 	Button *clear_references_button = nullptr;
+	Control *reference_empty_state = nullptr;
 	CheckButton *multiview_toggle = nullptr;
 	HBoxContainer *reference_aux = nullptr;
 	Button *generate_button = nullptr, *options_toggle = nullptr;
 	SolersSchemaForm *featured_form = nullptr, *generation_form = nullptr;
-	ScrollContainer *generation_options_scroll = nullptr;
 	FileDialog *reference_dialog = nullptr;
 	Array reference_attachments;
 	Array reference_images;

@@ -208,6 +208,7 @@ class SolersSurface : public MarginContainer {
 	Color bg = Color(0, 0, 0, 0);
 	Color border_opaque = Color(0, 0, 0, 0);
 	bool has_border = false;
+	bool dashed_border = false;
 	bool shadow = false;
 	float radius = 16.0f;
 	float border_w = 1.0f;
@@ -218,6 +219,10 @@ protected:
 
 public:
 	void configure(const Color &p_bg, const Color &p_border, float p_radius, int p_padding, bool p_shadow = false, float p_border_width = 1.0f);
+	void set_dashed_border(bool p_enabled) {
+		dashed_border = p_enabled;
+		queue_redraw();
+	}
 	void set_surface_colors(const Color &p_bg, const Color &p_border);
 
 	SolersSurface();

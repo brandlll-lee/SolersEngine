@@ -628,7 +628,17 @@ void SolersSurface::_notification(int p_what) {
 				sb->set_shadow_color(Color(0, 0, 0, 0));
 			}
 
-			if (has_border) {
+			if (dashed_border && has_border) {
+				sb->set_bg_color(bg);
+				sb->set_corner_radius_all(int(rad));
+				draw_style_box(sb, r);
+				const float inset = bw * 0.5f;
+				const float dash = 5.0f * ed;
+				draw_dashed_line(Point2(rad, inset), Point2(r.size.x - rad, inset), border_opaque, bw, dash);
+				draw_dashed_line(Point2(rad, r.size.y - inset), Point2(r.size.x - rad, r.size.y - inset), border_opaque, bw, dash);
+				draw_dashed_line(Point2(inset, rad), Point2(inset, r.size.y - rad), border_opaque, bw, dash);
+				draw_dashed_line(Point2(r.size.x - inset, rad), Point2(r.size.x - inset, r.size.y - rad), border_opaque, bw, dash);
+			} else if (has_border) {
 				// Outer fill = the (now opaque) hairline color.
 				sb->set_bg_color(border_opaque);
 				sb->set_corner_radius_all(int(rad));

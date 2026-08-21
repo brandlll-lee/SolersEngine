@@ -311,6 +311,8 @@ Ref<Theme> SolersUITheme::create() {
 	theme->set_color(SNAME("font_hovered_selected_color"), "ItemList", tokens.text);
 	theme->set_constant(SNAME("h_separation"), "ItemList", int(8 * EDSCALE));
 	theme->set_constant(SNAME("v_separation"), "ItemList", int(8 * EDSCALE));
+	theme->set_type_variation(SNAME("SolersStudioRail"), SNAME("ItemList"));
+	theme->set_stylebox(SceneStringName(panel), "SolersStudioRail", _solers_flat(tokens.surface, 0, Color(), 0, 0));
 
 	const Ref<StyleBoxFlat> tab_selected = _solers_flat(tokens.card_hover, product_radius, tokens.border, border_width, 8 * EDSCALE);
 	const Ref<StyleBoxFlat> tab_unselected = _solers_flat(tokens.surface, product_radius, Color(), 0, 8 * EDSCALE);
@@ -331,13 +333,15 @@ Ref<Theme> SolersUITheme::create() {
 	theme->set_stylebox(SNAME("background"), "ProgressBar", _solers_flat(tokens.card, card_radius, Color(), 0, 2 * EDSCALE));
 	theme->set_stylebox(SNAME("fill"), "ProgressBar", _solers_flat(tokens.text, card_radius, Color(), 0, 2 * EDSCALE));
 	theme->set_color(SceneStringName(font_color), "ProgressBar", tokens.on_primary);
-	for (const StringName &name : { CoreStringName(normal), SceneStringName(hover), SceneStringName(pressed), SNAME("hover_pressed"), SNAME("disabled") }) {
-		theme->set_stylebox(name, "CheckBox", _solers_flat(Color(0, 0, 0, 0), 0, Color(), 0, 2 * EDSCALE));
+	for (const StringName &type : { SNAME("CheckBox"), SNAME("CheckButton") }) {
+		for (const StringName &name : { CoreStringName(normal), SceneStringName(hover), SceneStringName(pressed), SNAME("hover_pressed"), SNAME("disabled") }) {
+			theme->set_stylebox(name, type, _solers_flat(Color(0, 0, 0, 0), 0, Color(), 0, 2 * EDSCALE));
+		}
+		theme->set_stylebox(SNAME("focus"), type, control_focus);
+		theme->set_color(SceneStringName(font_color), type, tokens.text);
+		theme->set_color(SNAME("font_hover_color"), type, tokens.text);
+		theme->set_color(SNAME("font_pressed_color"), type, tokens.text);
 	}
-	theme->set_stylebox(SNAME("focus"), "CheckBox", control_focus);
-	theme->set_color(SceneStringName(font_color), "CheckBox", tokens.text);
-	theme->set_color(SNAME("font_hover_color"), "CheckBox", tokens.text);
-	theme->set_color(SNAME("font_pressed_color"), "CheckBox", tokens.text);
 
 	theme->set_type_variation(SNAME("SolersPrimaryButton"), SNAME("Button"));
 	theme->set_stylebox(CoreStringName(normal), "SolersPrimaryButton", _solers_flat(tokens.primary, product_radius, Color(), 0, 10 * EDSCALE));

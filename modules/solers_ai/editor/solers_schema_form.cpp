@@ -34,7 +34,7 @@
 #include "core/object/callable_mp.h"
 #include "core/string/translation_server.h"
 #include "scene/gui/button.h"
-#include "scene/gui/check_box.h"
+#include "scene/gui/check_button.h"
 #include "scene/gui/label.h"
 #include "scene/gui/line_edit.h"
 #include "scene/gui/option_button.h"
@@ -116,7 +116,8 @@ Control *SolersSchemaForm::_create_field(const StringName &p_name, const Diction
 		row->set_meta("field_kind", "slider");
 		field = row;
 	} else if (type == "boolean") {
-		CheckBox *toggle = memnew(CheckBox);
+		CheckButton *toggle = memnew(CheckButton);
+		toggle->set_text(p_schema.get("label", p_schema.get("title", String(p_name).capitalize())));
 		toggle->set_pressed((bool)p_default);
 		field = toggle;
 	} else if ((type == "integer" || type == "number") && p_default.get_type() != Variant::NIL) {
@@ -171,13 +172,15 @@ void SolersSchemaForm::set_schema(const Dictionary &p_schema, const Dictionary &
 			continue;
 		}
 		const Dictionary property = properties[name];
-		Label *label = memnew(Label);
-		label->set_text(property.get("label", property.get("title", String(name).capitalize())));
-		label->set_theme_type_variation(SNAME("SolersSessionMeta"));
-		label->set_tooltip_text(property.get("description", String()));
-		add_child(label);
 		Control *field = _create_field(name, property, p_extras, controls.get(name, Dictionary()), property.get("default", Variant()));
-		field->set_tooltip_text(label->get_tooltip_text());
+		const String description = property.get("description", String());
+		field->set_tooltip_text(description);
+		if (String(property.get("type", "string")) != "boolean") {
+			Label *label = memnew(Label(property.get("label", property.get("title", String(name).capitalize()))));
+			label->set_theme_type_variation(SNAME("SolersSessionMeta"));
+			label->set_tooltip_text(description);
+			add_child(label);
+		}
 		add_child(field);
 		fields[name] = field;
 	}
@@ -202,7 +205,7 @@ Dictionary SolersSchemaForm::get_values() const {
 			value = type == "integer" ? Variant((int64_t)slider->get_value()) : Variant(slider->get_value());
 		} else if (OptionButton *options = Object::cast_to<OptionButton>(field)) {
 			value = options->get_selected_metadata();
-		} else if (CheckBox *toggle = Object::cast_to<CheckBox>(field)) {
+		} else if (CheckButton *toggle = Object::cast_to<CheckButton>(field)) {
 			value = toggle->is_pressed();
 		} else if (SpinBox *number = Object::cast_to<SpinBox>(field)) {
 			value = type == "integer" ? Variant((int64_t)number->get_value()) : Variant(number->get_value());
@@ -254,7 +257,7 @@ void SolersSchemaForm::set_values(const Dictionary &p_values) {
 					break;
 				}
 			}
-		} else if (CheckBox *toggle = Object::cast_to<CheckBox>(field)) {
+		} else if (CheckButton *toggle = Object::cast_to<CheckButton>(field)) {
 			toggle->set_pressed(value);
 		} else if (SpinBox *number = Object::cast_to<SpinBox>(field)) {
 			number->set_value(value);
