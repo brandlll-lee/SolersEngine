@@ -469,6 +469,24 @@ TEST_CASE("[SolersAssetService] Meshy topology target is an integer contract for
 	CHECK(String(Dictionary(remesh_contract.get("error", Dictionary())).get("message", String())).contains("should_remesh=true"));
 }
 
+TEST_CASE("[SolersAssetService] Meshy generation presets project native schema facts") {
+	SolersPluginMeshy meshy;
+	const Dictionary profile = meshy.get_profile();
+	const Array presets = profile.get("generation_presets", Array());
+	REQUIRE(presets.size() == 2);
+	int default_count = 0;
+	for (const Variant &value : presets) {
+		const Dictionary preset = value;
+		default_count += (bool)preset.get("default", false) ? 1 : 0;
+		CHECK((int)preset.get("max_reference_images", 0) >= 1);
+		CHECK_FALSE(Array(preset.get("featured_fields", Array())).is_empty());
+		CHECK_FALSE(Dictionary(preset.get("presentation", Dictionary())).is_empty());
+	}
+	CHECK(default_count == 1);
+	const Dictionary schema = meshy.get_generation_options_schema("3d");
+	CHECK(Dictionary(schema.get("texture_resolution", Dictionary())).get("default", String()) == "2k");
+}
+
 TEST_CASE("[SolersAssetService] non-terminal asset.status rejects progress polling; job.wait declares host park") {
 	const String asset_id = ".solers_background_wait_contract";
 	const String asset_dir = "user://solers_jobs/" + asset_id;

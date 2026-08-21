@@ -39,6 +39,8 @@
 #include "core/templates/vector.h"
 #include "core/variant/dictionary.h"
 
+class Image;
+
 class SolersAssetService : public Object {
 	GDCLASS(SolersAssetService, Object);
 
@@ -109,6 +111,8 @@ public:
 	Dictionary run_operation_for_session(const Dictionary &p_args, const String &p_session_id);
 	Dictionary status(const Dictionary &p_args) const;
 	Array list_assets() const;
+	Dictionary stage_input_image(const Ref<Image> &p_image) const;
+	String resolve_model_file(const Dictionary &p_manifest) const;
 	static bool is_project_import_terminal_status(const String &p_status);
 	uint64_t get_revision() const { return revision.get(); }
 	bool is_provider_configured(const String &p_kind, const String &p_provider) const;

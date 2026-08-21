@@ -882,16 +882,28 @@ static bool _solers_gltf_document_json(const String &p_path, Dictionary &r_docum
 	return true;
 }
 
-// Sums TRIANGLES-mode primitive counts from glTF accessor metadata, so topology
-// budgets are enforced from source data before any file is copied or imported.
-static int64_t _solers_gltf_source_triangle_count(const Dictionary &p_document) {
+struct SolersGLTFGeometryStats {
+	int64_t triangles = 0;
+	int64_t vertices = 0;
+};
+
+// Reads topology and vertex counts from the same glTF accessor pass, so every
+// manifest and import decision shares one delivered-geometry fact.
+static SolersGLTFGeometryStats _solers_gltf_geometry_stats(const Dictionary &p_document) {
 	const Array accessors = p_document.get("accessors", Array());
 	const Array meshes = p_document.get("meshes", Array());
-	int64_t triangles = 0;
+	SolersGLTFGeometryStats stats;
+	HashSet<int64_t> position_accessors;
 	for (int mesh_index = 0; mesh_index < meshes.size(); mesh_index++) {
 		const Array primitives = Dictionary(meshes[mesh_index]).get("primitives", Array());
 		for (int primitive_index = 0; primitive_index < primitives.size(); primitive_index++) {
 			const Dictionary primitive = primitives[primitive_index];
+			const Dictionary attributes = primitive.get("attributes", Dictionary());
+			const int64_t position_accessor = attributes.get("POSITION", -1);
+			if (position_accessor >= 0 && position_accessor < accessors.size() && !position_accessors.has(position_accessor)) {
+				position_accessors.insert(position_accessor);
+				stats.vertices += (int64_t)Dictionary(accessors[position_accessor]).get("count", 0);
+			}
 			if ((int64_t)primitive.get("mode", 4) != 4) {
 				continue;
 			}
@@ -901,17 +913,13 @@ static int64_t _solers_gltf_source_triangle_count(const Dictionary &p_document) 
 				if (accessor_index >= 0 && accessor_index < accessors.size()) {
 					element_count = (int64_t)Dictionary(accessors[accessor_index]).get("count", 0);
 				}
-			} else {
-				const Dictionary attributes = primitive.get("attributes", Dictionary());
-				const int64_t accessor_index = attributes.get("POSITION", -1);
-				if (accessor_index >= 0 && accessor_index < accessors.size()) {
-					element_count = (int64_t)Dictionary(accessors[accessor_index]).get("count", 0);
-				}
+			} else if (position_accessor >= 0 && position_accessor < accessors.size()) {
+				element_count = (int64_t)Dictionary(accessors[position_accessor]).get("count", 0);
 			}
-			triangles += element_count / 3;
+			stats.triangles += element_count / 3;
 		}
 	}
-	return triangles;
+	return stats;
 }
 
 static Dictionary _static_lightmap_import_config(const String &p_path) {
@@ -1042,7 +1050,7 @@ void SolersAssetService::_run_task(Task *p_task) {
 		// Provider-declared polycounts are estimates and can be far off.
 		// Measure the delivered glTF geometry once here so every later budget
 		// decision and model-facing report uses the same authoritative number.
-		int64_t measured_triangles = 0;
+		SolersGLTFGeometryStats measured_geometry;
 		bool measured = false;
 		for (int i = 0; i < files.size(); i++) {
 			const String path = String(files[i]);
@@ -1053,16 +1061,22 @@ void SolersAssetService::_run_task(Task *p_task) {
 			Dictionary document;
 			String parse_error;
 			if (_solers_gltf_document_json(path, document, parse_error)) {
-				measured_triangles += _solers_gltf_source_triangle_count(document);
+				const SolersGLTFGeometryStats file_geometry = _solers_gltf_geometry_stats(document);
+				measured_geometry.triangles += file_geometry.triangles;
+				measured_geometry.vertices += file_geometry.vertices;
+				if (!state.has("model_file")) {
+					state["model_file"] = path;
+				}
 				measured = true;
 			}
 		}
 		if (measured) {
 			const int64_t declared = state.get("polycount", 0);
-			if (declared > 0 && declared != measured_triangles) {
+			if (declared > 0 && declared != measured_geometry.triangles) {
 				state["declared_polycount"] = declared;
 			}
-			state["polycount"] = measured_triangles;
+			state["polycount"] = measured_geometry.triangles;
+			state["vertex_count"] = measured_geometry.vertices;
 		}
 	}
 	if (!state.has("entrypoints")) {
@@ -2155,6 +2169,59 @@ Array SolersAssetService::list_assets() const {
 	return assets;
 }
 
+Dictionary SolersAssetService::stage_input_image(const Ref<Image> &p_image) const {
+	if (p_image.is_null() || p_image->is_empty()) {
+		return _error("INVALID_ARGUMENT", "A non-empty image is required.");
+	}
+	const PackedByteArray bytes = p_image->save_png_to_buffer();
+	if (bytes.is_empty()) {
+		return _error("IMAGE_ENCODE_FAILED", "The reference image could not be encoded as PNG.");
+	}
+	const String input_dir = _asset_root().path_join(".inputs");
+	if (DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(input_dir)) != OK) {
+		return _error("WRITE_FAILED", "The global Solers input directory could not be created.");
+	}
+	const String temporary = input_dir.path_join(vformat("input-%d.png", (int64_t)Time::get_singleton()->get_ticks_usec()));
+	Ref<FileAccess> file = FileAccess::open(temporary, FileAccess::WRITE);
+	if (file.is_null()) {
+		return _error("WRITE_FAILED", "The reference image could not be staged.");
+	}
+	file->store_buffer(bytes);
+	file->close();
+	const String sha256 = FileAccess::get_sha256(temporary);
+	const String stored_path = input_dir.path_join(sha256 + ".png");
+	const String temporary_absolute = ProjectSettings::get_singleton()->globalize_path(temporary);
+	const String stored_absolute = ProjectSettings::get_singleton()->globalize_path(stored_path);
+	if (FileAccess::exists(stored_path)) {
+		DirAccess::remove_absolute(temporary_absolute);
+	} else if (DirAccess::rename_absolute(temporary_absolute, stored_absolute) != OK) {
+		return _error("WRITE_FAILED", "The reference image could not be committed to global storage.");
+	}
+	Dictionary attachment;
+	attachment["id"] = sha256;
+	attachment["type"] = "image";
+	attachment["mime_type"] = "image/png";
+	attachment["filename"] = sha256 + ".png";
+	attachment["local_path"] = stored_path;
+	return _ok(attachment);
+}
+
+String SolersAssetService::resolve_model_file(const Dictionary &p_manifest) const {
+	const String measured_path = p_manifest.get("model_file", String());
+	if (!measured_path.is_empty() && FileAccess::exists(measured_path)) {
+		return measured_path;
+	}
+	for (const Variant &value : Array(p_manifest.get("files", Array()))) {
+		const String path = value;
+		Dictionary document;
+		String parse_error;
+		if (FileAccess::exists(path) && _solers_gltf_document_json(path, document, parse_error)) {
+			return path;
+		}
+	}
+	return String();
+}
+
 bool SolersAssetService::is_provider_configured(const String &p_kind, const String &p_provider) const {
 	const Dictionary config = _provider_config(p_kind, p_provider);
 	if (config.is_empty()) {
@@ -2311,7 +2378,7 @@ Dictionary SolersAssetService::start_project_import(const Dictionary &p_args) {
 			if (!_solers_gltf_document_json(src, document, parse_error)) {
 				continue;
 			}
-			const int64_t file_triangles = _solers_gltf_source_triangle_count(document);
+			const int64_t file_triangles = _solers_gltf_geometry_stats(document).triangles;
 			source_triangle_count += file_triangles;
 			Dictionary entry;
 			entry["path"] = src;
