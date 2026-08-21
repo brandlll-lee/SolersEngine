@@ -41,6 +41,7 @@ class Label;
 class LineEdit;
 class OptionButton;
 class ProgressBar;
+class ScrollContainer;
 class SolersAssetService;
 class SolersDock;
 class SolersSchemaForm;
@@ -62,7 +63,7 @@ class SolersStudio : public PanelContainer {
 	TextEdit *prompt_edit = nullptr;
 	Button *reference_button = nullptr, *generate_button = nullptr, *options_toggle = nullptr;
 	SolersSchemaForm *generation_form = nullptr;
-	SolersSurface *generation_options_surface = nullptr;
+	ScrollContainer *generation_options_scroll = nullptr;
 	FileDialog *reference_dialog = nullptr;
 	PackedStringArray reference_paths;
 	TextureRect *preview = nullptr, *empty_icon = nullptr;
@@ -76,6 +77,8 @@ class SolersStudio : public PanelContainer {
 	OptionButton *catalog_provider = nullptr;
 	LineEdit *catalog_query = nullptr;
 	ItemList *catalog_list = nullptr, *project_list = nullptr;
+	Control *catalog_empty = nullptr, *project_empty = nullptr;
+	Label *catalog_empty_label = nullptr, *project_empty_label = nullptr;
 	TabContainer *library_tabs = nullptr;
 	Label *attribution_label = nullptr;
 	Dictionary selected_manifest;
@@ -93,6 +96,7 @@ class SolersStudio : public PanelContainer {
 	static void _catalog_thread_func(void *p_userdata);
 	void _start_catalog_work(const String &p_action, const Dictionary &p_args);
 	void _finish_catalog_work();
+	void _sync_library_empty_states();
 	void _sync_workspace();
 	void _refresh_text();
 	void _refresh_registry();
