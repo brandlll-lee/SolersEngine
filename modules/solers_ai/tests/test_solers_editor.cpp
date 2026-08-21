@@ -93,6 +93,7 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	CHECK(theme->has_stylebox(SNAME("panel"), SNAME("TabContainer")));
 	CHECK(theme->has_stylebox(SNAME("background"), SNAME("ProgressBar")));
 	CHECK(theme->has_stylebox(SNAME("normal"), SNAME("CheckBox")));
+	CHECK(theme->has_stylebox(SNAME("normal"), SNAME("CheckButton")));
 	CHECK(theme->get_type_variation_base(SNAME("SolersPrimaryButton")) == SNAME("Button"));
 	CHECK(theme->has_stylebox(SNAME("normal"), SNAME("SolersPrimaryButton")));
 	CHECK(theme->get_type_variation_base(SNAME("SolersStudioPrompt")) == SNAME("TextEdit"));
@@ -124,6 +125,7 @@ TEST_CASE("[SolersStudio][SceneTree] schema form projects unknown connector fiel
 	SolersSchemaForm *form = memnew(SolersSchemaForm);
 	SceneTree::get_singleton()->get_root()->add_child(form);
 	form->set_schema(properties, extras, presentation);
+	CHECK(form->find_children("*", "CheckButton", true, false).size() == 1);
 	CHECK(form->get_values().get("future_mode", String()) == "beta");
 	CHECK((int)form->get_values().get("future_count", 0) == 4);
 	CHECK(form->get_values().get("future_enabled", false));

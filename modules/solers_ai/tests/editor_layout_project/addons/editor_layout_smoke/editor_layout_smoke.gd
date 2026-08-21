@@ -91,6 +91,22 @@ func _check_layout() -> void:
 		return
 	if not _check(not _contains_button_text(base, "Solers"), "Solers still exposes a main-screen button"):
 		return
+	get_editor_interface().set_main_screen_editor("Studio")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var studio := base.find_child("SolersStudio", true, false) as Control
+	var creation_scroll: ScrollContainer = studio.find_child("CreationScroll", true, false) if studio else null
+	var generate: Button = studio.find_child("GenerateButton", true, false) if studio else null
+	var composer := solers.find_child("ComposerInput", true, false) as TextEdit
+	if not _check(studio != null and creation_scroll != null and generate != null and composer != null, "The Studio layout contract is unavailable"):
+		return
+	if not _check(creation_scroll.vertical_scroll_mode == ScrollContainer.SCROLL_MODE_AUTO, "The creation form does not own vertical overflow"):
+		return
+	var viewport_bottom := base.get_global_rect().end.y
+	if not _check(studio.get_combined_minimum_size().y <= studio.size.y, "Studio minimum height exceeds its native host"):
+		return
+	if not _check(generate.get_global_rect().end.y <= viewport_bottom and composer.get_global_rect().end.y <= viewport_bottom, "Studio pushed an editor composer below the visible window"):
+		return
 
 	var left_split := base.find_child("DockVSplitLeftL", true, false)
 	if not _check(left_split != null and left_split.get_parent() is SplitContainer, "Left host is not resizable by the native split"):
