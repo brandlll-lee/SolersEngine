@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  solers_schema_form.h                                                  */
+/*  solers_model_preview.h                                                */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -29,18 +29,34 @@
 /**************************************************************************/
 
 #pragma once
-#include "scene/gui/box_container.h"
-class SolersSchemaForm : public VBoxContainer {
-	GDCLASS(SolersSchemaForm, VBoxContainer);
 
-	HashMap<StringName, Control *> fields;
-	Control *_create_field(const StringName &p_name, const Dictionary &p_schema, const Dictionary &p_extras, const Dictionary &p_presentation, const Variant &p_default);
+#include "scene/gui/subviewport_container.h"
+
+class Camera3D;
+class Node3D;
+class SubViewport;
+
+class SolersModelPreview : public SubViewportContainer {
+	GDCLASS(SolersModelPreview, SubViewportContainer);
+
+	SubViewport *viewport = nullptr;
+	Camera3D *camera = nullptr;
+	Node3D *model_root = nullptr;
+	Vector3 model_center;
+	float model_radius = 1.0f;
+	float distance_scale = 1.0f;
+	float orbit_yaw = 0.45f;
+	float orbit_pitch = -0.18f;
+
+	void _update_camera();
 
 protected:
 	static void _bind_methods() {}
+	void gui_input(const Ref<InputEvent> &p_event) override;
 
 public:
-	void set_schema(const Dictionary &p_schema, const Dictionary &p_extras = Dictionary(), const Dictionary &p_presentation = Dictionary());
-	Dictionary get_values() const;
-	void set_values(const Dictionary &p_values);
+	Error load_model(const String &p_path);
+	void clear_model();
+
+	SolersModelPreview();
 };

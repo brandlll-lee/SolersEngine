@@ -155,3 +155,72 @@ msgstr "资产目录"
 
 msgid "Place"
 msgstr "放入场景"
+
+msgid "Assets"
+msgstr "资产"
+
+msgid "Images"
+msgstr "图像"
+
+msgid "Animation"
+msgstr "动画"
+
+msgid "Audio"
+msgstr "音频"
+
+msgid "Materials"
+msgstr "材质"
+
+msgid "Reference images"
+msgstr "参考图像"
+
+msgid "Click, drop, or paste an image"
+msgstr "点击、拖放或粘贴图像"
+
+msgid "Add view"
+msgstr "添加视图"
+
+msgid "Multi-view"
+msgstr "多视图"
+
+msgid "Create 3D"
+msgstr "创建 3D"
+
+msgid "Describe the model to create..."
+msgstr "描述要创建的模型..."
+
+msgid "Generate model"
+msgstr "生成模型"
+
+msgid "Generate a model or choose one from your library."
+msgstr "生成模型，或从资产库中选择。"
+
+msgid "My generations"
+msgstr "我的生成"
+
+msgid "Your generated assets will appear here."
+msgstr "生成的资产将显示在这里。"
+
+msgid "No catalog assets found."
+msgstr "未找到目录资产。"
+
+msgid "%s polygons | %s vertices"
+msgstr "%s 个多边形 | %s 个顶点"
+
+msgid "Remesh"
+msgstr "重拓扑"
+
+msgid "Remesh model"
+msgstr "重拓扑模型"
+
+msgid "Import to project"
+msgstr "导入到项目"
+
+msgid "Project import started."
+msgstr "项目导入已开始。"
+
+msgid "This Studio workspace is not available yet."
+msgstr "此 Studio 工作区暂不可用。"
+
+msgid "Only the 3D workspace is enabled in this release."
+msgstr "当前版本仅启用 3D 工作区。"

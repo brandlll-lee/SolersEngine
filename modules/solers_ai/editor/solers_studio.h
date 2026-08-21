@@ -33,9 +33,13 @@
 #include "core/os/thread.h"
 #include "core/templates/safe_refcount.h"
 #include "scene/gui/panel_container.h"
+
+class AcceptDialog;
 class Button;
+class CheckButton;
 class Control;
 class FileDialog;
+class HBoxContainer;
 class ItemList;
 class Label;
 class LineEdit;
@@ -44,6 +48,7 @@ class ProgressBar;
 class ScrollContainer;
 class SolersAssetService;
 class SolersDock;
+class SolersModelPreview;
 class SolersSchemaForm;
 class SolersSurface;
 class TabContainer;
@@ -51,6 +56,7 @@ class TextEdit;
 class Texture2D;
 class TextureRect;
 class VBoxContainer;
+
 class SolersStudio : public PanelContainer {
 	GDCLASS(SolersStudio, PanelContainer);
 
@@ -59,20 +65,34 @@ class SolersStudio : public PanelContainer {
 	uint64_t plugin_revision = 0;
 	uint64_t asset_revision = 0;
 	uint64_t preview_generation = 0;
-	OptionButton *kind_option = nullptr, *generation_provider = nullptr;
+	ItemList *route_list = nullptr;
+	Control *creation_workspace = nullptr;
+	OptionButton *preset_option = nullptr;
+	Label *preset_description = nullptr;
 	TextEdit *prompt_edit = nullptr;
-	Button *reference_button = nullptr, *generate_button = nullptr, *options_toggle = nullptr;
-	SolersSchemaForm *generation_form = nullptr;
+	Button *reference_buttons[4] = {};
+	Button *clear_references_button = nullptr;
+	CheckButton *multiview_toggle = nullptr;
+	HBoxContainer *reference_aux = nullptr;
+	Button *generate_button = nullptr, *options_toggle = nullptr;
+	SolersSchemaForm *featured_form = nullptr, *generation_form = nullptr;
 	ScrollContainer *generation_options_scroll = nullptr;
 	FileDialog *reference_dialog = nullptr;
-	PackedStringArray reference_paths;
+	Array reference_attachments;
+	Array reference_images;
+	SolersModelPreview *model_preview = nullptr;
 	TextureRect *preview = nullptr, *empty_icon = nullptr;
 	Label *creation_title = nullptr, *asset_title = nullptr, *asset_status = nullptr;
+	Label *geometry_stats = nullptr;
 	ProgressBar *asset_progress = nullptr;
-	VBoxContainer *operation_panel = nullptr;
-	OptionButton *operation_option = nullptr;
-	SolersSchemaForm *operation_form = nullptr;
-	Button *operation_button = nullptr, *acquire_button = nullptr, *place_button = nullptr;
+	Control *empty_stage = nullptr;
+	HBoxContainer *asset_actions = nullptr;
+	Button *empty_generate_button = nullptr, *animation_button = nullptr, *remesh_button = nullptr, *import_button = nullptr;
+	AcceptDialog *remesh_dialog = nullptr;
+	SolersSchemaForm *remesh_form = nullptr;
+	Dictionary remesh_operation;
+	FileDialog *import_dialog = nullptr;
+	Button *acquire_button = nullptr;
 	OptionButton *catalog_variant = nullptr;
 	OptionButton *catalog_provider = nullptr;
 	LineEdit *catalog_query = nullptr;
@@ -84,6 +104,7 @@ class SolersStudio : public PanelContainer {
 	Dictionary selected_manifest;
 	Dictionary selected_catalog;
 	Dictionary capability_data;
+	Dictionary selected_preset;
 	Thread catalog_thread;
 	SafeFlag catalog_cancel;
 	SafeFlag catalog_result_ready;
@@ -102,14 +123,22 @@ class SolersStudio : public PanelContainer {
 	void _refresh_registry();
 	void _refresh_providers();
 	void _refresh_generation_schema();
+	void _route_selected(int p_index);
+	void _preset_selected(int p_index);
 	void _refresh_project_assets();
 	void _show_manifest(const Dictionary &p_manifest);
 	void _show_result(const Dictionary &p_result, const String &p_success);
+	String _current_route() const;
 	String _current_kind() const;
 	String _selected_provider(const OptionButton *p_options) const;
-	String _manifest_resource_path(const Dictionary &p_manifest) const;
 	void _catalog_provider_selected(int p_index);
 	void _reference_files_selected(const PackedStringArray &p_files);
+	void _append_reference_image(const Ref<Image> &p_image);
+	void _refresh_reference_slots();
+	void _clear_references();
+	void _multiview_toggled(bool p_enabled);
+	void _reference_gui_input(const Ref<InputEvent> &p_event);
+	void _external_reference_files_dropped(const PackedStringArray &p_files);
 	bool _can_drop_reference(const Point2 &p_point, const Variant &p_data, Control *p_from) const;
 	void _drop_reference(const Point2 &p_point, const Variant &p_data, Control *p_from);
 	void _options_toggled(bool p_visible);
@@ -117,10 +146,12 @@ class SolersStudio : public PanelContainer {
 	void _catalog_search_pressed();
 	void _catalog_selected(int p_index);
 	void _project_selected(int p_index);
-	void _operation_selected(int p_index);
-	void _operation_pressed();
 	void _acquire_pressed();
-	void _place_pressed();
+	void _animation_pressed();
+	void _remesh_pressed();
+	void _remesh_confirmed();
+	void _import_pressed();
+	void _import_directory_selected(const String &p_directory);
 	void _preview_ready(const String &p_path, const Ref<Texture2D> &p_preview, const Ref<Texture2D> &p_small_preview, uint64_t p_generation);
 
 protected:

@@ -348,6 +348,15 @@ Ref<Theme> SolersUITheme::create() {
 	for (const StringName &name : { SceneStringName(font_color), SNAME("font_hover_color"), SNAME("font_pressed_color"), SNAME("font_focus_color") }) {
 		theme->set_color(name, "SolersPrimaryButton", tokens.on_primary);
 	}
+	theme->set_type_variation(SNAME("SolersStudioSegment"), SNAME("Button"));
+	theme->set_stylebox(CoreStringName(normal), "SolersStudioSegment", _solers_flat(tokens.surface, card_radius, Color(), 0, 6 * EDSCALE));
+	theme->set_stylebox(SceneStringName(hover), "SolersStudioSegment", _solers_flat(tokens.card_hover, card_radius, Color(), 0, 6 * EDSCALE));
+	theme->set_stylebox(SceneStringName(pressed), "SolersStudioSegment", _solers_flat(tokens.card_selected, card_radius, tokens.hairline, border_width, 6 * EDSCALE));
+	theme->set_stylebox(SNAME("disabled"), "SolersStudioSegment", _solers_flat(tokens.surface, card_radius, Color(), 0, 6 * EDSCALE));
+	theme->set_stylebox(SNAME("focus"), "SolersStudioSegment", control_focus);
+	for (const StringName &name : { SceneStringName(font_color), SNAME("font_hover_color"), SNAME("font_pressed_color"), SNAME("font_focus_color") }) {
+		theme->set_color(name, "SolersStudioSegment", tokens.text);
+	}
 	theme->set_stylebox(SceneStringName(panel), "PopupMenu", _solers_flat(tokens.card, product_radius, tokens.border, border_width, 6 * EDSCALE));
 	theme->set_stylebox(SceneStringName(hover), "PopupMenu", _solers_flat(tokens.card_hover, card_radius, Color(), 0, 6 * EDSCALE));
 	theme->set_color(SceneStringName(font_color), "PopupMenu", tokens.text);

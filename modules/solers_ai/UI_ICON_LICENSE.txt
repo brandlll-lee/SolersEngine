@@ -17,20 +17,24 @@ chevron_up         chevron-up
 cloud              cloud
 copy               copy
 cross              x
+cube_plus          cube-plus
 file               file
 file_alert         file-alert
 folder             folder
 history            history
+layout_grid        layout-grid
 more               dots-vertical
 new_chat           message-plus
 node               hierarchy-2
 panel              layout-sidebar
 plugin             puzzle
+photo_ai            photo-ai
 plus               plus
 send_up             arrow-up
 shield             shield-check
 sparkle            sparkle
 stop               filled/player-stop
+run_sprint         run-sprint
 tool_asset          upload
 tool_capture        photo
 tool_export         package
@@ -42,6 +46,7 @@ tool_run            player-play
 tool_scene          box
 tool_search         search
 tool_shell          terminal-2
+vinyl              vinyl
 
 Tabler Icons
 Copyright (c) 2020-2026 Paweł Kuna

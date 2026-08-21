@@ -96,6 +96,8 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	CHECK(theme->get_type_variation_base(SNAME("SolersPrimaryButton")) == SNAME("Button"));
 	CHECK(theme->has_stylebox(SNAME("normal"), SNAME("SolersPrimaryButton")));
 	CHECK(theme->get_type_variation_base(SNAME("SolersStudioPrompt")) == SNAME("TextEdit"));
+	CHECK(theme->get_type_variation_base(SNAME("SolersStudioSegment")) == SNAME("Button"));
+	CHECK(theme->has_stylebox(SNAME("pressed"), SNAME("SolersStudioSegment")));
 	CHECK(theme->get_font_size(SceneStringName(font_size), SNAME("SolersHeroTitle")) > theme->get_font_size(SceneStringName(font_size), SNAME("SolersSessionTitle")));
 	CHECK(theme->has_icon(SNAME("arrow"), SNAME("OptionButton")));
 
@@ -116,18 +118,22 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 }
 
 TEST_CASE("[SolersStudio][SceneTree] schema form projects unknown connector fields without provider branches") {
-	const Dictionary properties = JSON::parse_string(R"({"future_mode":{"type":"string","enum_source":"future_choices","enum_value":"wire_value","enum_label":"display_name","default":"beta"},"future_enabled":{"type":"boolean","default":true}})");
+	const Dictionary properties = JSON::parse_string(R"({"future_mode":{"type":"string","enum_source":"future_choices","enum_value":"wire_value","enum_label":"display_name","default":"beta"},"future_count":{"type":"integer","minimum":1,"maximum":9,"default":4},"future_enabled":{"type":"boolean","default":true}})");
 	const Dictionary extras = JSON::parse_string(R"({"future_choices":[{"wire_value":"alpha","display_name":"Alpha"},{"wire_value":"beta","display_name":"Beta"}]})");
+	const Dictionary presentation = JSON::parse_string(R"({"controls":{"future_mode":{"control":"segmented"},"future_count":{"control":"slider"}}})");
 	SolersSchemaForm *form = memnew(SolersSchemaForm);
 	SceneTree::get_singleton()->get_root()->add_child(form);
-	form->set_schema(properties, extras);
+	form->set_schema(properties, extras, presentation);
 	CHECK(form->get_values().get("future_mode", String()) == "beta");
+	CHECK((int)form->get_values().get("future_count", 0) == 4);
 	CHECK(form->get_values().get("future_enabled", false));
 	Dictionary changed;
 	changed["future_mode"] = "alpha";
+	changed["future_count"] = 7;
 	changed["future_enabled"] = false;
 	form->set_values(changed);
 	CHECK(form->get_values().get("future_mode", String()) == "alpha");
+	CHECK((int)form->get_values().get("future_count", 0) == 7);
 	CHECK_FALSE((bool)form->get_values().get("future_enabled", true));
 	form->queue_free();
 	MessageQueue::get_singleton()->flush();
