@@ -30,6 +30,9 @@
 
 #include "solers_schema_form.h"
 
+#include "solers_chat_widgets.h"
+#include "solers_ui_theme.h"
+
 #include "core/input/input_event.h"
 #include "core/io/image_loader.h"
 #include "core/io/json.h"
@@ -47,9 +50,6 @@
 #include "scene/gui/text_edit.h"
 #include "scene/resources/image_texture.h"
 #include "servers/display/display_server.h"
-
-#include "solers_chat_widgets.h"
-#include "solers_ui_theme.h"
 
 void SolersSchemaForm::_append_image(Control *p_field, const Ref<Image> &p_image) {
 	if (!image_stager.is_valid() || p_image.is_null() || p_image->is_empty()) {
