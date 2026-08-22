@@ -98,9 +98,12 @@ func _check_layout() -> void:
 	var creation_scroll: ScrollContainer = studio.find_child("CreationScroll", true, false) if studio else null
 	var rail: ItemList = studio.find_child("StudioRail", true, false) if studio else null
 	var library_search: Control = studio.find_child("StudioLibrarySearch", true, false) if studio else null
+	var library_tabs: TabContainer = studio.find_child("StudioLibraryTabs", true, false) if studio else null
 	var generate: Button = studio.find_child("GenerateButton", true, false) if studio else null
 	var composer := solers.find_child("ComposerInput", true, false) as TextEdit
-	if not _check(studio != null and creation_scroll != null and rail != null and library_search != null and generate != null and composer != null, "The Studio layout contract is unavailable"):
+	if not _check(studio != null and creation_scroll != null and rail != null and library_search != null and library_tabs != null and generate != null and composer != null, "The Studio layout contract is unavailable"):
+		return
+	if not _check(library_search.is_visible_in_tree() and not library_tabs.tabs_visible, "The 3D library search is obscured by tab chrome"):
 		return
 	if not _check(creation_scroll.vertical_scroll_mode == ScrollContainer.SCROLL_MODE_AUTO, "The creation form does not own vertical overflow"):
 		return
@@ -112,6 +115,15 @@ func _check_layout() -> void:
 
 	var left_split := base.find_child("DockVSplitLeftL", true, false)
 	if not _check(left_split != null and left_split.get_parent() is SplitContainer, "Left host is not resizable by the native split"):
+		return
+	var agent_toggle := base.find_child("SolersAgentToggle", true, false) as Button
+	if not _check(agent_toggle != null, "The native Agent toggle is unavailable"):
+		return
+	agent_toggle.emit_signal("pressed")
+	if not _check(solers.get_parent() == null, "The Agent toggle left an empty side-panel child"):
+		return
+	agent_toggle.emit_signal("pressed")
+	if not _check(solers.get_parent() != null and solers.get_parent().name == "EditorSidePanel", "The Agent toggle did not restore the native side panel"):
 		return
 
 	var right_tabs := base.find_child("DockSlotRightUL", true, false) as TabContainer

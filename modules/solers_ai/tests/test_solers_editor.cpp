@@ -38,6 +38,7 @@
 #include "scene/gui/label.h"
 #include "scene/gui/split_container.h"
 #include "scene/main/scene_tree.h"
+#include "scene/resources/style_box_flat.h"
 #include "tests/test_macros.h"
 
 #include "modules/modules_enabled.gen.h"
@@ -101,6 +102,9 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	CHECK(theme->has_stylebox(SNAME("pressed"), SNAME("SolersStudioSegment")));
 	CHECK(theme->get_type_variation_base(SNAME("SolersStudioRail")) == SNAME("ItemList"));
 	CHECK(theme->has_stylebox(SNAME("hovered"), SNAME("SolersStudioRail")));
+	Ref<StyleBoxFlat> rail_selected = theme->get_stylebox(SNAME("selected"), SNAME("SolersStudioRail"));
+	REQUIRE(rail_selected.is_valid());
+	CHECK(rail_selected->get_border_width(SIDE_LEFT) == 0);
 	CHECK(theme->get_constant(SNAME("v_separation"), SNAME("SolersStudioRail")) > 0);
 	CHECK(theme->get_type_variation_base(SNAME("SolersStudioScroll")) == SNAME("VScrollBar"));
 	CHECK(theme->has_stylebox(SNAME("grabber_highlight"), SNAME("SolersStudioScroll")));
