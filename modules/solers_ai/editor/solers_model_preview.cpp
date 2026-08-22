@@ -165,6 +165,7 @@ Error SolersModelPreview::load_model(const String &p_path) {
 
 SolersModelPreview::SolersModelPreview() {
 	set_stretch(true);
+	set_mouse_target(true);
 	set_focus_mode(FOCUS_ALL);
 	panner.instantiate();
 	panner->set_callbacks(callable_mp(this, &SolersModelPreview::_pan_view), callable_mp(this, &SolersModelPreview::_zoom_view));
