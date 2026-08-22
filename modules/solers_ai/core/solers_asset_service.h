@@ -31,6 +31,7 @@
 #pragma once
 
 #include "core/object/object.h"
+#include "core/object/worker_thread_pool.h"
 #include "core/os/mutex.h"
 #include "core/os/thread.h"
 #include "core/templates/hash_map.h"
@@ -55,8 +56,17 @@ class SolersAssetService : public Object {
 		Mutex mutex;
 		Dictionary state;
 	};
+	struct InputTask {
+		WorkerThreadPool::TaskID id = 0;
+		SolersAssetService *service = nullptr;
+		Variant source;
+		Variant image;
+		Callable callback;
+		Dictionary result;
+	};
 	mutable Mutex tasks_mutex;
 	HashMap<String, Task *> tasks;
+	Vector<InputTask *> input_tasks;
 	mutable Mutex terminal_events_mutex;
 	Array terminal_events;
 	HashMap<String, Dictionary> project_imports;
@@ -71,6 +81,8 @@ class SolersAssetService : public Object {
 	static String _source_dir(const String &p_asset_id);
 	static void _download_preview(Task *p_task, Dictionary &r_state, const String &p_url);
 	static void _task_func(void *p_userdata);
+	static void _input_task_func(void *p_userdata);
+	void _advance_input_tasks();
 	void _queue_terminal_event(Task *p_task);
 	static void _set_task_state(Task *p_task, const Dictionary &p_state);
 	static Dictionary _task_state(Task *p_task);
@@ -112,6 +124,7 @@ public:
 	Dictionary status(const Dictionary &p_args) const;
 	Array list_assets() const;
 	Dictionary stage_input_image(const Ref<Image> &p_image) const;
+	void stage_input_image_async(const Variant &p_source, const Callable &p_callback);
 	String resolve_model_file(const Dictionary &p_manifest) const;
 	static bool is_project_import_terminal_status(const String &p_status);
 	uint64_t get_revision() const { return revision.get(); }

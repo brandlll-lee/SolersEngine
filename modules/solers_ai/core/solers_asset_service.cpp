@@ -37,6 +37,7 @@
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/image.h"
+#include "core/io/image_loader.h"
 #include "core/io/json.h"
 #include "core/io/resource_importer.h"
 #include "core/io/resource_loader.h"
@@ -456,13 +457,13 @@ String SolersAssetService::_source_dir(const String &p_asset_id) {
 	return _asset_dir(p_asset_id).path_join("source");
 }
 
-static Dictionary _solers_project_request(const Dictionary &p_args, const String &p_kind, const String &p_name, const String &p_job_id) {
+static Dictionary _solers_project_request(const Dictionary &p_args, const String &p_kind, const String &p_name, const String &p_job_id, bool p_default_target) {
 	String target_dir = String(p_args.get("target_dir", String())).replace_char('\\', '/').simplify_path();
-	if (target_dir.is_empty()) {
+	if (target_dir.is_empty() && p_default_target) {
 		target_dir = "res://assets/" + p_kind + "/" + SolersPlugin::safe_slug(p_name) + "-" + p_job_id.right(8);
 	}
 	Dictionary result;
-	if (!target_dir.begins_with("res://") || target_dir.contains("..")) {
+	if (!target_dir.is_empty() && (!target_dir.begins_with("res://") || target_dir.contains(".."))) {
 		result["error"] = SolersPlugin::error_data("INVALID_TARGET", "target_dir must stay inside res://.");
 		return result;
 	}
@@ -1164,7 +1165,7 @@ Dictionary SolersAssetService::_generate(const Dictionary &p_args, const String 
 	Dictionary provider_options = p_args.get("provider_options", Dictionary());
 	const String asset_id = vformat("%s-%s_%s", itos((int64_t)Time::get_singleton()->get_unix_time_from_system()), String::num_uint64(OS::get_singleton()->get_ticks_usec()), (kind + prompt + provider).md5_text().substr(0, 10));
 	const String name = p_args.get("name", prompt);
-	const Dictionary project_request = _solers_project_request(p_args, kind, name, asset_id);
+	const Dictionary project_request = _solers_project_request(p_args, kind, name, asset_id, !p_session_id.is_empty());
 	if (project_request.has("error")) {
 		const Dictionary error = project_request["error"];
 		return _error(error.get("code", "INVALID_TARGET"), error.get("message", "Invalid project target."));
@@ -1767,7 +1768,7 @@ Dictionary SolersAssetService::catalog_acquire(const Dictionary &p_args, const S
 
 	const String asset_id = vformat("%s-%s_%s", itos((int64_t)Time::get_singleton()->get_unix_time_from_system()), String::num_uint64(OS::get_singleton()->get_ticks_usec()), (provider + source_asset_id + official_variant + source_version).md5_text().substr(0, 10));
 	const String name = p_args.get("name", inspected.get("display_name", source_asset_id));
-	const Dictionary project_request = _solers_project_request(p_args, kind, name, asset_id);
+	const Dictionary project_request = _solers_project_request(p_args, kind, name, asset_id, !p_session_id.is_empty());
 	if (project_request.has("error")) {
 		const Dictionary error = project_request["error"];
 		return _error(error.get("code", "INVALID_TARGET"), error.get("message", "Invalid project target."));
@@ -1990,18 +1991,16 @@ Dictionary SolersAssetService::_run_operation(const Dictionary &p_args, const St
 	if (!prepare_error.is_empty()) {
 		return _error(prepare_error.get("code", "PLUGIN_ARGUMENT_ERROR"), prepare_error.get("message", "Plugin rejected the operation request."));
 	}
-	const Dictionary import_constraints = provider_options.get("_solers_import_constraints", Dictionary());
-	provider_options.erase("_solers_import_constraints");
-
 	const String label = String(operation.get("label", operation_id));
 	const String name = String(source.get("name", source_job_id)) + " " + label;
 	const String prompt = String(source.get("prompt", String()));
 	const String asset_id = vformat("%s_%s", itos((int64_t)Time::get_singleton()->get_unix_time_from_system()), (kind + source_job_id + operation_id + JSON::stringify(provider_options)).md5_text().substr(0, 10));
 	Dictionary operation_args = p_args.duplicate(true);
-	if (!operation_args.has("target_dir") && !String(source.get("target_dir", String())).is_empty()) {
+	const String session_id = p_session_id.is_empty() ? String(source.get("session_id", String())) : p_session_id;
+	if (!session_id.is_empty() && !operation_args.has("target_dir") && !String(source.get("target_dir", String())).is_empty()) {
 		operation_args["target_dir"] = source["target_dir"];
 	}
-	const Dictionary project_request = _solers_project_request(operation_args, kind, name, asset_id);
+	const Dictionary project_request = _solers_project_request(operation_args, kind, name, asset_id, !session_id.is_empty());
 	if (project_request.has("error")) {
 		const Dictionary error = project_request["error"];
 		return _error(error.get("code", "INVALID_TARGET"), error.get("message", "Invalid project target."));
@@ -2020,12 +2019,8 @@ Dictionary SolersAssetService::_run_operation(const Dictionary &p_args, const St
 	manifest["provider"] = provider;
 	manifest["base_url"] = provider_config.get("base_url", String());
 	manifest["provider_options"] = provider_options;
-	if (!import_constraints.is_empty()) {
-		manifest["import_constraints"] = import_constraints;
-	}
 	manifest["target_dir"] = project_request["target_dir"];
 	manifest["import_options"] = project_request["import_options"];
-	const String session_id = p_session_id.is_empty() ? String(source.get("session_id", String())) : p_session_id;
 	if (!session_id.is_empty()) {
 		manifest["session_id"] = session_id;
 	}
@@ -2206,6 +2201,44 @@ Dictionary SolersAssetService::stage_input_image(const Ref<Image> &p_image) cons
 	return _ok(attachment);
 }
 
+void SolersAssetService::_input_task_func(void *p_userdata) {
+	InputTask *task = static_cast<InputTask *>(p_userdata);
+	Ref<Image> image;
+	if (task->source.get_type() == Variant::STRING) {
+		image.instantiate();
+		if (ImageLoader::load_image(task->source, image) != OK) {
+			image.unref();
+		}
+	} else {
+		image = task->source;
+	}
+	task->image = image;
+	task->result = task->service->stage_input_image(image);
+}
+void SolersAssetService::stage_input_image_async(const Variant &p_source, const Callable &p_callback) {
+	InputTask *task = memnew(InputTask);
+	task->service = this;
+	task->source = p_source;
+	task->callback = p_callback;
+	task->id = WorkerThreadPool::get_singleton()->add_native_task(&_input_task_func, task, false, "Stage Solers input image");
+	input_tasks.push_back(task);
+}
+void SolersAssetService::_advance_input_tasks() {
+	WorkerThreadPool *pool = WorkerThreadPool::get_singleton();
+	for (int i = input_tasks.size() - 1; i >= 0; i--) {
+		InputTask *task = input_tasks[i];
+		if (!pool->is_task_completed(task->id)) {
+			continue;
+		}
+		pool->wait_for_task_completion(task->id);
+		if (task->callback.is_valid()) {
+			task->callback.call(task->result, task->image);
+		}
+		input_tasks.remove_at(i);
+		memdelete(task);
+	}
+}
+
 String SolersAssetService::resolve_model_file(const Dictionary &p_manifest) const {
 	const String measured_path = p_manifest.get("model_file", String());
 	if (!measured_path.is_empty() && FileAccess::exists(measured_path)) {
@@ -2332,15 +2365,9 @@ Dictionary SolersAssetService::start_project_import(const Dictionary &p_args) {
 			return _error("BUDGET_CEILING_EXCEEDED", vformat("Declared max_triangles %d exceeds the project ceiling of %d (solers/import/max_source_triangles). Import a variant that fits, or raise that project setting through project.edit settings first if the project can truly afford the density.", max_triangles, budget_ceiling));
 		}
 	}
-	const int64_t plugin_triangle_limit = Dictionary(manifest.get("import_constraints", Dictionary())).get("max_triangles", 0);
 	if (max_triangles < 0 && asset_kind == "3d") {
-		if (plugin_triangle_limit > 0) {
-			max_triangles = plugin_triangle_limit;
-			triangle_budget_source = "asset_manifest";
-		} else {
-			max_triangles = ProjectSettings::get_singleton()->get_setting("solers/import/max_source_triangles", 2000000);
-			triangle_budget_source = "project_default";
-		}
+		max_triangles = ProjectSettings::get_singleton()->get_setting("solers/import/max_source_triangles", 2000000);
+		triangle_budget_source = "project_default";
 	}
 	String target_dir = String(p_args.get("target_dir", manifest.get("target_dir", String())));
 	if (target_dir.is_empty()) {
@@ -2464,9 +2491,6 @@ Dictionary SolersAssetService::start_project_import(const Dictionary &p_args) {
 	result_data["copied_file_count"] = copied_file_count;
 	result_data["authored_state_changed"] = copied_file_count > 0;
 	result_data["import_profile"] = import_profile;
-	if (plugin_triangle_limit > 0) {
-		result_data["plugin_triangle_limit"] = plugin_triangle_limit;
-	}
 	if (asset_kind == "3d" && max_triangles >= 0) {
 		result_data["max_import_triangle_count"] = max_triangles;
 		result_data["triangle_budget_source"] = triangle_budget_source;
@@ -2639,8 +2663,10 @@ void SolersAssetService::_advance_project_tasks(bool p_allow_new_imports) {
 			if (!task || !task->done.is_set()) {
 				continue;
 			}
-			const String status = String(_task_state(task).get("status", String())).to_lower();
-			if (status == "importing" || (p_allow_new_imports && status == "ready")) {
+			const Dictionary task_state = _task_state(task);
+			const String status = String(task_state.get("status", String())).to_lower();
+			const String target_dir = task_state.get("target_dir", String());
+			if (status == "importing" || (p_allow_new_imports && status == "ready" && !target_dir.is_empty())) {
 				candidates.push_back(task);
 			}
 		}
@@ -2741,6 +2767,7 @@ void SolersAssetService::_advance_project_tasks(bool p_allow_new_imports) {
 }
 
 void SolersAssetService::poll(bool p_allow_new_imports) {
+	_advance_input_tasks();
 	_advance_project_tasks(p_allow_new_imports);
 	EditorFileSystem *filesystem = _solers_editor_filesystem();
 	if (!filesystem) {
@@ -2874,6 +2901,9 @@ SolersAssetService::SolersAssetService() {
 		Dictionary manifest = SolersPlugin::read_json_file(_manifest_path(dirs[i]));
 		const String status = String(manifest.get("status", String())).to_lower();
 		if (status == "ready" || status == "importing") {
+			if (status == "ready" && String(manifest.get("target_dir", String())).is_empty()) {
+				continue;
+			}
 			Task *task = memnew(Task);
 			task->asset_id = manifest.get("id", dirs[i]);
 			task->service = this;
@@ -2915,6 +2945,11 @@ SolersAssetService::SolersAssetService() {
 }
 
 SolersAssetService::~SolersAssetService() {
+	for (InputTask *task : input_tasks) {
+		WorkerThreadPool::get_singleton()->wait_for_task_completion(task->id);
+		memdelete(task);
+	}
+	input_tasks.clear();
 	Vector<Task *> pending;
 	{
 		MutexLock lock(tasks_mutex);

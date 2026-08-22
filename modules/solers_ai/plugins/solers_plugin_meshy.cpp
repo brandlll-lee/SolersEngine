@@ -600,11 +600,6 @@ Dictionary SolersPluginMeshy::prepare_generate(const String &p_kind, const Dicti
 		provider_options["should_remesh"] = true;
 	}
 	r_manifest["provider_options"] = provider_options;
-	if (provider_options.has("target_polycount") && (model_type == "smart-topology" || (bool)provider_options.get("should_remesh", false))) {
-		Dictionary constraints;
-		constraints["max_triangles"] = String(provider_options.get("topology", "triangle")) == "quad" ? target_polycount * 2 : target_polycount;
-		r_manifest["import_constraints"] = constraints;
-	}
 
 	const String generation_mode = source_attachments.is_empty() ? "text_to_3d" : (source_attachments.size() == 1 ? "image_to_3d" : "multi_image_to_3d");
 	r_manifest["generation_mode"] = generation_mode;
@@ -735,12 +730,6 @@ Dictionary SolersPluginMeshy::prepare_operation(const Dictionary &p_operation, c
 	}
 	if (operation_id == "uv_unwrap" && (int64_t)p_source_manifest.get("polycount", 0) > 40000) {
 		return error_data("UV_UNWRAP_FACE_LIMIT", "Meshy UV Unwrap supports at most 40,000 faces; run Optimize first.");
-	}
-	if (operation_id == "remesh") {
-		Dictionary constraints;
-		const int64_t target_polycount = r_provider_options.get("target_polycount", 0);
-		constraints["max_triangles"] = String(r_provider_options.get("topology", "triangle")) == "quad" ? target_polycount * 2 : target_polycount;
-		r_provider_options["_solers_import_constraints"] = constraints;
 	}
 	return Dictionary();
 }
@@ -1060,7 +1049,7 @@ void SolersPluginMeshy::run_job(const Ref<SolersPluginJob> &p_job) {
 	Dictionary state = p_job->get_state();
 	const String prompt = state.get("prompt", String());
 	const String profile = state.get("profile", String("game_default"));
-	Dictionary provider_options = state.get("provider_options", Dictionary());
+	Dictionary provider_options = Dictionary(state.get("provider_options", Dictionary())).duplicate(true);
 	const Array source_attachments = state.get("source_attachments", Array());
 	Vector<String> headers;
 	headers.push_back("Content-Type: application/json");

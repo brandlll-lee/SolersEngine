@@ -255,6 +255,7 @@ TEST_CASE("[SolersPluginRegistry] an unknown connector extends every registry-dr
 	CHECK(SolersPluginRegistry::get_revision() == revision_before + 1);
 	CHECK(SolersPluginRegistry::get_plugin("synthetic-future") == plugin);
 	CHECK(SolersPluginRegistry::default_generator_for_kind("novel-geometry") == plugin);
+	SolersTestPaths cleanup;
 	SolersAssetService asset_service;
 	CHECK(asset_service.is_provider_configured("novel-geometry", "synthetic-future"));
 	SolersToolRegistry registry;
@@ -265,6 +266,12 @@ TEST_CASE("[SolersPluginRegistry] an unknown connector extends every registry-dr
 	CHECK(Array(Dictionary(properties.get("provider", Dictionary())).get("enum", Array())).has("synthetic-future"));
 	CHECK(Array(Dictionary(properties.get("kind", Dictionary())).get("enum", Array())).has("novel-geometry"));
 	CHECK(Dictionary(Dictionary(properties.get("provider_options", Dictionary())).get("properties", Dictionary())).has("density"));
+	Dictionary request = JSON::parse_string(R"({"kind":"novel-geometry","provider":"synthetic-future","prompt":"global asset"})");
+	const Dictionary queued = asset_service.generate(request);
+	REQUIRE(queued.get("ok", false));
+	const Dictionary queued_manifest = queued.get("data", Dictionary());
+	CHECK(String(queued_manifest.get("target_dir", "invalid")).is_empty());
+	cleanup.add("user://solers_jobs/" + String(queued_manifest.get("id", String())));
 	const String partial = "Create with @synthetic-fut";
 	int mention_start = -1;
 	CHECK(SolersMention::query_at(partial, partial.length(), mention_start) == "synthetic-fut");
@@ -377,6 +384,12 @@ TEST_CASE("[SolersPluginMeshy] generation schema and validation follow the curre
 	CHECK(Dictionary(schema.get("ai_model", Dictionary())).get("default", String()) == "latest");
 	CHECK(Array(Dictionary(schema.get("texture_resolution", Dictionary())).get("enum", Array())).has("8k"));
 	CHECK(schema.has("ultra_mode"));
+	Dictionary native_manifest;
+	native_manifest["provider_options"] = hero_options;
+	Dictionary native_args;
+	native_args["prompt"] = "native import authority";
+	CHECK(meshy.prepare_generate("3d", native_args, native_manifest).is_empty());
+	CHECK_FALSE(native_manifest.has("import_constraints"));
 }
 
 TEST_CASE("[SolersPluginMeshy] offline operation contracts") {
