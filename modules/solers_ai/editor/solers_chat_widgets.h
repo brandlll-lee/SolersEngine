@@ -210,6 +210,8 @@ class SolersSurface : public MarginContainer {
 	Color border_opaque = Color(0, 0, 0, 0);
 	bool has_border = false;
 	bool dashed_border = false;
+	bool hover_accent = false;
+	bool hovered = false;
 	bool shadow = false;
 	float radius = 16.0f;
 	float border_w = 1.0f;
@@ -224,6 +226,7 @@ public:
 		dashed_border = p_enabled;
 		queue_redraw();
 	}
+	void set_hover_accent(bool p_enabled) { hover_accent = p_enabled; }
 	void set_surface_colors(const Color &p_bg, const Color &p_border);
 
 	SolersSurface();

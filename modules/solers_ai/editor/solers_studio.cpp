@@ -318,9 +318,9 @@ void SolersStudio::_multiview_toggled(bool) {
 	_refresh_reference_slots();
 }
 
-void SolersStudio::_reference_gui_input(const Ref<InputEvent> &p_event) {
+void SolersStudio::_reference_gui_input(const Ref<InputEvent> &p_event, Button *p_button) {
 	const Ref<InputEventKey> key = p_event;
-	if (!key.is_valid() || !key->is_pressed() || key->is_echo() || key->get_keycode() != Key::V || !key->is_command_or_control_pressed()) {
+	if (!p_button->is_hovered() || !key.is_valid() || !key->is_pressed() || key->is_echo() || key->get_keycode() != Key::V || !key->is_command_or_control_pressed()) {
 		return;
 	}
 	DisplayServer *display = DisplayServer::get_singleton();
@@ -610,9 +610,6 @@ void SolersStudio::_project_selected(int p_index) {
 	}
 }
 void SolersStudio::_show_manifest(const Dictionary &p_manifest) {
-	if (selected_catalog.is_empty() && p_manifest == selected_manifest) {
-		return;
-	}
 	selected_manifest = p_manifest;
 	selected_catalog.clear();
 	asset_title->set_text(p_manifest.get("name", p_manifest.get("id", TTRC("Untitled asset"))));
@@ -628,12 +625,11 @@ void SolersStudio::_show_manifest(const Dictionary &p_manifest) {
 		}
 	}
 	const String model_path = assets->resolve_model_file(p_manifest);
-	const bool model_changed = model_path != selected_model_path;
-	if (model_changed) {
-		selected_model_path = model_path;
+	if (model_path != loaded_model_path || (!model_path.is_empty() && !model_preview->has_model())) {
+		loaded_model_path.clear();
 		model_preview->clear_model();
-		if (!model_path.is_empty()) {
-			model_preview->load_model(model_path);
+		if (!model_path.is_empty() && model_preview->load_model(model_path) == OK) {
+			loaded_model_path = model_path;
 		}
 	}
 	String project_path;
@@ -681,7 +677,9 @@ void SolersStudio::_sync_workspace() {
 	const int64_t vertex_count = selected_manifest.get("vertex_count", 0);
 	geometry_stats->set_text(polycount > 0 || vertex_count > 0 ? vformat(TTRC("%s polygons | %s vertices"), String::num_int64(polycount), String::num_int64(vertex_count)) : String());
 	geometry_stats->set_visible(!geometry_stats->get_text().is_empty());
-	asset_actions->set_visible(has_manifest && has_model && status != "queued" && status != "running" && status != "importing");
+	const bool ready = has_manifest && status == "ready";
+	asset_actions->set_visible(ready);
+	asset_status->set_visible(empty || !ready);
 	remesh_button->set_disabled(remesh_operation.is_empty());
 	const bool has_variant = has_catalog && catalog_variant->get_item_count() > 0;
 	catalog_variant->set_visible(has_variant);
@@ -695,9 +693,9 @@ void SolersStudio::_refresh_text() {
 	options_toggle->set_text(TTRC("Options"));
 	generate_button->set_text(TTRC("Generate model"));
 	empty_generate_button->set_text(TTRC("Generate model"));
-	animation_button->set_text(TTRC("Animation"));
-	remesh_button->set_text(TTRC("Remesh"));
-	import_button->set_text(TTRC("Import to project"));
+	animation_button->set_tooltip_text(TTRC("Animation"));
+	remesh_button->set_tooltip_text(TTRC("Remesh"));
+	import_button->set_tooltip_text(TTRC("Import to project"));
 	acquire_button->set_text(TTRC("Add to project"));
 	catalog_empty_label->set_text(TTRC("No catalog assets found."));
 	project_empty_label->set_text(TTRC("Your generated assets will appear here."));
@@ -848,6 +846,7 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	reference_well->set_v_size_flags(SIZE_EXPAND_FILL);
 	reference_well->configure(tokens.card, tokens.border, tokens.radius_list_thumb, 0, false);
 	reference_well->set_dashed_border(true);
+	reference_well->set_hover_accent(true);
 	reference_buttons[0] = _studio_add<Button>(reference_well);
 	reference_buttons[0]->set_h_size_flags(SIZE_EXPAND_FILL);
 	reference_buttons[0]->set_v_size_flags(SIZE_EXPAND_FILL);
@@ -877,6 +876,7 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 		slot->set_custom_minimum_size(Size2(0, 64 * EDSCALE));
 		slot->configure(tokens.card, tokens.border, tokens.radius_list_thumb, 0, false);
 		slot->set_dashed_border(true);
+		slot->set_hover_accent(true);
 		reference_buttons[i] = _studio_add<Button>(slot);
 		reference_buttons[i]->set_h_size_flags(SIZE_EXPAND_FILL);
 		reference_buttons[i]->set_v_size_flags(SIZE_EXPAND_FILL);
@@ -951,16 +951,21 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	asset_progress = _studio_add<ProgressBar>(center);
 	asset_progress->set_show_percentage(false);
 	asset_progress->set_custom_minimum_size(Size2(0, 6 * EDSCALE));
-	asset_actions = _studio_add<HBoxContainer>(center);
-	asset_actions->set_alignment(BoxContainer::ALIGNMENT_CENTER);
-	asset_actions->add_theme_constant_override(SNAME("separation"), int(8 * EDSCALE));
-	animation_button = _studio_add<Button>(asset_actions);
-	animation_button->set_button_icon(SolersIcons::get(SNAME("run_sprint"), int(16 * EDSCALE)));
-	remesh_button = _studio_add<Button>(asset_actions);
-	remesh_button->set_button_icon(SolersIcons::get(SNAME("adjustments"), int(16 * EDSCALE)));
-	import_button = _studio_add<Button>(asset_actions);
+	asset_actions = _studio_add<SolersSurface>(center);
+	asset_actions->set_h_size_flags(SIZE_SHRINK_CENTER);
+	asset_actions->configure(tokens.card, tokens.border, tokens.radius_home_tile, 4, false);
+	HBoxContainer *action_row = _studio_add<HBoxContainer>(asset_actions);
+	action_row->add_theme_constant_override(SNAME("separation"), int(4 * EDSCALE));
+	import_button = _studio_add<Button>(action_row);
 	import_button->set_button_icon(SolersIcons::get(SNAME("tool_export"), int(16 * EDSCALE)));
-	import_button->set_theme_type_variation(SNAME("SolersPrimaryButton"));
+	animation_button = _studio_add<Button>(action_row);
+	animation_button->set_button_icon(SolersIcons::get(SNAME("run_sprint"), int(16 * EDSCALE)));
+	remesh_button = _studio_add<Button>(action_row);
+	remesh_button->set_button_icon(SolersIcons::get(SNAME("adjustments"), int(16 * EDSCALE)));
+	for (Button *button : { animation_button, remesh_button, import_button }) {
+		button->set_theme_type_variation(SNAME("SolersStudioActionButton"));
+		button->set_custom_minimum_size(Size2(38, 34) * EDSCALE);
+	}
 	catalog_variant = _studio_add<OptionButton>(center);
 	acquire_button = _studio_add<Button>(center);
 	acquire_button->set_theme_type_variation(SNAME("SolersPrimaryButton"));
@@ -1044,7 +1049,8 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	catalog_provider->connect(SceneStringName(item_selected), callable_mp(this, &SolersStudio::_catalog_provider_selected));
 	for (Button *button : reference_buttons) {
 		button->connect(SceneStringName(pressed), callable_mp(reference_dialog, &FileDialog::popup_file_dialog));
-		button->connect(SceneStringName(gui_input), callable_mp(this, &SolersStudio::_reference_gui_input));
+		button->connect(SceneStringName(mouse_entered), callable_mp((Control *)button, &Control::grab_focus).bind(true));
+		button->connect(SceneStringName(gui_input), callable_mp(this, &SolersStudio::_reference_gui_input).bind(button));
 		button->set_drag_forwarding(Callable(), callable_mp(this, &SolersStudio::_can_drop_reference).bind(button), callable_mp(this, &SolersStudio::_drop_reference).bind(button));
 	}
 	reference_dialog->connect(SNAME("files_selected"), callable_mp(this, &SolersStudio::_reference_files_selected));

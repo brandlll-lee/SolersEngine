@@ -35,6 +35,7 @@
 class Camera3D;
 class Node3D;
 class SubViewport;
+class ViewPanner;
 
 class SolersModelPreview : public SubViewportContainer {
 	GDCLASS(SolersModelPreview, SubViewportContainer);
@@ -47,8 +48,11 @@ class SolersModelPreview : public SubViewportContainer {
 	float distance_scale = 1.0f;
 	float orbit_yaw = 0.45f;
 	float orbit_pitch = -0.18f;
+	Ref<ViewPanner> panner;
 
 	void _update_camera();
+	void _pan_view(Vector2 p_delta, Ref<InputEvent> p_event);
+	void _zoom_view(float p_factor, Vector2 p_origin, Ref<InputEvent> p_event);
 
 protected:
 	static void _bind_methods() {}

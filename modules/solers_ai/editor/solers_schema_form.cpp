@@ -93,7 +93,7 @@ void SolersSchemaForm::_replace_images(const PackedStringArray &p_files, Control
 void SolersSchemaForm::_image_gui_input(const Ref<InputEvent> &p_event, Control *p_field, Button *p_pick) {
 	const Ref<InputEventKey> key = p_event;
 	DisplayServer *display = DisplayServer::get_singleton();
-	if (key.is_valid() && key->is_pressed() && !key->is_echo() && key->get_keycode() == Key::V && key->is_command_or_control_pressed() && display && display->clipboard_has_image()) {
+	if (p_pick->is_hovered() && key.is_valid() && key->is_pressed() && !key->is_echo() && key->get_keycode() == Key::V && key->is_command_or_control_pressed() && display && display->clipboard_has_image()) {
 		const uint64_t generation = (uint64_t)p_field->get_meta("image_generation", 0) + 1;
 		p_field->set_meta("image_generation", generation);
 		p_field->set_meta("image_values", Array());
@@ -209,6 +209,7 @@ Control *SolersSchemaForm::_create_field(const StringName &p_name, const Diction
 		SolersSurface *well = memnew(SolersSurface);
 		well->configure(tokens.card, tokens.border, tokens.radius_home_tile, 0, false);
 		well->set_dashed_border(true);
+		well->set_hover_accent(true);
 		well->set_custom_minimum_size(Size2(0, 96 * EDSCALE));
 		Button *pick = memnew(Button(TTRC("Add reference image")));
 		FileDialog *dialog = memnew(FileDialog);
@@ -219,6 +220,7 @@ Control *SolersSchemaForm::_create_field(const StringName &p_name, const Diction
 		pick->set_flat(true);
 		pick->set_button_icon(SolersIcons::get(SNAME("tool_capture"), int(24 * EDSCALE)));
 		pick->connect(SceneStringName(pressed), callable_mp(dialog, &FileDialog::popup_file_dialog));
+		pick->connect(SceneStringName(mouse_entered), callable_mp((Control *)pick, &Control::grab_focus).bind(true));
 		pick->connect(SceneStringName(gui_input), callable_mp(this, &SolersSchemaForm::_image_gui_input).bind(well, pick));
 		pick->set_drag_forwarding(Callable(), callable_mp(this, &SolersSchemaForm::_can_drop_image).bind(well), callable_mp(this, &SolersSchemaForm::_drop_image).bind(well, pick));
 		well->add_child(pick);

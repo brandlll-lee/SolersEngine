@@ -37,6 +37,8 @@
 #include "core/os/keyboard.h"
 #include "core/string/ustring.h"
 #include "core/variant/dictionary.h"
+#include "editor/editor_node.h"
+#include "editor/editor_string_names.h"
 #include "editor/themes/editor_scale.h"
 #include "main/app_icon.gen.h"
 #include "scene/gui/box_container.h"
@@ -614,11 +616,20 @@ void SolersSurface::configure(const Color &p_bg, const Color &p_border, float p_
 
 void SolersSurface::_notification(int p_what) {
 	switch (p_what) {
+		case NOTIFICATION_MOUSE_ENTER:
+		case NOTIFICATION_MOUSE_EXIT: {
+			hovered = p_what == NOTIFICATION_MOUSE_ENTER;
+			if (hover_accent) {
+				queue_redraw();
+			}
+		} break;
 		case NOTIFICATION_DRAW: {
 			const float ed = EDSCALE;
 			const Rect2 r(Point2(), get_size());
 			const float rad = radius * ed;
-			const float bw = MAX(1.0f, border_w * ed);
+			const bool accent = hover_accent && hovered && EditorNode::get_singleton();
+			const Color draw_border = accent ? EditorNode::get_singleton()->get_editor_theme()->get_color(SNAME("accent_color"), EditorStringName(Editor)) : border_opaque;
+			const float bw = MAX(1.0f, border_w * ed * (accent ? 2.0f : 1.0f));
 
 			Ref<StyleBoxFlat> sb;
 			sb.instantiate();
@@ -644,10 +655,10 @@ void SolersSurface::_notification(int p_what) {
 				draw_style_box(sb, r);
 				const float inset = bw * 0.5f;
 				const float dash = 5.0f * ed;
-				draw_dashed_line(Point2(rad, inset), Point2(r.size.x - rad, inset), border_opaque, bw, dash);
-				draw_dashed_line(Point2(rad, r.size.y - inset), Point2(r.size.x - rad, r.size.y - inset), border_opaque, bw, dash);
-				draw_dashed_line(Point2(inset, rad), Point2(inset, r.size.y - rad), border_opaque, bw, dash);
-				draw_dashed_line(Point2(r.size.x - inset, rad), Point2(r.size.x - inset, r.size.y - rad), border_opaque, bw, dash);
+				draw_dashed_line(Point2(rad, inset), Point2(r.size.x - rad, inset), draw_border, bw, dash);
+				draw_dashed_line(Point2(rad, r.size.y - inset), Point2(r.size.x - rad, r.size.y - inset), draw_border, bw, dash);
+				draw_dashed_line(Point2(inset, rad), Point2(inset, r.size.y - rad), draw_border, bw, dash);
+				draw_dashed_line(Point2(r.size.x - inset, rad), Point2(r.size.x - inset, r.size.y - rad), draw_border, bw, dash);
 			} else if (has_border) {
 				// Outer fill = the (now opaque) hairline color.
 				sb->set_bg_color(border_opaque);

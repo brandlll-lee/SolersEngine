@@ -32,11 +32,13 @@
 
 #include "core/input/input_event.h"
 #include "core/math/math_funcs.h"
+#include "core/object/callable_mp.h"
 #include "editor/editor_node.h"
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/importer_mesh_instance_3d.h"
 #include "scene/3d/light_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
+#include "scene/gui/view_panner.h"
 #include "scene/main/viewport.h"
 #include "scene/resources/3d/importer_mesh.h"
 #include "scene/resources/3d/sky_material.h"
@@ -93,6 +95,18 @@ void SolersModelPreview::_update_camera() {
 	camera->set_perspective(42.0f, MAX(model_radius * 0.01f, 0.01f), MAX(distance + model_radius * 4.0f, 10.0f));
 }
 
+void SolersModelPreview::_pan_view(Vector2 p_delta, Ref<InputEvent>) {
+	const float depth = camera->get_global_position().distance_to(model_center);
+	const Vector2 center = get_size() * 0.5f;
+	model_center += camera->project_position(center, depth) - camera->project_position(center + p_delta, depth);
+	_update_camera();
+}
+
+void SolersModelPreview::_zoom_view(float p_factor, Vector2, Ref<InputEvent>) {
+	distance_scale = CLAMP(distance_scale / p_factor, 0.35f, 4.0f);
+	_update_camera();
+}
+
 void SolersModelPreview::clear_model() {
 	if (model_root) {
 		model_root->queue_free();
@@ -109,10 +123,7 @@ void SolersModelPreview::gui_input(const Ref<InputEvent> &p_event) {
 		accept_event();
 		return;
 	}
-	const Ref<InputEventMouseButton> button = p_event;
-	if (button.is_valid() && button->is_pressed() && (button->get_button_index() == MouseButton::WHEEL_UP || button->get_button_index() == MouseButton::WHEEL_DOWN)) {
-		distance_scale = CLAMP(distance_scale * (button->get_button_index() == MouseButton::WHEEL_UP ? 0.9f : 1.1f), 0.35f, 4.0f);
-		_update_camera();
+	if (panner->gui_input(p_event, Rect2(Point2(), get_size()))) {
 		accept_event();
 	}
 }
@@ -155,6 +166,9 @@ Error SolersModelPreview::load_model(const String &p_path) {
 SolersModelPreview::SolersModelPreview() {
 	set_stretch(true);
 	set_focus_mode(FOCUS_ALL);
+	panner.instantiate();
+	panner->set_callbacks(callable_mp(this, &SolersModelPreview::_pan_view), callable_mp(this, &SolersModelPreview::_zoom_view));
+	panner->setup_warped_panning(this, true);
 	viewport = memnew(SubViewport);
 	Ref<World3D> world;
 	world.instantiate();

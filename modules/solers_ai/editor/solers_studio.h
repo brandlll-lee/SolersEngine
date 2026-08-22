@@ -89,7 +89,7 @@ class SolersStudio : public PanelContainer {
 	Label *geometry_stats = nullptr;
 	ProgressBar *asset_progress = nullptr;
 	Control *empty_stage = nullptr;
-	HBoxContainer *asset_actions = nullptr;
+	SolersSurface *asset_actions = nullptr;
 	Button *empty_generate_button = nullptr, *animation_button = nullptr, *remesh_button = nullptr, *import_button = nullptr;
 	AcceptDialog *remesh_dialog = nullptr;
 	SolersSchemaForm *remesh_form = nullptr;
@@ -105,7 +105,7 @@ class SolersStudio : public PanelContainer {
 	TabContainer *library_tabs = nullptr;
 	Label *attribution_label = nullptr;
 	Dictionary selected_manifest;
-	String selected_model_path;
+	String loaded_model_path;
 	Array project_manifests;
 	HashMap<String, Ref<Texture2D>> project_previews;
 	Dictionary selected_catalog;
@@ -146,7 +146,7 @@ class SolersStudio : public PanelContainer {
 	void _refresh_reference_slots();
 	void _clear_references();
 	void _multiview_toggled(bool p_enabled);
-	void _reference_gui_input(const Ref<InputEvent> &p_event);
+	void _reference_gui_input(const Ref<InputEvent> &p_event, Button *p_button);
 	void _external_reference_files_dropped(const PackedStringArray &p_files);
 	bool _can_drop_reference(const Point2 &p_point, const Variant &p_data, Control *p_from) const;
 	void _drop_reference(const Point2 &p_point, const Variant &p_data, Control *p_from);

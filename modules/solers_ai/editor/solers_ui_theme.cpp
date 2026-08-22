@@ -32,6 +32,7 @@
 
 #include "core/os/os.h"
 #include "core/string/translation_server.h"
+#include "editor/editor_node.h"
 #include "editor/editor_string_names.h"
 #include "editor/themes/builtin_fonts.gen.h"
 #include "editor/themes/editor_scale.h"
@@ -381,6 +382,18 @@ Ref<Theme> SolersUITheme::create() {
 	for (const StringName &name : { SceneStringName(font_color), SNAME("font_hover_color"), SNAME("font_pressed_color"), SNAME("font_focus_color") }) {
 		theme->set_color(name, "SolersStudioSegment", tokens.text);
 	}
+	theme->set_type_variation(SNAME("SolersStudioActionButton"), SNAME("Button"));
+	theme->set_stylebox(CoreStringName(normal), "SolersStudioActionButton", _solers_flat(Color(0, 0, 0, 0), card_radius, Color(), 0, 6 * EDSCALE));
+	theme->set_stylebox(SceneStringName(hover), "SolersStudioActionButton", _solers_flat(tokens.card_hover, card_radius, Color(), 0, 6 * EDSCALE));
+	theme->set_stylebox(SceneStringName(pressed), "SolersStudioActionButton", _solers_flat(tokens.card_selected, card_radius, Color(), 0, 6 * EDSCALE));
+	theme->set_stylebox(SNAME("disabled"), "SolersStudioActionButton", _solers_flat(Color(0, 0, 0, 0), card_radius, Color(), 0, 6 * EDSCALE));
+	theme->set_stylebox(SNAME("focus"), "SolersStudioActionButton", control_focus);
+	const Color editor_accent = EditorNode::get_singleton() ? EditorNode::get_singleton()->get_editor_theme()->get_color(SNAME("accent_color"), EditorStringName(Editor)) : tokens.text;
+	theme->set_color(SNAME("icon_normal_color"), "SolersStudioActionButton", tokens.text_dim);
+	theme->set_color(SNAME("icon_hover_color"), "SolersStudioActionButton", editor_accent);
+	theme->set_color(SNAME("icon_pressed_color"), "SolersStudioActionButton", editor_accent);
+	theme->set_color(SNAME("icon_focus_color"), "SolersStudioActionButton", editor_accent);
+	theme->set_color(SNAME("icon_disabled_color"), "SolersStudioActionButton", tokens.text_dim);
 	theme->set_stylebox(SceneStringName(panel), "PopupMenu", _solers_flat(tokens.surface, product_radius, Color(), 0, 6 * EDSCALE));
 	theme->set_stylebox(SceneStringName(hover), "PopupMenu", _solers_flat(tokens.card_hover, card_radius, Color(), 0, 6 * EDSCALE));
 	theme->set_color(SceneStringName(font_color), "PopupMenu", tokens.text);
