@@ -28,13 +28,18 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
+#include "core/config/project_settings.h"
+#include "core/io/dir_access.h"
+#include "core/io/image.h"
 #include "core/io/json.h"
+#include "core/object/callable_mp.h"
 #include "core/object/message_queue.h"
 #include "core/string/translation_server.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
+#include "scene/gui/file_dialog.h"
 #include "scene/gui/label.h"
 #include "scene/gui/split_container.h"
 #include "scene/main/scene_tree.h"
@@ -52,6 +57,15 @@
 TEST_FORCE_LINK(test_solers_editor)
 
 namespace TestSolersEditor {
+
+static Dictionary _stage_schema_image(const Ref<Image> &) {
+	Dictionary data;
+	data["local_path"] = "user://staged-schema-image.png";
+	Dictionary result;
+	result["ok"] = true;
+	result["data"] = data;
+	return result;
+}
 
 class ScopedEditorLanguage {
 	String setting = "interface/editor/localization/editor_language";
@@ -133,6 +147,7 @@ TEST_CASE("[SolersStudio][SceneTree] schema form projects unknown connector fiel
 	const Dictionary presentation = JSON::parse_string(R"({"controls":{"future_mode":{"control":"segmented"},"future_count":{"control":"slider"},"future_formats":{"control":"multi_select"},"future_prompt":{"control":"multiline"},"future_image":{"control":"image"}}})");
 	SolersSchemaForm *form = memnew(SolersSchemaForm);
 	SceneTree::get_singleton()->get_root()->add_child(form);
+	form->set_image_stager(callable_mp_static(_stage_schema_image));
 	form->set_schema(properties, extras, presentation);
 	CHECK(form->find_children("*", "CheckButton", true, false).size() == 1);
 	CHECK(form->get_values().get("future_mode", String()) == "beta");
@@ -141,6 +156,16 @@ TEST_CASE("[SolersStudio][SceneTree] schema form projects unknown connector fiel
 	CHECK(Array(form->get_values().get("future_formats", Array())).has("glb"));
 	CHECK(form->get_values().get("future_prompt", String()) == "Detailed");
 	CHECK(form->find_children("*", "SolersSurface", true, false).size() == 1);
+	const String source_path = "user://solers-schema-image.png";
+	Ref<Image> image = Image::create_empty(1, 1, false, Image::FORMAT_RGBA8);
+	REQUIRE(image->save_png(source_path) == OK);
+	const TypedArray<Node> dialogs = form->find_children("*", "FileDialog", true, false);
+	REQUIRE(dialogs.size() == 1);
+	PackedStringArray files;
+	files.push_back(source_path);
+	Object::cast_to<FileDialog>(dialogs[0])->emit_signal(SNAME("files_selected"), files);
+	DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(source_path));
+	CHECK(form->get_values().get("future_image", String()) == "user://staged-schema-image.png");
 	Dictionary changed;
 	changed["future_mode"] = "alpha";
 	changed["future_count"] = 7;

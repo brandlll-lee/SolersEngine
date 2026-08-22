@@ -30,6 +30,7 @@
 
 #pragma once
 #include "scene/gui/box_container.h"
+class Button;
 class Image;
 class InputEvent;
 class SolersSchemaForm : public VBoxContainer {
@@ -38,11 +39,11 @@ class SolersSchemaForm : public VBoxContainer {
 	HashMap<StringName, Control *> fields;
 	Callable image_stager;
 	Control *_create_field(const StringName &p_name, const Dictionary &p_schema, const Dictionary &p_extras, const Dictionary &p_presentation, const Variant &p_default);
-	void _image_gui_input(const Ref<InputEvent> &p_event, Control *p_field);
+	void _image_gui_input(const Ref<InputEvent> &p_event, Control *p_field, Button *p_pick);
 	bool _can_drop_image(const Point2 &, const Variant &p_data, Control *) const;
-	void _drop_image(const Point2 &, const Variant &p_data, Control *p_field);
-	void _replace_images(const PackedStringArray &p_files, Control *p_field);
-	void _append_image(Control *p_field, const Ref<Image> &p_image);
+	void _drop_image(const Point2 &, const Variant &p_data, Control *p_field, Button *p_pick);
+	void _replace_images(const PackedStringArray &p_files, Control *p_field, Button *p_pick);
+	void _append_image(Control *p_field, Button *p_pick, const Ref<Image> &p_image);
 
 protected:
 	static void _bind_methods() {}

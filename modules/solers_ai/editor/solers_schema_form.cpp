@@ -51,7 +51,7 @@
 #include "scene/resources/image_texture.h"
 #include "servers/display/display_server.h"
 
-void SolersSchemaForm::_append_image(Control *p_field, const Ref<Image> &p_image) {
+void SolersSchemaForm::_append_image(Control *p_field, Button *p_pick, const Ref<Image> &p_image) {
 	if (!image_stager.is_valid() || p_image.is_null() || p_image->is_empty()) {
 		return;
 	}
@@ -68,30 +68,29 @@ void SolersSchemaForm::_append_image(Control *p_field, const Ref<Image> &p_image
 	}
 	values.push_back(path);
 	p_field->set_meta("image_values", values);
-	Button *pick = Object::cast_to<Button>(p_field->get_child(0));
-	pick->set_text(values.size() == 1 ? TTRC("1 reference image") : vformat(TTRC("%d reference images"), values.size()));
-	pick->set_button_icon(ImageTexture::create_from_image(p_image));
+	p_pick->set_text(values.size() == 1 ? TTRC("1 reference image") : vformat(TTRC("%d reference images"), values.size()));
+	p_pick->set_button_icon(ImageTexture::create_from_image(p_image));
 }
 
-void SolersSchemaForm::_replace_images(const PackedStringArray &p_files, Control *p_field) {
+void SolersSchemaForm::_replace_images(const PackedStringArray &p_files, Control *p_field, Button *p_pick) {
 	p_field->set_meta("image_values", Array());
-	Object::cast_to<Button>(p_field->get_child(0))->set_text(TTRC("Add reference image"));
-	Object::cast_to<Button>(p_field->get_child(0))->set_button_icon(SolersIcons::get(SNAME("tool_capture"), int(24 * EDSCALE)));
+	p_pick->set_text(TTRC("Add reference image"));
+	p_pick->set_button_icon(SolersIcons::get(SNAME("tool_capture"), int(24 * EDSCALE)));
 	for (const String &path : p_files) {
 		Ref<Image> image;
 		image.instantiate();
 		if (ImageLoader::load_image(path, image) == OK) {
-			_append_image(p_field, image);
+			_append_image(p_field, p_pick, image);
 		}
 	}
 }
 
-void SolersSchemaForm::_image_gui_input(const Ref<InputEvent> &p_event, Control *p_field) {
+void SolersSchemaForm::_image_gui_input(const Ref<InputEvent> &p_event, Control *p_field, Button *p_pick) {
 	const Ref<InputEventKey> key = p_event;
 	DisplayServer *display = DisplayServer::get_singleton();
 	if (key.is_valid() && key->is_pressed() && !key->is_echo() && key->get_keycode() == Key::V && key->is_command_or_control_pressed() && display && display->clipboard_has_image()) {
 		p_field->set_meta("image_values", Array());
-		_append_image(p_field, display->clipboard_get_image());
+		_append_image(p_field, p_pick, display->clipboard_get_image());
 		accept_event();
 	}
 }
@@ -100,8 +99,8 @@ bool SolersSchemaForm::_can_drop_image(const Point2 &, const Variant &p_data, Co
 	return String(Dictionary(p_data).get("type", String())) == "files";
 }
 
-void SolersSchemaForm::_drop_image(const Point2 &, const Variant &p_data, Control *p_field) {
-	_replace_images(Dictionary(p_data).get("files", PackedStringArray()), p_field);
+void SolersSchemaForm::_drop_image(const Point2 &, const Variant &p_data, Control *p_field, Button *p_pick) {
+	_replace_images(Dictionary(p_data).get("files", PackedStringArray()), p_field, p_pick);
 }
 
 Control *SolersSchemaForm::_create_field(const StringName &p_name, const Dictionary &p_schema, const Dictionary &p_extras, const Dictionary &p_presentation, const Variant &p_default) {
@@ -209,12 +208,12 @@ Control *SolersSchemaForm::_create_field(const StringName &p_name, const Diction
 		dialog->set_access(FileDialog::ACCESS_FILESYSTEM);
 		dialog->set_file_mode(FileDialog::FILE_MODE_OPEN_FILES);
 		well->add_child(dialog, false, INTERNAL_MODE_FRONT);
-		dialog->connect(SNAME("files_selected"), callable_mp(this, &SolersSchemaForm::_replace_images).bind(well));
+		dialog->connect(SNAME("files_selected"), callable_mp(this, &SolersSchemaForm::_replace_images).bind(well, pick));
 		pick->set_flat(true);
 		pick->set_button_icon(SolersIcons::get(SNAME("tool_capture"), int(24 * EDSCALE)));
 		pick->connect(SceneStringName(pressed), callable_mp(dialog, &FileDialog::popup_file_dialog));
-		pick->connect(SceneStringName(gui_input), callable_mp(this, &SolersSchemaForm::_image_gui_input).bind(well));
-		pick->set_drag_forwarding(Callable(), callable_mp(this, &SolersSchemaForm::_can_drop_image).bind(well), callable_mp(this, &SolersSchemaForm::_drop_image).bind(well));
+		pick->connect(SceneStringName(gui_input), callable_mp(this, &SolersSchemaForm::_image_gui_input).bind(well, pick));
+		pick->set_drag_forwarding(Callable(), callable_mp(this, &SolersSchemaForm::_can_drop_image).bind(well), callable_mp(this, &SolersSchemaForm::_drop_image).bind(well, pick));
 		well->add_child(pick);
 		well->set_meta("field_kind", "image");
 		field = well;
