@@ -69,12 +69,14 @@ void SolersSchemaForm::_append_image(Control *p_field, Button *p_pick, const Ref
 	values.push_back(path);
 	p_field->set_meta("image_values", values);
 	p_pick->set_text(values.size() == 1 ? TTRC("1 reference image") : vformat(TTRC("%d reference images"), values.size()));
+	p_pick->set_expand_icon(true);
 	p_pick->set_button_icon(ImageTexture::create_from_image(p_image));
 }
 
 void SolersSchemaForm::_replace_images(const PackedStringArray &p_files, Control *p_field, Button *p_pick) {
 	p_field->set_meta("image_values", Array());
 	p_pick->set_text(TTRC("Add reference image"));
+	p_pick->set_expand_icon(false);
 	p_pick->set_button_icon(SolersIcons::get(SNAME("tool_capture"), int(24 * EDSCALE)));
 	for (const String &path : p_files) {
 		Ref<Image> image;
