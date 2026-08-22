@@ -369,8 +369,8 @@ Dictionary SolersPluginMeshy::get_profile() const {
 	profile["supports_catalog"] = false;
 	profile["supports_resume"] = true;
 	profile["generation_presets"] = JSON::parse_string(R"([
-		{"id":"meshy-7","label":"Meshy 7","description":"Highest detail and fidelity","default":true,"kind":"3d","options":{"model_type":"standard","ai_model":"latest","should_texture":true,"image_enhancement":true,"enable_pbr":true,"texture_resolution":"2k"},"min_reference_images":1,"max_reference_images":4,"featured_fields":["pose_mode","image_enhancement","enable_pbr","texture_resolution"],"hidden_fields":["model_type","ai_model","should_remesh","topology","target_polycount"],"presentation":{"order":["pose_mode","image_enhancement","enable_pbr","texture_resolution"],"controls":{"pose_mode":{"control":"segmented","labels":{"":"Custom","a-pose":"A Pose","t-pose":"T Pose"}},"texture_resolution":{"control":"segmented"}}}},
-		{"id":"meshy-t2","label":"Meshy T2","description":"Game-ready topology from one image","kind":"3d","options":{"model_type":"smart-topology","ai_model":"meshy-t2","target_polycount":4000,"should_texture":true,"enable_pbr":true,"texture_resolution":"2k"},"min_reference_images":1,"max_reference_images":1,"featured_fields":["target_polycount","pose_mode","enable_pbr","texture_resolution"],"hidden_fields":["model_type","ai_model","ultra_mode","image_enhancement","remove_lighting","should_remesh","topology"],"presentation":{"order":["target_polycount","pose_mode","enable_pbr","texture_resolution"],"controls":{"target_polycount":{"control":"slider","minimum":100,"maximum":15000},"pose_mode":{"control":"segmented","labels":{"":"Custom","a-pose":"A Pose","t-pose":"T Pose"}},"texture_resolution":{"control":"segmented"}}}}
+		{"id":"meshy-7","label":"Meshy 7","description":"Highest detail and fidelity","default":true,"kind":"3d","options":{"model_type":"standard","ai_model":"latest","should_texture":true,"image_enhancement":true,"enable_pbr":true,"texture_resolution":"2k"},"min_reference_images":1,"max_reference_images":4,"featured_fields":["pose_mode","image_enhancement","enable_pbr","texture_resolution"],"hidden_fields":["model_type","ai_model","should_remesh","topology","target_polycount"],"presentation":{"order":["pose_mode","image_enhancement","enable_pbr","texture_resolution"],"controls":{"pose_mode":{"control":"segmented","labels":{"":"Custom","a-pose":"A Pose","t-pose":"T Pose"}},"texture_resolution":{"control":"segmented"},"texture_prompt":{"control":"multiline"},"texture_image_url":{"control":"image"},"texture_image_urls":{"control":"image"},"target_formats":{"control":"multi_select"}}}},
+		{"id":"meshy-t2","label":"Meshy T2","description":"Game-ready topology from one image","kind":"3d","options":{"model_type":"smart-topology","ai_model":"meshy-t2","target_polycount":4000,"should_texture":true,"enable_pbr":true,"texture_resolution":"2k"},"min_reference_images":1,"max_reference_images":1,"featured_fields":["target_polycount","pose_mode","enable_pbr","texture_resolution"],"hidden_fields":["model_type","ai_model","ultra_mode","image_enhancement","remove_lighting","should_remesh","topology"],"presentation":{"order":["target_polycount","pose_mode","enable_pbr","texture_resolution"],"controls":{"target_polycount":{"control":"slider","minimum":100,"maximum":15000},"pose_mode":{"control":"segmented","labels":{"":"Custom","a-pose":"A Pose","t-pose":"T Pose"}},"texture_resolution":{"control":"segmented"},"texture_prompt":{"control":"multiline"},"texture_image_url":{"control":"image"},"texture_image_urls":{"control":"image"},"target_formats":{"control":"multi_select"}}}}
 	])");
 	return profile;
 }
@@ -784,6 +784,36 @@ static String _attachment_data_uri(const Dictionary &p_attachment, String &r_err
 	return vformat("data:%s;base64,%s", mime, CryptoCore::b64_encode_str(bytes.ptr(), bytes.size()));
 }
 
+static bool _resolve_local_texture_images(Dictionary &r_body, String &r_error) {
+	for (const StringName &name : { SNAME("texture_image_url"), SNAME("texture_image_urls") }) {
+		if (!r_body.has(name)) {
+			continue;
+		}
+		const bool array_value = r_body[name].get_type() == Variant::ARRAY;
+		Array values;
+		if (array_value) {
+			values = r_body[name];
+		} else {
+			values.push_back(r_body[name]);
+		}
+		for (int i = 0; i < values.size(); i++) {
+			const String path = values[i];
+			if (!path.begins_with("user://")) {
+				continue;
+			}
+			Dictionary attachment;
+			attachment["local_path"] = path;
+			attachment["mime_type"] = "image/png";
+			values[i] = _attachment_data_uri(attachment, r_error);
+			if (String(values[i]).is_empty()) {
+				return false;
+			}
+		}
+		r_body[name] = array_value ? Variant(values) : values[0];
+	}
+	return true;
+}
+
 static Dictionary _select_options(const Dictionary &p_options, const char *const *p_names, int p_name_count) {
 	Dictionary selected;
 	for (int i = 0; i < p_name_count; i++) {
@@ -1030,7 +1060,7 @@ void SolersPluginMeshy::run_job(const Ref<SolersPluginJob> &p_job) {
 	Dictionary state = p_job->get_state();
 	const String prompt = state.get("prompt", String());
 	const String profile = state.get("profile", String("game_default"));
-	const Dictionary provider_options = state.get("provider_options", Dictionary());
+	Dictionary provider_options = state.get("provider_options", Dictionary());
 	const Array source_attachments = state.get("source_attachments", Array());
 	Vector<String> headers;
 	headers.push_back("Content-Type: application/json");
@@ -1058,6 +1088,11 @@ void SolersPluginMeshy::run_job(const Ref<SolersPluginJob> &p_job) {
 			state["stage"] = "draft";
 		}
 		p_job->set_state(state);
+		return;
+	}
+	String texture_error;
+	if (!_resolve_local_texture_images(provider_options, texture_error)) {
+		p_job->fail("ATTACHMENT_READ_FAILED", texture_error);
 		return;
 	}
 
