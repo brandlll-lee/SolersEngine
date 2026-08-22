@@ -30,27 +30,95 @@
 
 #include "solers_schema_form.h"
 
+#include "core/input/input_event.h"
+#include "core/io/image_loader.h"
 #include "core/io/json.h"
 #include "core/object/callable_mp.h"
 #include "core/string/translation_server.h"
+#include "editor/themes/editor_scale.h"
 #include "scene/gui/button.h"
 #include "scene/gui/check_button.h"
+#include "scene/gui/file_dialog.h"
 #include "scene/gui/label.h"
 #include "scene/gui/line_edit.h"
 #include "scene/gui/option_button.h"
 #include "scene/gui/slider.h"
 #include "scene/gui/spin_box.h"
 #include "scene/gui/text_edit.h"
+#include "scene/resources/image_texture.h"
+#include "servers/display/display_server.h"
+
+#include "solers_chat_widgets.h"
+#include "solers_ui_theme.h"
+
+void SolersSchemaForm::_append_image(Control *p_field, const Ref<Image> &p_image) {
+	if (!image_stager.is_valid() || p_image.is_null() || p_image->is_empty()) {
+		return;
+	}
+	const Dictionary result = image_stager.call(p_image);
+	const String path = Dictionary(result.get("data", Dictionary())).get("local_path", String());
+	if (path.is_empty()) {
+		return;
+	}
+	Array values = p_field->get_meta("image_values", Array());
+	const Dictionary schema = p_field->get_meta("schema", Dictionary());
+	const int limit = schema.get("type", "string") == "array" ? (int)schema.get("maxItems", 4) : 1;
+	if (values.size() >= limit) {
+		return;
+	}
+	values.push_back(path);
+	p_field->set_meta("image_values", values);
+	Button *pick = Object::cast_to<Button>(p_field->get_child(0));
+	pick->set_text(values.size() == 1 ? TTRC("1 reference image") : vformat(TTRC("%d reference images"), values.size()));
+	pick->set_button_icon(ImageTexture::create_from_image(p_image));
+}
+
+void SolersSchemaForm::_replace_images(const PackedStringArray &p_files, Control *p_field) {
+	p_field->set_meta("image_values", Array());
+	Object::cast_to<Button>(p_field->get_child(0))->set_text(TTRC("Add reference image"));
+	Object::cast_to<Button>(p_field->get_child(0))->set_button_icon(SolersIcons::get(SNAME("tool_capture"), int(24 * EDSCALE)));
+	for (const String &path : p_files) {
+		Ref<Image> image;
+		image.instantiate();
+		if (ImageLoader::load_image(path, image) == OK) {
+			_append_image(p_field, image);
+		}
+	}
+}
+
+void SolersSchemaForm::_image_gui_input(const Ref<InputEvent> &p_event, Control *p_field) {
+	const Ref<InputEventKey> key = p_event;
+	DisplayServer *display = DisplayServer::get_singleton();
+	if (key.is_valid() && key->is_pressed() && !key->is_echo() && key->get_keycode() == Key::V && key->is_command_or_control_pressed() && display && display->clipboard_has_image()) {
+		p_field->set_meta("image_values", Array());
+		_append_image(p_field, display->clipboard_get_image());
+		accept_event();
+	}
+}
+
+bool SolersSchemaForm::_can_drop_image(const Point2 &, const Variant &p_data, Control *) const {
+	return String(Dictionary(p_data).get("type", String())) == "files";
+}
+
+void SolersSchemaForm::_drop_image(const Point2 &, const Variant &p_data, Control *p_field) {
+	_replace_images(Dictionary(p_data).get("files", PackedStringArray()), p_field);
+}
+
 Control *SolersSchemaForm::_create_field(const StringName &p_name, const Dictionary &p_schema, const Dictionary &p_extras, const Dictionary &p_presentation, const Variant &p_default) {
 	const String type = p_schema.get("type", "string");
 	const String enum_source = p_schema.get("enum_source", String());
-	const Array enum_values = enum_source.is_empty() ? p_schema.get("enum", Array()) : p_extras.get(enum_source, Array());
 	const String control_type = p_presentation.get("control", String());
+	Array enum_values = enum_source.is_empty() ? p_schema.get("enum", Array()) : p_extras.get(enum_source, Array());
+	if (control_type == "multi_select") {
+		enum_values = Dictionary(p_schema.get("items", Dictionary())).get("enum", enum_values);
+	}
 	Control *field = nullptr;
-	if (!enum_values.is_empty() && control_type == "segmented") {
+	if (!enum_values.is_empty() && (control_type == "segmented" || control_type == "multi_select")) {
 		HBoxContainer *segments = memnew(HBoxContainer);
 		Ref<ButtonGroup> group;
-		group.instantiate();
+		if (control_type == "segmented") {
+			group.instantiate();
+		}
 		const String value_key = p_schema.get("enum_value", "id");
 		const String label_key = p_schema.get("enum_label", "label");
 		const Dictionary labels = p_presentation.get("labels", Dictionary());
@@ -65,14 +133,16 @@ Control *SolersSchemaForm::_create_field(const StringName &p_name, const Diction
 			Button *segment = memnew(Button(label));
 			segment->set_theme_type_variation(SNAME("SolersStudioSegment"));
 			segment->set_toggle_mode(true);
-			segment->set_button_group(group);
+			if (group.is_valid()) {
+				segment->set_button_group(group);
+			}
 			segment->set_h_size_flags(SIZE_EXPAND_FILL);
 			segment->set_meta("value", id);
-			segment->set_pressed(id == p_default);
+			segment->set_pressed(control_type == "multi_select" ? p_default.get_type() == Variant::ARRAY && Array(p_default).has(id) : id == p_default);
 			segments->add_child(segment);
 		}
 		segments->set_meta("button_group", group);
-		segments->set_meta("field_kind", "segmented");
+		segments->set_meta("field_kind", control_type);
 		field = segments;
 	} else if (!enum_values.is_empty()) {
 		OptionButton *options = memnew(OptionButton);
@@ -128,11 +198,35 @@ Control *SolersSchemaForm::_create_field(const StringName &p_name, const Diction
 		number->set_step(step);
 		number->set_value(p_default);
 		field = number;
-	} else if (type == "object" || type == "array") {
+	} else if (control_type == "image") {
+		const SolersUITheme::Tokens tokens = SolersUITheme::make_tokens();
+		SolersSurface *well = memnew(SolersSurface);
+		well->configure(tokens.card, tokens.border, tokens.radius_home_tile, 0, false);
+		well->set_dashed_border(true);
+		well->set_custom_minimum_size(Size2(0, 96 * EDSCALE));
+		Button *pick = memnew(Button(TTRC("Add reference image")));
+		FileDialog *dialog = memnew(FileDialog);
+		dialog->set_access(FileDialog::ACCESS_FILESYSTEM);
+		dialog->set_file_mode(FileDialog::FILE_MODE_OPEN_FILES);
+		well->add_child(dialog, false, INTERNAL_MODE_FRONT);
+		dialog->connect(SNAME("files_selected"), callable_mp(this, &SolersSchemaForm::_replace_images).bind(well));
+		pick->set_flat(true);
+		pick->set_button_icon(SolersIcons::get(SNAME("tool_capture"), int(24 * EDSCALE)));
+		pick->connect(SceneStringName(pressed), callable_mp(dialog, &FileDialog::popup_file_dialog));
+		pick->connect(SceneStringName(gui_input), callable_mp(this, &SolersSchemaForm::_image_gui_input).bind(well));
+		pick->set_drag_forwarding(Callable(), callable_mp(this, &SolersSchemaForm::_can_drop_image).bind(well), callable_mp(this, &SolersSchemaForm::_drop_image).bind(well));
+		well->add_child(pick);
+		well->set_meta("field_kind", "image");
+		field = well;
+	} else if (control_type == "multiline" || type == "object" || type == "array") {
 		TextEdit *text = memnew(TextEdit);
-		text->set_custom_minimum_size(Size2(0, 64));
+		text->set_custom_minimum_size(Size2(0, control_type == "multiline" ? 92 : 64));
+		if (control_type == "multiline") {
+			text->set_theme_type_variation(SNAME("SolersStudioPrompt"));
+			text->set_meta("field_kind", "multiline");
+		}
 		if (p_default.get_type() != Variant::NIL) {
-			text->set_text(JSON::stringify(p_default));
+			text->set_text(control_type == "multiline" ? String(p_default) : JSON::stringify(p_default));
 		}
 		field = text;
 	} else {
@@ -200,6 +294,21 @@ Dictionary SolersSchemaForm::get_values() const {
 				continue;
 			}
 			value = pressed->get_meta("value", Variant());
+		} else if (field_kind == "multi_select") {
+			Array selected;
+			for (int i = 0; i < field->get_child_count(); i++) {
+				Button *segment = Object::cast_to<Button>(field->get_child(i));
+				if (segment && segment->is_pressed()) {
+					selected.push_back(segment->get_meta("value", Variant()));
+				}
+			}
+			value = selected;
+		} else if (field_kind == "image") {
+			const Array images = field->get_meta("image_values", Array());
+			if (images.is_empty()) {
+				continue;
+			}
+			value = type == "array" ? Variant(images) : images[0];
 		} else if (field_kind == "slider") {
 			const HSlider *slider = Object::cast_to<HSlider>(field->get_child(0));
 			value = type == "integer" ? Variant((int64_t)slider->get_value()) : Variant(slider->get_value());
@@ -213,8 +322,8 @@ Dictionary SolersSchemaForm::get_values() const {
 			if (text->get_text().strip_edges().is_empty()) {
 				continue;
 			}
-			value = JSON::parse_string(text->get_text());
-			if (value.get_type() != (type == "array" ? Variant::ARRAY : Variant::DICTIONARY)) {
+			value = field_kind == "multiline" ? Variant(text->get_text().strip_edges()) : JSON::parse_string(text->get_text());
+			if (field_kind != "multiline" && value.get_type() != (type == "array" ? Variant::ARRAY : Variant::DICTIONARY)) {
 				continue;
 			}
 		} else if (LineEdit *line = Object::cast_to<LineEdit>(field)) {
@@ -248,6 +357,11 @@ void SolersSchemaForm::set_values(const Dictionary &p_values) {
 					break;
 				}
 			}
+		} else if (field_kind == "multi_select") {
+			for (int i = 0; i < field->get_child_count(); i++) {
+				Button *segment = Object::cast_to<Button>(field->get_child(i));
+				segment->set_pressed(Array(value).has(segment->get_meta("value", Variant())));
+			}
 		} else if (field_kind == "slider") {
 			Object::cast_to<HSlider>(field->get_child(0))->set_value(value);
 		} else if (OptionButton *options = Object::cast_to<OptionButton>(field)) {
@@ -262,7 +376,7 @@ void SolersSchemaForm::set_values(const Dictionary &p_values) {
 		} else if (SpinBox *number = Object::cast_to<SpinBox>(field)) {
 			number->set_value(value);
 		} else if (TextEdit *text = Object::cast_to<TextEdit>(field)) {
-			text->set_text(JSON::stringify(value));
+			text->set_text(field_kind == "multiline" ? String(value) : JSON::stringify(value));
 		} else if (LineEdit *line = Object::cast_to<LineEdit>(field)) {
 			line->set_text(value);
 		}

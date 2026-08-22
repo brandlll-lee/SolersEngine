@@ -877,11 +877,13 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	prompt_edit->set_caret_blink_enabled(true);
 	prompt_edit->set_custom_minimum_size(Size2(0, 92 * EDSCALE));
 	featured_form = _studio_add<SolersSchemaForm>(creation_column);
+	featured_form->set_image_stager(callable_mp(assets, &SolersAssetService::stage_input_image));
 	options_toggle = _studio_add<Button>(creation_column);
 	options_toggle->set_flat(true);
 	options_toggle->set_toggle_mode(true);
 	options_toggle->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
 	generation_form = _studio_add<SolersSchemaForm>(creation_column);
+	generation_form->set_image_stager(callable_mp(assets, &SolersAssetService::stage_input_image));
 	generate_button = _studio_add<Button>(creation_frame);
 	generate_button->set_name("GenerateButton");
 	generate_button->set_theme_type_variation(SNAME("SolersPrimaryButton"));

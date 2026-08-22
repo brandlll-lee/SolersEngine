@@ -175,7 +175,7 @@ SolersEditorPlugin::SolersEditorPlugin() {
 	agent_toggle->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
 	agent_toggle->set_theme_type_variation(SNAME("MainScreenButton"));
 	agent_toggle->set_button_icon(SolersIcons::brand_mark());
-	agent_toggle->set_expand_icon(true);
+	agent_toggle->set_custom_minimum_size(Size2(28, 28) * EDSCALE);
 	agent_toggle->add_theme_constant_override(SNAME("icon_max_width"), int(18 * EDSCALE));
 	agent_toggle->set_tooltip_text(TTRC("Toggle Solers Agent"));
 	agent_toggle->set_accessibility_name(TTRC("Toggle Solers Agent"));

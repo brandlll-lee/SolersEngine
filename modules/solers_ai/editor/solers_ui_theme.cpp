@@ -37,6 +37,7 @@
 #include "editor/themes/editor_scale.h"
 #include "scene/gui/dialogs.h"
 #include "scene/resources/font.h"
+#include "scene/resources/image_texture.h"
 #include "scene/resources/style_box_flat.h"
 #include "scene/resources/style_box_line.h"
 
@@ -380,7 +381,7 @@ Ref<Theme> SolersUITheme::create() {
 	for (const StringName &name : { SceneStringName(font_color), SNAME("font_hover_color"), SNAME("font_pressed_color"), SNAME("font_focus_color") }) {
 		theme->set_color(name, "SolersStudioSegment", tokens.text);
 	}
-	theme->set_stylebox(SceneStringName(panel), "PopupMenu", _solers_flat(tokens.card, product_radius, tokens.border, border_width, 6 * EDSCALE));
+	theme->set_stylebox(SceneStringName(panel), "PopupMenu", _solers_flat(tokens.surface, product_radius, Color(), 0, 6 * EDSCALE));
 	theme->set_stylebox(SceneStringName(hover), "PopupMenu", _solers_flat(tokens.card_hover, card_radius, Color(), 0, 6 * EDSCALE));
 	theme->set_color(SceneStringName(font_color), "PopupMenu", tokens.text);
 	theme->set_color(SNAME("font_hover_color"), "PopupMenu", tokens.text);
@@ -389,6 +390,10 @@ Ref<Theme> SolersUITheme::create() {
 	theme->set_constant(SNAME("item_start_padding"), "PopupMenu", int(8 * EDSCALE));
 	theme->set_constant(SNAME("item_end_padding"), "PopupMenu", int(8 * EDSCALE));
 	theme->set_constant(SNAME("v_separation"), "PopupMenu", int(4 * EDSCALE));
+	const Ref<Texture2D> empty_mark = ImageTexture::create_from_image(Image::create_empty(MAX(1, int(14 * EDSCALE)), MAX(1, int(14 * EDSCALE)), false, Image::FORMAT_RGBA8));
+	const Ref<Texture2D> check_mark = SolersIcons::get(SNAME("check"), int(14 * EDSCALE));
+	theme->set_icon(SNAME("radio_checked"), "PopupMenu", check_mark);
+	theme->set_icon(SNAME("radio_unchecked"), "PopupMenu", empty_mark);
 	apply_chrome_edges(theme, tokens.hairline);
 	return theme;
 }
