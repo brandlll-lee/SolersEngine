@@ -62,11 +62,6 @@ TEST_FORCE_LINK(test_solers_editor)
 
 namespace TestSolersEditor {
 
-class TestModelPreview : public SolersModelPreview {
-public:
-	void send_input(const Ref<InputEvent> &p_event) { gui_input(p_event); }
-};
-
 static void _stage_schema_image(const Variant &, const Callable &p_callback) {
 	Dictionary data;
 	data["local_path"] = "user://staged-schema-image.png";
@@ -136,9 +131,11 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	CHECK(theme->has_stylebox(SNAME("grabber_highlight"), SNAME("SolersStudioScroll")));
 	CHECK(theme->get_font_size(SceneStringName(font_size), SNAME("SolersHeroTitle")) > theme->get_font_size(SceneStringName(font_size), SNAME("SolersSessionTitle")));
 	CHECK(bool(theme->has_icon(SNAME("arrow"), SNAME("OptionButton")) && theme->has_icon(SNAME("radio_checked"), SNAME("PopupMenu")) && theme->has_icon(SNAME("radio_unchecked"), SNAME("PopupMenu"))));
-	TestModelPreview *model_preview = memnew(TestModelPreview);
+	SolersModelPreview *model_preview = memnew(SolersModelPreview);
 	model_preview->set_size(Size2(400, 300));
 	SceneTree::get_singleton()->get_root()->add_child(model_preview);
+	MessageQueue::get_singleton()->flush();
+	CHECK(model_preview->is_mouse_target_enabled());
 	Camera3D *preview_camera = Object::cast_to<Camera3D>(model_preview->get_child(0)->get_child(0));
 	REQUIRE(preview_camera);
 	const Ref<Environment> preview_environment = preview_camera->get_environment();
@@ -146,15 +143,33 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	CHECK(preview_environment->get_sky().is_valid());
 	Ref<InputEventMouseButton> middle;
 	middle.instantiate();
+	middle->set_position(Vector2(200, 150));
 	middle->set_button_index(MouseButton::MIDDLE);
 	middle->set_pressed(true);
-	model_preview->send_input(middle);
+	SceneTree::get_singleton()->get_root()->push_input(middle, true);
 	const Vector3 camera_before_pan = preview_camera->get_global_position();
 	Ref<InputEventMouseMotion> pan;
 	pan.instantiate();
+	pan->set_position(Vector2(220, 160));
 	pan->set_relative(Vector2(20, 10));
-	model_preview->send_input(pan);
+	pan->set_button_mask(MouseButtonMask::MIDDLE);
+	SceneTree::get_singleton()->get_root()->push_input(pan, true);
 	CHECK(preview_camera->get_global_position() != camera_before_pan);
+	middle->set_pressed(false);
+	SceneTree::get_singleton()->get_root()->push_input(middle, true);
+	const Vector3 camera_before_orbit = preview_camera->get_global_position();
+	pan->set_relative(Vector2(10, 0));
+	pan->set_button_mask(MouseButtonMask::LEFT);
+	SceneTree::get_singleton()->get_root()->push_input(pan, true);
+	CHECK(preview_camera->get_global_position() != camera_before_orbit);
+	const Vector3 camera_before_zoom = preview_camera->get_global_position();
+	Ref<InputEventMouseButton> wheel;
+	wheel.instantiate();
+	wheel->set_position(Vector2(200, 150));
+	wheel->set_button_index(MouseButton::WHEEL_UP);
+	wheel->set_pressed(true);
+	SceneTree::get_singleton()->get_root()->push_input(wheel, true);
+	CHECK(preview_camera->get_global_position() != camera_before_zoom);
 	CHECK(model_preview->load_model("res://missing-solers-preview.glb") != OK);
 	CHECK_FALSE(model_preview->has_model());
 	model_preview->queue_free();
@@ -202,6 +217,7 @@ TEST_CASE("[SolersStudio][SceneTree] schema form projects unknown connector fiel
 	REQUIRE(image_buttons.size() == 1);
 	Button *image_button = Object::cast_to<Button>(image_buttons[0]);
 	REQUIRE(image_button);
+	CHECK(image_button->get_mouse_filter() == Control::MOUSE_FILTER_PASS);
 	image_button->emit_signal(SceneStringName(mouse_entered));
 	CHECK(image_button->has_focus());
 	PackedStringArray files;

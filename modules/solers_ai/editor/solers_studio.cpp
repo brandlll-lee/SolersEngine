@@ -39,6 +39,7 @@
 #include "core/object/class_db.h"
 #include "core/string/translation_server.h"
 #include "editor/editor_node.h"
+#include "editor/editor_string_names.h"
 #include "editor/inspector/editor_resource_preview.h"
 #include "editor/themes/editor_scale.h"
 #include "scene/animation/tween.h"
@@ -52,7 +53,6 @@
 #include "scene/gui/label.h"
 #include "scene/gui/line_edit.h"
 #include "scene/gui/option_button.h"
-#include "scene/gui/progress_bar.h"
 #include "scene/gui/scroll_bar.h"
 #include "scene/gui/scroll_container.h"
 #include "scene/gui/split_container.h"
@@ -60,7 +60,9 @@
 #include "scene/gui/text_edit.h"
 #include "scene/gui/texture_rect.h"
 #include "scene/main/window.h"
+#include "scene/resources/animated_texture.h"
 #include "scene/resources/image_texture.h"
+#include "scene/resources/theme.h"
 #include "servers/display/display_server.h"
 
 #include "modules/solers_ai/core/solers_asset_service.h"
@@ -84,6 +86,17 @@ static Label *_studio_label(Node *p_parent, const String &p_text, const StringNa
 	}
 	p_parent->add_child(label);
 	return label;
+}
+static Ref<Texture2D> _studio_activity_texture() {
+	Ref<AnimatedTexture> activity;
+	activity.instantiate();
+	activity->set_frames(8);
+	const Ref<Theme> editor_theme = EditorNode::get_singleton()->get_editor_theme();
+	for (int i = 0; i < 8; i++) {
+		activity->set_frame_texture(i, editor_theme->get_icon("Progress" + itos(i + 1), EditorStringName(EditorIcons)));
+		activity->set_frame_duration(i, 0.08f);
+	}
+	return activity;
 }
 static Control *_studio_empty_state(Node *p_parent, Label **r_label) {
 	CenterContainer *empty = _studio_add<CenterContainer>(p_parent);
@@ -563,9 +576,11 @@ void SolersStudio::_refresh_project_assets() {
 		if (!query.is_empty() && !title.to_lower().contains(query)) {
 			continue;
 		}
-		Ref<Texture2D> item_preview = SolersIcons::get(SNAME("tool_asset"), int(54 * EDSCALE));
+		const String status = String(manifest.get("status", "unknown")).to_lower();
+		const bool busy = status == "queued" || status == "running";
+		Ref<Texture2D> item_preview = busy ? activity_texture : SolersIcons::get(SNAME("tool_asset"), int(54 * EDSCALE));
 		const String preview_file = manifest.get("preview_file", String());
-		if (!preview_file.is_empty()) {
+		if (!busy && !preview_file.is_empty()) {
 			const Ref<Texture2D> *cached = project_previews.getptr(preview_file);
 			if (cached) {
 				item_preview = *cached;
@@ -577,8 +592,11 @@ void SolersStudio::_refresh_project_assets() {
 				}
 			}
 		}
-		const int index = project_list->add_item(title + "\n" + String(manifest.get("status", "unknown")).capitalize(), item_preview);
+		const int index = project_list->add_item(title + "\n" + status.capitalize(), item_preview);
 		project_list->set_item_metadata(index, manifest);
+		if (busy) {
+			project_list->set_item_icon_modulate(index, SolersUITheme::make_tokens().primary);
+		}
 		if (manifest.get("id", String()) == selected_id) {
 			project_list->select(index);
 			_show_manifest(manifest);
@@ -613,9 +631,11 @@ void SolersStudio::_show_manifest(const Dictionary &p_manifest) {
 	selected_manifest = p_manifest;
 	selected_catalog.clear();
 	asset_title->set_text(p_manifest.get("name", p_manifest.get("id", TTRC("Untitled asset"))));
-	asset_status->set_text(String(p_manifest.get("stage", p_manifest.get("status", String()))).capitalize());
-	const double progress_value = p_manifest.get("progress", 0.0);
-	asset_progress->set_value(progress_value <= 1.0 ? progress_value * 100.0 : progress_value);
+	String stage = String(p_manifest.get("stage", p_manifest.get("status", String()))).capitalize();
+	if (p_manifest.has("progress")) {
+		stage += "  " + itos(CLAMP((int)p_manifest["progress"], 0, 100)) + "%";
+	}
+	asset_status->set_text(stage);
 	preview->set_texture(Ref<Texture2D>());
 	const String preview_file = p_manifest.get("preview_file", String());
 	if (!preview_file.is_empty()) {
@@ -661,18 +681,23 @@ void SolersStudio::_sync_workspace() {
 	const bool has_manifest = (route == "3d" || route == "assets") && !selected_manifest.is_empty();
 	const bool has_catalog = route == "assets" && !selected_catalog.is_empty();
 	const bool empty = !has_manifest && !has_catalog;
-	empty_stage->set_visible(empty);
+	const String status = String(selected_manifest.get("status", String())).to_lower();
+	const bool busy = has_manifest && (status == "queued" || status == "running");
+	empty_stage->set_visible(empty || busy);
 	if (empty) {
+		empty_icon->set_texture(SolersIcons::get(SNAME("cube_plus"), int(84 * EDSCALE)));
+		empty_icon->set_self_modulate(SolersUITheme::make_tokens().text);
 		asset_title->set_text(route == "3d" ? TTRC("What will you create today?") : TTRC("This Studio workspace is not available yet."));
 		if (asset_status->get_text().is_empty()) {
 			asset_status->set_text(route == "3d" ? TTRC("Generate a model or choose one from your library.") : TTRC("Only the 3D workspace is enabled in this release."));
 		}
+	} else if (busy) {
+		empty_icon->set_texture(activity_texture);
+		empty_icon->set_self_modulate(SolersUITheme::make_tokens().primary);
 	}
-	const bool has_model = has_manifest && model_preview->has_model();
+	const bool has_model = has_manifest && !busy && model_preview->has_model();
 	model_preview->set_visible(has_model);
-	preview->set_visible(!empty && !has_model && preview->get_texture().is_valid());
-	const String status = String(selected_manifest.get("status", String())).to_lower();
-	asset_progress->set_visible(has_manifest && (status == "queued" || status == "running"));
+	preview->set_visible(!empty && !busy && !has_model && preview->get_texture().is_valid());
 	const int64_t polycount = selected_manifest.get("polycount", 0);
 	const int64_t vertex_count = selected_manifest.get("vertex_count", 0);
 	geometry_stats->set_text(polycount > 0 || vertex_count > 0 ? vformat(TTRC("%s polygons | %s vertices"), String::num_int64(polycount), String::num_int64(vertex_count)) : String());
@@ -780,6 +805,7 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	set_name("SolersStudio");
 	set_process(true);
 	const SolersUITheme::Tokens tokens = SolersUITheme::make_tokens();
+	activity_texture = _studio_activity_texture();
 	List<String> image_extensions;
 	ImageLoader::get_recognized_extensions(&image_extensions);
 	HBoxContainer *shell = _studio_add<HBoxContainer>(this);
@@ -885,6 +911,7 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	for (Button *button : reference_buttons) {
 		button->set_flat(true);
 		button->set_focus_mode(FOCUS_ALL);
+		button->set_mouse_filter(MOUSE_FILTER_PASS);
 	}
 	multiview_toggle = _studio_add<CheckButton>(creation_column);
 	multiview_toggle->set_text(TTRC("Multi-view"));
@@ -948,9 +975,6 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	asset_status = _studio_label(center, String(), SNAME("SolersSessionMeta"));
 	asset_status->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
 	asset_status->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	asset_progress = _studio_add<ProgressBar>(center);
-	asset_progress->set_show_percentage(false);
-	asset_progress->set_custom_minimum_size(Size2(0, 6 * EDSCALE));
 	asset_actions = _studio_add<SolersSurface>(center);
 	asset_actions->set_h_size_flags(SIZE_SHRINK_CENTER);
 	asset_actions->configure(tokens.card, tokens.border, tokens.radius_home_tile, 4, false);

@@ -45,7 +45,6 @@ class ItemList;
 class Label;
 class LineEdit;
 class OptionButton;
-class ProgressBar;
 class ScrollContainer;
 class SolersAssetService;
 class SolersDock;
@@ -85,9 +84,9 @@ class SolersStudio : public PanelContainer {
 	uint64_t reference_generation = 1;
 	SolersModelPreview *model_preview = nullptr;
 	TextureRect *preview = nullptr, *empty_icon = nullptr;
+	Ref<Texture2D> activity_texture;
 	Label *creation_title = nullptr, *asset_title = nullptr, *asset_status = nullptr;
 	Label *geometry_stats = nullptr;
-	ProgressBar *asset_progress = nullptr;
 	Control *empty_stage = nullptr;
 	SolersSurface *asset_actions = nullptr;
 	Button *empty_generate_button = nullptr, *animation_button = nullptr, *remesh_button = nullptr, *import_button = nullptr;

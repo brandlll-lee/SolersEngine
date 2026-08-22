@@ -218,6 +218,7 @@ Control *SolersSchemaForm::_create_field(const StringName &p_name, const Diction
 		well->add_child(dialog, false, INTERNAL_MODE_FRONT);
 		dialog->connect(SNAME("files_selected"), callable_mp(this, &SolersSchemaForm::_replace_images).bind(well, pick));
 		pick->set_flat(true);
+		pick->set_mouse_filter(Control::MOUSE_FILTER_PASS);
 		pick->set_button_icon(SolersIcons::get(SNAME("tool_capture"), int(24 * EDSCALE)));
 		pick->connect(SceneStringName(pressed), callable_mp(dialog, &FileDialog::popup_file_dialog));
 		pick->connect(SceneStringName(mouse_entered), callable_mp((Control *)pick, &Control::grab_focus).bind(true));
