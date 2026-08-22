@@ -29,6 +29,7 @@
 /**************************************************************************/
 
 #include "core/config/project_settings.h"
+#include "core/input/input_event.h"
 #include "core/io/dir_access.h"
 #include "core/io/image.h"
 #include "core/io/json.h"
@@ -60,6 +61,11 @@
 TEST_FORCE_LINK(test_solers_editor)
 
 namespace TestSolersEditor {
+
+class TestModelPreview : public SolersModelPreview {
+public:
+	void send_input(const Ref<InputEvent> &p_event) { gui_input(p_event); }
+};
 
 static void _stage_schema_image(const Variant &, const Callable &p_callback) {
 	Dictionary data;
@@ -118,6 +124,8 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	CHECK(theme->get_type_variation_base(SNAME("SolersStudioPrompt")) == SNAME("TextEdit"));
 	CHECK(theme->get_type_variation_base(SNAME("SolersStudioSegment")) == SNAME("Button"));
 	CHECK(theme->has_stylebox(SNAME("pressed"), SNAME("SolersStudioSegment")));
+	CHECK(theme->get_type_variation_base(SNAME("SolersStudioActionButton")) == SNAME("Button"));
+	CHECK(theme->get_color(SNAME("icon_hover_color"), SNAME("SolersStudioActionButton")) != theme->get_color(SNAME("icon_normal_color"), SNAME("SolersStudioActionButton")));
 	CHECK(theme->get_type_variation_base(SNAME("SolersStudioRail")) == SNAME("ItemList"));
 	CHECK(theme->has_stylebox(SNAME("hovered"), SNAME("SolersStudioRail")));
 	Ref<StyleBoxFlat> rail_selected = theme->get_stylebox(SNAME("selected"), SNAME("SolersStudioRail"));
@@ -128,13 +136,29 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	CHECK(theme->has_stylebox(SNAME("grabber_highlight"), SNAME("SolersStudioScroll")));
 	CHECK(theme->get_font_size(SceneStringName(font_size), SNAME("SolersHeroTitle")) > theme->get_font_size(SceneStringName(font_size), SNAME("SolersSessionTitle")));
 	CHECK(bool(theme->has_icon(SNAME("arrow"), SNAME("OptionButton")) && theme->has_icon(SNAME("radio_checked"), SNAME("PopupMenu")) && theme->has_icon(SNAME("radio_unchecked"), SNAME("PopupMenu"))));
-	SolersModelPreview *model_preview = memnew(SolersModelPreview);
+	TestModelPreview *model_preview = memnew(TestModelPreview);
+	model_preview->set_size(Size2(400, 300));
+	SceneTree::get_singleton()->get_root()->add_child(model_preview);
 	Camera3D *preview_camera = Object::cast_to<Camera3D>(model_preview->get_child(0)->get_child(0));
 	REQUIRE(preview_camera);
 	const Ref<Environment> preview_environment = preview_camera->get_environment();
 	REQUIRE(preview_environment.is_valid());
 	CHECK(preview_environment->get_sky().is_valid());
-	memdelete(model_preview);
+	Ref<InputEventMouseButton> middle;
+	middle.instantiate();
+	middle->set_button_index(MouseButton::MIDDLE);
+	middle->set_pressed(true);
+	model_preview->send_input(middle);
+	const Vector3 camera_before_pan = preview_camera->get_global_position();
+	Ref<InputEventMouseMotion> pan;
+	pan.instantiate();
+	pan->set_relative(Vector2(20, 10));
+	model_preview->send_input(pan);
+	CHECK(preview_camera->get_global_position() != camera_before_pan);
+	CHECK(model_preview->load_model("res://missing-solers-preview.glb") != OK);
+	CHECK_FALSE(model_preview->has_model());
+	model_preview->queue_free();
+	MessageQueue::get_singleton()->flush();
 
 	Control *host = memnew(Control);
 	Label *ambient = memnew(Label("Godot"));
@@ -178,6 +202,8 @@ TEST_CASE("[SolersStudio][SceneTree] schema form projects unknown connector fiel
 	REQUIRE(image_buttons.size() == 1);
 	Button *image_button = Object::cast_to<Button>(image_buttons[0]);
 	REQUIRE(image_button);
+	image_button->emit_signal(SceneStringName(mouse_entered));
+	CHECK(image_button->has_focus());
 	PackedStringArray files;
 	files.push_back(source_path);
 	dialog->emit_signal(SNAME("files_selected"), files);
