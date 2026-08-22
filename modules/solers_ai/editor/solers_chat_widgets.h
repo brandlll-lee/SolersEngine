@@ -57,6 +57,7 @@ public:
 	// color track is absent — callers fall back to provider_logo and may tint.
 	// Color textures must be drawn without Button/theme icon modulate.
 	static Ref<Texture2D> provider_logo_color(const String &p_catalog_id, int p_size_px);
+	static Ref<Texture2D> brand_mark();
 	static void clear_cache();
 };
 

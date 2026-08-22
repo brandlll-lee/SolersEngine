@@ -52,7 +52,6 @@
 #include "editor/inspector/editor_resource_preview.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
-#include "main/app_icon.gen.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
 #include "scene/gui/dialogs.h"
@@ -419,10 +418,9 @@ Control *SolersDock::_create_empty_state() const {
 	state->set_alignment(BoxContainer::ALIGNMENT_CENTER);
 	state->add_theme_constant_override("separation", 10 * EDSCALE);
 
-	Ref<Image> logo_image = memnew(Image(app_icon_png));
 	TextureRect *logo = memnew(TextureRect);
 	logo->set_name("SolersBrandMark");
-	logo->set_texture(ImageTexture::create_from_image(logo_image));
+	logo->set_texture(SolersIcons::brand_mark());
 	logo->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
 	logo->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
 	logo->set_custom_minimum_size(Size2(36, 36) * EDSCALE);

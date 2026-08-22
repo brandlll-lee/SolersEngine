@@ -38,6 +38,7 @@
 #include "core/string/ustring.h"
 #include "core/variant/dictionary.h"
 #include "editor/themes/editor_scale.h"
+#include "main/app_icon.gen.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/label.h"
 #include "scene/gui/panel_container.h"
@@ -135,6 +136,15 @@ Ref<Texture2D> SolersIcons::provider_logo_color(const String &p_catalog_id, int 
 	}
 	// Color track preserves official fills — do not theme-tint at draw time.
 	return _solers_raster_svg(svg, "logo-color:" + id + "@" + itos(size_px), size_px);
+}
+
+Ref<Texture2D> SolersIcons::brand_mark() {
+	if (const Ref<Texture2D> *found = g_solers_icon_cache.getptr("brand")) {
+		return *found;
+	}
+	const Ref<Texture2D> texture = ImageTexture::create_from_image(memnew(Image(app_icon_png)));
+	g_solers_icon_cache.insert("brand", texture);
+	return texture;
 }
 
 void SolersIcons::clear_cache() {
@@ -1008,8 +1018,8 @@ void solers_style_bare_search_line_edit(LineEdit *p_edit) {
 	p_edit->add_theme_style_override("normal", empty);
 	p_edit->add_theme_style_override("focus", empty);
 	p_edit->add_theme_style_override("read_only", empty);
-	p_edit->add_theme_color_override(SceneStringName(font_color), Color(0.918f, 0.929f, 0.945f));
-	p_edit->add_theme_color_override("font_placeholder_color", Color(0.345f, 0.357f, 0.388f));
+	p_edit->add_theme_color_override(SceneStringName(font_color), SOLERS_UI_TOKENS.text);
+	p_edit->add_theme_color_override("font_placeholder_color", SOLERS_UI_TOKENS.text_dim);
 	p_edit->add_theme_font_size_override(SceneStringName(font_size), int(12 * EDSCALE));
 	p_edit->set_custom_minimum_size(Size2(0, 26 * EDSCALE));
 }

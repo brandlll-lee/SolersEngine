@@ -198,6 +198,9 @@ msgstr "生成模型，或从资产库中选择。"
 msgid "My generations"
 msgstr "我的生成"
 
+msgid "Toggle Solers Agent"
+msgstr "切换 Solers 智能体"
+
 msgid "Your generated assets will appear here."
 msgstr "生成的资产将显示在这里。"
 

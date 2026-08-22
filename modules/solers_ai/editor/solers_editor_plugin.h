@@ -35,6 +35,7 @@
 class SolersAgentRuntime;
 class SolersDock;
 class SolersStudio;
+class Button;
 class EditorDebuggerPlugin;
 class Texture2D;
 
@@ -46,12 +47,14 @@ class SolersEditorPlugin : public EditorPlugin {
 	SolersAgentRuntime *runtime = nullptr;
 	SolersDock *dock = nullptr;
 	SolersStudio *studio = nullptr;
+	Button *agent_toggle = nullptr;
 	Ref<EditorDebuggerPlugin> runtime_debugger_capture;
 	String project_path;
 
 	void _select_session(const String &p_session_id);
 	void _new_session();
 	void _translation_changed();
+	void _toggle_agent();
 
 protected:
 	void _notification(int p_what);

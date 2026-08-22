@@ -42,9 +42,11 @@
 #include "editor/docks/editor_dock_manager.h"
 #include "editor/editor_main_screen.h"
 #include "editor/editor_node.h"
+#include "editor/gui/editor_title_bar.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
 #include "scene/gui/box_container.h"
+#include "scene/gui/button.h"
 
 #include "modules/solers_ai/editor/solers_agent_runtime.h"
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
@@ -101,6 +103,19 @@ void SolersEditorPlugin::_translation_changed() {
 	if (studio) {
 		studio->propagate_notification(NOTIFICATION_TRANSLATION_CHANGED);
 	}
+	if (agent_toggle) {
+		agent_toggle->set_tooltip_text(TTRC("Toggle Solers Agent"));
+		agent_toggle->set_accessibility_name(TTRC("Toggle Solers Agent"));
+	}
+}
+
+void SolersEditorPlugin::_toggle_agent() {
+	if (dock->get_parent()) {
+		remove_control_from_container(CONTAINER_EDITOR_SIDE_LEFT, dock);
+	} else {
+		add_control_to_container(CONTAINER_EDITOR_SIDE_LEFT, dock);
+	}
+	agent_toggle->set_pressed_no_signal(dock->get_parent() != nullptr);
 }
 
 void SolersEditorPlugin::make_visible(bool p_visible) {
@@ -152,6 +167,24 @@ SolersEditorPlugin::SolersEditorPlugin() {
 	dock->set_new_session_callback(callable_mp(this, &SolersEditorPlugin::_new_session));
 	runtime->bind_dock(dock);
 	add_control_to_container(CONTAINER_EDITOR_SIDE_LEFT, dock);
+	agent_toggle = memnew(Button);
+	agent_toggle->set_name("SolersAgentToggle");
+	agent_toggle->set_toggle_mode(true);
+	agent_toggle->set_pressed_no_signal(true);
+	agent_toggle->set_flat(true);
+	agent_toggle->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
+	agent_toggle->set_theme_type_variation(SNAME("MainScreenButton"));
+	agent_toggle->set_button_icon(SolersIcons::brand_mark());
+	agent_toggle->set_expand_icon(true);
+	agent_toggle->add_theme_constant_override(SNAME("icon_max_width"), int(18 * EDSCALE));
+	agent_toggle->set_tooltip_text(TTRC("Toggle Solers Agent"));
+	agent_toggle->set_accessibility_name(TTRC("Toggle Solers Agent"));
+	agent_toggle->connect(SceneStringName(pressed), callable_mp(this, &SolersEditorPlugin::_toggle_agent));
+	add_control_to_container(CONTAINER_TOOLBAR, agent_toggle);
+	EditorTitleBar *title_bar = EditorNode::get_title_bar();
+	if (Control *center = title_bar->get_center_control()) {
+		title_bar->move_child(agent_toggle, MAX(0, center->get_index() - 1));
+	}
 	studio = memnew(SolersStudio(runtime->get_asset_service(), dock));
 	studio->set_theme(SolersUITheme::create());
 	studio->set_v_size_flags(Control::SIZE_EXPAND_FILL);
@@ -173,6 +206,10 @@ SolersEditorPlugin::SolersEditorPlugin() {
 }
 
 SolersEditorPlugin::~SolersEditorPlugin() {
+	if (agent_toggle && agent_toggle->get_parent()) {
+		remove_control_from_container(CONTAINER_TOOLBAR, agent_toggle);
+	}
+	memdelete(agent_toggle);
 	if (studio && studio->get_parent()) {
 		studio->get_parent()->remove_child(studio);
 	}
