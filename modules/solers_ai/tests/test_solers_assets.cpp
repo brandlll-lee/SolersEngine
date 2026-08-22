@@ -480,7 +480,7 @@ TEST_CASE("[SolersAssetService] Meshy generation presets project native schema f
 		default_count += (bool)preset.get("default", false) ? 1 : 0;
 		CHECK((int)preset.get("max_reference_images", 0) >= 1);
 		CHECK_FALSE(Array(preset.get("featured_fields", Array())).is_empty());
-		CHECK_FALSE(Dictionary(preset.get("presentation", Dictionary())).is_empty());
+		CHECK(bool(!Dictionary(preset.get("presentation", Dictionary())).is_empty() && (!(bool)preset.get("default", false) || (Dictionary(Dictionary(preset.get("presentation", Dictionary())).get("controls", Dictionary())).has("target_formats") && Dictionary(Dictionary(preset.get("presentation", Dictionary())).get("controls", Dictionary())).has("texture_image_url")))));
 	}
 	CHECK(default_count == 1);
 	const Dictionary schema = meshy.get_generation_options_schema("3d");

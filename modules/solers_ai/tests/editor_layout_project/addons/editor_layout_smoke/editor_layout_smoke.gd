@@ -117,7 +117,7 @@ func _check_layout() -> void:
 	if not _check(left_split != null and left_split.get_parent() is SplitContainer, "Left host is not resizable by the native split"):
 		return
 	var agent_toggle := base.find_child("SolersAgentToggle", true, false) as Button
-	if not _check(agent_toggle != null, "The native Agent toggle is unavailable"):
+	if not _check(agent_toggle != null and agent_toggle.get_combined_minimum_size().x >= 28, "The native Agent toggle collapsed below its toolbar slot"):
 		return
 	agent_toggle.emit_signal("pressed")
 	if not _check(solers.get_parent() == null, "The Agent toggle left an empty side-panel child"):

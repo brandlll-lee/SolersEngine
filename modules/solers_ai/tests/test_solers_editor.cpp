@@ -109,7 +109,7 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	CHECK(theme->get_type_variation_base(SNAME("SolersStudioScroll")) == SNAME("VScrollBar"));
 	CHECK(theme->has_stylebox(SNAME("grabber_highlight"), SNAME("SolersStudioScroll")));
 	CHECK(theme->get_font_size(SceneStringName(font_size), SNAME("SolersHeroTitle")) > theme->get_font_size(SceneStringName(font_size), SNAME("SolersSessionTitle")));
-	CHECK(theme->has_icon(SNAME("arrow"), SNAME("OptionButton")));
+	CHECK(bool(theme->has_icon(SNAME("arrow"), SNAME("OptionButton")) && theme->has_icon(SNAME("radio_checked"), SNAME("PopupMenu")) && theme->has_icon(SNAME("radio_unchecked"), SNAME("PopupMenu"))));
 
 	Control *host = memnew(Control);
 	Label *ambient = memnew(Label("Godot"));
@@ -128,9 +128,9 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 }
 
 TEST_CASE("[SolersStudio][SceneTree] schema form projects unknown connector fields without provider branches") {
-	const Dictionary properties = JSON::parse_string(R"({"future_mode":{"type":"string","enum_source":"future_choices","enum_value":"wire_value","enum_label":"display_name","default":"beta"},"future_count":{"type":"integer","minimum":1,"maximum":9,"default":4},"future_enabled":{"type":"boolean","default":true}})");
+	const Dictionary properties = JSON::parse_string(R"({"future_mode":{"type":"string","enum_source":"future_choices","enum_value":"wire_value","enum_label":"display_name","default":"beta"},"future_count":{"type":"integer","minimum":1,"maximum":9,"default":4},"future_enabled":{"type":"boolean","default":true},"future_formats":{"type":"array","items":{"type":"string","enum":["glb","obj"]},"default":["glb"]},"future_prompt":{"type":"string","default":"Detailed"},"future_image":{"type":"string"}})");
 	const Dictionary extras = JSON::parse_string(R"({"future_choices":[{"wire_value":"alpha","display_name":"Alpha"},{"wire_value":"beta","display_name":"Beta"}]})");
-	const Dictionary presentation = JSON::parse_string(R"({"controls":{"future_mode":{"control":"segmented"},"future_count":{"control":"slider"}}})");
+	const Dictionary presentation = JSON::parse_string(R"({"controls":{"future_mode":{"control":"segmented"},"future_count":{"control":"slider"},"future_formats":{"control":"multi_select"},"future_prompt":{"control":"multiline"},"future_image":{"control":"image"}}})");
 	SolersSchemaForm *form = memnew(SolersSchemaForm);
 	SceneTree::get_singleton()->get_root()->add_child(form);
 	form->set_schema(properties, extras, presentation);
@@ -138,6 +138,9 @@ TEST_CASE("[SolersStudio][SceneTree] schema form projects unknown connector fiel
 	CHECK(form->get_values().get("future_mode", String()) == "beta");
 	CHECK((int)form->get_values().get("future_count", 0) == 4);
 	CHECK(form->get_values().get("future_enabled", false));
+	CHECK(Array(form->get_values().get("future_formats", Array())).has("glb"));
+	CHECK(form->get_values().get("future_prompt", String()) == "Detailed");
+	CHECK(form->find_children("*", "SolersSurface", true, false).size() == 1);
 	Dictionary changed;
 	changed["future_mode"] = "alpha";
 	changed["future_count"] = 7;
