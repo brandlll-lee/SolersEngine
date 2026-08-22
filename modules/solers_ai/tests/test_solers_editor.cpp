@@ -99,6 +99,11 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	CHECK(theme->get_type_variation_base(SNAME("SolersStudioPrompt")) == SNAME("TextEdit"));
 	CHECK(theme->get_type_variation_base(SNAME("SolersStudioSegment")) == SNAME("Button"));
 	CHECK(theme->has_stylebox(SNAME("pressed"), SNAME("SolersStudioSegment")));
+	CHECK(theme->get_type_variation_base(SNAME("SolersStudioRail")) == SNAME("ItemList"));
+	CHECK(theme->has_stylebox(SNAME("hovered"), SNAME("SolersStudioRail")));
+	CHECK(theme->get_constant(SNAME("v_separation"), SNAME("SolersStudioRail")) > 0);
+	CHECK(theme->get_type_variation_base(SNAME("SolersStudioScroll")) == SNAME("VScrollBar"));
+	CHECK(theme->has_stylebox(SNAME("grabber_highlight"), SNAME("SolersStudioScroll")));
 	CHECK(theme->get_font_size(SceneStringName(font_size), SNAME("SolersHeroTitle")) > theme->get_font_size(SceneStringName(font_size), SNAME("SolersSessionTitle")));
 	CHECK(theme->has_icon(SNAME("arrow"), SNAME("OptionButton")));
 

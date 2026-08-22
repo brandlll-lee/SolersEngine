@@ -96,9 +96,11 @@ func _check_layout() -> void:
 	await get_tree().process_frame
 	var studio := base.find_child("SolersStudio", true, false) as Control
 	var creation_scroll: ScrollContainer = studio.find_child("CreationScroll", true, false) if studio else null
+	var rail: ItemList = studio.find_child("StudioRail", true, false) if studio else null
+	var library_search: Control = studio.find_child("StudioLibrarySearch", true, false) if studio else null
 	var generate: Button = studio.find_child("GenerateButton", true, false) if studio else null
 	var composer := solers.find_child("ComposerInput", true, false) as TextEdit
-	if not _check(studio != null and creation_scroll != null and generate != null and composer != null, "The Studio layout contract is unavailable"):
+	if not _check(studio != null and creation_scroll != null and rail != null and library_search != null and generate != null and composer != null, "The Studio layout contract is unavailable"):
 		return
 	if not _check(creation_scroll.vertical_scroll_mode == ScrollContainer.SCROLL_MODE_AUTO, "The creation form does not own vertical overflow"):
 		return
