@@ -31,6 +31,7 @@
 #pragma once
 #include "core/os/mutex.h"
 #include "core/os/thread.h"
+#include "core/templates/hash_map.h"
 #include "core/templates/safe_refcount.h"
 #include "scene/gui/panel_container.h"
 
@@ -79,7 +80,9 @@ class SolersStudio : public PanelContainer {
 	SolersSchemaForm *featured_form = nullptr, *generation_form = nullptr;
 	FileDialog *reference_dialog = nullptr;
 	Array reference_attachments;
-	Array reference_images;
+	Array reference_textures;
+	int pending_reference_images = 0;
+	uint64_t reference_generation = 1;
 	SolersModelPreview *model_preview = nullptr;
 	TextureRect *preview = nullptr, *empty_icon = nullptr;
 	Label *creation_title = nullptr, *asset_title = nullptr, *asset_status = nullptr;
@@ -102,6 +105,9 @@ class SolersStudio : public PanelContainer {
 	TabContainer *library_tabs = nullptr;
 	Label *attribution_label = nullptr;
 	Dictionary selected_manifest;
+	String selected_model_path;
+	Array project_manifests;
+	HashMap<String, Ref<Texture2D>> project_previews;
 	Dictionary selected_catalog;
 	Dictionary capability_data;
 	Dictionary selected_preset;
@@ -127,6 +133,7 @@ class SolersStudio : public PanelContainer {
 	void _route_selected(int p_index);
 	void _preset_selected(int p_index);
 	void _refresh_project_assets();
+	void _reload_project_assets();
 	void _show_manifest(const Dictionary &p_manifest);
 	void _show_result(const Dictionary &p_result, const String &p_success);
 	String _current_route() const;
@@ -134,7 +141,8 @@ class SolersStudio : public PanelContainer {
 	String _selected_provider(const OptionButton *p_options) const;
 	void _catalog_provider_selected(int p_index);
 	void _reference_files_selected(const PackedStringArray &p_files);
-	void _append_reference_image(const Ref<Image> &p_image);
+	void _stage_reference_image(const Variant &p_source);
+	void _reference_image_staged(const Dictionary &p_result, const Ref<Image> &p_image, uint64_t p_generation);
 	void _refresh_reference_slots();
 	void _clear_references();
 	void _multiview_toggled(bool p_enabled);

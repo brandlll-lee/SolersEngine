@@ -39,7 +39,9 @@
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/main/viewport.h"
 #include "scene/resources/3d/importer_mesh.h"
+#include "scene/resources/3d/sky_material.h"
 #include "scene/resources/environment.h"
+#include "scene/resources/sky.h"
 
 #ifdef MODULE_GLTF_ENABLED
 #include "modules/gltf/gltf_document.h"
@@ -163,9 +165,15 @@ SolersModelPreview::SolersModelPreview() {
 
 	Ref<Environment> environment;
 	environment.instantiate();
+	Ref<Sky> sky;
+	sky.instantiate();
+	Ref<ProceduralSkyMaterial> sky_material = memnew(ProceduralSkyMaterial);
+	sky->set_material(sky_material);
+	environment->set_sky(sky);
 	environment->set_background(Environment::BG_COLOR);
 	environment->set_bg_color(Color(0.065f, 0.065f, 0.072f));
-	environment->set_ambient_source(Environment::AMBIENT_SOURCE_COLOR);
+	environment->set_ambient_source(Environment::AMBIENT_SOURCE_SKY);
+	environment->set_reflection_source(Environment::REFLECTION_SOURCE_SKY);
 	environment->set_ambient_light_color(Color(0.72f, 0.74f, 0.78f));
 	environment->set_ambient_light_energy(0.55f);
 	camera = memnew(Camera3D);

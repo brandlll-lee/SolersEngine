@@ -252,36 +252,43 @@ void SolersStudio::_catalog_provider_selected(int) {
 }
 void SolersStudio::_reference_files_selected(const PackedStringArray &p_files) {
 	for (const String &path : p_files) {
-		Ref<Image> image;
-		image.instantiate();
-		if (ImageLoader::load_image(path, image) == OK && !image->is_empty()) {
-			_append_reference_image(image);
-			if (reference_attachments.size() >= _studio_reference_limit(selected_preset, multiview_toggle->is_pressed())) {
-				break;
-			}
+		_stage_reference_image(path);
+		if (reference_attachments.size() + pending_reference_images >= _studio_reference_limit(selected_preset, multiview_toggle->is_pressed())) {
+			break;
 		}
 	}
 	_refresh_reference_slots();
 }
 
-void SolersStudio::_append_reference_image(const Ref<Image> &p_image) {
-	if (reference_attachments.size() >= _studio_reference_limit(selected_preset, multiview_toggle->is_pressed())) {
+void SolersStudio::_stage_reference_image(const Variant &p_source) {
+	if (reference_attachments.size() + pending_reference_images >= _studio_reference_limit(selected_preset, multiview_toggle->is_pressed())) {
 		return;
 	}
-	const Dictionary result = assets->stage_input_image(p_image);
-	if (!(bool)result.get("ok", false)) {
-		_show_result(result, String());
+	pending_reference_images++;
+	assets->stage_input_image_async(p_source, callable_mp(this, &SolersStudio::_reference_image_staged).bind(reference_generation));
+}
+
+void SolersStudio::_reference_image_staged(const Dictionary &p_result, const Ref<Image> &p_image, uint64_t p_generation) {
+	if (p_generation != reference_generation) {
 		return;
 	}
-	reference_attachments.push_back(result.get("data", Dictionary()));
-	reference_images.push_back(p_image);
+	pending_reference_images = MAX(0, pending_reference_images - 1);
+	if (!(bool)p_result.get("ok", false)) {
+		_show_result(p_result, String());
+		return;
+	}
+	if (reference_attachments.size() < _studio_reference_limit(selected_preset, multiview_toggle->is_pressed())) {
+		reference_attachments.push_back(p_result.get("data", Dictionary()));
+		reference_textures.push_back(ImageTexture::create_from_image(p_image));
+	}
+	_refresh_reference_slots();
 }
 
 void SolersStudio::_refresh_reference_slots() {
 	const int limit = _studio_reference_limit(selected_preset, multiview_toggle->is_pressed());
 	while (reference_attachments.size() > limit) {
 		reference_attachments.pop_back();
-		reference_images.pop_back();
+		reference_textures.pop_back();
 	}
 	for (int i = 0; i < 4; i++) {
 		const bool slot_visible = i < limit;
@@ -289,19 +296,21 @@ void SolersStudio::_refresh_reference_slots() {
 		if (!slot_visible) {
 			continue;
 		}
-		const Ref<Image> image = i < reference_images.size() ? Ref<Image>(reference_images[i]) : Ref<Image>();
+		const Ref<Texture2D> image = i < reference_textures.size() ? Ref<Texture2D>(reference_textures[i]) : Ref<Texture2D>();
 		const Ref<Texture2D> placeholder = i == 0 ? Ref<Texture2D>() : SolersIcons::get(SNAME("tool_capture"), int(24 * EDSCALE));
-		reference_buttons[i]->set_button_icon(image.is_valid() ? Ref<Texture2D>(ImageTexture::create_from_image(image)) : placeholder);
+		reference_buttons[i]->set_button_icon(image.is_valid() ? image : placeholder);
 		reference_buttons[i]->set_expand_icon(image.is_valid());
 	}
-	reference_empty_state->set_visible(reference_images.is_empty());
+	reference_empty_state->set_visible(reference_textures.is_empty());
 	reference_aux->set_visible(limit > 1);
 	clear_references_button->set_visible(!reference_attachments.is_empty());
 }
 
 void SolersStudio::_clear_references() {
 	reference_attachments.clear();
-	reference_images.clear();
+	reference_textures.clear();
+	pending_reference_images = 0;
+	reference_generation++;
 	_refresh_reference_slots();
 }
 
@@ -316,8 +325,7 @@ void SolersStudio::_reference_gui_input(const Ref<InputEvent> &p_event) {
 	}
 	DisplayServer *display = DisplayServer::get_singleton();
 	if (display && display->clipboard_has_image()) {
-		_append_reference_image(display->clipboard_get_image());
-		_refresh_reference_slots();
+		_stage_reference_image(display->clipboard_get_image());
 		accept_event();
 	}
 }
@@ -546,8 +554,7 @@ void SolersStudio::_refresh_project_assets() {
 	const String route = _current_route();
 	const String query = catalog_query ? catalog_query->get_text().strip_edges().to_lower() : String();
 	project_list->clear();
-	const Array manifests = assets->list_assets();
-	for (const Variant &value : manifests) {
+	for (const Variant &value : project_manifests) {
 		const Dictionary manifest = value;
 		if (route != "assets" && String(manifest.get("kind", String())).to_lower() != route) {
 			continue;
@@ -559,9 +566,15 @@ void SolersStudio::_refresh_project_assets() {
 		Ref<Texture2D> item_preview = SolersIcons::get(SNAME("tool_asset"), int(54 * EDSCALE));
 		const String preview_file = manifest.get("preview_file", String());
 		if (!preview_file.is_empty()) {
-			const Ref<Image> image = Image::load_from_file(preview_file);
-			if (image.is_valid() && !image->is_empty()) {
-				item_preview = ImageTexture::create_from_image(image);
+			const Ref<Texture2D> *cached = project_previews.getptr(preview_file);
+			if (cached) {
+				item_preview = *cached;
+			} else {
+				const Ref<Image> image = Image::load_from_file(preview_file);
+				if (image.is_valid() && !image->is_empty()) {
+					item_preview = ImageTexture::create_from_image(image);
+					project_previews.insert(preview_file, item_preview);
+				}
 			}
 		}
 		const int index = project_list->add_item(title + "\n" + String(manifest.get("status", "unknown")).capitalize(), item_preview);
@@ -572,6 +585,11 @@ void SolersStudio::_refresh_project_assets() {
 		}
 	}
 	_sync_library_empty_states();
+}
+
+void SolersStudio::_reload_project_assets() {
+	project_manifests = assets->list_assets();
+	_refresh_project_assets();
 }
 void SolersStudio::_creation_scroll_hovered(bool p_hovered) {
 	if (!creation_scroll) {
@@ -592,6 +610,9 @@ void SolersStudio::_project_selected(int p_index) {
 	}
 }
 void SolersStudio::_show_manifest(const Dictionary &p_manifest) {
+	if (selected_catalog.is_empty() && p_manifest == selected_manifest) {
+		return;
+	}
 	selected_manifest = p_manifest;
 	selected_catalog.clear();
 	asset_title->set_text(p_manifest.get("name", p_manifest.get("id", TTRC("Untitled asset"))));
@@ -601,15 +622,19 @@ void SolersStudio::_show_manifest(const Dictionary &p_manifest) {
 	preview->set_texture(Ref<Texture2D>());
 	const String preview_file = p_manifest.get("preview_file", String());
 	if (!preview_file.is_empty()) {
-		Ref<Image> image = Image::load_from_file(preview_file);
-		if (image.is_valid() && !image->is_empty()) {
-			preview->set_texture(ImageTexture::create_from_image(image));
+		const Ref<Texture2D> *cached = project_previews.getptr(preview_file);
+		if (cached) {
+			preview->set_texture(*cached);
 		}
 	}
-	model_preview->clear_model();
 	const String model_path = assets->resolve_model_file(p_manifest);
-	if (!model_path.is_empty()) {
-		model_preview->load_model(model_path);
+	const bool model_changed = model_path != selected_model_path;
+	if (model_changed) {
+		selected_model_path = model_path;
+		model_preview->clear_model();
+		if (!model_path.is_empty()) {
+			model_preview->load_model(model_path);
+		}
 	}
 	String project_path;
 	for (const Variant &value : Array(p_manifest.get("project_entrypoints", Array()))) {
@@ -647,7 +672,7 @@ void SolersStudio::_sync_workspace() {
 			asset_status->set_text(route == "3d" ? TTRC("Generate a model or choose one from your library.") : TTRC("Only the 3D workspace is enabled in this release."));
 		}
 	}
-	const bool has_model = has_manifest && !assets->resolve_model_file(selected_manifest).is_empty();
+	const bool has_model = has_manifest && model_preview->has_model();
 	model_preview->set_visible(has_model);
 	preview->set_visible(!empty && !has_model && preview->get_texture().is_valid());
 	const String status = String(selected_manifest.get("status", String())).to_lower();
@@ -656,7 +681,7 @@ void SolersStudio::_sync_workspace() {
 	const int64_t vertex_count = selected_manifest.get("vertex_count", 0);
 	geometry_stats->set_text(polycount > 0 || vertex_count > 0 ? vformat(TTRC("%s polygons | %s vertices"), String::num_int64(polycount), String::num_int64(vertex_count)) : String());
 	geometry_stats->set_visible(!geometry_stats->get_text().is_empty());
-	asset_actions->set_visible(has_manifest && status == "ready");
+	asset_actions->set_visible(has_manifest && has_model && status != "queued" && status != "running" && status != "importing");
 	remesh_button->set_disabled(remesh_operation.is_empty());
 	const bool has_variant = has_catalog && catalog_variant->get_item_count() > 0;
 	catalog_variant->set_visible(has_variant);
@@ -744,7 +769,7 @@ void SolersStudio::_notification(int p_what) {
 		}
 		if (asset_revision != assets->get_revision()) {
 			asset_revision = assets->get_revision();
-			_refresh_project_assets();
+			_reload_project_assets();
 		}
 		_finish_catalog_work();
 	} else if (p_what == NOTIFICATION_TRANSLATION_CHANGED) {
@@ -877,13 +902,13 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	prompt_edit->set_caret_blink_enabled(true);
 	prompt_edit->set_custom_minimum_size(Size2(0, 92 * EDSCALE));
 	featured_form = _studio_add<SolersSchemaForm>(creation_column);
-	featured_form->set_image_stager(callable_mp(assets, &SolersAssetService::stage_input_image));
+	featured_form->set_image_stager(callable_mp(assets, &SolersAssetService::stage_input_image_async));
 	options_toggle = _studio_add<Button>(creation_column);
 	options_toggle->set_flat(true);
 	options_toggle->set_toggle_mode(true);
 	options_toggle->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
 	generation_form = _studio_add<SolersSchemaForm>(creation_column);
-	generation_form->set_image_stager(callable_mp(assets, &SolersAssetService::stage_input_image));
+	generation_form->set_image_stager(callable_mp(assets, &SolersAssetService::stage_input_image_async));
 	generate_button = _studio_add<Button>(creation_frame);
 	generate_button->set_name("GenerateButton");
 	generate_button->set_theme_type_variation(SNAME("SolersPrimaryButton"));
@@ -1042,7 +1067,7 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	import_dialog->connect(SNAME("dir_selected"), callable_mp(this, &SolersStudio::_import_directory_selected));
 	_options_toggled(false);
 	_refresh_registry();
-	_refresh_project_assets();
+	_reload_project_assets();
 	_refresh_text();
 }
 SolersStudio::~SolersStudio() {

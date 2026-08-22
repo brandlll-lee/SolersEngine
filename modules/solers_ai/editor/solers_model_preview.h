@@ -57,6 +57,7 @@ protected:
 public:
 	Error load_model(const String &p_path);
 	void clear_model();
+	bool has_model() const { return model_root != nullptr; }
 
 	SolersModelPreview();
 };

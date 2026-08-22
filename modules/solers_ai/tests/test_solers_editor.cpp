@@ -37,12 +37,14 @@
 #include "core/string/translation_server.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
+#include "scene/3d/camera_3d.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
 #include "scene/gui/file_dialog.h"
 #include "scene/gui/label.h"
 #include "scene/gui/split_container.h"
 #include "scene/main/scene_tree.h"
+#include "scene/resources/environment.h"
 #include "scene/resources/style_box_flat.h"
 #include "tests/test_macros.h"
 
@@ -50,6 +52,7 @@
 #include "modules/solers_ai/editor/solers_chat_cells.h"
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
 #include "modules/solers_ai/editor/solers_editor_plugin.h"
+#include "modules/solers_ai/editor/solers_model_preview.h"
 #include "modules/solers_ai/editor/solers_schema_form.h"
 #include "modules/solers_ai/editor/solers_ui_theme.h"
 #include "modules/solers_ai/generated/solers_svg_assets.gen.h"
@@ -58,13 +61,14 @@ TEST_FORCE_LINK(test_solers_editor)
 
 namespace TestSolersEditor {
 
-static Dictionary _stage_schema_image(const Ref<Image> &) {
+static void _stage_schema_image(const Variant &, const Callable &p_callback) {
 	Dictionary data;
 	data["local_path"] = "user://staged-schema-image.png";
 	Dictionary result;
 	result["ok"] = true;
 	result["data"] = data;
-	return result;
+	Ref<Image> image = Image::create_empty(1, 1, false, Image::FORMAT_RGBA8);
+	p_callback.call(result, image);
 }
 
 class ScopedEditorLanguage {
@@ -124,6 +128,13 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	CHECK(theme->has_stylebox(SNAME("grabber_highlight"), SNAME("SolersStudioScroll")));
 	CHECK(theme->get_font_size(SceneStringName(font_size), SNAME("SolersHeroTitle")) > theme->get_font_size(SceneStringName(font_size), SNAME("SolersSessionTitle")));
 	CHECK(bool(theme->has_icon(SNAME("arrow"), SNAME("OptionButton")) && theme->has_icon(SNAME("radio_checked"), SNAME("PopupMenu")) && theme->has_icon(SNAME("radio_unchecked"), SNAME("PopupMenu"))));
+	SolersModelPreview *model_preview = memnew(SolersModelPreview);
+	Camera3D *preview_camera = Object::cast_to<Camera3D>(model_preview->get_child(0)->get_child(0));
+	REQUIRE(preview_camera);
+	const Ref<Environment> preview_environment = preview_camera->get_environment();
+	REQUIRE(preview_environment.is_valid());
+	CHECK(preview_environment->get_sky().is_valid());
+	memdelete(model_preview);
 
 	Control *host = memnew(Control);
 	Label *ambient = memnew(Label("Godot"));

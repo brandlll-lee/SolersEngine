@@ -34,9 +34,9 @@
 #include "solers_ui_theme.h"
 
 #include "core/input/input_event.h"
-#include "core/io/image_loader.h"
 #include "core/io/json.h"
 #include "core/object/callable_mp.h"
+#include "core/object/object.h"
 #include "core/string/translation_server.h"
 #include "editor/themes/editor_scale.h"
 #include "scene/gui/button.h"
@@ -51,39 +51,42 @@
 #include "scene/resources/image_texture.h"
 #include "servers/display/display_server.h"
 
-void SolersSchemaForm::_append_image(Control *p_field, Button *p_pick, const Ref<Image> &p_image) {
-	if (!image_stager.is_valid() || p_image.is_null() || p_image->is_empty()) {
+void SolersSchemaForm::_image_staged(const Dictionary &p_result, const Ref<Image> &p_image, ObjectID p_field_id, ObjectID p_pick_id, uint64_t p_generation, int p_slot) {
+	Control *field = Object::cast_to<Control>(ObjectDB::get_instance(p_field_id));
+	Button *pick = Object::cast_to<Button>(ObjectDB::get_instance(p_pick_id));
+	if (!field || !pick || (uint64_t)field->get_meta("image_generation", 0) != p_generation) {
 		return;
 	}
-	const Dictionary result = image_stager.call(p_image);
-	const String path = Dictionary(result.get("data", Dictionary())).get("local_path", String());
+	const String path = Dictionary(p_result.get("data", Dictionary())).get("local_path", String());
 	if (path.is_empty()) {
 		return;
 	}
-	Array values = p_field->get_meta("image_values", Array());
-	const Dictionary schema = p_field->get_meta("schema", Dictionary());
-	const int limit = schema.get("type", "string") == "array" ? (int)schema.get("maxItems", 4) : 1;
-	if (values.size() >= limit) {
-		return;
+	Array values = field->get_meta("image_values", Array());
+	if (values.size() <= p_slot) {
+		values.resize(p_slot + 1);
 	}
-	values.push_back(path);
-	p_field->set_meta("image_values", values);
-	p_pick->set_text(values.size() == 1 ? TTRC("1 reference image") : vformat(TTRC("%d reference images"), values.size()));
-	p_pick->set_expand_icon(true);
-	p_pick->set_button_icon(ImageTexture::create_from_image(p_image));
+	values[p_slot] = path;
+	field->set_meta("image_values", values);
+	int count = 0;
+	for (const Variant &value : values) {
+		count += !String(value).is_empty();
+	}
+	pick->set_text(count == 1 ? TTRC("1 reference image") : vformat(TTRC("%d reference images"), count));
+	pick->set_expand_icon(true);
+	pick->set_button_icon(ImageTexture::create_from_image(p_image));
 }
 
 void SolersSchemaForm::_replace_images(const PackedStringArray &p_files, Control *p_field, Button *p_pick) {
+	const uint64_t generation = (uint64_t)p_field->get_meta("image_generation", 0) + 1;
+	p_field->set_meta("image_generation", generation);
 	p_field->set_meta("image_values", Array());
 	p_pick->set_text(TTRC("Add reference image"));
 	p_pick->set_expand_icon(false);
 	p_pick->set_button_icon(SolersIcons::get(SNAME("tool_capture"), int(24 * EDSCALE)));
-	for (const String &path : p_files) {
-		Ref<Image> image;
-		image.instantiate();
-		if (ImageLoader::load_image(path, image) == OK) {
-			_append_image(p_field, p_pick, image);
-		}
+	const Dictionary schema = p_field->get_meta("schema", Dictionary());
+	const int limit = schema.get("type", "string") == "array" ? (int)schema.get("maxItems", 4) : 1;
+	for (int i = 0; i < MIN(p_files.size(), limit); i++) {
+		image_stager.call(p_files[i], callable_mp(this, &SolersSchemaForm::_image_staged).bind(p_field->get_instance_id(), p_pick->get_instance_id(), generation, i));
 	}
 }
 
@@ -91,8 +94,10 @@ void SolersSchemaForm::_image_gui_input(const Ref<InputEvent> &p_event, Control 
 	const Ref<InputEventKey> key = p_event;
 	DisplayServer *display = DisplayServer::get_singleton();
 	if (key.is_valid() && key->is_pressed() && !key->is_echo() && key->get_keycode() == Key::V && key->is_command_or_control_pressed() && display && display->clipboard_has_image()) {
+		const uint64_t generation = (uint64_t)p_field->get_meta("image_generation", 0) + 1;
+		p_field->set_meta("image_generation", generation);
 		p_field->set_meta("image_values", Array());
-		_append_image(p_field, p_pick, display->clipboard_get_image());
+		image_stager.call(display->clipboard_get_image(), callable_mp(this, &SolersSchemaForm::_image_staged).bind(p_field->get_instance_id(), p_pick->get_instance_id(), generation, 0));
 		accept_event();
 	}
 }
@@ -305,7 +310,12 @@ Dictionary SolersSchemaForm::get_values() const {
 			}
 			value = selected;
 		} else if (field_kind == "image") {
-			const Array images = field->get_meta("image_values", Array());
+			Array images;
+			for (const Variant &image : Array(field->get_meta("image_values", Array()))) {
+				if (!String(image).is_empty()) {
+					images.push_back(image);
+				}
+			}
 			if (images.is_empty()) {
 				continue;
 			}

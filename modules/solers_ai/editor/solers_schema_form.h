@@ -43,7 +43,7 @@ class SolersSchemaForm : public VBoxContainer {
 	bool _can_drop_image(const Point2 &, const Variant &p_data, Control *) const;
 	void _drop_image(const Point2 &, const Variant &p_data, Control *p_field, Button *p_pick);
 	void _replace_images(const PackedStringArray &p_files, Control *p_field, Button *p_pick);
-	void _append_image(Control *p_field, Button *p_pick, const Ref<Image> &p_image);
+	void _image_staged(const Dictionary &p_result, const Ref<Image> &p_image, ObjectID p_field_id, ObjectID p_pick_id, uint64_t p_generation, int p_slot);
 
 protected:
 	static void _bind_methods() {}
