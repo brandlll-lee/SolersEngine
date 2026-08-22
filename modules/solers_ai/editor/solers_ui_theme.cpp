@@ -315,7 +315,7 @@ Ref<Theme> SolersUITheme::create() {
 	theme->set_stylebox(SceneStringName(panel), "SolersStudioRail", _solers_flat(tokens.surface, 0, Color(), 0, 0));
 	Ref<StyleBoxFlat> rail_hover = _solers_flat(tokens.card_hover, card_radius, Color(), 0, 4 * EDSCALE);
 	rail_hover->set_expand_margin_all(-2 * EDSCALE);
-	Ref<StyleBoxFlat> rail_selected = _solers_flat(tokens.card_selected, card_radius, tokens.hairline, border_width, 4 * EDSCALE);
+	Ref<StyleBoxFlat> rail_selected = _solers_flat(tokens.card_selected, card_radius, Color(), 0, 4 * EDSCALE);
 	rail_selected->set_expand_margin_all(-2 * EDSCALE);
 	for (const StringName &name : { SNAME("hovered"), SNAME("hovered_selected"), SNAME("hovered_selected_focus") }) {
 		theme->set_stylebox(name, "SolersStudioRail", rail_hover);

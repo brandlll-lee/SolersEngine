@@ -213,6 +213,7 @@ void SolersStudio::_route_selected(int) {
 	catalog_query->set_placeholder(is_3d ? TTRC("Search generated assets...") : TTRC("Search catalog..."));
 	library_tabs->set_current_tab(is_3d ? 1 : 0);
 	library_tabs->set_tab_hidden(0, is_3d);
+	library_tabs->set_tabs_visible(!is_3d);
 	_refresh_providers();
 	_refresh_project_assets();
 	_sync_workspace();
@@ -247,7 +248,7 @@ void SolersStudio::_catalog_provider_selected(int) {
 	SolersPlugin *plugin = SolersPluginRegistry::get_plugin(_selected_provider(catalog_provider));
 	const Dictionary profile = plugin ? plugin->get_profile() : Dictionary();
 	attribution_label->set_text(profile.get("attribution", String()));
-	catalog_query->set_editable(plugin != nullptr);
+	catalog_query->set_editable(_current_route() == "3d" || plugin != nullptr);
 }
 void SolersStudio::_reference_files_selected(const PackedStringArray &p_files) {
 	for (const String &path : p_files) {
@@ -941,12 +942,25 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	library_surface->set_h_size_flags(SIZE_EXPAND_FILL);
 	library_surface->set_v_size_flags(SIZE_EXPAND_FILL);
 	library_surface->configure(tokens.surface, tokens.border, tokens.radius_home_tile, 12, false);
-	SolersSurface *search_surface = _studio_add<SolersSurface>(library_surface);
+	VBoxContainer *library_column = _studio_add<VBoxContainer>(library_surface);
+	library_column->set_h_size_flags(SIZE_EXPAND_FILL);
+	library_column->set_v_size_flags(SIZE_EXPAND_FILL);
+	library_column->add_theme_constant_override(SNAME("separation"), int(8 * EDSCALE));
+	SolersSurface *search_surface = _studio_add<SolersSurface>(library_column);
 	search_surface->set_name("StudioLibrarySearch");
 	search_surface->configure(tokens.card, tokens.border, tokens.radius_list_thumb, 4, false);
-	catalog_query = _studio_add<LineEdit>(search_surface);
+	HBoxContainer *search_row = _studio_add<HBoxContainer>(search_surface);
+	search_row->add_theme_constant_override(SNAME("separation"), int(6 * EDSCALE));
+	TextureRect *search_icon = _studio_add<TextureRect>(search_row);
+	search_icon->set_texture(SolersIcons::get(SNAME("tool_search"), int(15 * EDSCALE)));
+	search_icon->set_custom_minimum_size(Size2(18, 18) * EDSCALE);
+	search_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+	search_icon->set_mouse_filter(MOUSE_FILTER_IGNORE);
+	catalog_query = _studio_add<LineEdit>(search_row);
+	catalog_query->set_h_size_flags(SIZE_EXPAND_FILL);
 	solers_style_bare_search_line_edit(catalog_query);
-	library_tabs = _studio_add<TabContainer>(library_surface);
+	library_tabs = _studio_add<TabContainer>(library_column);
+	library_tabs->set_name("StudioLibraryTabs");
 	library_tabs->set_h_size_flags(SIZE_EXPAND_FILL);
 	library_tabs->set_v_size_flags(SIZE_EXPAND_FILL);
 	VBoxContainer *catalog = _studio_add<VBoxContainer>(library_tabs);
