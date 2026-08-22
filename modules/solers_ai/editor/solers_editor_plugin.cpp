@@ -43,9 +43,11 @@
 #include "editor/editor_main_screen.h"
 #include "editor/editor_node.h"
 #include "editor/settings/editor_settings.h"
+#include "editor/themes/editor_scale.h"
 #include "scene/gui/box_container.h"
 
 #include "modules/solers_ai/editor/solers_agent_runtime.h"
+#include "modules/solers_ai/editor/solers_chat_widgets.h"
 #include "modules/solers_ai/editor/solers_dock.h"
 #include "modules/solers_ai/editor/solers_studio.h"
 #include "modules/solers_ai/editor/solers_ui_theme.h"
@@ -103,6 +105,10 @@ void SolersEditorPlugin::_translation_changed() {
 
 void SolersEditorPlugin::make_visible(bool p_visible) {
 	studio->set_visible(p_visible);
+}
+
+const Ref<Texture2D> SolersEditorPlugin::get_plugin_icon() const {
+	return SolersIcons::get(SNAME("image_generation"), int(16 * EDSCALE));
 }
 
 void SolersEditorPlugin::_notification(int p_what) {

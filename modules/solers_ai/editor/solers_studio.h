@@ -105,6 +105,7 @@ class SolersStudio : public PanelContainer {
 	Dictionary selected_catalog;
 	Dictionary capability_data;
 	Dictionary selected_preset;
+	ScrollContainer *creation_scroll = nullptr;
 	Thread catalog_thread;
 	SafeFlag catalog_cancel;
 	SafeFlag catalog_result_ready;
@@ -153,6 +154,7 @@ class SolersStudio : public PanelContainer {
 	void _import_pressed();
 	void _import_directory_selected(const String &p_directory);
 	void _preview_ready(const String &p_path, const Ref<Texture2D> &p_preview, const Ref<Texture2D> &p_small_preview, uint64_t p_generation);
+	void _creation_scroll_hovered(bool p_hovered);
 
 protected:
 	static void _bind_methods() {}

@@ -313,6 +313,25 @@ Ref<Theme> SolersUITheme::create() {
 	theme->set_constant(SNAME("v_separation"), "ItemList", int(8 * EDSCALE));
 	theme->set_type_variation(SNAME("SolersStudioRail"), SNAME("ItemList"));
 	theme->set_stylebox(SceneStringName(panel), "SolersStudioRail", _solers_flat(tokens.surface, 0, Color(), 0, 0));
+	Ref<StyleBoxFlat> rail_hover = _solers_flat(tokens.card_hover, card_radius, Color(), 0, 4 * EDSCALE);
+	rail_hover->set_expand_margin_all(-2 * EDSCALE);
+	Ref<StyleBoxFlat> rail_selected = _solers_flat(tokens.card_selected, card_radius, tokens.hairline, border_width, 4 * EDSCALE);
+	rail_selected->set_expand_margin_all(-2 * EDSCALE);
+	for (const StringName &name : { SNAME("hovered"), SNAME("hovered_selected"), SNAME("hovered_selected_focus") }) {
+		theme->set_stylebox(name, "SolersStudioRail", rail_hover);
+	}
+	for (const StringName &name : { SNAME("selected"), SNAME("selected_focus") }) {
+		theme->set_stylebox(name, "SolersStudioRail", rail_selected);
+	}
+	theme->set_constant(SNAME("h_separation"), "SolersStudioRail", int(8 * EDSCALE));
+	theme->set_constant(SNAME("v_separation"), "SolersStudioRail", int(10 * EDSCALE));
+	theme->set_type_variation(SNAME("SolersStudioScroll"), SNAME("VScrollBar"));
+	const Ref<StyleBoxFlat> scroll_empty = _solers_flat(Color(0, 0, 0, 0), 3 * EDSCALE, Color(0, 0, 0, 0), 0, 0);
+	theme->set_stylebox(SNAME("scroll"), "SolersStudioScroll", scroll_empty);
+	theme->set_stylebox(SNAME("scroll_focus"), "SolersStudioScroll", scroll_empty);
+	theme->set_stylebox(SNAME("grabber"), "SolersStudioScroll", scroll_empty);
+	theme->set_stylebox(SNAME("grabber_highlight"), "SolersStudioScroll", _solers_flat(tokens.text_dim, 3 * EDSCALE, Color(), 0, 0));
+	theme->set_stylebox(SNAME("grabber_pressed"), "SolersStudioScroll", _solers_flat(tokens.text, 3 * EDSCALE, Color(), 0, 0));
 
 	const Ref<StyleBoxFlat> tab_selected = _solers_flat(tokens.card_hover, product_radius, tokens.border, border_width, 8 * EDSCALE);
 	const Ref<StyleBoxFlat> tab_unselected = _solers_flat(tokens.surface, product_radius, Color(), 0, 8 * EDSCALE);

@@ -23,6 +23,7 @@ file_alert         file-alert
 folder             folder
 history            history
 layout_grid        layout-grid
+image_generation   image-generation
 more               dots-vertical
 new_chat           message-plus
 node               hierarchy-2

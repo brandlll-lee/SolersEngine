@@ -36,6 +36,7 @@ class SolersAgentRuntime;
 class SolersDock;
 class SolersStudio;
 class EditorDebuggerPlugin;
+class Texture2D;
 
 void solers_load_editor_translation();
 
@@ -57,6 +58,7 @@ protected:
 
 public:
 	String get_plugin_name() const override { return "Studio"; }
+	const Ref<Texture2D> get_plugin_icon() const override;
 	bool has_main_screen() const override { return true; }
 	void make_visible(bool p_visible) override;
 	void set_window_layout(Ref<ConfigFile> p_layout) override;

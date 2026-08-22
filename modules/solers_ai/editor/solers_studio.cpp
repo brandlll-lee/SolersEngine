@@ -52,11 +52,13 @@
 #include "scene/gui/line_edit.h"
 #include "scene/gui/option_button.h"
 #include "scene/gui/progress_bar.h"
+#include "scene/gui/scroll_bar.h"
 #include "scene/gui/scroll_container.h"
 #include "scene/gui/split_container.h"
 #include "scene/gui/tab_container.h"
 #include "scene/gui/text_edit.h"
 #include "scene/gui/texture_rect.h"
+#include "scene/animation/tween.h"
 #include "scene/main/window.h"
 #include "scene/resources/image_texture.h"
 #include "servers/display/display_server.h"
@@ -208,6 +210,7 @@ void SolersStudio::_route_selected(int) {
 	const String route = _current_route();
 	const bool is_3d = route == "3d";
 	creation_workspace->set_visible(is_3d);
+	catalog_query->set_placeholder(is_3d ? TTRC("Search generated assets...") : TTRC("Search catalog..."));
 	library_tabs->set_current_tab(is_3d ? 1 : 0);
 	library_tabs->set_tab_hidden(0, is_3d);
 	_refresh_providers();
@@ -436,6 +439,10 @@ void SolersStudio::_start_catalog_work(const String &p_action, const Dictionary 
 	catalog_thread.start(&SolersStudio::_catalog_thread_func, this);
 }
 void SolersStudio::_catalog_search_pressed() {
+	if (_current_route() == "3d") {
+		_refresh_project_assets();
+		return;
+	}
 	Dictionary args;
 	args["kind"] = _current_kind();
 	args["provider"] = _selected_provider(catalog_provider);
@@ -536,6 +543,7 @@ void SolersStudio::_acquire_pressed() {
 void SolersStudio::_refresh_project_assets() {
 	const String selected_id = selected_manifest.get("id", String());
 	const String route = _current_route();
+	const String query = catalog_query ? catalog_query->get_text().strip_edges().to_lower() : String();
 	project_list->clear();
 	const Array manifests = assets->list_assets();
 	for (const Variant &value : manifests) {
@@ -544,6 +552,9 @@ void SolersStudio::_refresh_project_assets() {
 			continue;
 		}
 		const String title = manifest.get("name", manifest.get("id", TTRC("Untitled asset")));
+		if (!query.is_empty() && !title.to_lower().contains(query)) {
+			continue;
+		}
 		Ref<Texture2D> item_preview = SolersIcons::get(SNAME("tool_asset"), int(54 * EDSCALE));
 		const String preview_file = manifest.get("preview_file", String());
 		if (!preview_file.is_empty()) {
@@ -560,6 +571,19 @@ void SolersStudio::_refresh_project_assets() {
 		}
 	}
 	_sync_library_empty_states();
+}
+void SolersStudio::_creation_scroll_hovered(bool p_hovered) {
+	if (!creation_scroll) {
+		return;
+	}
+	VScrollBar *bar = creation_scroll->get_v_scroll_bar();
+	if (!bar) {
+		return;
+	}
+	Ref<Tween> tween = Ref<Tween>(create_tween());
+	tween->set_trans(Tween::TRANS_QUAD);
+	tween->set_ease(Tween::EASE_OUT);
+	tween->tween_property(bar, NodePath("self_modulate"), Color(1, 1, 1, p_hovered ? 1.0f : 0.0f), 0.12);
 }
 void SolersStudio::_project_selected(int p_index) {
 	if (p_index >= 0 && p_index < project_list->get_item_count()) {
@@ -651,7 +675,7 @@ void SolersStudio::_refresh_text() {
 	acquire_button->set_text(TTRC("Add to project"));
 	catalog_empty_label->set_text(TTRC("No catalog assets found."));
 	project_empty_label->set_text(TTRC("Your generated assets will appear here."));
-	catalog_query->set_placeholder(TTRC("Search catalog..."));
+	catalog_query->set_placeholder(_current_route() == "3d" ? TTRC("Search generated assets...") : TTRC("Search catalog..."));
 	library_tabs->set_tab_title(0, TTRC("Catalog"));
 	library_tabs->set_tab_title(1, TTRC("My generations"));
 	_refresh_reference_slots();
@@ -743,6 +767,7 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	rail_surface->set_v_size_flags(SIZE_EXPAND_FILL);
 	rail_surface->configure(tokens.surface, tokens.border, tokens.radius_home_tile, 5, false);
 	route_list = _studio_add<ItemList>(rail_surface);
+	route_list->set_name("StudioRail");
 	route_list->set_theme_type_variation(SNAME("SolersStudioRail"));
 	route_list->set_icon_mode(ItemList::ICON_MODE_TOP);
 	route_list->set_fixed_icon_size(Size2i(24, 24) * EDSCALE);
@@ -764,12 +789,14 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	creation_frame->set_h_size_flags(SIZE_EXPAND_FILL);
 	creation_frame->set_v_size_flags(SIZE_EXPAND_FILL);
 	creation_frame->add_theme_constant_override(SNAME("separation"), int(12 * EDSCALE));
-	ScrollContainer *creation_scroll = _studio_add<ScrollContainer>(creation_frame);
+	creation_scroll = _studio_add<ScrollContainer>(creation_frame);
 	creation_scroll->set_name("CreationScroll");
 	creation_scroll->set_h_size_flags(SIZE_EXPAND_FILL);
 	creation_scroll->set_v_size_flags(SIZE_EXPAND_FILL);
 	creation_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
 	creation_scroll->set_vertical_scroll_mode(ScrollContainer::SCROLL_MODE_AUTO);
+	creation_scroll->get_v_scroll_bar()->set_theme_type_variation(SNAME("SolersStudioScroll"));
+	creation_scroll->get_v_scroll_bar()->set_self_modulate(Color(1, 1, 1, 0));
 	VBoxContainer *creation_column = _studio_add<VBoxContainer>(creation_scroll);
 	creation_column->set_h_size_flags(SIZE_EXPAND_FILL);
 	creation_column->add_theme_constant_override(SNAME("separation"), int(12 * EDSCALE));
@@ -819,9 +846,15 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	reference_aux = _studio_add<HBoxContainer>(reference_column);
 	reference_aux->add_theme_constant_override(SNAME("separation"), int(6 * EDSCALE));
 	for (int i = 1; i < 4; i++) {
-		reference_buttons[i] = _studio_add<Button>(reference_aux);
+		SolersSurface *slot = _studio_add<SolersSurface>(reference_aux);
+		slot->set_h_size_flags(SIZE_EXPAND_FILL);
+		slot->set_custom_minimum_size(Size2(0, 64 * EDSCALE));
+		slot->configure(tokens.card, tokens.border, tokens.radius_list_thumb, 0, false);
+		slot->set_dashed_border(true);
+		reference_buttons[i] = _studio_add<Button>(slot);
 		reference_buttons[i]->set_h_size_flags(SIZE_EXPAND_FILL);
-		reference_buttons[i]->set_custom_minimum_size(Size2(0, 64 * EDSCALE));
+		reference_buttons[i]->set_v_size_flags(SIZE_EXPAND_FILL);
+		reference_buttons[i]->set_icon_alignment(HORIZONTAL_ALIGNMENT_CENTER);
 	}
 	for (Button *button : reference_buttons) {
 		button->set_flat(true);
@@ -908,6 +941,11 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	library_surface->set_h_size_flags(SIZE_EXPAND_FILL);
 	library_surface->set_v_size_flags(SIZE_EXPAND_FILL);
 	library_surface->configure(tokens.surface, tokens.border, tokens.radius_home_tile, 12, false);
+	SolersSurface *search_surface = _studio_add<SolersSurface>(library_surface);
+	search_surface->set_name("StudioLibrarySearch");
+	search_surface->configure(tokens.card, tokens.border, tokens.radius_list_thumb, 4, false);
+	catalog_query = _studio_add<LineEdit>(search_surface);
+	solers_style_bare_search_line_edit(catalog_query);
 	library_tabs = _studio_add<TabContainer>(library_surface);
 	library_tabs->set_h_size_flags(SIZE_EXPAND_FILL);
 	library_tabs->set_v_size_flags(SIZE_EXPAND_FILL);
@@ -915,10 +953,6 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	catalog->set_name("Catalog");
 	catalog->add_theme_constant_override(SNAME("separation"), int(8 * EDSCALE));
 	catalog_provider = _studio_add<OptionButton>(catalog);
-	SolersSurface *search_surface = _studio_add<SolersSurface>(catalog);
-	search_surface->configure(tokens.card, tokens.border, tokens.radius_list_thumb, 4, false);
-	catalog_query = _studio_add<LineEdit>(search_surface);
-	solers_style_bare_search_line_edit(catalog_query);
 	PanelContainer *catalog_stack = _studio_add<PanelContainer>(catalog);
 	catalog_stack->set_v_size_flags(SIZE_EXPAND_FILL);
 	catalog_list = _studio_add<ItemList>(catalog_stack);
@@ -929,6 +963,7 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	catalog_list->set_max_columns(0);
 	catalog_list->set_max_text_lines(2);
 	catalog_list->set_v_size_flags(SIZE_EXPAND_FILL);
+	catalog_list->get_v_scroll_bar()->set_theme_type_variation(SNAME("SolersStudioScroll"));
 	catalog_empty = _studio_empty_state(catalog_stack, &catalog_empty_label);
 	attribution_label = _studio_label(catalog, String(), SNAME("SolersSessionMeta"));
 	attribution_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
@@ -942,6 +977,7 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	project_list->set_max_columns(0);
 	project_list->set_max_text_lines(2);
 	project_list->set_v_size_flags(SIZE_EXPAND_FILL);
+	project_list->get_v_scroll_bar()->set_theme_type_variation(SNAME("SolersStudioScroll"));
 	project_empty = _studio_empty_state(project, &project_empty_label);
 	reference_dialog = _studio_add<FileDialog>(this);
 	reference_dialog->set_access(FileDialog::ACCESS_FILESYSTEM);
@@ -977,6 +1013,9 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	generate_button->connect(SceneStringName(pressed), callable_mp(this, &SolersStudio::_generate_pressed));
 	empty_generate_button->connect(SceneStringName(pressed), callable_mp(this, &SolersStudio::_generate_pressed));
 	catalog_query->connect(SceneStringName(text_submitted), callable_mp(this, &SolersStudio::_catalog_search_pressed).unbind(1));
+	catalog_query->connect(SceneStringName(text_changed), callable_mp(this, &SolersStudio::_refresh_project_assets).unbind(1));
+	creation_scroll->connect(SceneStringName(mouse_entered), callable_mp(this, &SolersStudio::_creation_scroll_hovered).bind(true));
+	creation_scroll->connect(SceneStringName(mouse_exited), callable_mp(this, &SolersStudio::_creation_scroll_hovered).bind(false));
 	catalog_list->connect(SceneStringName(item_selected), callable_mp(this, &SolersStudio::_catalog_selected));
 	project_list->connect(SceneStringName(item_selected), callable_mp(this, &SolersStudio::_project_selected));
 	acquire_button->connect(SceneStringName(pressed), callable_mp(this, &SolersStudio::_acquire_pressed));

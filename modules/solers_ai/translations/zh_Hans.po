@@ -141,6 +141,9 @@ msgstr "添加到项目"
 msgid "Search catalog..."
 msgstr "搜索资产目录..."
 
+msgid "Search generated assets..."
+msgstr "搜索生成资产..."
+
 msgid "Describe the asset to create..."
 msgstr "描述要创建的资产..."
 
