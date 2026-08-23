@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "core/io/http_client.h"
 #include "core/object/gdvirtual.gen.h"
 #include "core/object/object.h"
 #include "core/object/ref_counted.h"
@@ -81,8 +82,8 @@ public:
 	void set_preview_url(const String &p_url) { preview_url = p_url; }
 	String get_preview_url() const { return preview_url; }
 
-	Dictionary http_request(const String &p_method, const String &p_url, const Vector<String> &p_headers, const PackedByteArray &p_body, uint64_t p_timeout_msec, int64_t p_max_body_bytes = -1) const;
-	Dictionary http_request_bound(const String &p_method, const String &p_url, const PackedStringArray &p_headers, const PackedByteArray &p_body, int64_t p_timeout_msec, int64_t p_max_body_bytes) const;
+	Dictionary http_request(HTTPClient::Method p_method, const String &p_url, const Vector<String> &p_headers, const PackedByteArray &p_body, uint64_t p_timeout_msec, int64_t p_max_body_bytes = -1) const;
+	Dictionary http_request_bound(HTTPClient::Method p_method, const String &p_url, const PackedStringArray &p_headers, const PackedByteArray &p_body, int64_t p_timeout_msec, int64_t p_max_body_bytes) const;
 };
 
 // One external service connector (Meshy, ambientCG, Poly Haven, ElevenLabs,
@@ -98,6 +99,7 @@ protected:
 	mutable Mutex catalog_cache_mutex;
 	Dictionary catalog_cache;
 	Dictionary catalog_inspections;
+	static Dictionary _http_status_error(const String &p_url, HTTPClient::Status p_status, int p_response_code = 0, const List<String> &p_headers = List<String>());
 
 	static void _bind_methods();
 	GDVIRTUAL0RC(Dictionary, _get_profile)
@@ -133,7 +135,7 @@ public:
 
 	// Shared provider-side utilities (single authoritative implementations;
 	// the asset service uses these too).
-	static Dictionary http_request(const String &p_method, const String &p_url, const Vector<String> &p_headers, const PackedByteArray &p_body, uint64_t p_timeout_msec, int64_t p_max_body_bytes = -1, const SafeFlag *p_cancel_requested = nullptr, int p_retry_count = 0);
+	static Dictionary http_request(HTTPClient::Method p_method, const String &p_url, const Vector<String> &p_headers, const PackedByteArray &p_body, uint64_t p_timeout_msec, int64_t p_max_body_bytes = -1, const SafeFlag *p_cancel_requested = nullptr, int p_retry_count = 0);
 	static Dictionary parse_json_body(const Dictionary &p_response);
 	static PackedByteArray utf8_bytes(const String &p_text);
 	static Dictionary error_data(const String &p_code, const String &p_message);

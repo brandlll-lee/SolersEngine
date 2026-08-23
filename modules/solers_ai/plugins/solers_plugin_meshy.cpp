@@ -306,7 +306,7 @@ Array SolersPluginMeshy::animation_actions() {
 	initialized = true;
 
 	static const char *catalog_url = "https://api.meshy.ai/web/public/animations/resources";
-	const Dictionary response = http_request("GET", catalog_url, Vector<String>(), PackedByteArray(), 30000, 4 * 1024 * 1024);
+	const Dictionary response = http_request(HTTPClient::METHOD_GET, catalog_url, Vector<String>(), PackedByteArray(), 30000, 4 * 1024 * 1024);
 	if ((bool)response.get("ok", false)) {
 		memory_actions = _meshy_animation_actions_from_document(parse_json_body(response));
 		if (!memory_actions.is_empty()) {
@@ -838,7 +838,7 @@ static String _meshy_task_id(const Dictionary &p_response) {
 Dictionary SolersPluginMeshy::_poll_task(const Ref<SolersPluginJob> &p_job, Dictionary &r_state, const String &p_url, const Vector<String> &p_headers) {
 	Dictionary detail;
 	for (int i = 0; i < 90 && !p_job->is_cancelled(); i++) {
-		Dictionary poll = http_request("GET", p_url, p_headers, PackedByteArray(), 60000);
+		Dictionary poll = http_request(HTTPClient::METHOD_GET, p_url, p_headers, PackedByteArray(), 60000);
 		if (!(bool)poll.get("ok", false)) {
 			r_state["status"] = "failed";
 			r_state["error"] = poll.get("error", Dictionary());
@@ -889,7 +889,7 @@ Dictionary SolersPluginMeshy::_submit_and_poll(const Ref<SolersPluginJob> &p_job
 	r_state["updated_at"] = Time::get_singleton()->get_datetime_string_from_system(true, true);
 	p_job->set_state(r_state);
 
-	Dictionary submit = http_request("POST", p_url, p_headers, utf8_bytes(JSON::stringify(p_body)), 120000);
+	Dictionary submit = http_request(HTTPClient::METHOD_POST, p_url, p_headers, utf8_bytes(JSON::stringify(p_body)), 120000);
 	if (!(bool)submit.get("ok", false)) {
 		r_state["status"] = "failed";
 		r_state["error"] = submit.get("error", Dictionary());
@@ -976,7 +976,7 @@ bool SolersPluginMeshy::_download_model(const Ref<SolersPluginJob> &p_job, Dicti
 		const Dictionary item = downloads[i];
 		const String extension = String(item.get("extension", String())).to_lower();
 		const String url = item.get("url", String());
-		const Dictionary download = http_request("GET", url, Vector<String>(), PackedByteArray(), 180000);
+		const Dictionary download = http_request(HTTPClient::METHOD_GET, url, Vector<String>(), PackedByteArray(), 180000);
 		if (!(bool)download.get("ok", false)) {
 			r_state["status"] = "failed";
 			r_state["error"] = download.get("error", Dictionary());
@@ -1017,7 +1017,7 @@ void SolersPluginMeshy::_download_basic_animations(const Ref<SolersPluginJob> &p
 		if (url.is_empty()) {
 			continue;
 		}
-		Dictionary download = http_request("GET", url, Vector<String>(), PackedByteArray(), 180000);
+		Dictionary download = http_request(HTTPClient::METHOD_GET, url, Vector<String>(), PackedByteArray(), 180000);
 		if (!(bool)download.get("ok", false)) {
 			r_state["animation_download_error"] = download.get("error", Dictionary());
 			continue;

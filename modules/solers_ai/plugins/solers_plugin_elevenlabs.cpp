@@ -131,7 +131,7 @@ void SolersPluginElevenLabs::run_job(const Ref<SolersPluginJob> &p_job) {
 	headers.push_back("xi-api-key: " + p_job->get_api_key());
 	const String endpoint = kind == "music" ? "/v1/music" : "/v1/sound-generation";
 	const String url = clean_base_url(p_job->get_base_url()) + endpoint + "?output_format=" + output_format.uri_encode();
-	Dictionary response = p_job->http_request("POST", url, headers, utf8_bytes(JSON::stringify(body)), 120000);
+	Dictionary response = p_job->http_request(HTTPClient::METHOD_POST, url, headers, utf8_bytes(JSON::stringify(body)), 120000);
 	if (!(bool)response.get("ok", false)) {
 		state["status"] = "failed";
 		state["error"] = response.get("error", Dictionary());

@@ -59,7 +59,7 @@ Dictionary SolersPluginAmbientCG::get_profile() const {
 
 Dictionary SolersPluginAmbientCG::_asset_metadata(const String &p_asset_id, const SafeFlag *p_cancel_requested) {
 	const String url = "https://ambientcg.com/api/v3/assets?id=" + p_asset_id.uri_encode() + "&limit=1&include=id,type,title,url,tags,dimensions,maps,downloads,thumbnails";
-	Dictionary response = http_request("GET", url, Vector<String>(), PackedByteArray(), 60000, 4 * 1024 * 1024, p_cancel_requested);
+	Dictionary response = http_request(HTTPClient::METHOD_GET, url, Vector<String>(), PackedByteArray(), 60000, 4 * 1024 * 1024, p_cancel_requested);
 	if (!(bool)response.get("ok", false)) {
 		return response;
 	}
@@ -153,7 +153,7 @@ Dictionary SolersPluginAmbientCG::catalog_search(const Dictionary &p_args, const
 	const int offset = MAX(0, (int)p_args.get("offset", 0));
 	const String api_type = kind == "3d" ? "3d-model" : kind;
 	const String url = "https://ambientcg.com/api/v3/assets?q=" + query.uri_encode() + "&type=" + api_type + "&sort=popular&limit=" + itos(limit) + "&offset=" + itos(offset) + "&include=id,type,title,url,tags,dimensions,thumbnails";
-	const Dictionary response = http_request("GET", url, Vector<String>(), PackedByteArray(), 60000, 4 * 1024 * 1024, p_cancel_requested);
+	const Dictionary response = http_request(HTTPClient::METHOD_GET, url, Vector<String>(), PackedByteArray(), 60000, 4 * 1024 * 1024, p_cancel_requested);
 	if (!(bool)response.get("ok", false)) {
 		const Dictionary error = response.get("error", Dictionary());
 		return error_result(String(error.get("code", String())) == "HTTP_CANCELLED" ? "TOOL_CANCELLED" : "CATALOG_SEARCH_FAILED", String(error.get("message", "ambientCG catalog request failed.")));
@@ -287,7 +287,7 @@ void SolersPluginAmbientCG::run_job(const Ref<SolersPluginJob> &p_job) {
 	state["stage"] = "downloading";
 	p_job->set_state(state);
 
-	Dictionary archive = p_job->http_request("GET", url, Vector<String>(), PackedByteArray(), 180000, size + 1);
+	Dictionary archive = p_job->http_request(HTTPClient::METHOD_GET, url, Vector<String>(), PackedByteArray(), 180000, size + 1);
 	if (!(bool)archive.get("ok", false)) {
 		state["status"] = "failed";
 		state["error"] = archive.get("error", Dictionary());

@@ -1231,7 +1231,7 @@ Dictionary SolersAssetService::addon_search(const Dictionary &p_args, const Safe
 	}
 
 	const String url = vformat("https://godotengine.org/asset-library/api/asset?godot_version=%d.%d&filter=%s&page=0&max_results=%d", GODOT_VERSION_MAJOR, GODOT_VERSION_MINOR, query.uri_encode(), limit);
-	const Dictionary response = SolersPlugin::http_request("GET", url, Vector<String>(), PackedByteArray(), 60000, 4 * 1024 * 1024, p_cancel_requested);
+	const Dictionary response = SolersPlugin::http_request(HTTPClient::METHOD_GET, url, Vector<String>(), PackedByteArray(), 60000, 4 * 1024 * 1024, p_cancel_requested);
 	if (!(bool)response.get("ok", false)) {
 		const Dictionary error = response.get("error", Dictionary());
 		return _error(String(error.get("code", String())) == "HTTP_CANCELLED" ? "TOOL_CANCELLED" : "PLUGIN_SEARCH_FAILED", String(error.get("message", "Godot Asset Library search failed.")));
@@ -1289,7 +1289,7 @@ Dictionary SolersAssetService::addon_inspect(const Dictionary &p_args, const Saf
 			return _error("PLUGIN_BUNDLE_MISSING", "The verified Terrain3D bundle is missing. Rebuild Solers or set SOLERS_TERRAIN3D_ARCHIVE to the official archive.", false);
 		}
 	} else {
-		const Dictionary response = SolersPlugin::http_request("GET", "https://godotengine.org/asset-library/api/asset/" + plugin_id.uri_encode(), Vector<String>(), PackedByteArray(), 60000, 4 * 1024 * 1024, p_cancel_requested);
+		const Dictionary response = SolersPlugin::http_request(HTTPClient::METHOD_GET, "https://godotengine.org/asset-library/api/asset/" + plugin_id.uri_encode(), Vector<String>(), PackedByteArray(), 60000, 4 * 1024 * 1024, p_cancel_requested);
 		if (!(bool)response.get("ok", false)) {
 			const Dictionary error = response.get("error", Dictionary());
 			return _error(String(error.get("code", String())) == "HTTP_CANCELLED" ? "TOOL_CANCELLED" : "PLUGIN_INSPECTION_FAILED", String(error.get("message", "Godot Asset Library inspection failed.")));
@@ -1320,7 +1320,7 @@ Dictionary SolersAssetService::addon_inspect(const Dictionary &p_args, const Saf
 		const String cache_dir = _solers_plugin_cache_root().path_join("assetlib").path_join(SolersPlugin::safe_slug(plugin_id)).path_join(SolersPlugin::safe_slug(plugin_metadata.get("version", String())));
 		archive_path = cache_dir.path_join("package.zip");
 		if ((bool)p_args.get("refresh", false) || !FileAccess::exists(archive_path)) {
-			const Dictionary download = SolersPlugin::http_request("GET", detail.get("download_url", String()), Vector<String>(), PackedByteArray(), 180000, 512LL * 1024LL * 1024LL, p_cancel_requested);
+			const Dictionary download = SolersPlugin::http_request(HTTPClient::METHOD_GET, detail.get("download_url", String()), Vector<String>(), PackedByteArray(), 180000, 512LL * 1024LL * 1024LL, p_cancel_requested);
 			if (!(bool)download.get("ok", false)) {
 				const Dictionary error = download.get("error", Dictionary());
 				return _error(String(error.get("code", String())) == "HTTP_CANCELLED" ? "TOOL_CANCELLED" : "PLUGIN_DOWNLOAD_FAILED", String(error.get("message", "Plugin download failed.")));
@@ -1725,7 +1725,7 @@ Dictionary SolersAssetService::fetch_provider_preview(const String &p_provider, 
 	for (const String &header : PackedStringArray(plugin->get_profile().get("download_headers", PackedStringArray()))) {
 		headers.push_back(header);
 	}
-	const Dictionary response = SolersPlugin::http_request("GET", p_url, headers, PackedByteArray(), 60000, 2 * 1024 * 1024, p_cancel_requested);
+	const Dictionary response = SolersPlugin::http_request(HTTPClient::METHOD_GET, p_url, headers, PackedByteArray(), 60000, 2 * 1024 * 1024, p_cancel_requested);
 	if (!(bool)response.get("ok", false)) {
 		const Dictionary error = response.get("error", Dictionary());
 		return _error(String(error.get("code", String())) == "HTTP_CANCELLED" ? "TOOL_CANCELLED" : "PREVIEW_DOWNLOAD_FAILED", error.get("message", "Provider thumbnail could not be downloaded."));

@@ -37,7 +37,7 @@ class SolersPluginTripo : public SolersPlugin {
 
 	static Dictionary _poll_task(const Ref<SolersPluginJob> &p_job, Dictionary &r_state, const Vector<String> &p_headers);
 	static Dictionary _submit_and_poll(const Ref<SolersPluginJob> &p_job, Dictionary &r_state, const String &p_endpoint, const Vector<String> &p_headers, const Dictionary &p_body, const String &p_stage);
-	static String _upload_attachment(const Ref<SolersPluginJob> &p_job, const Dictionary &p_attachment, const Vector<String> &p_headers, String &r_error);
+	static String _upload_attachment(const Ref<SolersPluginJob> &p_job, const Dictionary &p_attachment, const Vector<String> &p_headers, Dictionary &r_error);
 	static bool _download_result(const Ref<SolersPluginJob> &p_job, Dictionary &r_state, const Dictionary &p_detail);
 
 public:

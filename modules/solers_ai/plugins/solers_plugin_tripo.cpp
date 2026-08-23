@@ -131,7 +131,7 @@ Dictionary SolersPluginTripo::get_profile() const {
 	profile["supports_resume"] = true;
 	profile["generation_presets"] = JSON::parse_string(R"([
 		{"id":"tripo-h3.1","label":"Tripo H3.1","description":"Highest geometry fidelity","default":true,"kind":"3d","options":{"model":"v3.1-20260211","texture":true,"pbr":true,"texture_quality":"detailed","export_uv":true},"min_reference_images":0,"max_reference_images":4,"featured_fields":["texture","pbr","texture_quality","geometry_quality","face_limit"],"presentation":{"controls":{"texture_quality":{"control":"segmented"},"geometry_quality":{"control":"segmented"},"face_limit":{"control":"slider"}}}},
-		{"id":"tripo-p1","label":"Tripo P1","description":"Smart low-poly topology","kind":"3d","options":{"model":"P1-20260311","texture":true,"pbr":true,"smart_low_poly":true,"export_uv":true},"min_reference_images":0,"max_reference_images":4,"featured_fields":["face_limit","smart_low_poly","texture","pbr"],"presentation":{"controls":{"face_limit":{"control":"slider"}}}}
+		{"id":"tripo-p1","label":"Tripo P1","description":"Smart low-poly topology","kind":"3d","options":{"model":"P1-20260311","texture":true,"pbr":true,"export_uv":true},"min_reference_images":0,"max_reference_images":4,"featured_fields":["face_limit","texture","pbr"],"hidden_fields":["quad","smart_low_poly","generate_parts","geometry_quality"],"option_constraints":{"face_limit":{"minimum":50,"maximum":20000}},"presentation":{"controls":{"face_limit":{"control":"slider"}}}}
 	])");
 	return profile;
 }
@@ -177,11 +177,26 @@ Dictionary SolersPluginTripo::prepare_generate(const String &p_kind, const Dicti
 	if (attachments.size() > 4) {
 		return error_data("INVALID_ARGUMENT", "Tripo accepts at most four reference images.");
 	}
-	const String model = String(options.get("model", "v3.1-20260211"));
-	if (model != "v3.1-20260211" && model != "P1-20260311") {
-		return error_data("INVALID_ARGUMENT", "model must be v3.1-20260211 or P1-20260311.");
+	const Array presets = get_profile().get("generation_presets", Array());
+	Dictionary model_preset;
+	const String default_model = presets.is_empty() ? String() : String(Dictionary(Dictionary(presets[0]).get("options", Dictionary())).get("model", String()));
+	const String model = String(options.get("model", default_model));
+	for (const Variant &preset_value : presets) {
+		const Dictionary preset = preset_value;
+		if (Dictionary(preset.get("options", Dictionary())).get("model", String()) == model) {
+			model_preset = preset;
+			break;
+		}
+	}
+	if (model_preset.is_empty()) {
+		return error_data("INVALID_ARGUMENT", "Unknown Tripo generation model.");
 	}
 	options["model"] = model;
+	for (const Variant &field : Array(model_preset.get("hidden_fields", Array()))) {
+		if (options.has(field)) {
+			return error_data("INVALID_ARGUMENT", vformat("%s does not support option '%s'.", model, field));
+		}
+	}
 	String option_error;
 	const char *booleans[] = { "texture", "pbr", "auto_size", "quad", "smart_low_poly", "generate_parts", "export_uv", "enable_image_autofix" };
 	for (const char *name : booleans) {
@@ -191,8 +206,11 @@ Dictionary SolersPluginTripo::prepare_generate(const String &p_kind, const Dicti
 	}
 	if (options.has("face_limit")) {
 		const Variant value = options["face_limit"];
-		if (value.get_type() != Variant::INT || (int64_t)value < 100 || (int64_t)value > 2000000) {
-			return error_data("INVALID_ARGUMENT", "face_limit must be an integer from 100 to 2000000.");
+		const Dictionary limit = Dictionary(model_preset.get("option_constraints", Dictionary())).get("face_limit", Dictionary());
+		const int64_t minimum = limit.get("minimum", 100);
+		const int64_t maximum = limit.get("maximum", 2000000);
+		if (value.get_type() != Variant::INT || (int64_t)value < minimum || (int64_t)value > maximum) {
+			return error_data("INVALID_ARGUMENT", vformat("face_limit must be an integer from %d to %d for %s.", minimum, maximum, model));
 		}
 	}
 	const String quality = String(options.get("texture_quality", "detailed")).to_lower();
@@ -235,30 +253,34 @@ static Dictionary _tripo_data(const Dictionary &p_response) {
 	return parsed["data"];
 }
 
-String SolersPluginTripo::_upload_attachment(const Ref<SolersPluginJob> &p_job, const Dictionary &p_attachment, const Vector<String> &p_headers, String &r_error) {
+String SolersPluginTripo::_upload_attachment(const Ref<SolersPluginJob> &p_job, const Dictionary &p_attachment, const Vector<String> &p_headers, Dictionary &r_error) {
 	const String path = p_attachment.get("local_path", String());
 	const String format = path.get_extension().to_lower() == "jpeg" ? String("jpg") : path.get_extension().to_lower();
 	const PackedByteArray bytes = FileAccess::get_file_as_bytes(path);
 	if (bytes.is_empty()) {
-		r_error = "Could not read Tripo input attachment: " + path;
+		r_error = error_data("ATTACHMENT_READ_FAILED", "Could not read the Tripo input attachment.");
 		return String();
 	}
 	Dictionary body;
 	body["format"] = format;
 	const String base_url = clean_base_url(p_job->get_base_url());
-	const Dictionary request = http_request("POST", base_url + "/v3/files/presign", p_headers, utf8_bytes(JSON::stringify(body)), 60000);
+	const Dictionary request = http_request(HTTPClient::METHOD_POST, base_url + "/v3/files/presign", p_headers, utf8_bytes(JSON::stringify(body)), 60000);
+	if (!(bool)request.get("ok", false)) {
+		r_error = request.get("error", error_data("PRESIGN_FAILED", "Tripo file presigning failed."));
+		return String();
+	}
 	const Dictionary data = _tripo_data(request);
 	const String upload_url = data.get("presigned_url", String());
 	const String token = data.get("file_token", String());
 	if (upload_url.is_empty() || token.is_empty()) {
-		r_error = "Tripo presign response did not contain an upload URL and file token.";
+		r_error = error_data("BAD_PROVIDER_RESPONSE", "Tripo presign response did not contain an upload URL and file token.");
 		return String();
 	}
 	Vector<String> upload_headers;
 	upload_headers.push_back("Content-Type: application/octet-stream");
-	const Dictionary upload = http_request("PUT", upload_url, upload_headers, bytes, 180000);
+	const Dictionary upload = http_request(HTTPClient::METHOD_PUT, upload_url, upload_headers, bytes, 180000);
 	if (!(bool)upload.get("ok", false)) {
-		r_error = String(Dictionary(upload.get("error", Dictionary())).get("message", "Tripo file upload failed."));
+		r_error = upload.get("error", error_data("ATTACHMENT_UPLOAD_FAILED", "Tripo file upload failed."));
 		return String();
 	}
 	return token;
@@ -268,7 +290,7 @@ Dictionary SolersPluginTripo::_poll_task(const Ref<SolersPluginJob> &p_job, Dict
 	Dictionary detail;
 	const String task_id = r_state.get("provider_task_id", String());
 	for (int i = 0; i < 90 && !p_job->is_cancelled(); i++) {
-		const Dictionary response = http_request("GET", clean_base_url(p_job->get_base_url()) + "/v3/tasks/" + task_id, p_headers, PackedByteArray(), 60000);
+		const Dictionary response = http_request(HTTPClient::METHOD_GET, clean_base_url(p_job->get_base_url()) + "/v3/tasks/" + task_id, p_headers, PackedByteArray(), 60000);
 		detail = _tripo_data(response);
 		if (detail.is_empty()) {
 			r_state["status"] = "failed";
@@ -308,7 +330,7 @@ Dictionary SolersPluginTripo::_submit_and_poll(const Ref<SolersPluginJob> &p_job
 	r_state["stage"] = p_stage;
 	r_state["updated_at"] = Time::get_singleton()->get_datetime_string_from_system(true, true);
 	p_job->set_state(r_state);
-	const Dictionary response = http_request("POST", clean_base_url(p_job->get_base_url()) + p_endpoint, p_headers, utf8_bytes(JSON::stringify(p_body)), 120000);
+	const Dictionary response = http_request(HTTPClient::METHOD_POST, clean_base_url(p_job->get_base_url()) + p_endpoint, p_headers, utf8_bytes(JSON::stringify(p_body)), 120000);
 	const Dictionary data = _tripo_data(response);
 	const String task_id = data.get("task_id", String());
 	if (task_id.is_empty()) {
@@ -338,7 +360,7 @@ bool SolersPluginTripo::_download_result(const Ref<SolersPluginJob> &p_job, Dict
 		p_job->set_state(r_state);
 		return false;
 	}
-	const Dictionary response = http_request("GET", url, Vector<String>(), PackedByteArray(), 180000);
+	const Dictionary response = http_request(HTTPClient::METHOD_GET, url, Vector<String>(), PackedByteArray(), 180000);
 	if (!(bool)response.get("ok", false)) {
 		r_state["status"] = "failed";
 		r_state["error"] = response.get("error", Dictionary());
@@ -394,10 +416,13 @@ void SolersPluginTripo::run_job(const Ref<SolersPluginJob> &p_job) {
 		} else {
 			Array tokens;
 			for (int i = 0; i < attachments.size(); i++) {
-				String error;
+				Dictionary error;
 				const String token = _upload_attachment(p_job, attachments[i], headers, error);
 				if (token.is_empty()) {
-					p_job->fail("ATTACHMENT_UPLOAD_FAILED", error);
+					state["status"] = "failed";
+					error["operation"] = "attachment_upload";
+					state["error"] = error;
+					p_job->set_state(state);
 					return;
 				}
 				tokens.push_back(token);

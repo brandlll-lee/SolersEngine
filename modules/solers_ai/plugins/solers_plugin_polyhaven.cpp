@@ -69,11 +69,11 @@ Dictionary SolersPluginPolyHaven::get_profile() const {
 
 Dictionary SolersPluginPolyHaven::_asset_metadata(const String &p_asset_id, const SafeFlag *p_cancel_requested) {
 	const Vector<String> headers = request_headers();
-	Dictionary info_response = http_request("GET", "https://api.polyhaven.com/info/" + p_asset_id.uri_encode(), headers, PackedByteArray(), 60000, 2 * 1024 * 1024, p_cancel_requested);
+	Dictionary info_response = http_request(HTTPClient::METHOD_GET, "https://api.polyhaven.com/info/" + p_asset_id.uri_encode(), headers, PackedByteArray(), 60000, 2 * 1024 * 1024, p_cancel_requested);
 	if (!(bool)info_response.get("ok", false)) {
 		return info_response;
 	}
-	Dictionary files_response = http_request("GET", "https://api.polyhaven.com/files/" + p_asset_id.uri_encode(), headers, PackedByteArray(), 60000, 8 * 1024 * 1024, p_cancel_requested);
+	Dictionary files_response = http_request(HTTPClient::METHOD_GET, "https://api.polyhaven.com/files/" + p_asset_id.uri_encode(), headers, PackedByteArray(), 60000, 8 * 1024 * 1024, p_cancel_requested);
 	if (!(bool)files_response.get("ok", false)) {
 		return files_response;
 	}
@@ -198,7 +198,7 @@ bool SolersPluginPolyHaven::_download_file(const Ref<SolersPluginJob> &p_job, co
 		r_error = vformat("Poly Haven metadata for %s is incomplete.", p_label);
 		return false;
 	}
-	const Dictionary response = p_job->http_request("GET", url, request_headers(), PackedByteArray(), 180000, expected_size + 1);
+	const Dictionary response = p_job->http_request(HTTPClient::METHOD_GET, url, request_headers(), PackedByteArray(), 180000, expected_size + 1);
 	if (!(bool)response.get("ok", false)) {
 		r_error = Dictionary(response.get("error", Dictionary())).get("message", vformat("Poly Haven download failed for %s.", p_label));
 		return false;
@@ -330,7 +330,7 @@ Dictionary SolersPluginPolyHaven::catalog_search(const Dictionary &p_args, const
 	}
 	if ((bool)p_args.get("refresh", false) || catalog.is_empty()) {
 		const String api_type = kind == "material" ? "textures" : (kind == "hdri" ? "hdris" : "models");
-		const Dictionary response = http_request("GET", "https://api.polyhaven.com/assets?type=" + api_type, request_headers(), PackedByteArray(), 60000, 16 * 1024 * 1024, p_cancel_requested);
+		const Dictionary response = http_request(HTTPClient::METHOD_GET, "https://api.polyhaven.com/assets?type=" + api_type, request_headers(), PackedByteArray(), 60000, 16 * 1024 * 1024, p_cancel_requested);
 		if (!(bool)response.get("ok", false)) {
 			const Dictionary error = response.get("error", Dictionary());
 			if (String(error.get("code", String())) == "HTTP_CANCELLED") {

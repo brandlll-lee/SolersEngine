@@ -102,13 +102,15 @@ static Control *_studio_empty_state(Node *p_parent, Label **r_label) {
 	return empty;
 }
 
-static Dictionary _studio_schema_subset(const Dictionary &p_schema, const Array &p_include, const Array &p_exclude, bool p_remaining) {
+static Dictionary _studio_schema_subset(const Dictionary &p_schema, const Array &p_include, const Array &p_exclude, const Dictionary &p_constraints, bool p_remaining) {
 	const Dictionary properties = p_schema.has("properties") ? Dictionary(p_schema["properties"]) : p_schema;
 	Dictionary selected;
 	for (const Variant &key : properties.keys()) {
 		const bool included = p_include.has(key);
 		if (!p_exclude.has(key) && (p_remaining ? !included : included)) {
-			selected[key] = properties[key];
+			Dictionary property = Dictionary(properties[key]).duplicate(true);
+			property.merge(p_constraints.get(key, Dictionary()), true);
+			selected[key] = property;
 		}
 	}
 	return selected;
@@ -261,9 +263,10 @@ void SolersStudio::_refresh_generation_schema() {
 	const Dictionary schema = plugin ? plugin->get_generation_options_schema(_current_kind()) : Dictionary();
 	const Array featured = selected_preset.get("featured_fields", Array());
 	const Array hidden = selected_preset.get("hidden_fields", Array());
+	const Dictionary constraints = selected_preset.get("option_constraints", Dictionary());
 	const Dictionary presentation = selected_preset.get("presentation", Dictionary());
-	featured_form->set_schema(_studio_schema_subset(schema, featured, hidden, false), Dictionary(), presentation);
-	generation_form->set_schema(_studio_schema_subset(schema, featured, hidden, true), Dictionary(), presentation);
+	featured_form->set_schema(_studio_schema_subset(schema, featured, hidden, constraints, false), Dictionary(), presentation);
+	generation_form->set_schema(_studio_schema_subset(schema, featured, hidden, constraints, true), Dictionary(), presentation);
 	const Dictionary defaults = selected_preset.get("options", Dictionary());
 	featured_form->set_values(defaults);
 	generation_form->set_values(defaults);
@@ -689,11 +692,21 @@ void SolersStudio::_show_manifest(const Dictionary &p_manifest) {
 	selected_manifest = p_manifest;
 	selected_catalog.clear();
 	asset_title->set_text(p_manifest.get("name", p_manifest.get("id", TTRC("Untitled asset"))));
-	String stage = String(p_manifest.get("stage", p_manifest.get("status", String()))).capitalize();
-	if (p_manifest.has("progress")) {
-		stage += "  " + itos(CLAMP((int)p_manifest["progress"], 0, 100)) + "%";
+	const Dictionary error = p_manifest.get("error", Dictionary());
+	if (!error.is_empty()) {
+		String message = error.get("message", TTRC("The operation failed."));
+		const String code = error.get("code", String());
+		if (!code.is_empty()) {
+			message += "\n" + code;
+		}
+		asset_status->set_text(message);
+	} else {
+		String stage = String(p_manifest.get("stage", p_manifest.get("status", String()))).capitalize();
+		if (p_manifest.has("progress")) {
+			stage += "  " + itos(CLAMP((int)p_manifest["progress"], 0, 100)) + "%";
+		}
+		asset_status->set_text(stage);
 	}
-	asset_status->set_text(stage);
 	preview->set_texture(Ref<Texture2D>());
 	const String preview_file = p_manifest.get("preview_file", String());
 	if (!preview_file.is_empty()) {

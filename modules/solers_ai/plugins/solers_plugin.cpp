@@ -100,11 +100,11 @@ void SolersPluginJob::fail(const String &p_code, const String &p_message) {
 	set_state(failed);
 }
 
-Dictionary SolersPluginJob::http_request(const String &p_method, const String &p_url, const Vector<String> &p_headers, const PackedByteArray &p_body, uint64_t p_timeout_msec, int64_t p_max_body_bytes) const {
+Dictionary SolersPluginJob::http_request(HTTPClient::Method p_method, const String &p_url, const Vector<String> &p_headers, const PackedByteArray &p_body, uint64_t p_timeout_msec, int64_t p_max_body_bytes) const {
 	return SolersPlugin::http_request(p_method, p_url, p_headers, p_body, p_timeout_msec, p_max_body_bytes, abort);
 }
 
-Dictionary SolersPluginJob::http_request_bound(const String &p_method, const String &p_url, const PackedStringArray &p_headers, const PackedByteArray &p_body, int64_t p_timeout_msec, int64_t p_max_body_bytes) const {
+Dictionary SolersPluginJob::http_request_bound(HTTPClient::Method p_method, const String &p_url, const PackedStringArray &p_headers, const PackedByteArray &p_body, int64_t p_timeout_msec, int64_t p_max_body_bytes) const {
 	Vector<String> headers;
 	for (const String &header : p_headers) {
 		headers.push_back(header);
@@ -448,7 +448,7 @@ static Dictionary _solers_http_error(const String &p_code, const String &p_messa
 	Dictionary error;
 	error["code"] = p_code;
 	error["message"] = p_message;
-	error["url"] = p_url;
+	error["url"] = p_url.get_slice("?", 0).get_slice("#", 0);
 	error["http_client_status"] = (int)p_status;
 	if (p_response_code > 0) {
 		error["status"] = p_response_code;
@@ -459,7 +459,22 @@ static Dictionary _solers_http_error(const String &p_code, const String &p_messa
 	return error;
 }
 
-Dictionary SolersPlugin::http_request(const String &p_method, const String &p_url, const Vector<String> &p_headers, const PackedByteArray &p_body, uint64_t p_timeout_msec, int64_t p_max_body_bytes, const SafeFlag *p_cancel_requested, int p_retry_count) {
+Dictionary SolersPlugin::_http_status_error(const String &p_url, HTTPClient::Status p_status, int p_response_code, const List<String> &p_headers) {
+	switch (p_status) {
+		case HTTPClient::STATUS_CANT_RESOLVE:
+			return _solers_http_error("HTTP_CANT_RESOLVE", "Could not resolve the provider host. Check DNS or network settings and retry.", p_url, p_status, p_response_code, p_headers);
+		case HTTPClient::STATUS_CANT_CONNECT:
+			return _solers_http_error("HTTP_CANT_CONNECT", "Could not connect to the provider host. Check network or proxy settings and retry.", p_url, p_status, p_response_code, p_headers);
+		case HTTPClient::STATUS_CONNECTION_ERROR:
+			return _solers_http_error("HTTP_CONNECTION_ERROR", "The provider connection failed while sending the request. Retry the operation.", p_url, p_status, p_response_code, p_headers);
+		case HTTPClient::STATUS_TLS_HANDSHAKE_ERROR:
+			return _solers_http_error("HTTP_TLS_HANDSHAKE_ERROR", "The secure connection to the provider failed. Check TLS interception or certificate settings.", p_url, p_status, p_response_code, p_headers);
+		default:
+			return _solers_http_error("HTTP_STATUS_ERROR", "The provider connection entered an unexpected state.", p_url, p_status, p_response_code, p_headers);
+	}
+}
+
+Dictionary SolersPlugin::http_request(HTTPClient::Method p_method, const String &p_url, const Vector<String> &p_headers, const PackedByteArray &p_body, uint64_t p_timeout_msec, int64_t p_max_body_bytes, const SafeFlag *p_cancel_requested, int p_retry_count) {
 	String current_url = p_url;
 	String redirected_from;
 	for (int redirect_count = 0; redirect_count <= 3; redirect_count++) {
@@ -538,8 +553,7 @@ Dictionary SolersPlugin::http_request(const String &p_method, const String &p_ur
 			}
 			if (status == HTTPClient::STATUS_CONNECTED) {
 				if (!requested) {
-					const HTTPClient::Method method = p_method == "GET" ? HTTPClient::METHOD_GET : HTTPClient::METHOD_POST;
-					err = http->request(method, path, p_headers, p_body.ptr(), p_body.size());
+					err = http->request(p_method, path, p_headers, p_body.ptr(), p_body.size());
 					if (err != OK) {
 						Dictionary out;
 						out["ok"] = false;
@@ -580,7 +594,7 @@ Dictionary SolersPlugin::http_request(const String &p_method, const String &p_ur
 			}
 			Dictionary out;
 			out["ok"] = false;
-			out["error"] = _solers_http_error("HTTP_STATUS_ERROR", "HTTP connection failed.", current_url, status, response_code, response_headers);
+			out["error"] = _http_status_error(current_url, status, response_code, response_headers);
 			return out;
 		}
 
@@ -625,7 +639,7 @@ Dictionary SolersPlugin::http_request(const String &p_method, const String &p_ur
 			continue;
 		}
 
-		if (p_retry_count < 2 && ((p_method == "GET" && (response_code == 429 || response_code == 503)) || (p_method == "POST" && response_code == 429))) {
+		if (p_retry_count < 2 && ((p_method == HTTPClient::METHOD_GET && (response_code == 429 || response_code == 503)) || (p_method == HTTPClient::METHOD_POST && response_code == 429))) {
 			const int retry_seconds = _solers_header_value(response_headers, "Retry-After").to_int();
 			if (retry_seconds > 0 && retry_seconds <= 60) {
 				const uint64_t retry_at = OS::get_singleton()->get_ticks_msec() + (uint64_t)retry_seconds * 1000;

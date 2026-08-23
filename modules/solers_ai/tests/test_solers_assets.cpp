@@ -33,6 +33,7 @@
 #include "core/io/file_access.h"
 #include "core/io/image.h"
 #include "core/io/json.h"
+#include "core/io/tcp_server.h"
 #include "core/os/os.h"
 #include "core/templates/pair.h"
 #include "editor/asset_library/editor_asset_installer.h"
@@ -48,6 +49,8 @@
 #include "modules/solers_ai/plugins/solers_plugin_tripo.h"
 #include "modules/solers_ai/tests/support/solers_test_state.h"
 #include "modules/zip/zip_packer.h"
+
+#include <thread>
 
 TEST_FORCE_LINK(test_solers_assets)
 
@@ -84,6 +87,13 @@ public:
 	~ScopedPluginRegistration() {
 		SolersPluginRegistry::unregister_plugin(plugin);
 		memdelete(plugin);
+	}
+};
+
+class SolersTransportProbe : public SolersPlugin {
+public:
+	static Dictionary status_error(HTTPClient::Status p_status) {
+		return _http_status_error("https://storage.example/upload?signature=secret", p_status);
 	}
 };
 
@@ -508,7 +518,14 @@ TEST_CASE("[SolersPluginTripo] v3 presets and generation constraints follow prov
 	const Array presets = profile.get("generation_presets", Array());
 	REQUIRE(presets.size() == 2);
 	CHECK(Dictionary(Dictionary(presets[0]).get("options", Dictionary())).get("model", String()) == "v3.1-20260211");
-	CHECK(Dictionary(Dictionary(presets[1]).get("options", Dictionary())).get("model", String()) == "P1-20260311");
+	const Dictionary p1 = presets[1];
+	const Dictionary p1_options = p1.get("options", Dictionary());
+	CHECK(p1_options.get("model", String()) == "P1-20260311");
+	CHECK_FALSE(p1_options.has("smart_low_poly"));
+	CHECK(Array(p1.get("hidden_fields", Array())).has("geometry_quality"));
+	const Dictionary p1_face_limit = Dictionary(p1.get("option_constraints", Dictionary())).get("face_limit", Dictionary());
+	CHECK((int64_t)p1_face_limit.get("minimum", 0) == 50);
+	CHECK((int64_t)p1_face_limit.get("maximum", 0) == 20000);
 
 	Dictionary manifest;
 	Dictionary options;
@@ -526,6 +543,63 @@ TEST_CASE("[SolersPluginTripo] v3 presets and generation constraints follow prov
 	manifest["provider_options"] = options;
 	const Dictionary conflict = tripo.prepare_generate("3d", args, manifest);
 	CHECK(conflict.get("code", String()) == "INVALID_ARGUMENT");
+
+	options = p1_options.duplicate(true);
+	options["face_limit"] = 50;
+	manifest["provider_options"] = options;
+	CHECK(tripo.prepare_generate("3d", args, manifest).is_empty());
+	options["face_limit"] = 49;
+	manifest["provider_options"] = options;
+	CHECK(tripo.prepare_generate("3d", args, manifest).get("code", String()) == "INVALID_ARGUMENT");
+	options["face_limit"] = 20001;
+	manifest["provider_options"] = options;
+	CHECK(tripo.prepare_generate("3d", args, manifest).get("code", String()) == "INVALID_ARGUMENT");
+	options["face_limit"] = 1000;
+	options["smart_low_poly"] = false;
+	manifest["provider_options"] = options;
+	CHECK(tripo.prepare_generate("3d", args, manifest).get("code", String()) == "INVALID_ARGUMENT");
+}
+
+TEST_CASE("[SolersPlugin] HTTP transport preserves method and native status facts") {
+	Ref<TCPServer> server;
+	server.instantiate();
+	REQUIRE(server->listen(0, IPAddress("127.0.0.1")) == OK);
+	String request_text;
+	std::thread responder([server, &request_text]() {
+		const uint64_t deadline = OS::get_singleton()->get_ticks_msec() + 3000;
+		while (!server->is_connection_available() && OS::get_singleton()->get_ticks_msec() < deadline) {
+			OS::get_singleton()->delay_usec(1000);
+		}
+		Ref<StreamPeerTCP> connection = server->is_connection_available() ? server->take_connection() : Ref<StreamPeerTCP>();
+		while (connection.is_valid() && !request_text.contains("\r\n") && OS::get_singleton()->get_ticks_msec() < deadline) {
+			connection->poll();
+			const int available = connection->get_available_bytes();
+			if (available > 0) {
+				PackedByteArray bytes;
+				bytes.resize(available);
+				int received = 0;
+				connection->get_partial_data(bytes.ptrw(), available, received);
+				request_text += String::utf8((const char *)bytes.ptr(), received);
+			}
+			OS::get_singleton()->delay_usec(1000);
+		}
+		if (connection.is_valid()) {
+			const CharString response = String("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").utf8();
+			connection->put_data((const uint8_t *)response.get_data(), response.length());
+		}
+		server->stop();
+	});
+	const Dictionary response = SolersPlugin::http_request(HTTPClient::METHOD_PUT, vformat("http://127.0.0.1:%d/upload", server->get_local_port()), Vector<String>(), PackedByteArray(), 3000);
+	responder.join();
+	CHECK(response.get("ok", false));
+	CHECK(request_text.begins_with("PUT /upload HTTP/1.1"));
+
+	CHECK(SolersTransportProbe::status_error(HTTPClient::STATUS_CANT_RESOLVE).get("code", String()) == "HTTP_CANT_RESOLVE");
+	CHECK(SolersTransportProbe::status_error(HTTPClient::STATUS_CANT_CONNECT).get("code", String()) == "HTTP_CANT_CONNECT");
+	CHECK(SolersTransportProbe::status_error(HTTPClient::STATUS_CONNECTION_ERROR).get("code", String()) == "HTTP_CONNECTION_ERROR");
+	const Dictionary tls_error = SolersTransportProbe::status_error(HTTPClient::STATUS_TLS_HANDSHAKE_ERROR);
+	CHECK(tls_error.get("code", String()) == "HTTP_TLS_HANDSHAKE_ERROR");
+	CHECK(tls_error.get("url", String()) == "https://storage.example/upload");
 }
 
 TEST_CASE("[SolersAssetService] global assets delete atomically outside active jobs") {
