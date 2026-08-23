@@ -1125,8 +1125,10 @@ void SolersAssetService::_cleanup_finished_task(const String &p_asset_id) const 
 			return;
 		}
 		task = *found;
-		const String status = String(_task_state(task).get("status", String()));
-		if (status != "imported" && status != "draft" && status != "failed" && status != "cancelled" && status != "interrupted") {
+		const Dictionary state = _task_state(task);
+		const String status = String(state.get("status", String()));
+		const bool global_ready = status == "ready" && String(state.get("target_dir", String())).is_empty();
+		if (!global_ready && status != "imported" && status != "draft" && status != "failed" && status != "cancelled" && status != "interrupted") {
 			return;
 		}
 		if (!task->done.is_set()) {
@@ -2162,6 +2164,30 @@ Array SolersAssetService::list_assets() const {
 		}
 	}
 	return assets;
+}
+
+Dictionary SolersAssetService::delete_asset(const String &p_asset_id) {
+	const String asset_id = p_asset_id.strip_edges();
+	if (asset_id.is_empty() || asset_id.contains("/") || asset_id.contains("\\")) {
+		return _error("INVALID_ARGUMENT", "A valid global asset id is required.");
+	}
+	const Dictionary manifest = _manifest_for_asset(asset_id);
+	if (manifest.is_empty()) {
+		return _error("NOT_FOUND", "The global Studio asset was not found.");
+	}
+	const String status = String(manifest.get("status", String())).to_lower();
+	if (status == "queued" || status == "running" || status == "importing") {
+		return _error("ASSET_BUSY", "An active Studio asset cannot be deleted.");
+	}
+	_cleanup_finished_task(asset_id);
+	String error;
+	if (!SolersPlugin::remove_dir_recursive(_asset_dir(asset_id), error)) {
+		return _error("DELETE_FAILED", error);
+	}
+	revision.increment();
+	Dictionary data;
+	data["asset_id"] = asset_id;
+	return _ok(data);
 }
 
 Dictionary SolersAssetService::stage_input_image(const Ref<Image> &p_image) const {

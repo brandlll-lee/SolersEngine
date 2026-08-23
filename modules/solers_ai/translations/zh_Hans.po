@@ -219,6 +219,21 @@ msgstr "重拓扑模型"
 msgid "Import to project"
 msgstr "导入到项目"
 
+msgid "Asset actions"
+msgstr "资产操作"
+
+msgid "Delete asset"
+msgstr "删除资产"
+
+msgid "Delete"
+msgstr "删除"
+
+msgid "Delete '%s' from the global Studio library? This cannot be undone."
+msgstr "从全局 Studio 资产库中删除“%s”？此操作无法撤销。"
+
+msgid "No generator available"
+msgstr "没有可用的生成器"
+
 msgid "Project import started."
 msgstr "项目导入已开始。"
 

@@ -143,6 +143,10 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	CHECK(theme->get_constant(SNAME("h_separation"), SNAME("SolersStudioAssetGrid")) > 0);
 	CHECK(theme->get_type_variation_base(SNAME("SolersStudioScroll")) == SNAME("VScrollBar"));
 	CHECK(theme->has_stylebox(SNAME("grabber_highlight"), SNAME("SolersStudioScroll")));
+	CHECK(theme->get_type_variation_base(SNAME("SolersAssetCard")) == SNAME("Button"));
+	CHECK(theme->get_type_variation_base(SNAME("SolersPopupPanel")) == SNAME("PanelContainer"));
+	CHECK(theme->get_type_variation_base(SNAME("SolersPopupItem")) == SNAME("Button"));
+	CHECK(theme->get_type_variation_base(SNAME("SolersPopupDangerItem")) == SNAME("Button"));
 	CHECK(theme->get_font_size(SceneStringName(font_size), SNAME("SolersHeroTitle")) > theme->get_font_size(SceneStringName(font_size), SNAME("SolersSessionTitle")));
 	CHECK(bool(theme->has_icon(SNAME("arrow"), SNAME("OptionButton")) && theme->has_icon(SNAME("radio_checked"), SNAME("PopupMenu")) && theme->has_icon(SNAME("radio_unchecked"), SNAME("PopupMenu"))));
 	Ref<AnimatedTexture> activity = SolersIcons::activity(56);

@@ -116,7 +116,7 @@ void SolersModelPreview::gui_input(const Ref<InputEvent> &p_event) {
 		accept_event();
 		return;
 	}
-	if (panner->gui_input(p_event, Rect2(Point2(), get_size()))) {
+	if (panner->gui_input(p_event, get_global_rect())) {
 		accept_event();
 	}
 }

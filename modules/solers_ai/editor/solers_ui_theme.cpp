@@ -403,11 +403,34 @@ Ref<Theme> SolersUITheme::create() {
 	theme->set_stylebox(SNAME("disabled"), "SolersStudioActionButton", _solers_flat(Color(0, 0, 0, 0), card_radius, Color(), 0, 6 * EDSCALE));
 	theme->set_stylebox(SNAME("focus"), "SolersStudioActionButton", control_focus);
 	const Color editor_accent = EditorNode::get_singleton() ? EditorNode::get_singleton()->get_editor_theme()->get_color(SNAME("accent_color"), EditorStringName(Editor)) : tokens.text;
+	const Color editor_error = EditorNode::get_singleton() ? EditorNode::get_singleton()->get_editor_theme()->get_color(SNAME("error_color"), EditorStringName(Editor)) : Color(0.9, 0.3, 0.3);
 	theme->set_color(SNAME("icon_normal_color"), "SolersStudioActionButton", tokens.text_dim);
 	theme->set_color(SNAME("icon_hover_color"), "SolersStudioActionButton", editor_accent);
 	theme->set_color(SNAME("icon_pressed_color"), "SolersStudioActionButton", editor_accent);
 	theme->set_color(SNAME("icon_focus_color"), "SolersStudioActionButton", editor_accent);
 	theme->set_color(SNAME("icon_disabled_color"), "SolersStudioActionButton", tokens.text_dim);
+	theme->set_type_variation(SNAME("SolersAssetCard"), SNAME("Button"));
+	const Ref<StyleBoxFlat> asset_card_idle = _solers_flat(Color(0, 0, 0, 0), card_radius, Color(), 0, 0);
+	const Ref<StyleBoxFlat> asset_card_active = _solers_flat(Color(0, 0, 0, 0), card_radius, editor_accent, border_width, 0);
+	for (const StringName &name : { CoreStringName(normal), SNAME("disabled") }) {
+		theme->set_stylebox(name, "SolersAssetCard", asset_card_idle);
+	}
+	for (const StringName &name : { SceneStringName(hover), SceneStringName(pressed), SNAME("hover_pressed"), SNAME("focus") }) {
+		theme->set_stylebox(name, "SolersAssetCard", asset_card_active);
+	}
+	theme->set_type_variation(SNAME("SolersPopupPanel"), SNAME("PanelContainer"));
+	theme->set_stylebox(SceneStringName(panel), "SolersPopupPanel", _solers_flat(tokens.surface, product_radius, tokens.border, border_width, 6 * EDSCALE));
+	for (const StringName &variation : { SNAME("SolersPopupItem"), SNAME("SolersPopupDangerItem") }) {
+		theme->set_type_variation(variation, SNAME("Button"));
+		theme->set_stylebox(CoreStringName(normal), variation, _solers_flat(Color(0, 0, 0, 0), card_radius, Color(), 0, 8 * EDSCALE));
+		theme->set_stylebox(SceneStringName(hover), variation, _solers_flat(tokens.card_hover, card_radius, Color(), 0, 8 * EDSCALE));
+		theme->set_stylebox(SceneStringName(pressed), variation, _solers_flat(tokens.card_selected, card_radius, Color(), 0, 8 * EDSCALE));
+		theme->set_stylebox(SNAME("hover_pressed"), variation, _solers_flat(tokens.card_selected, card_radius, Color(), 0, 8 * EDSCALE));
+		theme->set_stylebox(SNAME("focus"), variation, control_focus);
+		theme->set_color(SceneStringName(font_color), variation, variation == SNAME("SolersPopupDangerItem") ? editor_error : tokens.text);
+		theme->set_color(SNAME("font_hover_color"), variation, variation == SNAME("SolersPopupDangerItem") ? editor_error : tokens.text);
+		theme->set_color(SNAME("font_pressed_color"), variation, variation == SNAME("SolersPopupDangerItem") ? editor_error : tokens.text);
+	}
 	theme->set_stylebox(SceneStringName(panel), "PopupMenu", _solers_flat(tokens.surface, product_radius, Color(), 0, 6 * EDSCALE));
 	theme->set_stylebox(SceneStringName(hover), "PopupMenu", _solers_flat(tokens.card_hover, card_radius, Color(), 0, 6 * EDSCALE));
 	theme->set_color(SceneStringName(font_color), "PopupMenu", tokens.text);

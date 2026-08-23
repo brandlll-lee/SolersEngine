@@ -123,6 +123,7 @@ public:
 	Dictionary run_operation_for_session(const Dictionary &p_args, const String &p_session_id);
 	Dictionary status(const Dictionary &p_args) const;
 	Array list_assets() const;
+	Dictionary delete_asset(const String &p_asset_id);
 	Dictionary stage_input_image(const Ref<Image> &p_image) const;
 	void stage_input_image_async(const Variant &p_source, const Callable &p_callback);
 	String resolve_model_file(const Dictionary &p_manifest) const;

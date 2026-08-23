@@ -65,9 +65,11 @@
 #include "servers/display/display_server.h"
 
 #include "modules/solers_ai/core/solers_asset_service.h"
+#include "modules/solers_ai/editor/solers_asset_grid.h"
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
 #include "modules/solers_ai/editor/solers_dock.h"
 #include "modules/solers_ai/editor/solers_model_preview.h"
+#include "modules/solers_ai/editor/solers_popup_list.h"
 #include "modules/solers_ai/editor/solers_schema_form.h"
 #include "modules/solers_ai/editor/solers_ui_theme.h"
 #include "modules/solers_ai/plugins/solers_plugin.h"
@@ -152,8 +154,9 @@ void SolersStudio::_refresh_providers() {
 	const String selected_preset_id = selected_preset.get("id", String());
 	const String selected_preset_provider = selected_preset.get("provider", String());
 	const String selected_catalog_provider = _selected_provider(catalog_provider);
-	preset_option->clear();
+	generation_presets.clear();
 	catalog_provider->clear();
+	int selected_preset_index = -1;
 	int default_preset = -1;
 	for (SolersPlugin *plugin : SolersPluginRegistry::get_plugins()) {
 		const Dictionary profile = plugin->get_profile();
@@ -180,15 +183,15 @@ void SolersStudio::_refresh_providers() {
 					continue;
 				}
 				preset["provider"] = id;
-				const int index = preset_option->get_item_count();
-				preset_option->add_icon_item(SolersIcons::provider_logo(profile.get("catalog_provider", id), int(18 * EDSCALE)), preset.get("label", label));
-				preset_option->set_item_metadata(index, preset);
+				const int index = generation_presets.size();
+				preset["icon"] = SolersIcons::provider_logo(profile.get("catalog_provider", id), int(18 * EDSCALE));
+				preset["menu_id"] = id + ":" + String(preset.get("id", String()));
+				generation_presets.push_back(preset);
 				if ((bool)preset.get("default", false)) {
 					default_preset = index;
 				}
 				if (preset.get("id", String()) == selected_preset_id && id == selected_preset_provider) {
-					preset_option->select(index);
-					default_preset = index;
+					selected_preset_index = index;
 				}
 			}
 		}
@@ -200,10 +203,7 @@ void SolersStudio::_refresh_providers() {
 			}
 		}
 	}
-	if (preset_option->get_item_count() > 0 && preset_option->get_selected() < 0) {
-		preset_option->select(default_preset >= 0 ? default_preset : 0);
-	}
-	_preset_selected(preset_option->get_selected());
+	_preset_selected(selected_preset_index >= 0 ? selected_preset_index : (default_preset >= 0 ? default_preset : (generation_presets.is_empty() ? -1 : 0)));
 	_catalog_provider_selected(catalog_provider->get_selected());
 }
 
@@ -221,13 +221,39 @@ void SolersStudio::_route_selected(int) {
 }
 
 void SolersStudio::_preset_selected(int p_index) {
-	selected_preset = p_index >= 0 && p_index < preset_option->get_item_count() ? Dictionary(preset_option->get_item_metadata(p_index)) : Dictionary();
+	selected_preset = p_index >= 0 && p_index < generation_presets.size() ? Dictionary(generation_presets[p_index]) : Dictionary();
+	preset_button->set_disabled(selected_preset.is_empty());
+	preset_button->set_text(selected_preset.get("label", TTRC("No generator available")));
+	preset_button->set_button_icon(selected_preset.get("icon", Ref<Texture2D>()));
 	preset_description->set_text(selected_preset.get("description", String()));
 	const bool supports_multiview = (int)selected_preset.get("max_reference_images", 1) > 1;
 	multiview_toggle->set_visible(supports_multiview);
 	multiview_toggle->set_pressed_no_signal(supports_multiview);
 	_refresh_generation_schema();
 	_refresh_reference_slots();
+}
+
+void SolersStudio::_open_preset_popup() {
+	Array items;
+	for (const Variant &value : generation_presets) {
+		const Dictionary preset = value;
+		Dictionary item;
+		item["id"] = preset.get("menu_id", String());
+		item["label"] = preset.get("label", String());
+		item["description"] = preset.get("description", String());
+		item["icon"] = preset.get("icon", Variant());
+		items.push_back(item);
+	}
+	popup_list->popup(preset_button, items, selected_preset.get("menu_id", String()), callable_mp(this, &SolersStudio::_preset_popup_selected));
+}
+
+void SolersStudio::_preset_popup_selected(const String &p_id) {
+	for (int i = 0; i < generation_presets.size(); i++) {
+		if (Dictionary(generation_presets[i]).get("menu_id", String()) == p_id) {
+			_preset_selected(i);
+			return;
+		}
+	}
 }
 
 void SolersStudio::_refresh_generation_schema() {
@@ -519,7 +545,7 @@ void SolersStudio::_finish_catalog_work() {
 }
 void SolersStudio::_sync_library_empty_states() {
 	catalog_empty->set_visible(catalog_list->get_item_count() == 0);
-	project_empty->set_visible(project_list->get_item_count() == 0);
+	project_empty->set_visible(project_grid->get_asset_count() == 0);
 }
 void SolersStudio::_catalog_selected(int p_index) {
 	if (p_index < 0 || p_index >= catalog_list->get_item_count()) {
@@ -554,7 +580,7 @@ void SolersStudio::_refresh_project_assets() {
 	const String selected_id = selected_manifest.get("id", String());
 	const String route = _current_route();
 	const String query = catalog_query ? catalog_query->get_text().strip_edges().to_lower() : String();
-	project_list->clear();
+	project_grid->clear_assets();
 	for (const Variant &value : project_manifests) {
 		const Dictionary manifest = value;
 		if (route != "assets" && String(manifest.get("kind", String())).to_lower() != route) {
@@ -580,14 +606,9 @@ void SolersStudio::_refresh_project_assets() {
 				}
 			}
 		}
-		const int index = project_list->add_item(String(), item_preview);
-		const Size2 preview_size = item_preview->get_size();
-		const float side = MIN(preview_size.x, preview_size.y);
-		project_list->set_item_icon_region(index, Rect2((preview_size - Size2(side, side)) * 0.5f, Size2(side, side)));
-		project_list->set_item_metadata(index, manifest);
-		project_list->set_item_tooltip(index, title + "\n" + status.capitalize());
+		project_grid->add_asset(manifest, item_preview);
 		if (manifest.get("id", String()) == selected_id) {
-			project_list->select(index);
+			project_grid->set_selected_asset(selected_id);
 			_show_manifest(manifest);
 		}
 	}
@@ -611,10 +632,58 @@ void SolersStudio::_creation_scroll_hovered(bool p_hovered) {
 	tween->set_ease(Tween::EASE_OUT);
 	tween->tween_property(bar, NodePath("self_modulate"), Color(1, 1, 1, p_hovered ? 1.0f : 0.0f), 0.12);
 }
-void SolersStudio::_project_selected(int p_index) {
-	if (p_index >= 0 && p_index < project_list->get_item_count()) {
-		_show_manifest(project_list->get_item_metadata(p_index));
+void SolersStudio::_project_selected(const String &p_asset_id) {
+	for (const Variant &value : project_manifests) {
+		const Dictionary manifest = value;
+		if (manifest.get("id", String()) == p_asset_id) {
+			_show_manifest(manifest);
+			return;
+		}
 	}
+}
+
+void SolersStudio::_asset_menu_requested(const String &p_asset_id, Control *p_anchor) {
+	_project_selected(p_asset_id);
+	Array items;
+	Dictionary import_item;
+	import_item["id"] = "import";
+	import_item["label"] = TTRC("Import to project");
+	import_item["icon"] = SolersIcons::get(SNAME("tool_export"), int(16 * EDSCALE));
+	items.push_back(import_item);
+	Dictionary delete_item;
+	delete_item["id"] = "delete";
+	delete_item["label"] = TTRC("Delete");
+	delete_item["icon"] = SolersIcons::get(SNAME("cross"), int(16 * EDSCALE));
+	delete_item["danger"] = true;
+	items.push_back(delete_item);
+	popup_list->popup(p_anchor, items, String(), callable_mp(this, &SolersStudio::_asset_menu_action), 180 * EDSCALE);
+}
+
+void SolersStudio::_asset_menu_action(const String &p_action) {
+	if (p_action == "import") {
+		_import_pressed();
+	} else if (p_action == "delete" && !selected_manifest.is_empty()) {
+		pending_delete_asset_id = selected_manifest.get("id", String());
+		delete_dialog->set_text(vformat(TTRC("Delete '%s' from the global Studio library? This cannot be undone."), selected_manifest.get("name", pending_delete_asset_id)));
+		delete_dialog->popup_centered();
+	}
+}
+
+void SolersStudio::_delete_asset_confirmed() {
+	if (pending_delete_asset_id.is_empty()) {
+		return;
+	}
+	const Dictionary result = assets->delete_asset(pending_delete_asset_id);
+	pending_delete_asset_id.clear();
+	if (!result.get("ok", false)) {
+		_show_result(result, String());
+		return;
+	}
+	selected_manifest.clear();
+	loaded_model_path.clear();
+	model_preview->clear_model();
+	_reload_project_assets();
+	_sync_workspace();
 }
 void SolersStudio::_show_manifest(const Dictionary &p_manifest) {
 	selected_manifest = p_manifest;
@@ -844,8 +913,10 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	creation_column->set_h_size_flags(SIZE_EXPAND_FILL);
 	creation_column->add_theme_constant_override(SNAME("separation"), int(12 * EDSCALE));
 	creation_title = _studio_label(creation_column, String(), SNAME("SolersSessionTitle"));
-	preset_option = _studio_add<OptionButton>(creation_column);
-	preset_option->set_custom_minimum_size(Size2(0, 52 * EDSCALE));
+	preset_button = _studio_add<Button>(creation_column);
+	preset_button->set_custom_minimum_size(Size2(0, 52 * EDSCALE));
+	preset_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+	preset_button->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
 	preset_description = _studio_label(creation_column, String(), SNAME("SolersSessionMeta"));
 	preset_description->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
 	HBoxContainer *reference_header = _studio_add<HBoxContainer>(creation_column);
@@ -1033,15 +1104,8 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	attribution_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
 	PanelContainer *project = _studio_add<PanelContainer>(library_tabs);
 	project->set_name("Project");
-	project_list = _studio_add<ItemList>(project);
-	project_list->set_icon_mode(ItemList::ICON_MODE_TOP);
-	project_list->set_theme_type_variation(SNAME("SolersStudioAssetGrid"));
-	project_list->set_fixed_icon_size(Size2i(100, 100) * EDSCALE);
-	project_list->set_fixed_column_width(int(100 * EDSCALE));
-	project_list->set_same_column_width(true);
-	project_list->set_max_columns(0);
-	project_list->set_v_size_flags(SIZE_EXPAND_FILL);
-	project_list->get_v_scroll_bar()->set_theme_type_variation(SNAME("SolersStudioScroll"));
+	project_grid = _studio_add<SolersAssetGrid>(project);
+	project_grid->set_v_size_flags(SIZE_EXPAND_FILL);
 	project_empty = _studio_empty_state(project, &project_empty_label);
 	reference_dialog = _studio_add<FileDialog>(this);
 	reference_dialog->set_access(FileDialog::ACCESS_FILESYSTEM);
@@ -1058,12 +1122,16 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	remesh_dialog->set_title(TTRC("Remesh model"));
 	remesh_dialog->set_ok_button_text(TTRC("Remesh"));
 	remesh_form = _studio_add<SolersSchemaForm>(remesh_dialog);
-	for (OptionButton *selector : { preset_option, catalog_variant, catalog_provider }) {
+	delete_dialog = _studio_add<ConfirmationDialog>(this);
+	delete_dialog->set_title(TTRC("Delete asset"));
+	delete_dialog->set_ok_button_text(TTRC("Delete"));
+	popup_list = _studio_add<SolersPopupList>(this);
+	for (OptionButton *selector : { catalog_variant, catalog_provider }) {
 		selector->set_fit_to_longest_item(false);
 		selector->set_clip_text(true);
 	}
 	route_list->connect(SceneStringName(item_selected), callable_mp(this, &SolersStudio::_route_selected));
-	preset_option->connect(SceneStringName(item_selected), callable_mp(this, &SolersStudio::_preset_selected));
+	preset_button->connect(SceneStringName(pressed), callable_mp(this, &SolersStudio::_open_preset_popup));
 	catalog_provider->connect(SceneStringName(item_selected), callable_mp(this, &SolersStudio::_catalog_provider_selected));
 	for (Button *button : reference_buttons) {
 		button->connect(SceneStringName(pressed), callable_mp(reference_dialog, &FileDialog::popup_file_dialog));
@@ -1082,11 +1150,12 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	creation_scroll->connect(SceneStringName(mouse_entered), callable_mp(this, &SolersStudio::_creation_scroll_hovered).bind(true));
 	creation_scroll->connect(SceneStringName(mouse_exited), callable_mp(this, &SolersStudio::_creation_scroll_hovered).bind(false));
 	catalog_list->connect(SceneStringName(item_selected), callable_mp(this, &SolersStudio::_catalog_selected));
-	project_list->connect(SceneStringName(item_selected), callable_mp(this, &SolersStudio::_project_selected));
+	project_grid->set_callbacks(callable_mp(this, &SolersStudio::_project_selected), callable_mp(this, &SolersStudio::_asset_menu_requested));
 	acquire_button->connect(SceneStringName(pressed), callable_mp(this, &SolersStudio::_acquire_pressed));
 	animation_button->connect(SceneStringName(pressed), callable_mp(this, &SolersStudio::_animation_pressed));
 	remesh_button->connect(SceneStringName(pressed), callable_mp(this, &SolersStudio::_remesh_pressed));
 	remesh_dialog->connect(SceneStringName(confirmed), callable_mp(this, &SolersStudio::_remesh_confirmed));
+	delete_dialog->connect(SceneStringName(confirmed), callable_mp(this, &SolersStudio::_delete_asset_confirmed));
 	import_button->connect(SceneStringName(pressed), callable_mp(this, &SolersStudio::_import_pressed));
 	import_dialog->connect(SNAME("dir_selected"), callable_mp(this, &SolersStudio::_import_directory_selected));
 	_options_toggled(false);
