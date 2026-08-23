@@ -35,12 +35,10 @@
 #include "core/object/callable_mp.h"
 #include "editor/editor_node.h"
 #include "scene/3d/camera_3d.h"
-#include "scene/3d/importer_mesh_instance_3d.h"
 #include "scene/3d/light_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/gui/view_panner.h"
 #include "scene/main/viewport.h"
-#include "scene/resources/3d/importer_mesh.h"
 #include "scene/resources/3d/sky_material.h"
 #include "scene/resources/environment.h"
 #include "scene/resources/sky.h"
@@ -48,6 +46,7 @@
 #include "modules/modules_enabled.gen.h"
 
 #ifdef MODULE_GLTF_ENABLED
+#include "modules/gltf/extensions/gltf_document_extension_convert_importer_mesh.h"
 #include "modules/gltf/gltf_document.h"
 #include "modules/gltf/gltf_state.h"
 #endif
@@ -74,14 +73,6 @@ static void _solers_preview_bounds(Node *p_node, const Transform3D &p_parent, AA
 		const Ref<Mesh> mesh = mesh_instance->get_mesh();
 		if (mesh.is_valid()) {
 			_solers_preview_merge_aabb(transform.xform(mesh->get_aabb()), r_bounds, r_has_bounds);
-		}
-	} else if (ImporterMeshInstance3D *importer_instance = Object::cast_to<ImporterMeshInstance3D>(p_node)) {
-		const Ref<ImporterMesh> importer_mesh = importer_instance->get_mesh();
-		if (importer_mesh.is_valid()) {
-			const Ref<ArrayMesh> mesh = importer_mesh->get_mesh();
-			if (mesh.is_valid()) {
-				_solers_preview_merge_aabb(transform.xform(mesh->get_aabb()), r_bounds, r_has_bounds);
-			}
 		}
 	}
 	for (int i = 0; i < p_node->get_child_count(); i++) {
@@ -137,11 +128,22 @@ Error SolersModelPreview::load_model(const String &p_path) {
 	document.instantiate();
 	Ref<GLTFState> state;
 	state.instantiate();
+	state->set_handle_binary_image_mode(GLTFState::HANDLE_BINARY_IMAGE_MODE_EMBED_AS_UNCOMPRESSED);
 	const Error error = document->append_from_file(p_path, state);
 	if (error != OK) {
 		return error;
 	}
 	Node *generated = document->generate_scene(state);
+	if (!generated) {
+		return ERR_CANT_CREATE;
+	}
+	Ref<GLTFDocumentExtensionConvertImporterMesh> converter;
+	converter.instantiate();
+	const Error conversion_error = converter->import_post(state, generated);
+	if (conversion_error != OK) {
+		memdelete(generated);
+		return conversion_error;
+	}
 	model_root = Object::cast_to<Node3D>(generated);
 	if (!model_root) {
 		if (generated) {

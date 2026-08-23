@@ -40,6 +40,7 @@
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
 #include "scene/3d/camera_3d.h"
+#include "scene/3d/mesh_instance_3d.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
 #include "scene/gui/file_dialog.h"
@@ -52,6 +53,7 @@
 #include "scene/resources/environment.h"
 #include "scene/resources/style_box_flat.h"
 #include "tests/test_macros.h"
+#include "tests/test_tools.h"
 #include "tests/test_utils.h"
 
 #include "modules/modules_enabled.gen.h"
@@ -137,6 +139,8 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	REQUIRE(grid_selected.is_valid());
 	CHECK(grid_selected->get_bg_color().a == 0.0f);
 	CHECK(grid_selected->get_border_width(SIDE_LEFT) > 0);
+	CHECK(grid_selected->get_expand_margin(SIDE_LEFT) < 0.0f);
+	CHECK(theme->get_constant(SNAME("h_separation"), SNAME("SolersStudioAssetGrid")) > 0);
 	CHECK(theme->get_type_variation_base(SNAME("SolersStudioScroll")) == SNAME("VScrollBar"));
 	CHECK(theme->has_stylebox(SNAME("grabber_highlight"), SNAME("SolersStudioScroll")));
 	CHECK(theme->get_font_size(SceneStringName(font_size), SNAME("SolersHeroTitle")) > theme->get_font_size(SceneStringName(font_size), SNAME("SolersSessionTitle")));
@@ -156,10 +160,19 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	SceneTree::get_singleton()->get_root()->add_child(stage);
 	MessageQueue::get_singleton()->flush();
 	CHECK(model_preview->is_mouse_target_enabled());
-	const String model_path = TestUtils::get_data_path("models/suzanne.glb");
-	REQUIRE(FileAccess::exists(model_path));
-	REQUIRE(model_preview->load_model(model_path) == OK);
+	const String source_model_path = TestUtils::get_data_path("models/suzanne.glb");
+	const String model_path = "user://solers-preview-suzanne.glb";
+	Ref<FileAccess> model_file = FileAccess::open(model_path, FileAccess::WRITE);
+	REQUIRE(model_file.is_valid());
+	model_file->store_buffer(FileAccess::get_file_as_bytes(source_model_path));
+	model_file.unref();
+	{
+		ErrorDetector errors;
+		REQUIRE(model_preview->load_model(model_path) == OK);
+		CHECK_FALSE(errors.has_error);
+	}
 	CHECK(model_preview->has_model());
+	CHECK(Object::cast_to<MeshInstance3D>(model_preview->get_child(0)->find_child("Suzanne", true, false)) != nullptr);
 	Camera3D *preview_camera = Object::cast_to<Camera3D>(model_preview->get_child(0)->get_child(0));
 	REQUIRE(preview_camera);
 	const Ref<Environment> preview_environment = preview_camera->get_environment();
@@ -199,6 +212,7 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	CHECK_FALSE(model_preview->has_model());
 	stage->queue_free();
 	MessageQueue::get_singleton()->flush();
+	DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(model_path));
 
 	Control *host = memnew(Control);
 	Label *ambient = memnew(Label("Godot"));

@@ -581,6 +581,9 @@ void SolersStudio::_refresh_project_assets() {
 			}
 		}
 		const int index = project_list->add_item(String(), item_preview);
+		const Size2 preview_size = item_preview->get_size();
+		const float side = MIN(preview_size.x, preview_size.y);
+		project_list->set_item_icon_region(index, Rect2((preview_size - Size2(side, side)) * 0.5f, Size2(side, side)));
 		project_list->set_item_metadata(index, manifest);
 		project_list->set_item_tooltip(index, title + "\n" + status.capitalize());
 		if (manifest.get("id", String()) == selected_id) {
@@ -1033,7 +1036,7 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	project_list = _studio_add<ItemList>(project);
 	project_list->set_icon_mode(ItemList::ICON_MODE_TOP);
 	project_list->set_theme_type_variation(SNAME("SolersStudioAssetGrid"));
-	project_list->set_fixed_icon_size(Size2i(92, 92) * EDSCALE);
+	project_list->set_fixed_icon_size(Size2i(100, 100) * EDSCALE);
 	project_list->set_fixed_column_width(int(100 * EDSCALE));
 	project_list->set_same_column_width(true);
 	project_list->set_max_columns(0);
