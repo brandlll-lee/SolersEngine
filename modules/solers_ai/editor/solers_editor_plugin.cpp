@@ -110,6 +110,14 @@ void SolersEditorPlugin::_translation_changed() {
 }
 
 void SolersEditorPlugin::_toggle_agent() {
+	if (EditorNode::get_singleton()->is_distraction_free_mode_enabled()) {
+		EditorNode::get_singleton()->set_distraction_free_mode(false);
+		if (!dock->get_parent()) {
+			add_control_to_container(CONTAINER_EDITOR_SIDE_LEFT, dock);
+		}
+		agent_toggle->set_pressed_no_signal(true);
+		return;
+	}
 	if (dock->get_parent()) {
 		remove_control_from_container(CONTAINER_EDITOR_SIDE_LEFT, dock);
 	} else {

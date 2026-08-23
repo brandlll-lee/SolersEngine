@@ -125,6 +125,12 @@ func _check_layout() -> void:
 	agent_toggle.emit_signal("pressed")
 	if not _check(solers.get_parent() != null and solers.get_parent().name == "EditorSidePanel", "The Agent toggle did not restore the native side panel"):
 		return
+	get_editor_interface().set_distraction_free_mode(true)
+	await get_tree().process_frame
+	agent_toggle.emit_signal("pressed")
+	await get_tree().process_frame
+	if not _check(not get_editor_interface().is_distraction_free_mode_enabled() and solers.get_parent() != null, "The Agent toggle did not restore the native side panel from distraction-free mode"):
+		return
 
 	var right_tabs := base.find_child("DockSlotRightUL", true, false) as TabContainer
 	if not _check(right_tabs != null and right_tabs.get_tab_count() > 0, "No native docks remain open on the right"):
