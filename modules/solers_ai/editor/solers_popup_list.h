@@ -33,6 +33,7 @@
 #include "core/variant/array.h"
 #include "core/variant/callable.h"
 #include "scene/gui/control.h"
+#include "scene/gui/option_button.h"
 
 class Button;
 class PanelContainer;
@@ -45,6 +46,7 @@ class SolersPopupList : public Control {
 	PanelContainer *panel = nullptr;
 	VBoxContainer *rows = nullptr;
 	Callable selected_callback;
+	ObjectID anchor_id;
 
 	void _item_pressed(const String &p_id);
 	void _dismissed();
@@ -53,8 +55,23 @@ protected:
 	static void _bind_methods() {}
 
 public:
+	virtual void unhandled_key_input(const Ref<InputEvent> &p_event) override;
 	void popup(Control *p_anchor, const Array &p_items, const String &p_selected_id, const Callable &p_callback, float p_minimum_width = 0.0f);
 	void close();
 
 	SolersPopupList();
+};
+
+class SolersStudioSelect : public OptionButton {
+	GDCLASS(SolersStudioSelect, OptionButton);
+
+	SolersPopupList *popup_list = nullptr;
+	void _popup_selected(const String &p_index);
+
+protected:
+	static void _bind_methods() {}
+	virtual void pressed() override;
+
+public:
+	void set_popup_list(SolersPopupList *p_popup_list) { popup_list = p_popup_list; }
 };

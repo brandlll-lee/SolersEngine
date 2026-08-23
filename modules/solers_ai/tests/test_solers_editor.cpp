@@ -61,6 +61,7 @@
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
 #include "modules/solers_ai/editor/solers_editor_plugin.h"
 #include "modules/solers_ai/editor/solers_model_preview.h"
+#include "modules/solers_ai/editor/solers_popup_list.h"
 #include "modules/solers_ai/editor/solers_schema_form.h"
 #include "modules/solers_ai/editor/solers_ui_theme.h"
 #include "modules/solers_ai/generated/solers_svg_assets.gen.h"
@@ -94,6 +95,11 @@ public:
 		TranslationServer::get_singleton()->set_locale(previous_locale);
 		solers_load_editor_translation();
 	}
+};
+
+class TestStudioSelect : public SolersStudioSelect {
+public:
+	void open_popup() { pressed(); }
 };
 
 TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the Solers subtree") {
@@ -279,6 +285,70 @@ TEST_CASE("[SolersStudio][SceneTree] schema form projects unknown connector fiel
 	CHECK((int)form->get_values().get("future_count", 0) == 7);
 	CHECK_FALSE((bool)form->get_values().get("future_enabled", true));
 	form->queue_free();
+	MessageQueue::get_singleton()->flush();
+}
+
+TEST_CASE("[SolersStudio][SceneTree] selectors keep native state with the shared rich popup") {
+	Control *host = memnew(Control);
+	host->set_size(Size2(640, 480));
+	host->set_theme(SolersUITheme::create());
+	SolersPopupList *popup = memnew(SolersPopupList);
+	TestStudioSelect *select = memnew(TestStudioSelect);
+	select->set_size(Size2(240, 44));
+	select->add_item("Fast");
+	select->set_item_tooltip(0, "Quick preview");
+	select->add_item("Detailed");
+	select->set_item_tooltip(1, "Highest fidelity");
+	select->select(1);
+	select->set_popup_list(popup);
+	host->add_child(select);
+	host->add_child(popup);
+	SceneTree::get_singleton()->get_root()->add_child(host);
+	MessageQueue::get_singleton()->flush();
+
+	select->open_popup();
+	CHECK(popup->is_visible());
+	Button *selected_row = nullptr;
+	const TypedArray<Node> popup_buttons = popup->find_children("*", "Button", true, false);
+	for (int i = 0; i < popup_buttons.size(); i++) {
+		Button *row = Object::cast_to<Button>(popup_buttons[i]);
+		if (row && row->get_text().contains("Highest fidelity")) {
+			selected_row = row;
+			break;
+		}
+	}
+	REQUIRE(selected_row);
+	CHECK(selected_row->has_focus());
+	Ref<InputEventKey> escape;
+	escape.instantiate();
+	escape->set_keycode(Key::ESCAPE);
+	escape->set_pressed(true);
+	popup->unhandled_key_input(escape);
+	CHECK_FALSE(popup->is_visible());
+	CHECK(select->has_focus());
+	select->open_popup();
+	const TypedArray<Node> reopened_buttons = popup->find_children("*", "Button", true, false);
+	for (int i = 0; i < reopened_buttons.size(); i++) {
+		Button *row = Object::cast_to<Button>(reopened_buttons[i]);
+		if (row && row->get_text().contains("Quick preview")) {
+			row->emit_signal(SceneStringName(pressed));
+			break;
+		}
+	}
+	CHECK(select->get_selected() == 0);
+	CHECK_FALSE(popup->is_visible());
+
+	SolersSchemaForm *form = memnew(SolersSchemaForm);
+	form->set_popup_list(popup);
+	host->add_child(form);
+	const Dictionary properties = JSON::parse_string(R"({"quality":{"type":"string","enum":[{"id":"fast","label":"Fast","description":"Quick preview"},{"id":"detail","label":"Detailed","description":"Highest fidelity"}],"enum_value":"id","enum_label":"label","default":"detail"}})");
+	form->set_schema(properties, Dictionary(), Dictionary());
+	const TypedArray<Node> option_nodes = form->find_children("*", "OptionButton", true, false);
+	REQUIRE(option_nodes.size() == 1);
+	CHECK(Object::cast_to<SolersStudioSelect>(option_nodes[0]) != nullptr);
+	CHECK(form->get_values().get("quality", String()) == "detail");
+
+	host->queue_free();
 	MessageQueue::get_singleton()->flush();
 }
 

@@ -52,6 +52,7 @@ class SolersAssetGrid;
 class SolersDock;
 class SolersModelPreview;
 class SolersPopupList;
+class SolersStudioSelect;
 class SolersSchemaForm;
 class SolersSurface;
 class TabContainer;
@@ -70,7 +71,7 @@ class SolersStudio : public PanelContainer {
 	uint64_t preview_generation = 0;
 	ItemList *route_list = nullptr;
 	Control *creation_workspace = nullptr;
-	Button *preset_button = nullptr;
+	SolersStudioSelect *preset_button = nullptr;
 	Label *preset_description = nullptr;
 	TextEdit *prompt_edit = nullptr;
 	Button *reference_buttons[4] = {};
@@ -98,8 +99,8 @@ class SolersStudio : public PanelContainer {
 	Dictionary remesh_operation;
 	FileDialog *import_dialog = nullptr;
 	Button *acquire_button = nullptr;
-	OptionButton *catalog_variant = nullptr;
-	OptionButton *catalog_provider = nullptr;
+	SolersStudioSelect *catalog_variant = nullptr;
+	SolersStudioSelect *catalog_provider = nullptr;
 	LineEdit *catalog_query = nullptr;
 	ItemList *catalog_list = nullptr;
 	SolersAssetGrid *project_grid = nullptr;
@@ -139,8 +140,6 @@ class SolersStudio : public PanelContainer {
 	void _refresh_generation_schema();
 	void _route_selected(int p_index);
 	void _preset_selected(int p_index);
-	void _open_preset_popup();
-	void _preset_popup_selected(const String &p_id);
 	void _refresh_project_assets();
 	void _reload_project_assets();
 	void _show_manifest(const Dictionary &p_manifest);

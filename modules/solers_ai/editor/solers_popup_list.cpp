@@ -30,7 +30,9 @@
 
 #include "solers_popup_list.h"
 
+#include "core/input/input_event.h"
 #include "core/object/callable_mp.h"
+#include "core/object/object.h"
 #include "editor/themes/editor_scale.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
@@ -42,6 +44,7 @@ SolersPopupList::SolersPopupList() {
 	set_mouse_filter(MOUSE_FILTER_STOP);
 	set_as_top_level(true);
 	set_z_index(100);
+	set_process_unhandled_key_input(true);
 	hide();
 
 	dismiss = memnew(Button);
@@ -72,6 +75,14 @@ void SolersPopupList::_item_pressed(const String &p_id) {
 	}
 }
 
+void SolersPopupList::unhandled_key_input(const Ref<InputEvent> &p_event) {
+	const Ref<InputEventKey> key = p_event;
+	if (is_visible() && key.is_valid() && key->is_pressed() && !key->is_echo() && key->get_keycode() == Key::ESCAPE) {
+		close();
+		get_viewport()->set_input_as_handled();
+	}
+}
+
 void SolersPopupList::popup(Control *p_anchor, const Array &p_items, const String &p_selected_id, const Callable &p_callback, float p_minimum_width) {
 	ERR_FAIL_NULL(p_anchor);
 
@@ -81,6 +92,8 @@ void SolersPopupList::popup(Control *p_anchor, const Array &p_items, const Strin
 		child->queue_free();
 	}
 	selected_callback = p_callback;
+	anchor_id = p_anchor->get_instance_id();
+	Button *focus_row = nullptr;
 
 	for (const Variant &item_variant : p_items) {
 		const Dictionary item = item_variant;
@@ -103,6 +116,10 @@ void SolersPopupList::popup(Control *p_anchor, const Array &p_items, const Strin
 		}
 		if (id == p_selected_id) {
 			row->set_pressed_no_signal(true);
+			focus_row = row;
+		}
+		if (!focus_row && !row->is_disabled()) {
+			focus_row = row;
 		}
 		row->connect(SceneStringName(pressed), callable_mp(this, &SolersPopupList::_item_pressed).bind(id));
 		rows->add_child(row);
@@ -114,9 +131,45 @@ void SolersPopupList::popup(Control *p_anchor, const Array &p_items, const Strin
 	panel->set_size(Size2(width, 0));
 	panel->set_custom_minimum_size(Size2(width, 0));
 	show();
+	if (focus_row) {
+		focus_row->grab_focus();
+	}
 }
 
 void SolersPopupList::close() {
 	selected_callback = Callable();
 	hide();
+	Control *anchor = Object::cast_to<Control>(ObjectDB::get_instance(anchor_id));
+	anchor_id = ObjectID();
+	if (anchor && anchor->is_inside_tree()) {
+		anchor->grab_focus();
+	}
+}
+
+void SolersStudioSelect::pressed() {
+	if (!popup_list) {
+		show_popup();
+		return;
+	}
+	Array items;
+	for (int i = 0; i < get_item_count(); i++) {
+		Dictionary item;
+		item["id"] = itos(i);
+		item["label"] = get_item_text(i);
+		item["description"] = get_item_tooltip(i);
+		item["icon"] = get_item_icon(i);
+		item["disabled"] = is_item_disabled(i);
+		items.push_back(item);
+	}
+	popup_list->popup(this, items, get_selected() < 0 ? String() : itos(get_selected()), callable_mp(this, &SolersStudioSelect::_popup_selected));
+}
+
+void SolersStudioSelect::_popup_selected(const String &p_index) {
+	const int index = p_index.to_int();
+	ERR_FAIL_INDEX(index, get_item_count());
+	const bool changed = index != get_selected();
+	select(index);
+	if (changed || get_allow_reselect()) {
+		emit_signal(SceneStringName(item_selected), index);
+	}
 }

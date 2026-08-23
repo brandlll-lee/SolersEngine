@@ -157,6 +157,7 @@ void SolersStudio::_refresh_providers() {
 	const String selected_preset_provider = selected_preset.get("provider", String());
 	const String selected_catalog_provider = _selected_provider(catalog_provider);
 	generation_presets.clear();
+	preset_button->clear();
 	catalog_provider->clear();
 	int selected_preset_index = -1;
 	int default_preset = -1;
@@ -187,8 +188,10 @@ void SolersStudio::_refresh_providers() {
 				preset["provider"] = id;
 				const int index = generation_presets.size();
 				preset["icon"] = SolersIcons::provider_logo(profile.get("catalog_provider", id), int(18 * EDSCALE));
-				preset["menu_id"] = id + ":" + String(preset.get("id", String()));
 				generation_presets.push_back(preset);
+				preset_button->add_item(preset.get("label", String()));
+				preset_button->set_item_icon(index, preset.get("icon", Ref<Texture2D>()));
+				preset_button->set_item_tooltip(index, preset.get("description", String()));
 				if ((bool)preset.get("default", false)) {
 					default_preset = index;
 				}
@@ -225,37 +228,13 @@ void SolersStudio::_route_selected(int) {
 void SolersStudio::_preset_selected(int p_index) {
 	selected_preset = p_index >= 0 && p_index < generation_presets.size() ? Dictionary(generation_presets[p_index]) : Dictionary();
 	preset_button->set_disabled(selected_preset.is_empty());
-	preset_button->set_text(selected_preset.get("label", TTRC("No generator available")));
-	preset_button->set_button_icon(selected_preset.get("icon", Ref<Texture2D>()));
+	preset_button->select(selected_preset.is_empty() ? -1 : p_index);
 	preset_description->set_text(selected_preset.get("description", String()));
 	const bool supports_multiview = (int)selected_preset.get("max_reference_images", 1) > 1;
 	multiview_toggle->set_visible(supports_multiview);
 	multiview_toggle->set_pressed_no_signal(supports_multiview);
 	_refresh_generation_schema();
 	_refresh_reference_slots();
-}
-
-void SolersStudio::_open_preset_popup() {
-	Array items;
-	for (const Variant &value : generation_presets) {
-		const Dictionary preset = value;
-		Dictionary item;
-		item["id"] = preset.get("menu_id", String());
-		item["label"] = preset.get("label", String());
-		item["description"] = preset.get("description", String());
-		item["icon"] = preset.get("icon", Variant());
-		items.push_back(item);
-	}
-	popup_list->popup(preset_button, items, selected_preset.get("menu_id", String()), callable_mp(this, &SolersStudio::_preset_popup_selected));
-}
-
-void SolersStudio::_preset_popup_selected(const String &p_id) {
-	for (int i = 0; i < generation_presets.size(); i++) {
-		if (Dictionary(generation_presets[i]).get("menu_id", String()) == p_id) {
-			_preset_selected(i);
-			return;
-		}
-	}
 }
 
 void SolersStudio::_refresh_generation_schema() {
@@ -926,7 +905,7 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	creation_column->set_h_size_flags(SIZE_EXPAND_FILL);
 	creation_column->add_theme_constant_override(SNAME("separation"), int(12 * EDSCALE));
 	creation_title = _studio_label(creation_column, String(), SNAME("SolersSessionTitle"));
-	preset_button = _studio_add<Button>(creation_column);
+	preset_button = _studio_add<SolersStudioSelect>(creation_column);
 	preset_button->set_custom_minimum_size(Size2(0, 52 * EDSCALE));
 	preset_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
 	preset_button->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
@@ -1068,7 +1047,7 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 		button->set_theme_type_variation(SNAME("SolersStudioActionButton"));
 		button->set_custom_minimum_size(Size2(38, 34) * EDSCALE);
 	}
-	catalog_variant = _studio_add<OptionButton>(center);
+	catalog_variant = _studio_add<SolersStudioSelect>(center);
 	acquire_button = _studio_add<Button>(center);
 	acquire_button->set_theme_type_variation(SNAME("SolersPrimaryButton"));
 
@@ -1100,7 +1079,7 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	VBoxContainer *catalog = _studio_add<VBoxContainer>(library_tabs);
 	catalog->set_name("Catalog");
 	catalog->add_theme_constant_override(SNAME("separation"), int(8 * EDSCALE));
-	catalog_provider = _studio_add<OptionButton>(catalog);
+	catalog_provider = _studio_add<SolersStudioSelect>(catalog);
 	PanelContainer *catalog_stack = _studio_add<PanelContainer>(catalog);
 	catalog_stack->set_v_size_flags(SIZE_EXPAND_FILL);
 	catalog_list = _studio_add<ItemList>(catalog_stack);
@@ -1139,12 +1118,16 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	delete_dialog->set_title(TTRC("Delete asset"));
 	delete_dialog->set_ok_button_text(TTRC("Delete"));
 	popup_list = _studio_add<SolersPopupList>(this);
-	for (OptionButton *selector : { catalog_variant, catalog_provider }) {
+	for (SolersStudioSelect *selector : { preset_button, catalog_variant, catalog_provider }) {
+		selector->set_popup_list(popup_list);
 		selector->set_fit_to_longest_item(false);
 		selector->set_clip_text(true);
 	}
+	for (SolersSchemaForm *form : { featured_form, generation_form, remesh_form }) {
+		form->set_popup_list(popup_list);
+	}
 	route_list->connect(SceneStringName(item_selected), callable_mp(this, &SolersStudio::_route_selected));
-	preset_button->connect(SceneStringName(pressed), callable_mp(this, &SolersStudio::_open_preset_popup));
+	preset_button->connect(SceneStringName(item_selected), callable_mp(this, &SolersStudio::_preset_selected));
 	catalog_provider->connect(SceneStringName(item_selected), callable_mp(this, &SolersStudio::_catalog_provider_selected));
 	for (Button *button : reference_buttons) {
 		button->connect(SceneStringName(pressed), callable_mp(reference_dialog, &FileDialog::popup_file_dialog));

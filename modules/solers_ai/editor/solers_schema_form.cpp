@@ -31,6 +31,7 @@
 #include "solers_schema_form.h"
 
 #include "solers_chat_widgets.h"
+#include "solers_popup_list.h"
 #include "solers_ui_theme.h"
 
 #include "core/input/input_event.h"
@@ -151,7 +152,8 @@ Control *SolersSchemaForm::_create_field(const StringName &p_name, const Diction
 		segments->set_meta("field_kind", control_type);
 		field = segments;
 	} else if (!enum_values.is_empty()) {
-		OptionButton *options = memnew(OptionButton);
+		SolersStudioSelect *options = memnew(SolersStudioSelect);
+		options->set_popup_list(popup_list);
 		const String value_key = p_schema.get("enum_value", "id");
 		const String label_key = p_schema.get("enum_label", "label");
 		for (const Variant &value : enum_values) {
@@ -165,6 +167,9 @@ Control *SolersSchemaForm::_create_field(const StringName &p_name, const Diction
 			const int index = options->get_item_count();
 			options->add_item(label);
 			options->set_item_metadata(index, id);
+			if (value.get_type() == Variant::DICTIONARY) {
+				options->set_item_tooltip(index, Dictionary(value).get("description", String()));
+			}
 			if (id == p_default) {
 				options->select(index);
 			}
