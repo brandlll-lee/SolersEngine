@@ -86,7 +86,6 @@ void SolersAssetGrid::add_asset(const Dictionary &p_manifest, const Ref<Texture2
 	const String asset_id = p_manifest.get("id", String());
 	Button *card = memnew(Button);
 	card->set_meta(SNAME("asset_id"), asset_id);
-	card->set_name("AssetCard");
 	card->set_toggle_mode(true);
 	card->set_pressed_no_signal(asset_id == selected_id);
 	card->set_custom_minimum_size(Size2(108, 108) * EDSCALE);
@@ -103,7 +102,6 @@ void SolersAssetGrid::add_asset(const Dictionary &p_manifest, const Ref<Texture2
 		center->set_anchors_and_offsets_preset(PRESET_FULL_RECT);
 		center->set_mouse_filter(MOUSE_FILTER_IGNORE);
 		SolersActivityIndicator *activity = memnew(SolersActivityIndicator);
-		activity->set_name("ActivityIndicator");
 		activity->set_custom_minimum_size(Size2(32, 32) * EDSCALE);
 		center->add_child(activity);
 		card->add_child(center);
@@ -119,7 +117,6 @@ void SolersAssetGrid::add_asset(const Dictionary &p_manifest, const Ref<Texture2
 	}
 
 	Button *more = memnew(Button);
-	more->set_name("AssetMenuButton");
 	more->set_button_icon(SolersIcons::get(SNAME("more"), int(16 * EDSCALE)));
 	more->set_custom_minimum_size(Size2(28, 28) * EDSCALE);
 	more->set_theme_type_variation(SNAME("SolersStudioActionButton"));

@@ -565,13 +565,14 @@ TEST_CASE("[SolersPlugin] HTTP transport preserves method and native status fact
 	server.instantiate();
 	REQUIRE(server->listen(0, IPAddress("127.0.0.1")) == OK);
 	String request_text;
-	std::thread responder([server, &request_text]() {
+	SafeFlag response_done;
+	std::thread responder([server, &request_text, &response_done]() {
 		const uint64_t deadline = OS::get_singleton()->get_ticks_msec() + 3000;
 		while (!server->is_connection_available() && OS::get_singleton()->get_ticks_msec() < deadline) {
 			OS::get_singleton()->delay_usec(1000);
 		}
 		Ref<StreamPeerTCP> connection = server->is_connection_available() ? server->take_connection() : Ref<StreamPeerTCP>();
-		while (connection.is_valid() && !request_text.contains("\r\n") && OS::get_singleton()->get_ticks_msec() < deadline) {
+		while (connection.is_valid() && !request_text.contains("\r\n\r\n") && OS::get_singleton()->get_ticks_msec() < deadline) {
 			connection->poll();
 			const int available = connection->get_available_bytes();
 			if (available > 0) {
@@ -584,12 +585,16 @@ TEST_CASE("[SolersPlugin] HTTP transport preserves method and native status fact
 			OS::get_singleton()->delay_usec(1000);
 		}
 		if (connection.is_valid()) {
-			const CharString response = String("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").utf8();
+			const CharString response = String("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n").utf8();
 			connection->put_data((const uint8_t *)response.get_data(), response.length());
+			while (!response_done.is_set() && OS::get_singleton()->get_ticks_msec() < deadline) {
+				OS::get_singleton()->delay_usec(1000);
+			}
 		}
 		server->stop();
 	});
 	const Dictionary response = SolersPlugin::http_request(HTTPClient::METHOD_PUT, vformat("http://127.0.0.1:%d/upload", server->get_local_port()), Vector<String>(), PackedByteArray(), 3000);
+	response_done.set();
 	responder.join();
 	CHECK(response.get("ok", false));
 	CHECK(request_text.begins_with("PUT /upload HTTP/1.1"));
