@@ -45,6 +45,8 @@
 #include "scene/resources/environment.h"
 #include "scene/resources/sky.h"
 
+#include "modules/modules_enabled.gen.h"
+
 #ifdef MODULE_GLTF_ENABLED
 #include "modules/gltf/gltf_document.h"
 #include "modules/gltf/gltf_state.h"

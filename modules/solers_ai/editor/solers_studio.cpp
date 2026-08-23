@@ -60,7 +60,6 @@
 #include "scene/gui/text_edit.h"
 #include "scene/gui/texture_rect.h"
 #include "scene/main/window.h"
-#include "scene/resources/animated_texture.h"
 #include "scene/resources/image_texture.h"
 #include "scene/resources/theme.h"
 #include "servers/display/display_server.h"
@@ -86,17 +85,6 @@ static Label *_studio_label(Node *p_parent, const String &p_text, const StringNa
 	}
 	p_parent->add_child(label);
 	return label;
-}
-static Ref<Texture2D> _studio_activity_texture() {
-	Ref<AnimatedTexture> activity;
-	activity.instantiate();
-	activity->set_frames(8);
-	const Ref<Theme> editor_theme = EditorNode::get_singleton()->get_editor_theme();
-	for (int i = 0; i < 8; i++) {
-		activity->set_frame_texture(i, editor_theme->get_icon("Progress" + itos(i + 1), EditorStringName(EditorIcons)));
-		activity->set_frame_duration(i, 0.08f);
-	}
-	return activity;
 }
 static Control *_studio_empty_state(Node *p_parent, Label **r_label) {
 	CenterContainer *empty = _studio_add<CenterContainer>(p_parent);
@@ -592,11 +580,9 @@ void SolersStudio::_refresh_project_assets() {
 				}
 			}
 		}
-		const int index = project_list->add_item(title + "\n" + status.capitalize(), item_preview);
+		const int index = project_list->add_item(String(), item_preview);
 		project_list->set_item_metadata(index, manifest);
-		if (busy) {
-			project_list->set_item_icon_modulate(index, SolersUITheme::make_tokens().primary);
-		}
+		project_list->set_item_tooltip(index, title + "\n" + status.capitalize());
 		if (manifest.get("id", String()) == selected_id) {
 			project_list->select(index);
 			_show_manifest(manifest);
@@ -697,14 +683,18 @@ void SolersStudio::_sync_workspace() {
 	}
 	const bool has_model = has_manifest && !busy && model_preview->has_model();
 	model_preview->set_visible(has_model);
-	preview->set_visible(!empty && !busy && !has_model && preview->get_texture().is_valid());
+	preview->set_visible(route != "3d" && !empty && !busy && !has_model && preview->get_texture().is_valid());
 	const int64_t polycount = selected_manifest.get("polycount", 0);
 	const int64_t vertex_count = selected_manifest.get("vertex_count", 0);
 	geometry_stats->set_text(polycount > 0 || vertex_count > 0 ? vformat(TTRC("%s polygons | %s vertices"), String::num_int64(polycount), String::num_int64(vertex_count)) : String());
 	geometry_stats->set_visible(!geometry_stats->get_text().is_empty());
 	const bool ready = has_manifest && status == "ready";
+	const bool preview_failed = ready && route == "3d" && !has_model;
+	if (preview_failed) {
+		asset_status->set_text(TTRC("3D preview unavailable."));
+	}
 	asset_actions->set_visible(ready);
-	asset_status->set_visible(empty || !ready);
+	asset_status->set_visible(empty || !ready || preview_failed);
 	remesh_button->set_disabled(remesh_operation.is_empty());
 	const bool has_variant = has_catalog && catalog_variant->get_item_count() > 0;
 	catalog_variant->set_visible(has_variant);
@@ -805,7 +795,7 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	set_name("SolersStudio");
 	set_process(true);
 	const SolersUITheme::Tokens tokens = SolersUITheme::make_tokens();
-	activity_texture = _studio_activity_texture();
+	activity_texture = SolersIcons::activity(int(64 * EDSCALE));
 	List<String> image_extensions;
 	ImageLoader::get_recognized_extensions(&image_extensions);
 	HBoxContainer *shell = _studio_add<HBoxContainer>(this);
@@ -954,12 +944,13 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	PanelContainer *stage = _studio_add<PanelContainer>(center);
 	stage->set_h_size_flags(SIZE_EXPAND_FILL);
 	stage->set_v_size_flags(SIZE_EXPAND_FILL);
-	model_preview = _studio_add<SolersModelPreview>(stage);
-	model_preview->set_h_size_flags(SIZE_EXPAND_FILL);
-	model_preview->set_v_size_flags(SIZE_EXPAND_FILL);
 	preview = _studio_add<TextureRect>(stage);
 	preview->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
 	preview->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+	preview->set_mouse_filter(MOUSE_FILTER_IGNORE);
+	model_preview = _studio_add<SolersModelPreview>(stage);
+	model_preview->set_h_size_flags(SIZE_EXPAND_FILL);
+	model_preview->set_v_size_flags(SIZE_EXPAND_FILL);
 	empty_stage = _studio_add<CenterContainer>(stage);
 	VBoxContainer *empty_content = _studio_add<VBoxContainer>(empty_stage);
 	empty_content->add_theme_constant_override(SNAME("separation"), int(14 * EDSCALE));
@@ -1041,11 +1032,11 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	project->set_name("Project");
 	project_list = _studio_add<ItemList>(project);
 	project_list->set_icon_mode(ItemList::ICON_MODE_TOP);
+	project_list->set_theme_type_variation(SNAME("SolersStudioAssetGrid"));
 	project_list->set_fixed_icon_size(Size2i(92, 92) * EDSCALE);
 	project_list->set_fixed_column_width(int(100 * EDSCALE));
 	project_list->set_same_column_width(true);
 	project_list->set_max_columns(0);
-	project_list->set_max_text_lines(2);
 	project_list->set_v_size_flags(SIZE_EXPAND_FILL);
 	project_list->get_v_scroll_bar()->set_theme_type_variation(SNAME("SolersStudioScroll"));
 	project_empty = _studio_empty_state(project, &project_empty_label);

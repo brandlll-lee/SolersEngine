@@ -227,3 +227,6 @@ msgstr "此 Studio 工作区暂不可用。"
 
 msgid "Only the 3D workspace is enabled in this release."
 msgstr "当前版本仅启用 3D 工作区。"
+
+msgid "3D preview unavailable."
+msgstr "3D 预览不可用。"

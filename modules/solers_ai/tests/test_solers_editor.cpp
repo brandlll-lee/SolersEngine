@@ -31,6 +31,7 @@
 #include "core/config/project_settings.h"
 #include "core/input/input_event.h"
 #include "core/io/dir_access.h"
+#include "core/io/file_access.h"
 #include "core/io/image.h"
 #include "core/io/json.h"
 #include "core/object/callable_mp.h"
@@ -43,11 +44,15 @@
 #include "scene/gui/button.h"
 #include "scene/gui/file_dialog.h"
 #include "scene/gui/label.h"
+#include "scene/gui/panel_container.h"
 #include "scene/gui/split_container.h"
+#include "scene/gui/texture_rect.h"
 #include "scene/main/scene_tree.h"
+#include "scene/resources/animated_texture.h"
 #include "scene/resources/environment.h"
 #include "scene/resources/style_box_flat.h"
 #include "tests/test_macros.h"
+#include "tests/test_utils.h"
 
 #include "modules/modules_enabled.gen.h"
 #include "modules/solers_ai/editor/solers_chat_cells.h"
@@ -127,15 +132,34 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	REQUIRE(rail_selected.is_valid());
 	CHECK(rail_selected->get_border_width(SIDE_LEFT) == 0);
 	CHECK(theme->get_constant(SNAME("v_separation"), SNAME("SolersStudioRail")) > 0);
+	CHECK(theme->get_type_variation_base(SNAME("SolersStudioAssetGrid")) == SNAME("ItemList"));
+	Ref<StyleBoxFlat> grid_selected = theme->get_stylebox(SNAME("selected"), SNAME("SolersStudioAssetGrid"));
+	REQUIRE(grid_selected.is_valid());
+	CHECK(grid_selected->get_bg_color().a == 0.0f);
+	CHECK(grid_selected->get_border_width(SIDE_LEFT) > 0);
 	CHECK(theme->get_type_variation_base(SNAME("SolersStudioScroll")) == SNAME("VScrollBar"));
 	CHECK(theme->has_stylebox(SNAME("grabber_highlight"), SNAME("SolersStudioScroll")));
 	CHECK(theme->get_font_size(SceneStringName(font_size), SNAME("SolersHeroTitle")) > theme->get_font_size(SceneStringName(font_size), SNAME("SolersSessionTitle")));
 	CHECK(bool(theme->has_icon(SNAME("arrow"), SNAME("OptionButton")) && theme->has_icon(SNAME("radio_checked"), SNAME("PopupMenu")) && theme->has_icon(SNAME("radio_unchecked"), SNAME("PopupMenu"))));
+	Ref<AnimatedTexture> activity = SolersIcons::activity(56);
+	REQUIRE(activity.is_valid());
+	CHECK(activity->get_frames() > 1);
+
+	PanelContainer *stage = memnew(PanelContainer);
+	stage->set_position(Vector2(20, 20));
+	stage->set_size(Size2(400, 300));
+	TextureRect *fallback = memnew(TextureRect);
+	fallback->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
+	stage->add_child(fallback);
 	SolersModelPreview *model_preview = memnew(SolersModelPreview);
-	model_preview->set_size(Size2(400, 300));
-	SceneTree::get_singleton()->get_root()->add_child(model_preview);
+	stage->add_child(model_preview);
+	SceneTree::get_singleton()->get_root()->add_child(stage);
 	MessageQueue::get_singleton()->flush();
 	CHECK(model_preview->is_mouse_target_enabled());
+	const String model_path = TestUtils::get_data_path("models/suzanne.glb");
+	REQUIRE(FileAccess::exists(model_path));
+	REQUIRE(model_preview->load_model(model_path) == OK);
+	CHECK(model_preview->has_model());
 	Camera3D *preview_camera = Object::cast_to<Camera3D>(model_preview->get_child(0)->get_child(0));
 	REQUIRE(preview_camera);
 	const Ref<Environment> preview_environment = preview_camera->get_environment();
@@ -147,6 +171,7 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	middle->set_button_index(MouseButton::MIDDLE);
 	middle->set_pressed(true);
 	SceneTree::get_singleton()->get_root()->push_input(middle, true);
+	CHECK(SceneTree::get_singleton()->get_root()->gui_get_hovered_control() == model_preview);
 	const Vector3 camera_before_pan = preview_camera->get_global_position();
 	Ref<InputEventMouseMotion> pan;
 	pan.instantiate();
@@ -172,7 +197,7 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	CHECK(preview_camera->get_global_position() != camera_before_zoom);
 	CHECK(model_preview->load_model("res://missing-solers-preview.glb") != OK);
 	CHECK_FALSE(model_preview->has_model());
-	model_preview->queue_free();
+	stage->queue_free();
 	MessageQueue::get_singleton()->flush();
 
 	Control *host = memnew(Control);
