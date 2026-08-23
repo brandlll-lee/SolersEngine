@@ -49,6 +49,7 @@ class OptionButton;
 class ScrollContainer;
 class SolersAssetService;
 class SolersAssetGrid;
+class SolersActivityIndicator;
 class SolersDock;
 class SolersModelPreview;
 class SolersPopupList;
@@ -88,7 +89,7 @@ class SolersStudio : public PanelContainer {
 	uint64_t reference_generation = 1;
 	SolersModelPreview *model_preview = nullptr;
 	TextureRect *preview = nullptr, *empty_icon = nullptr;
-	Ref<Texture2D> activity_texture;
+	SolersActivityIndicator *empty_activity = nullptr;
 	Label *creation_title = nullptr, *asset_title = nullptr, *asset_status = nullptr;
 	Label *geometry_stats = nullptr;
 	Control *empty_stage = nullptr;

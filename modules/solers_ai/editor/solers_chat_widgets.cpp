@@ -45,7 +45,6 @@
 #include "scene/gui/label.h"
 #include "scene/gui/panel_container.h"
 #include "scene/gui/text_edit.h"
-#include "scene/resources/animated_texture.h"
 #include "scene/resources/font.h"
 #include "scene/resources/image_texture.h"
 #include "scene/resources/style_box.h"
@@ -150,37 +149,28 @@ Ref<Texture2D> SolersIcons::brand_mark() {
 	return texture;
 }
 
-Ref<Texture2D> SolersIcons::activity(int p_size_px) {
-	const int size_px = MAX(2, p_size_px);
-	const String cache_key = "activity@" + itos(size_px);
-	if (const Ref<Texture2D> *found = g_solers_icon_cache.getptr(cache_key)) {
-		return *found;
-	}
+SolersActivityIndicator::SolersActivityIndicator() {
+	set_mouse_filter(MOUSE_FILTER_IGNORE);
+	set_process_internal(true);
+}
 
-	static constexpr int delays[] = {
-		2221, 2317, 869, 966, 1062, 2124, 772, 97, 193, 1159, 2028, 676, 0,
-		290, 1255, 1931, 579, 483, 386, 1352, 1834, 1738, 1641, 1545, 1448
-	};
-	Ref<AnimatedTexture> activity;
-	activity.instantiate();
-	activity->set_frames(28);
-	for (int frame = 0; frame < 28; frame++) {
-		String svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 56 56'>";
-		for (int dot = 0; dot < 25; dot++) {
-			const int x = 6 + (dot % 5) * 11;
-			const int y = 6 + (dot / 5) * 11;
-			svg += vformat("<circle cx='%d' cy='%d' r='2.4' fill='white' opacity='.07'/>", x, y);
-			const float phase = Math::fposmod(frame * 100.0f - delays[dot], 2800.0f) / 2800.0f;
-			const float opacity = phase < 0.04f ? phase / 0.04f : (phase < 0.26f ? Math::lerp(1.0f, 0.08f, (phase - 0.04f) / 0.22f) : Math::lerp(0.08f, 0.0f, (phase - 0.26f) / 0.74f));
-			svg += vformat("<circle cx='%d' cy='%d' r='3.1' fill='white' opacity='%f'/>", x, y, opacity);
+void SolersActivityIndicator::_notification(int p_what) {
+	if (p_what == NOTIFICATION_INTERNAL_PROCESS) {
+		if (is_visible_in_tree()) {
+			phase = Math::fposmod(phase + float(get_process_delta_time()), 1.4f);
+			queue_redraw();
 		}
-		svg += "</svg>";
-		const CharString svg_utf8 = svg.utf8();
-		activity->set_frame_texture(frame, _solers_raster_svg(svg_utf8.get_data(), cache_key + ":" + itos(frame), size_px, 56));
-		activity->set_frame_duration(frame, 0.1f);
+	} else if (p_what == NOTIFICATION_DRAW) {
+		const float spacing = MIN(get_size().x, get_size().y) / 5.5f;
+		const Vector2 origin = (get_size() - Vector2(spacing * 4.0f, spacing * 4.0f)) * 0.5f;
+		for (int y = 0; y < 5; y++) {
+			for (int x = 0; x < 5; x++) {
+				const float wave = Math::fposmod(phase - x * 0.12f - y * 0.17f, 1.4f);
+				const float pulse = Math::pow(MAX(0.0f, 1.0f - wave / 0.35f), 2.0f);
+				draw_circle(origin + Vector2(x, y) * spacing, MAX(1.0f, spacing * 0.19f), Color(1, 1, 1, 0.08f + pulse * 0.92f));
+			}
+		}
 	}
-	g_solers_icon_cache.insert(cache_key, activity);
-	return activity;
 }
 
 void SolersIcons::clear_cache() {

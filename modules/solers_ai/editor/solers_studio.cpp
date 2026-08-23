@@ -574,7 +574,7 @@ void SolersStudio::_refresh_project_assets() {
 		}
 		const String status = String(manifest.get("status", "unknown")).to_lower();
 		const bool busy = status == "queued" || status == "running";
-		Ref<Texture2D> item_preview = busy ? activity_texture : SolersIcons::get(SNAME("tool_asset"), int(54 * EDSCALE));
+		Ref<Texture2D> item_preview = SolersIcons::get(SNAME("tool_asset"), int(54 * EDSCALE));
 		const String preview_file = manifest.get("preview_file", String());
 		if (!busy && !preview_file.is_empty()) {
 			const Ref<Texture2D> *cached = project_previews.getptr(preview_file);
@@ -734,6 +734,8 @@ void SolersStudio::_sync_workspace() {
 	const String status = String(selected_manifest.get("status", String())).to_lower();
 	const bool busy = has_manifest && (status == "queued" || status == "running");
 	empty_stage->set_visible(empty || busy);
+	empty_icon->set_visible(!busy);
+	empty_activity->set_visible(busy);
 	if (empty) {
 		empty_icon->set_texture(SolersIcons::get(SNAME("cube_plus"), int(84 * EDSCALE)));
 		empty_icon->set_self_modulate(SolersUITheme::make_tokens().text);
@@ -741,9 +743,6 @@ void SolersStudio::_sync_workspace() {
 		if (asset_status->get_text().is_empty()) {
 			asset_status->set_text(route == "3d" ? TTRC("Generate a model or choose one from your library.") : TTRC("Only the 3D workspace is enabled in this release."));
 		}
-	} else if (busy) {
-		empty_icon->set_texture(activity_texture);
-		empty_icon->set_self_modulate(SolersUITheme::make_tokens().primary);
 	}
 	const bool has_model = has_manifest && !busy && model_preview->has_model();
 	model_preview->set_visible(has_model);
@@ -859,7 +858,6 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	set_name("SolersStudio");
 	set_process(true);
 	const SolersUITheme::Tokens tokens = SolersUITheme::make_tokens();
-	activity_texture = SolersIcons::activity(int(64 * EDSCALE));
 	List<String> image_extensions;
 	ImageLoader::get_recognized_extensions(&image_extensions);
 	HBoxContainer *shell = _studio_add<HBoxContainer>(this);
@@ -1024,6 +1022,9 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	empty_icon->set_texture(SolersIcons::get(SNAME("cube_plus"), int(84 * EDSCALE)));
 	empty_icon->set_custom_minimum_size(Size2(84, 84) * EDSCALE);
 	empty_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+	empty_activity = _studio_add<SolersActivityIndicator>(empty_content);
+	empty_activity->set_custom_minimum_size(Size2(64, 64) * EDSCALE);
+	empty_activity->set_self_modulate(tokens.primary);
 	asset_title = _studio_label(empty_content, String(), SNAME("SolersHeroTitle"));
 	asset_title->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
 	empty_generate_button = _studio_add<Button>(empty_content);

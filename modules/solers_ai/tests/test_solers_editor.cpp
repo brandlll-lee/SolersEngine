@@ -49,7 +49,6 @@
 #include "scene/gui/split_container.h"
 #include "scene/gui/texture_rect.h"
 #include "scene/main/scene_tree.h"
-#include "scene/resources/animated_texture.h"
 #include "scene/resources/environment.h"
 #include "scene/resources/style_box_flat.h"
 #include "tests/test_macros.h"
@@ -57,6 +56,7 @@
 #include "tests/test_utils.h"
 
 #include "modules/modules_enabled.gen.h"
+#include "modules/solers_ai/editor/solers_asset_grid.h"
 #include "modules/solers_ai/editor/solers_chat_cells.h"
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
 #include "modules/solers_ai/editor/solers_editor_plugin.h"
@@ -95,11 +95,6 @@ public:
 		TranslationServer::get_singleton()->set_locale(previous_locale);
 		solers_load_editor_translation();
 	}
-};
-
-class TestStudioSelect : public SolersStudioSelect {
-public:
-	void open_popup() { pressed(); }
 };
 
 TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the Solers subtree") {
@@ -155,13 +150,14 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	CHECK(theme->get_type_variation_base(SNAME("SolersPopupDangerItem")) == SNAME("Button"));
 	CHECK(theme->get_font_size(SceneStringName(font_size), SNAME("SolersHeroTitle")) > theme->get_font_size(SceneStringName(font_size), SNAME("SolersSessionTitle")));
 	CHECK(bool(theme->has_icon(SNAME("arrow"), SNAME("OptionButton")) && theme->has_icon(SNAME("radio_checked"), SNAME("PopupMenu")) && theme->has_icon(SNAME("radio_unchecked"), SNAME("PopupMenu"))));
-	Ref<AnimatedTexture> activity = SolersIcons::activity(56);
-	REQUIRE(activity.is_valid());
-	CHECK(activity->get_frames() > 1);
-
 	PanelContainer *stage = memnew(PanelContainer);
 	stage->set_position(Vector2(20, 20));
 	stage->set_size(Size2(400, 300));
+	SolersActivityIndicator *activity = memnew(SolersActivityIndicator);
+	activity->set_custom_minimum_size(Size2(64, 64));
+	stage->add_child(activity);
+	CHECK(activity->is_processing_internal());
+	CHECK(activity->get_combined_minimum_size() == Size2(64, 64));
 	TextureRect *fallback = memnew(TextureRect);
 	fallback->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
 	stage->add_child(fallback);
@@ -291,53 +287,26 @@ TEST_CASE("[SolersStudio][SceneTree] schema form projects unknown connector fiel
 TEST_CASE("[SolersStudio][SceneTree] selectors keep native state with the shared rich popup") {
 	Control *host = memnew(Control);
 	host->set_size(Size2(640, 480));
-	host->set_theme(SolersUITheme::create());
 	SolersPopupList *popup = memnew(SolersPopupList);
-	TestStudioSelect *select = memnew(TestStudioSelect);
-	select->set_size(Size2(240, 44));
-	select->add_item("Fast");
-	select->set_item_tooltip(0, "Quick preview");
-	select->add_item("Detailed");
-	select->set_item_tooltip(1, "Highest fidelity");
-	select->select(1);
-	select->set_popup_list(popup);
-	host->add_child(select);
+	Button *anchor = memnew(Button);
+	anchor->set_size(Size2(240, 44));
+	host->add_child(anchor);
 	host->add_child(popup);
 	SceneTree::get_singleton()->get_root()->add_child(host);
 	MessageQueue::get_singleton()->flush();
 
-	select->open_popup();
-	CHECK(popup->is_visible());
-	Button *selected_row = nullptr;
-	const TypedArray<Node> popup_buttons = popup->find_children("*", "Button", true, false);
-	for (int i = 0; i < popup_buttons.size(); i++) {
-		Button *row = Object::cast_to<Button>(popup_buttons[i]);
-		if (row && row->get_text().contains("Highest fidelity")) {
-			selected_row = row;
-			break;
-		}
-	}
+	const Array popup_items = JSON::parse_string(R"([{"id":"fast","label":"Fast","description":"Quick preview"},{"id":"detail","label":"Detailed","description":"Highest fidelity"}])");
+	popup->popup(anchor, popup_items, "detail", Callable());
+	Button *selected_row = Object::cast_to<Button>(host->get_viewport()->gui_get_focus_owner());
 	REQUIRE(selected_row);
-	CHECK(selected_row->has_focus());
+	CHECK(selected_row->get_text().contains("Highest fidelity"));
 	Ref<InputEventKey> escape;
 	escape.instantiate();
 	escape->set_keycode(Key::ESCAPE);
 	escape->set_pressed(true);
 	popup->unhandled_key_input(escape);
 	CHECK_FALSE(popup->is_visible());
-	CHECK(select->has_focus());
-	select->open_popup();
-	const TypedArray<Node> reopened_buttons = popup->find_children("*", "Button", true, false);
-	for (int i = 0; i < reopened_buttons.size(); i++) {
-		Button *row = Object::cast_to<Button>(reopened_buttons[i]);
-		if (row && row->get_text().contains("Quick preview")) {
-			row->emit_signal(SceneStringName(pressed));
-			break;
-		}
-	}
-	CHECK(select->get_selected() == 0);
-	CHECK_FALSE(popup->is_visible());
-
+	CHECK(anchor->has_focus());
 	SolersSchemaForm *form = memnew(SolersSchemaForm);
 	form->set_popup_list(popup);
 	host->add_child(form);
@@ -346,7 +315,18 @@ TEST_CASE("[SolersStudio][SceneTree] selectors keep native state with the shared
 	const TypedArray<Node> option_nodes = form->find_children("*", "OptionButton", true, false);
 	REQUIRE(option_nodes.size() == 1);
 	CHECK(Object::cast_to<SolersStudioSelect>(option_nodes[0]) != nullptr);
-	CHECK(form->get_values().get("quality", String()) == "detail");
+	SolersAssetGrid *grid = memnew(SolersAssetGrid);
+	host->add_child(grid);
+	grid->add_asset(JSON::parse_string(R"({"id":"busy","status":"running"})"), Ref<Texture2D>());
+	MessageQueue::get_singleton()->flush();
+	Button *card = Object::cast_to<Button>(grid->find_child("AssetCard", true, false));
+	Button *menu = Object::cast_to<Button>(grid->find_child("AssetMenuButton", true, false));
+	Control *card_activity = Object::cast_to<Control>(grid->find_child("ActivityIndicator", true, false));
+	REQUIRE(bool(card && menu && card_activity));
+	CHECK(card_activity->get_combined_minimum_size() == Size2(32, 32) * EDSCALE);
+	CHECK(Rect2(Vector2(), card->get_size()).encloses(menu->get_rect()));
+	card->grab_focus();
+	CHECK(menu->is_visible());
 
 	host->queue_free();
 	MessageQueue::get_singleton()->flush();

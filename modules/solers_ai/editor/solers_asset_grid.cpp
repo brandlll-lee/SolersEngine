@@ -36,9 +36,14 @@
 #include "core/string/translation.h"
 #include "editor/themes/editor_scale.h"
 #include "scene/gui/button.h"
+#include "scene/gui/center_container.h"
 #include "scene/gui/grid_container.h"
 #include "scene/gui/scroll_bar.h"
 #include "scene/gui/texture_rect.h"
+
+static void _sync_asset_menu(Button *p_card, Button *p_menu) {
+	p_menu->set_visible(p_card->is_hovered() || p_card->has_focus() || p_menu->has_focus());
+}
 
 SolersAssetGrid::SolersAssetGrid() {
 	set_horizontal_scroll_mode(SCROLL_MODE_DISABLED);
@@ -81,6 +86,7 @@ void SolersAssetGrid::add_asset(const Dictionary &p_manifest, const Ref<Texture2
 	const String asset_id = p_manifest.get("id", String());
 	Button *card = memnew(Button);
 	card->set_meta(SNAME("asset_id"), asset_id);
+	card->set_name("AssetCard");
 	card->set_toggle_mode(true);
 	card->set_pressed_no_signal(asset_id == selected_id);
 	card->set_custom_minimum_size(Size2(108, 108) * EDSCALE);
@@ -91,30 +97,43 @@ void SolersAssetGrid::add_asset(const Dictionary &p_manifest, const Ref<Texture2
 	card->connect(SceneStringName(pressed), callable_mp(this, &SolersAssetGrid::_asset_pressed).bind(asset_id));
 	grid->add_child(card);
 
-	TextureRect *image = memnew(TextureRect);
-	image->set_anchors_and_offsets_preset(PRESET_FULL_RECT);
-	image->set_offset(SIDE_LEFT, 2 * EDSCALE);
-	image->set_offset(SIDE_TOP, 2 * EDSCALE);
-	image->set_offset(SIDE_RIGHT, -2 * EDSCALE);
-	image->set_offset(SIDE_BOTTOM, -2 * EDSCALE);
-	image->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
-	image->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_COVERED);
-	image->set_texture(p_preview);
-	image->set_mouse_filter(MOUSE_FILTER_IGNORE);
-	card->add_child(image);
+	const String status = String(p_manifest.get("status", String())).to_lower();
+	if (status == "queued" || status == "running") {
+		CenterContainer *center = memnew(CenterContainer);
+		center->set_anchors_and_offsets_preset(PRESET_FULL_RECT);
+		center->set_mouse_filter(MOUSE_FILTER_IGNORE);
+		SolersActivityIndicator *activity = memnew(SolersActivityIndicator);
+		activity->set_name("ActivityIndicator");
+		activity->set_custom_minimum_size(Size2(32, 32) * EDSCALE);
+		center->add_child(activity);
+		card->add_child(center);
+	} else {
+		TextureRect *image = memnew(TextureRect);
+		image->set_anchors_and_offsets_preset(PRESET_FULL_RECT);
+		image->set_offsets_preset(PRESET_FULL_RECT, PRESET_MODE_MINSIZE, 2 * EDSCALE);
+		image->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
+		image->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_COVERED);
+		image->set_texture(p_preview);
+		image->set_mouse_filter(MOUSE_FILTER_IGNORE);
+		card->add_child(image);
+	}
 
 	Button *more = memnew(Button);
-	more->set_anchors_and_offsets_preset(PRESET_BOTTOM_RIGHT);
-	more->set_offsets_preset(PRESET_BOTTOM_RIGHT, PRESET_MODE_MINSIZE, 4 * EDSCALE);
+	more->set_name("AssetMenuButton");
 	more->set_button_icon(SolersIcons::get(SNAME("more"), int(16 * EDSCALE)));
 	more->set_custom_minimum_size(Size2(28, 28) * EDSCALE);
 	more->set_theme_type_variation(SNAME("SolersStudioActionButton"));
 	more->set_tooltip_text(TTRC("Asset actions"));
 	more->hide();
-	more->connect(SceneStringName(pressed), callable_mp(this, &SolersAssetGrid::_asset_menu_pressed).bind(asset_id, more));
-	card->connect(SceneStringName(mouse_entered), callable_mp((CanvasItem *)more, &CanvasItem::show));
-	card->connect(SceneStringName(mouse_exited), callable_mp((CanvasItem *)more, &CanvasItem::hide));
 	card->add_child(more);
+	more->set_anchors_and_offsets_preset(PRESET_BOTTOM_RIGHT, PRESET_MODE_MINSIZE, int(4 * EDSCALE));
+	more->set_grow_direction_preset(PRESET_BOTTOM_RIGHT);
+	more->connect(SceneStringName(pressed), callable_mp(this, &SolersAssetGrid::_asset_menu_pressed).bind(asset_id, more));
+	const Callable sync_menu = callable_mp_static(_sync_asset_menu).bind(card, more);
+	for (const StringName &signal : { SceneStringName(mouse_entered), SceneStringName(mouse_exited), SceneStringName(focus_entered), SceneStringName(focus_exited) }) {
+		card->connect(signal, sync_menu);
+		more->connect(signal, sync_menu);
+	}
 	asset_count++;
 }
 

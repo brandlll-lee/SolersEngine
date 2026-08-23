@@ -58,8 +58,20 @@ public:
 	// Color textures must be drawn without Button/theme icon modulate.
 	static Ref<Texture2D> provider_logo_color(const String &p_catalog_id, int p_size_px);
 	static Ref<Texture2D> brand_mark();
-	static Ref<Texture2D> activity(int p_size_px);
 	static void clear_cache();
+};
+
+class SolersActivityIndicator : public Control {
+	GDCLASS(SolersActivityIndicator, Control);
+
+	float phase = 0.0f;
+
+protected:
+	void _notification(int p_what);
+	static void _bind_methods() {}
+
+public:
+	SolersActivityIndicator();
 };
 
 // Self-drawn icon button. Two skins:
