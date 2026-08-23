@@ -45,6 +45,7 @@
 #include "modules/solers_ai/plugins/solers_plugin.h"
 #include "modules/solers_ai/plugins/solers_plugin_meshy.h"
 #include "modules/solers_ai/plugins/solers_plugin_polyhaven.h"
+#include "modules/solers_ai/plugins/solers_plugin_tripo.h"
 #include "modules/solers_ai/tests/support/solers_test_state.h"
 #include "modules/zip/zip_packer.h"
 
@@ -498,6 +499,50 @@ TEST_CASE("[SolersAssetService] Meshy generation presets project native schema f
 	CHECK(default_count == 1);
 	const Dictionary schema = meshy.get_generation_options_schema("3d");
 	CHECK(Dictionary(schema.get("texture_resolution", Dictionary())).get("default", String()) == "2k");
+}
+
+TEST_CASE("[SolersPluginTripo] v3 presets and generation constraints follow provider facts") {
+	SolersPluginTripo tripo;
+	const Dictionary profile = tripo.get_profile();
+	CHECK(profile.get("base_url", String()) == "https://openapi.tripo3d.ai");
+	const Array presets = profile.get("generation_presets", Array());
+	REQUIRE(presets.size() == 2);
+	CHECK(Dictionary(Dictionary(presets[0]).get("options", Dictionary())).get("model", String()) == "v3.1-20260211");
+	CHECK(Dictionary(Dictionary(presets[1]).get("options", Dictionary())).get("model", String()) == "P1-20260311");
+
+	Dictionary manifest;
+	Dictionary options;
+	options["model"] = "v3.1-20260211";
+	options["texture"] = true;
+	options["pbr"] = true;
+	manifest["provider_options"] = options;
+	manifest["source_attachments"] = Array();
+	Dictionary args;
+	args["prompt"] = "A game-ready prop";
+	CHECK(tripo.prepare_generate("3d", args, manifest).is_empty());
+	CHECK(manifest.get("provider_endpoint", String()) == "/v3/generation/text-to-model");
+
+	options["generate_parts"] = true;
+	manifest["provider_options"] = options;
+	const Dictionary conflict = tripo.prepare_generate("3d", args, manifest);
+	CHECK(conflict.get("code", String()) == "INVALID_ARGUMENT");
+}
+
+TEST_CASE("[SolersAssetService] global assets delete atomically outside active jobs") {
+	const String asset_id = ".solers_delete_contract";
+	const String asset_dir = "user://solers_jobs/" + asset_id;
+	SolersTestPaths cleanup;
+	cleanup.add(asset_dir);
+	REQUIRE(DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(asset_dir)) == OK);
+	Dictionary manifest;
+	manifest["id"] = asset_id;
+	manifest["status"] = "ready";
+	String error;
+	REQUIRE(SolersPlugin::write_json_atomic(asset_dir.path_join("manifest.json"), manifest, error));
+	SolersAssetService assets;
+	const Dictionary result = assets.delete_asset(asset_id);
+	CHECK((bool)result.get("ok", false));
+	CHECK_FALSE(DirAccess::dir_exists_absolute(ProjectSettings::get_singleton()->globalize_path(asset_dir)));
 }
 
 TEST_CASE("[SolersAssetService] non-terminal asset.status rejects progress polling; job.wait declares host park") {

@@ -34,6 +34,7 @@
 #include "solers_plugin_elevenlabs.h"
 #include "solers_plugin_meshy.h"
 #include "solers_plugin_polyhaven.h"
+#include "solers_plugin_tripo.h"
 
 #include "core/config/project_settings.h"
 #include "core/io/dir_access.h"
@@ -247,6 +248,7 @@ void SolersPluginRegistry::register_builtins() {
 	builtins.push_back(memnew(SolersPluginElevenLabs));
 	builtins.push_back(memnew(SolersPluginAmbientCG));
 	builtins.push_back(memnew(SolersPluginPolyHaven));
+	builtins.push_back(memnew(SolersPluginTripo));
 	for (SolersPlugin *plugin : builtins) {
 		register_plugin(plugin);
 	}
