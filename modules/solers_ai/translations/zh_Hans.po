@@ -72,30 +72,6 @@ msgstr "远程服务商的服务地址未使用 HTTPS。"
 msgid "Custom OpenAI-compatible"
 msgstr "自定义 OpenAI 兼容"
 
-msgid "Qwen / Alibaba Cloud Model Studio"
-msgstr "通义千问 / 阿里云百炼"
-
-msgid "Use native Anthropic Messages for provider-specific features."
-msgstr "使用 Anthropic 原生 Messages 协议以获得其特有功能。"
-
-msgid "OpenAI-compatible endpoint is useful for shared gateway code; native API can expose Gemini-specific features."
-msgstr "OpenAI 兼容端点便于复用通用网关代码；原生 API 可启用 Gemini 专属功能。"
-
-msgid "Provider model aliases can change; Solers validates shape, not remote availability."
-msgstr "服务商的模型别名可能变化；Solers 只校验配置形态，不校验远端可用性。"
-
-msgid "Default is the Beijing-region DashScope compatible-mode endpoint; international accounts use dashscope-intl.aliyuncs.com."
-msgstr "默认为北京地域的 DashScope 兼容模式端点；国际站账号请使用 dashscope-intl.aliyuncs.com。"
-
-msgid "Local runtime. API key is required by some clients but ignored by Ollama."
-msgstr "本地运行时。部分客户端要求填写 API 密钥，但 Ollama 会忽略它。"
-
-msgid "Local server defaults to port 1234; model id depends on loaded model."
-msgstr "本地服务默认端口 1234；模型 ID 取决于已加载的模型。"
-
-msgid "For LiteLLM, OpenRouter-style, vLLM, or private gateway deployments."
-msgstr "适用于 LiteLLM、OpenRouter 类中转、vLLM 或私有网关部署。"
-
 msgid "New chat"
 msgstr "新建对话"
 
@@ -123,14 +99,8 @@ msgstr "上下文窗口未知"
 msgid "Add reference images"
 msgstr "添加参考图像"
 
-msgid "No reference images"
-msgstr "无参考图像"
-
 msgid "What will you create today?"
 msgstr "今天想创作什么？"
-
-msgid "Generate an asset or choose one from your library."
-msgstr "生成资产，或从资产库中选择。"
 
 msgid "Run operation"
 msgstr "执行操作"
@@ -143,9 +113,6 @@ msgstr "搜索资产目录..."
 
 msgid "Search generated assets..."
 msgstr "搜索生成资产..."
-
-msgid "Describe the asset to create..."
-msgstr "描述要创建的资产..."
 
 msgid "Generation queued."
 msgstr "生成任务已排队。"
@@ -167,6 +134,69 @@ msgstr "图像"
 
 msgid "Animation"
 msgstr "动画"
+
+msgid "Animate 3D"
+msgstr "3D 动画"
+
+msgid "Check rig compatibility"
+msgstr "检查骨骼绑定兼容性"
+
+msgid "Bind skeleton"
+msgstr "绑定骨骼"
+
+msgid "Text to animation"
+msgstr "文本转动画"
+
+msgid "Preset animation"
+msgstr "预设动画"
+
+msgid "Choose a model to animate"
+msgstr "选择要制作动画的模型"
+
+msgid "This workspace is not available yet."
+msgstr "此工作区暂不可用。"
+
+msgid "Import to current project"
+msgstr "导入到当前项目"
+
+msgid "Play or pause animation"
+msgstr "播放或暂停动画"
+
+msgid "Stop animation"
+msgstr "停止动画"
+
+msgid "Show skeleton"
+msgstr "显示骨骼"
+
+msgid "Animations"
+msgstr "动画列表"
+
+msgid "Bake Animation"
+msgstr "烘焙动画"
+
+msgid "Export with Geometry"
+msgstr "与几何体一起导出"
+
+msgid "Animate in Place"
+msgstr "原地动画"
+
+msgid "Decimation Model"
+msgstr "减面模型"
+
+msgid "Bake Textures"
+msgstr "烘焙纹理"
+
+msgid "Check Rig"
+msgstr "检查骨骼"
+
+msgid "Rig"
+msgstr "绑定骨骼"
+
+msgid "Animate"
+msgstr "添加动画"
+
+msgid "Optimize"
+msgstr "优化拓扑"
 
 msgid "Audio"
 msgstr "音频"
@@ -231,17 +261,11 @@ msgstr "删除"
 msgid "Delete '%s' from the global Studio library? This cannot be undone."
 msgstr "从全局 Studio 资产库中删除“%s”？此操作无法撤销。"
 
-msgid "No generator available"
-msgstr "没有可用的生成器"
-
 msgid "Project import started."
 msgstr "项目导入已开始。"
 
 msgid "This Studio workspace is not available yet."
 msgstr "此 Studio 工作区暂不可用。"
-
-msgid "Only the 3D workspace is enabled in this release."
-msgstr "当前版本仅启用 3D 工作区。"
 
 msgid "3D preview unavailable."
 msgstr "3D 预览不可用。"
@@ -257,9 +281,6 @@ msgstr "动作 ID"
 
 msgid "Add reference image"
 msgstr "添加参考图像"
-
-msgid "Animation Preset"
-msgstr "动画预设"
 
 msgid "Asset acquisition queued."
 msgstr "资产获取已排队。"

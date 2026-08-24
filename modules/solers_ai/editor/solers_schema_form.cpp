@@ -137,7 +137,7 @@ Control *SolersSchemaForm::_create_field(const StringName &p_name, const Diction
 				id = item.get(value_key, item.get("value", Variant()));
 				label = item.get(label_key, item.get("name", String(id)));
 			}
-			Button *segment = memnew(Button(label));
+			Button *segment = memnew(Button(TTR(label)));
 			segment->set_theme_type_variation(SNAME("SolersStudioSegment"));
 			segment->set_toggle_mode(true);
 			if (group.is_valid()) {
@@ -165,10 +165,10 @@ Control *SolersSchemaForm::_create_field(const StringName &p_name, const Diction
 				label = item.get(label_key, item.get("name", String(id)));
 			}
 			const int index = options->get_item_count();
-			options->add_item(label);
+			options->add_item(TTR(label));
 			options->set_item_metadata(index, id);
 			if (value.get_type() == Variant::DICTIONARY) {
-				options->set_item_tooltip(index, Dictionary(value).get("description", String()));
+				options->set_item_tooltip(index, TTR(Dictionary(value).get("description", String())));
 			}
 			if (id == p_default) {
 				options->select(index);
@@ -198,7 +198,7 @@ Control *SolersSchemaForm::_create_field(const StringName &p_name, const Diction
 		field = row;
 	} else if (type == "boolean") {
 		CheckButton *toggle = memnew(CheckButton);
-		toggle->set_text(p_schema.get("label", p_schema.get("title", String(p_name).capitalize())));
+		toggle->set_text(TTR(p_schema.get("label", p_schema.get("title", String(p_name).capitalize()))));
 		toggle->set_pressed((bool)p_default);
 		field = toggle;
 	} else if ((type == "integer" || type == "number") && p_default.get_type() != Variant::NIL) {
@@ -281,10 +281,10 @@ void SolersSchemaForm::set_schema(const Dictionary &p_schema, const Dictionary &
 		}
 		const Dictionary property = properties[name];
 		Control *field = _create_field(name, property, p_extras, controls.get(name, Dictionary()), property.get("default", Variant()));
-		const String description = property.get("description", String());
+		const String description = TTR(property.get("description", String()));
 		field->set_tooltip_text(description);
 		if (String(property.get("type", "string")) != "boolean") {
-			Label *label = memnew(Label(property.get("label", property.get("title", String(name).capitalize()))));
+			Label *label = memnew(Label(TTR(property.get("label", property.get("title", String(name).capitalize())))));
 			label->set_theme_type_variation(SNAME("SolersSessionMeta"));
 			label->set_tooltip_text(description);
 			add_child(label);

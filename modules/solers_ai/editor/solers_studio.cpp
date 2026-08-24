@@ -102,6 +102,47 @@ static Control *_studio_empty_state(Node *p_parent, Label **r_label) {
 	return empty;
 }
 
+struct SolersStudioRoute {
+	const char *id;
+	const char *label;
+	const char *icon;
+	const char *asset_kind;
+	const char *workspace;
+	const char *library;
+	const char *bottom_action;
+};
+
+static constexpr SolersStudioRoute studio_routes[] = {
+	{ "assets", "Assets", "layout_grid", "3d", "unavailable", "catalog", "acquire" },
+	{ "3d", "3D", "tool_export", "3d", "generation", "project", "model" },
+	{ "image", "Images", "photo_ai", "image", "unavailable", "catalog", "acquire" },
+	{ "animation", "Animation", "run_sprint", "3d", "animation", "project", "import" },
+	{ "audio", "Audio", "vinyl", "audio", "unavailable", "catalog", "acquire" },
+	{ "material", "Materials", "adjustments", "material", "unavailable", "catalog", "acquire" },
+	{ "hdri", "HDRI", "cloud", "hdri", "unavailable", "catalog", "acquire" },
+};
+
+static const SolersStudioRoute &_studio_route(const String &p_id) {
+	for (const SolersStudioRoute &route : studio_routes) {
+		if (p_id == route.id) {
+			return route;
+		}
+	}
+	return studio_routes[1];
+}
+
+struct SolersAnimationIntent {
+	const char *id;
+	const char *label;
+};
+
+static constexpr SolersAnimationIntent animation_intents[] = {
+	{ "rig.check", "Check rig compatibility" },
+	{ "rig.bind", "Bind skeleton" },
+	{ "animation.text", "Text to animation" },
+	{ "animation.preset", "Preset animation" },
+};
+
 static Dictionary _studio_schema_subset(const Dictionary &p_schema, const Array &p_include, const Array &p_exclude, const Dictionary &p_constraints, bool p_remaining) {
 	const Dictionary properties = p_schema.has("properties") ? Dictionary(p_schema["properties"]) : p_schema;
 	Dictionary selected;
@@ -139,24 +180,19 @@ String SolersStudio::_current_route() const {
 }
 
 String SolersStudio::_current_kind() const {
-	const String route = _current_route();
-	return route == "assets" ? String("3d") : route;
+	return _studio_route(_current_route()).asset_kind;
 }
 String SolersStudio::_selected_provider(const OptionButton *p_options) const {
 	return p_options && p_options->get_selected() >= 0 ? String(p_options->get_selected_metadata()) : String();
 }
 void SolersStudio::_refresh_registry() {
 	const String selected_route = _current_route();
-	const char *const routes[][3] = {
-		{ "assets", "Assets", "layout_grid" }, { "3d", "3D", "tool_export" }, { "image", "Images", "photo_ai" },
-		{ "animation", "Animation", "run_sprint" }, { "audio", "Audio", "vinyl" }, { "material", "Materials", "adjustments" }, { "hdri", "HDRI", "cloud" }
-	};
 	route_list->clear();
 	int selected_index = 1;
-	for (const auto &route : routes) {
-		const int index = route_list->add_item(TTRC(route[1]), SolersIcons::get(StringName(route[2]), int(22 * EDSCALE)));
-		route_list->set_item_metadata(index, route[0]);
-		if (selected_route == route[0]) {
+	for (const SolersStudioRoute &route : studio_routes) {
+		const int index = route_list->add_item(TTR(route.label), SolersIcons::get(StringName(route.icon), int(22 * EDSCALE)));
+		route_list->set_item_metadata(index, route.id);
+		if (selected_route == route.id) {
 			selected_index = index;
 		}
 	}
@@ -232,15 +268,17 @@ void SolersStudio::_refresh_providers() {
 }
 
 void SolersStudio::_route_selected(int) {
-	const String route = _current_route();
-	const bool is_3d = route == "3d";
-	creation_workspace->set_visible(is_3d);
-	catalog_query->set_placeholder(is_3d ? TTRC("Search generated assets...") : TTRC("Search catalog..."));
-	library_tabs->set_current_tab(is_3d ? 1 : 0);
-	library_tabs->set_tab_hidden(0, is_3d);
-	library_tabs->set_tabs_visible(!is_3d);
+	const SolersStudioRoute &route = _studio_route(_current_route());
+	const bool project_library = String(route.library) == "project";
+	creation_workspace->set_visible(String(route.workspace) == "generation");
+	animation_workspace->set_visible(String(route.workspace) == "animation");
+	catalog_query->set_placeholder(project_library ? TTRC("Search generated assets...") : TTRC("Search catalog..."));
+	library_tabs->set_current_tab(project_library ? 1 : 0);
+	library_tabs->set_tab_hidden(0, project_library);
+	library_tabs->set_tabs_visible(!project_library);
 	_refresh_providers();
 	_refresh_project_assets();
+	_refresh_animation_workspace();
 	_sync_workspace();
 }
 
@@ -313,7 +351,7 @@ void SolersStudio::_catalog_provider_selected(int) {
 	SolersPlugin *plugin = SolersPluginRegistry::get_plugin(_selected_provider(catalog_provider));
 	const Dictionary profile = plugin ? plugin->get_profile() : Dictionary();
 	attribution_label->set_text(profile.get("attribution", String()));
-	catalog_query->set_editable(_current_route() == "3d" || plugin != nullptr);
+	catalog_query->set_editable(String(_studio_route(_current_route()).library) == "project" || plugin != nullptr);
 }
 void SolersStudio::_reference_files_selected(const PackedStringArray &p_files) {
 	for (const String &path : p_files) {
@@ -517,7 +555,7 @@ void SolersStudio::_start_catalog_work(const String &p_action, const Dictionary 
 	catalog_thread.start(&SolersStudio::_catalog_thread_func, this);
 }
 void SolersStudio::_catalog_search_pressed() {
-	if (_current_route() == "3d") {
+	if (String(_studio_route(_current_route()).library) == "project") {
 		_refresh_project_assets();
 		return;
 	}
@@ -620,12 +658,13 @@ void SolersStudio::_acquire_pressed() {
 }
 void SolersStudio::_refresh_project_assets() {
 	const String selected_id = selected_manifest.get("id", String());
-	const String route = _current_route();
+	const String kind = _current_kind();
+	const bool project_library = String(_studio_route(_current_route()).library) == "project";
 	const String query = catalog_query ? catalog_query->get_text().strip_edges().to_lower() : String();
 	project_grid->clear_assets();
 	for (const Variant &value : project_manifests) {
 		const Dictionary manifest = value;
-		if (route != "assets" && String(manifest.get("kind", String())).to_lower() != route) {
+		if (project_library && String(manifest.get("kind", String())).to_lower() != kind) {
 			continue;
 		}
 		const String title = manifest.get("name", manifest.get("id", TTRC("Untitled asset")));
@@ -675,17 +714,24 @@ void SolersStudio::_creation_scroll_hovered(bool p_hovered) {
 	tween->tween_property(bar, NodePath("self_modulate"), Color(1, 1, 1, p_hovered ? 1.0f : 0.0f), 0.12);
 }
 void SolersStudio::_project_selected(const String &p_asset_id) {
-	for (const Variant &value : project_manifests) {
-		const Dictionary manifest = value;
-		if (manifest.get("id", String()) == p_asset_id) {
-			_show_manifest(manifest);
-			return;
-		}
+	const Dictionary manifest = _project_manifest(p_asset_id);
+	if (!manifest.is_empty()) {
+		_show_manifest(manifest);
 	}
 }
 
+Dictionary SolersStudio::_project_manifest(const String &p_asset_id) const {
+	for (const Variant &value : project_manifests) {
+		const Dictionary manifest = value;
+		if (manifest.get("id", String()) == p_asset_id) {
+			return manifest;
+		}
+	}
+	return Dictionary();
+}
+
 void SolersStudio::_asset_menu_requested(const String &p_asset_id, Control *p_anchor) {
-	_project_selected(p_asset_id);
+	menu_asset_id = p_asset_id;
 	Array items;
 	Dictionary import_item;
 	import_item["id"] = "import";
@@ -702,11 +748,16 @@ void SolersStudio::_asset_menu_requested(const String &p_asset_id, Control *p_an
 }
 
 void SolersStudio::_asset_menu_action(const String &p_action) {
+	const Dictionary manifest = _project_manifest(menu_asset_id);
+	if (manifest.is_empty()) {
+		return;
+	}
 	if (p_action == "import") {
-		_import_pressed();
-	} else if (p_action == "delete" && !selected_manifest.is_empty()) {
-		pending_delete_asset_id = selected_manifest.get("id", String());
-		delete_dialog->set_text(vformat(TTRC("Delete '%s' from the global Studio library? This cannot be undone."), selected_manifest.get("name", pending_delete_asset_id)));
+		import_asset_id = menu_asset_id;
+		import_dialog->popup_file_dialog();
+	} else if (p_action == "delete") {
+		pending_delete_asset_id = menu_asset_id;
+		delete_dialog->set_text(vformat(TTRC("Delete '%s' from the global Studio library? This cannot be undone."), manifest.get("name", pending_delete_asset_id)));
 		delete_dialog->popup_centered();
 	}
 }
@@ -715,15 +766,19 @@ void SolersStudio::_delete_asset_confirmed() {
 	if (pending_delete_asset_id.is_empty()) {
 		return;
 	}
-	const Dictionary result = assets->delete_asset(pending_delete_asset_id);
+	const String deleted_asset_id = pending_delete_asset_id;
+	const Dictionary result = assets->delete_asset(deleted_asset_id);
 	pending_delete_asset_id.clear();
 	if (!result.get("ok", false)) {
 		_show_result(result, String());
 		return;
 	}
-	selected_manifest.clear();
-	loaded_model_path.clear();
-	model_preview->clear_model();
+	if (selected_manifest.get("id", String()) == deleted_asset_id) {
+		selected_manifest.clear();
+		loaded_model_path.clear();
+		model_preview->clear_model();
+		_refresh_preview_controls();
+	}
 	_reload_project_assets();
 	_sync_workspace();
 }
@@ -761,20 +816,16 @@ void SolersStudio::_show_manifest(const Dictionary &p_manifest) {
 	capability_args["asset_id"] = p_manifest.get("id", String());
 	const Dictionary result = assets->capabilities(capability_args);
 	capability_data = result.get("data", Dictionary());
-	remesh_operation.clear();
-	for (const Variant &value : Array(capability_data.get("available_operations", Array()))) {
-		const Dictionary operation = value;
-		if (Array(operation.get("remediates", Array())).has("triangle_budget")) {
-			remesh_operation = operation;
-			break;
-		}
-	}
+	_refresh_animation_workspace();
+	_refresh_preview_controls();
 	_sync_workspace();
 }
 
 void SolersStudio::_sync_workspace() {
 	const String route = _current_route();
-	const bool has_manifest = (route == "3d" || route == "assets") && !selected_manifest.is_empty();
+	const SolersStudioRoute &route_info = _studio_route(route);
+	const bool model_workspace = String(route_info.workspace) == "generation" || String(route_info.workspace) == "animation";
+	const bool has_manifest = model_workspace && !selected_manifest.is_empty();
 	const bool has_catalog = route == "assets" && !selected_catalog.is_empty();
 	const bool empty = !has_manifest && !has_catalog;
 	const String status = String(selected_manifest.get("status", String())).to_lower();
@@ -785,30 +836,40 @@ void SolersStudio::_sync_workspace() {
 	if (empty) {
 		empty_icon->set_texture(SolersIcons::get(SNAME("cube_plus"), int(84 * EDSCALE)));
 		empty_icon->set_self_modulate(SolersUITheme::make_tokens().text);
-		asset_title->set_text(route == "3d" ? TTRC("What will you create today?") : TTRC("This Studio workspace is not available yet."));
+		asset_title->set_text(String(route_info.workspace) == "animation" ? TTRC("Choose a model to animate") : (model_workspace ? TTRC("What will you create today?") : TTRC("This Studio workspace is not available yet.")));
 		if (asset_status->get_text().is_empty()) {
-			asset_status->set_text(route == "3d" ? TTRC("Generate a model or choose one from your library.") : TTRC("Only the 3D workspace is enabled in this release."));
+			asset_status->set_text(model_workspace ? TTRC("Generate a model or choose one from your library.") : TTRC("This workspace is not available yet."));
 		}
 	}
 	const bool has_model = has_manifest && !busy && model_preview->has_model();
 	model_preview->set_visible(has_model);
-	preview->set_visible(route != "3d" && !empty && !busy && !has_model && preview->get_texture().is_valid());
+	preview->set_visible(!model_workspace && !empty && !busy && !has_model && preview->get_texture().is_valid());
 	const int64_t polycount = selected_manifest.get("polycount", 0);
 	const int64_t vertex_count = selected_manifest.get("vertex_count", 0);
 	geometry_stats->set_text(polycount > 0 || vertex_count > 0 ? vformat(TTRC("%s polygons | %s vertices"), String::num_int64(polycount), String::num_int64(vertex_count)) : String());
 	geometry_stats->set_visible(!geometry_stats->get_text().is_empty());
 	const bool ready = has_manifest && status == "ready";
-	const bool preview_failed = ready && route == "3d" && !has_model;
+	const bool preview_failed = ready && model_workspace && !has_model;
 	if (preview_failed) {
 		asset_status->set_text(TTRC("3D preview unavailable."));
 	}
-	asset_actions->set_visible(ready);
+	asset_actions->set_visible(ready && model_workspace);
 	asset_status->set_visible(empty || !ready || preview_failed);
-	remesh_button->set_disabled(remesh_operation.is_empty());
+	bool has_remesh = false;
+	for (const Variant &value : Array(capability_data.get("available_operations", Array()))) {
+		has_remesh |= Dictionary(value).get("intent", String()) == "geometry.remesh";
+	}
+	const bool model_actions = String(route_info.bottom_action) == "model";
+	animation_button->set_visible(model_actions);
+	remesh_button->set_visible(model_actions);
+	remesh_button->set_disabled(!has_remesh);
+	import_button->set_visible(model_actions || String(route_info.bottom_action) == "import");
+	import_button->set_text(String(route_info.bottom_action) == "import" ? TTRC("Import to current project") : String());
+	preview_controls->set_visible(route == "animation" && has_model);
 	const bool has_variant = has_catalog && catalog_variant->get_item_count() > 0;
 	catalog_variant->set_visible(has_variant);
 	acquire_button->set_visible(has_variant);
-	empty_generate_button->set_visible(empty && route == "3d");
+	empty_generate_button->set_visible(empty && String(route_info.workspace) == "generation");
 }
 
 void SolersStudio::_refresh_text() {
@@ -820,10 +881,13 @@ void SolersStudio::_refresh_text() {
 	animation_button->set_tooltip_text(TTRC("Animation"));
 	remesh_button->set_tooltip_text(TTRC("Remesh"));
 	import_button->set_tooltip_text(TTRC("Import to project"));
+	preview_play_button->set_tooltip_text(TTRC("Play or pause animation"));
+	preview_stop_button->set_tooltip_text(TTRC("Stop animation"));
+	skeleton_button->set_tooltip_text(TTRC("Show skeleton"));
 	acquire_button->set_text(TTRC("Add to project"));
 	catalog_empty_label->set_text(TTRC("No catalog assets found."));
 	project_empty_label->set_text(TTRC("Your generated assets will appear here."));
-	catalog_query->set_placeholder(_current_route() == "3d" ? TTRC("Search generated assets...") : TTRC("Search catalog..."));
+	catalog_query->set_placeholder(String(_studio_route(_current_route()).library) == "project" ? TTRC("Search generated assets...") : TTRC("Search catalog..."));
 	library_tabs->set_tab_title(0, TTRC("Catalog"));
 	library_tabs->set_tab_title(1, TTRC("My generations"));
 	if (!selected_manifest.is_empty()) {
@@ -843,20 +907,206 @@ void SolersStudio::_animation_pressed() {
 	}
 }
 
-void SolersStudio::_remesh_pressed() {
-	if (remesh_operation.is_empty()) {
+void SolersStudio::_refresh_animation_workspace() {
+	if (!animation_provider) {
 		return;
 	}
-	remesh_form->set_schema(remesh_operation.get("options_schema", Dictionary()), capability_data, remesh_operation.get("presentation", Dictionary()));
+	const String selected_provider = _selected_provider(animation_provider);
+	Array providers;
+	for (const Variant &value : Array(capability_data.get("available_operations", Array()))) {
+		const Dictionary operation = value;
+		const String intent = operation.get("intent", String());
+		bool animation_intent = false;
+		for (const SolersAnimationIntent &candidate : animation_intents) {
+			animation_intent |= intent == candidate.id;
+		}
+		const String provider = operation.get("provider", String());
+		if (animation_intent && !providers.has(provider)) {
+			providers.push_back(provider);
+		}
+	}
+	animation_provider->clear();
+	int selected = -1;
+	const Dictionary contexts = capability_data.get("provider_contexts", Dictionary());
+	for (const Variant &value : providers) {
+		const String provider = value;
+		const Dictionary context = contexts.get(provider, Dictionary());
+		animation_provider->add_item(context.get("label", provider));
+		const int index = animation_provider->get_item_count() - 1;
+		animation_provider->set_item_metadata(index, provider);
+		if (provider == selected_provider) {
+			selected = index;
+		}
+	}
+	if (selected < 0 && !providers.is_empty()) {
+		const int source_index = providers.find(selected_manifest.get("provider", String()));
+		selected = source_index >= 0 ? source_index : 0;
+	}
+	_animation_provider_selected(selected);
+}
+
+void SolersStudio::_animation_provider_selected(int p_index) {
+	animation_provider->select(p_index);
+	animation_operation.clear();
+	while (animation_operation_list->get_child_count() > 0) {
+		Node *child = animation_operation_list->get_child(0);
+		animation_operation_list->remove_child(child);
+		child->queue_free();
+	}
+	const String provider = _selected_provider(animation_provider);
+	for (const SolersAnimationIntent &intent : animation_intents) {
+		for (const Variant &value : Array(capability_data.get("available_operations", Array()))) {
+			const Dictionary operation = value;
+			if (operation.get("provider", String()) != provider || operation.get("intent", String()) != intent.id) {
+				continue;
+			}
+			_studio_label(animation_operation_list, TTR(intent.label), SNAME("SolersSessionMeta"));
+			Button *button = _studio_add<Button>(animation_operation_list);
+			button->set_text(TTR(operation.get("label", String())));
+			button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+			button->set_theme_type_variation(SNAME("SolersStudioActionButton"));
+			button->connect(SceneStringName(pressed), callable_mp(this, &SolersStudio::_animation_operation_selected).bind(operation));
+			if (animation_operation.is_empty()) {
+				_animation_operation_selected(operation);
+			}
+			break;
+		}
+	}
+	animation_provider->set_disabled(animation_provider->get_item_count() == 0);
+	if (animation_operation.is_empty()) {
+		animation_form->set_schema(Dictionary());
+		animation_run_button->set_text(TTRC("Run operation"));
+	}
+	animation_run_button->set_disabled(animation_operation.is_empty());
+}
+
+void SolersStudio::_animation_operation_selected(const Dictionary &p_operation) {
+	animation_operation = p_operation;
+	const String provider = p_operation.get("provider", String());
+	const Dictionary context = Dictionary(capability_data.get("provider_contexts", Dictionary())).get(provider, Dictionary());
+	animation_form->set_schema(p_operation.get("options_schema", Dictionary()), context, p_operation.get("presentation", Dictionary()));
+	animation_run_button->set_text(TTR(p_operation.get("label", TTRC("Run operation"))));
+	animation_run_button->set_disabled(p_operation.is_empty());
+}
+
+void SolersStudio::_animation_run_pressed() {
+	if (selected_manifest.is_empty() || animation_operation.is_empty()) {
+		return;
+	}
+	const String provider = animation_operation.get("provider", String());
+	if (!assets->is_provider_configured("3d", provider)) {
+		dock->open_provider_settings("plugins");
+		return;
+	}
+	Dictionary args;
+	args["asset_id"] = selected_manifest.get("id", String());
+	args["provider"] = provider;
+	args["operation_id"] = animation_operation.get("operation_id", String());
+	args["options"] = animation_form->get_values();
+	_show_result(assets->run_operation(args), TTRC("Asset operation queued."));
+}
+
+void SolersStudio::_refresh_preview_controls() {
+	if (!animation_clip || !preview_play_button || !preview_stop_button || !skeleton_button || !model_preview) {
+		return;
+	}
+	const String selected = _selected_provider(animation_clip);
+	animation_clip->clear();
+	for (const String &name : model_preview->get_animation_names()) {
+		animation_clip->add_item(name);
+		const int index = animation_clip->get_item_count() - 1;
+		animation_clip->set_item_metadata(index, name);
+		if (name == selected) {
+			animation_clip->select(index);
+		}
+	}
+	if (animation_clip->get_selected() < 0 && animation_clip->get_item_count() > 0) {
+		animation_clip->select(0);
+	}
+	const bool has_animation = animation_clip->get_item_count() > 0;
+	animation_clip->set_disabled(!has_animation);
+	preview_play_button->set_disabled(!has_animation);
+	preview_stop_button->set_disabled(!has_animation);
+	skeleton_button->set_disabled(!model_preview->has_skeleton());
+	skeleton_button->set_pressed_no_signal(false);
+	model_preview->set_skeleton_visible(false);
+	preview_play_button->set_button_icon(get_editor_theme_icon(SNAME("MainPlay")));
+	preview_stop_button->set_button_icon(get_editor_theme_icon(SNAME("Stop")));
+	skeleton_button->set_button_icon(get_editor_theme_icon(SNAME("Skeleton3D")));
+}
+
+void SolersStudio::_preview_play_pressed() {
+	if (model_preview->is_animation_playing()) {
+		model_preview->pause_animation();
+		preview_play_button->set_button_icon(get_editor_theme_icon(SNAME("MainPlay")));
+	} else if (model_preview->play_animation(_selected_provider(animation_clip))) {
+		preview_play_button->set_button_icon(get_editor_theme_icon(SNAME("Pause")));
+	}
+}
+
+void SolersStudio::_preview_stop_pressed() {
+	model_preview->stop_animation();
+	preview_play_button->set_button_icon(get_editor_theme_icon(SNAME("MainPlay")));
+}
+
+void SolersStudio::_preview_skeleton_toggled(bool p_visible) {
+	model_preview->set_skeleton_visible(p_visible);
+}
+
+void SolersStudio::_remesh_pressed() {
+	const String selected_provider = _selected_provider(remesh_provider);
+	remesh_provider->clear();
+	const Dictionary contexts = capability_data.get("provider_contexts", Dictionary());
+	for (const Variant &value : Array(capability_data.get("available_operations", Array()))) {
+		const Dictionary operation = value;
+		if (operation.get("intent", String()) != "geometry.remesh") {
+			continue;
+		}
+		const String provider = operation.get("provider", String());
+		remesh_provider->add_item(Dictionary(contexts.get(provider, Dictionary())).get("label", provider));
+		remesh_provider->set_item_metadata(remesh_provider->get_item_count() - 1, provider);
+	}
+	if (remesh_provider->get_item_count() == 0) {
+		return;
+	}
+	int selected = -1;
+	for (int i = 0; i < remesh_provider->get_item_count(); i++) {
+		const String provider = remesh_provider->get_item_metadata(i);
+		if (provider == selected_provider || (selected < 0 && provider == String(selected_manifest.get("provider", String())))) {
+			selected = i;
+		}
+	}
+	_remesh_provider_selected(selected >= 0 ? selected : 0);
 	remesh_dialog->popup_centered(Size2i(420, 360) * EDSCALE);
+}
+
+void SolersStudio::_remesh_provider_selected(int p_index) {
+	remesh_provider->select(p_index);
+	remesh_operation.clear();
+	const String provider = _selected_provider(remesh_provider);
+	for (const Variant &value : Array(capability_data.get("available_operations", Array()))) {
+		const Dictionary operation = value;
+		if (operation.get("provider", String()) == provider && operation.get("intent", String()) == "geometry.remesh") {
+			remesh_operation = operation;
+			break;
+		}
+	}
+	const Dictionary context = Dictionary(capability_data.get("provider_contexts", Dictionary())).get(provider, Dictionary());
+	remesh_form->set_schema(remesh_operation.get("options_schema", Dictionary()), context, remesh_operation.get("presentation", Dictionary()));
 }
 
 void SolersStudio::_remesh_confirmed() {
 	if (selected_manifest.is_empty() || remesh_operation.is_empty()) {
 		return;
 	}
+	const String provider = remesh_operation.get("provider", String());
+	if (!assets->is_provider_configured("3d", provider)) {
+		dock->open_provider_settings("plugins");
+		return;
+	}
 	Dictionary args;
 	args["asset_id"] = selected_manifest.get("id", String());
+	args["provider"] = provider;
 	args["operation_id"] = remesh_operation.get("operation_id", String());
 	args["options"] = remesh_form->get_values();
 	_show_result(assets->run_operation(args), TTRC("Asset operation queued."));
@@ -866,13 +1116,15 @@ void SolersStudio::_import_pressed() {
 	if (selected_manifest.is_empty()) {
 		return;
 	}
+	import_asset_id = selected_manifest.get("id", String());
 	import_dialog->popup_file_dialog();
 }
 
 void SolersStudio::_import_directory_selected(const String &p_directory) {
 	Dictionary args;
-	args["asset_id"] = selected_manifest.get("id", String());
+	args["asset_id"] = import_asset_id;
 	args["target_dir"] = p_directory;
+	import_asset_id.clear();
 	_show_result(assets->start_project_import(args), TTRC("Project import started."));
 }
 void SolersStudio::_preview_ready(const String &, const Ref<Texture2D> &p_preview, const Ref<Texture2D> &p_small_preview, uint64_t p_generation) {
@@ -887,6 +1139,7 @@ void SolersStudio::_notification(int p_what) {
 		if (host_window && !host_window->is_connected(SNAME("files_dropped"), callable_mp(this, &SolersStudio::_external_reference_files_dropped))) {
 			host_window->connect(SNAME("files_dropped"), callable_mp(this, &SolersStudio::_external_reference_files_dropped));
 		}
+		_refresh_preview_controls();
 	} else if (p_what == NOTIFICATION_PROCESS) {
 		if (plugin_revision != SolersPluginRegistry::get_revision()) {
 			plugin_revision = SolersPluginRegistry::get_revision();
@@ -900,6 +1153,8 @@ void SolersStudio::_notification(int p_what) {
 	} else if (p_what == NOTIFICATION_TRANSLATION_CHANGED) {
 		_refresh_registry();
 		_refresh_text();
+	} else if (p_what == NOTIFICATION_THEME_CHANGED) {
+		_refresh_preview_controls();
 	}
 }
 SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
@@ -932,11 +1187,11 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	columns->set_v_size_flags(SIZE_EXPAND_FILL);
 	columns->add_theme_constant_override(SNAME("separation"), int(10 * EDSCALE));
 	SolersSurface *creation_surface = _studio_add<SolersSurface>(columns);
-	creation_workspace = creation_surface;
 	creation_surface->set_h_size_flags(SIZE_EXPAND_FILL);
 	creation_surface->set_v_size_flags(SIZE_EXPAND_FILL);
 	creation_surface->configure(tokens.surface, tokens.border, tokens.radius_home_tile, 12, false);
 	VBoxContainer *creation_frame = _studio_add<VBoxContainer>(creation_surface);
+	creation_workspace = creation_frame;
 	creation_frame->set_h_size_flags(SIZE_EXPAND_FILL);
 	creation_frame->set_v_size_flags(SIZE_EXPAND_FILL);
 	creation_frame->add_theme_constant_override(SNAME("separation"), int(12 * EDSCALE));
@@ -1043,6 +1298,28 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	generate_button->set_name("GenerateButton");
 	generate_button->set_theme_type_variation(SNAME("SolersPrimaryButton"));
 	generate_button->set_custom_minimum_size(Size2(0, 44 * EDSCALE));
+	VBoxContainer *animation_column = _studio_add<VBoxContainer>(creation_surface);
+	animation_workspace = animation_column;
+	animation_column->set_h_size_flags(SIZE_EXPAND_FILL);
+	animation_column->set_v_size_flags(SIZE_EXPAND_FILL);
+	animation_column->add_theme_constant_override(SNAME("separation"), int(12 * EDSCALE));
+	_studio_label(animation_column, TTRC("Animate 3D"), SNAME("SolersSessionTitle"));
+	animation_provider = _studio_add<SolersStudioSelect>(animation_column);
+	animation_provider->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+	ScrollContainer *animation_scroll = _studio_add<ScrollContainer>(animation_column);
+	animation_scroll->set_h_size_flags(SIZE_EXPAND_FILL);
+	animation_scroll->set_v_size_flags(SIZE_EXPAND_FILL);
+	animation_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
+	VBoxContainer *animation_body = _studio_add<VBoxContainer>(animation_scroll);
+	animation_body->set_h_size_flags(SIZE_EXPAND_FILL);
+	animation_body->add_theme_constant_override(SNAME("separation"), int(8 * EDSCALE));
+	animation_operation_list = _studio_add<VBoxContainer>(animation_body);
+	animation_operation_list->add_theme_constant_override(SNAME("separation"), int(6 * EDSCALE));
+	animation_form = _studio_add<SolersSchemaForm>(animation_body);
+	animation_form->set_image_stager(callable_mp(assets, &SolersAssetService::stage_input_image_async));
+	animation_run_button = _studio_add<Button>(animation_column);
+	animation_run_button->set_theme_type_variation(SNAME("SolersPrimaryButton"));
+	animation_run_button->set_custom_minimum_size(Size2(0, 44 * EDSCALE));
 
 	SolersSurface *center_surface = _studio_add<SolersSurface>(columns);
 	center_surface->set_h_size_flags(SIZE_EXPAND_FILL);
@@ -1054,6 +1331,19 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	center->set_v_size_flags(SIZE_EXPAND_FILL);
 	center->add_theme_constant_override(SNAME("separation"), int(12 * EDSCALE));
 	geometry_stats = _studio_label(center, String(), SNAME("SolersSessionMeta"));
+	preview_controls = _studio_add<HBoxContainer>(center);
+	preview_controls->set_h_size_flags(SIZE_SHRINK_CENTER);
+	preview_controls->add_theme_constant_override(SNAME("separation"), int(4 * EDSCALE));
+	animation_clip = _studio_add<SolersStudioSelect>(preview_controls);
+	animation_clip->set_custom_minimum_size(Size2(180, 34) * EDSCALE);
+	preview_play_button = _studio_add<Button>(preview_controls);
+	preview_stop_button = _studio_add<Button>(preview_controls);
+	skeleton_button = _studio_add<Button>(preview_controls);
+	skeleton_button->set_toggle_mode(true);
+	for (Button *button : { preview_play_button, preview_stop_button, skeleton_button }) {
+		button->set_theme_type_variation(SNAME("SolersStudioActionButton"));
+		button->set_custom_minimum_size(Size2(36, 34) * EDSCALE);
+	}
 	PanelContainer *stage = _studio_add<PanelContainer>(center);
 	stage->set_h_size_flags(SIZE_EXPAND_FILL);
 	stage->set_v_size_flags(SIZE_EXPAND_FILL);
@@ -1163,23 +1453,29 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	remesh_dialog = _studio_add<AcceptDialog>(this);
 	remesh_dialog->set_title(TTRC("Remesh model"));
 	remesh_dialog->set_ok_button_text(TTRC("Remesh"));
-	remesh_form = _studio_add<SolersSchemaForm>(remesh_dialog);
+	VBoxContainer *remesh_column = _studio_add<VBoxContainer>(remesh_dialog);
+	remesh_column->set_custom_minimum_size(Size2(380, 280) * EDSCALE);
+	remesh_provider = _studio_add<SolersStudioSelect>(remesh_column);
+	remesh_form = _studio_add<SolersSchemaForm>(remesh_column);
+	remesh_form->set_image_stager(callable_mp(assets, &SolersAssetService::stage_input_image_async));
 	delete_dialog = _studio_add<ConfirmationDialog>(this);
 	delete_dialog->set_title(TTRC("Delete asset"));
 	delete_dialog->set_ok_button_text(TTRC("Delete"));
 	popup_list = _studio_add<SolersPopupList>(this);
-	for (SolersStudioSelect *selector : { preset_button, input_mode_button, catalog_variant, catalog_provider }) {
+	for (SolersStudioSelect *selector : { preset_button, input_mode_button, catalog_variant, catalog_provider, remesh_provider, animation_provider, animation_clip }) {
 		selector->set_popup_list(popup_list);
 		selector->set_fit_to_longest_item(false);
 		selector->set_clip_text(true);
 	}
-	for (SolersSchemaForm *form : { featured_form, generation_form, remesh_form }) {
+	for (SolersSchemaForm *form : { featured_form, generation_form, remesh_form, animation_form }) {
 		form->set_popup_list(popup_list);
 	}
 	route_list->connect(SceneStringName(item_selected), callable_mp(this, &SolersStudio::_route_selected));
 	preset_button->connect(SceneStringName(item_selected), callable_mp(this, &SolersStudio::_preset_selected));
 	input_mode_button->connect(SceneStringName(item_selected), callable_mp(this, &SolersStudio::_input_mode_selected));
 	catalog_provider->connect(SceneStringName(item_selected), callable_mp(this, &SolersStudio::_catalog_provider_selected));
+	remesh_provider->connect(SceneStringName(item_selected), callable_mp(this, &SolersStudio::_remesh_provider_selected));
+	animation_provider->connect(SceneStringName(item_selected), callable_mp(this, &SolersStudio::_animation_provider_selected));
 	for (Button *button : reference_buttons) {
 		button->connect(SceneStringName(pressed), callable_mp(reference_dialog, &FileDialog::popup_file_dialog));
 		button->connect(SceneStringName(mouse_entered), callable_mp((Control *)button, &Control::grab_focus).bind(true));
@@ -1201,6 +1497,10 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	animation_button->connect(SceneStringName(pressed), callable_mp(this, &SolersStudio::_animation_pressed));
 	remesh_button->connect(SceneStringName(pressed), callable_mp(this, &SolersStudio::_remesh_pressed));
 	remesh_dialog->connect(SceneStringName(confirmed), callable_mp(this, &SolersStudio::_remesh_confirmed));
+	animation_run_button->connect(SceneStringName(pressed), callable_mp(this, &SolersStudio::_animation_run_pressed));
+	preview_play_button->connect(SceneStringName(pressed), callable_mp(this, &SolersStudio::_preview_play_pressed));
+	preview_stop_button->connect(SceneStringName(pressed), callable_mp(this, &SolersStudio::_preview_stop_pressed));
+	skeleton_button->connect(SceneStringName(toggled), callable_mp(this, &SolersStudio::_preview_skeleton_toggled));
 	delete_dialog->connect(SceneStringName(confirmed), callable_mp(this, &SolersStudio::_delete_asset_confirmed));
 	import_button->connect(SceneStringName(pressed), callable_mp(this, &SolersStudio::_import_pressed));
 	import_dialog->connect(SNAME("dir_selected"), callable_mp(this, &SolersStudio::_import_directory_selected));

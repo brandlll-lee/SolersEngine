@@ -132,7 +132,7 @@ void SolersAssetGrid::add_asset(const Dictionary &p_manifest, const Ref<Texture2
 	more->set_button_icon(SolersIcons::get(SNAME("more"), int(16 * EDSCALE)));
 	more->set_custom_minimum_size(Size2(28, 28) * EDSCALE);
 	more->set_theme_type_variation(SNAME("SolersStudioActionButton"));
-	more->set_mouse_filter(MOUSE_FILTER_PASS);
+	more->set_mouse_filter(MOUSE_FILTER_STOP);
 	more->set_tooltip_text(TTRC("Asset actions"));
 	more->hide();
 	card->add_child(more);
@@ -155,7 +155,6 @@ void SolersAssetGrid::_asset_pressed(const String &p_asset_id) {
 }
 
 void SolersAssetGrid::_asset_menu_pressed(const String &p_asset_id, Control *p_anchor) {
-	set_selected_asset(p_asset_id);
 	if (menu_callback.is_valid()) {
 		menu_callback.call(p_asset_id, p_anchor);
 	}

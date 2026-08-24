@@ -34,9 +34,12 @@
 #include "core/math/math_funcs.h"
 #include "core/object/callable_mp.h"
 #include "editor/editor_node.h"
+#include "editor/scene/3d/skeleton_3d_editor_plugin.h"
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/light_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
+#include "scene/3d/skeleton_3d.h"
+#include "scene/animation/animation_player.h"
 #include "scene/gui/view_panner.h"
 #include "scene/main/viewport.h"
 #include "scene/resources/3d/sky_material.h"
@@ -79,6 +82,18 @@ static void _solers_preview_bounds(Node *p_node, const Transform3D &p_parent, AA
 		_solers_preview_bounds(p_node->get_child(i), transform, r_bounds, r_has_bounds);
 	}
 }
+
+static void _solers_preview_nodes(Node *p_node, Vector<Skeleton3D *> &r_skeletons, AnimationPlayer *&r_animation_player) {
+	if (Skeleton3D *skeleton = Object::cast_to<Skeleton3D>(p_node)) {
+		r_skeletons.push_back(skeleton);
+	}
+	if (!r_animation_player) {
+		r_animation_player = Object::cast_to<AnimationPlayer>(p_node);
+	}
+	for (int i = 0; i < p_node->get_child_count(); i++) {
+		_solers_preview_nodes(p_node->get_child(i), r_skeletons, r_animation_player);
+	}
+}
 #endif
 
 void SolersModelPreview::_update_camera() {
@@ -101,10 +116,75 @@ void SolersModelPreview::_zoom_view(float p_factor, Vector2, Ref<InputEvent>) {
 }
 
 void SolersModelPreview::clear_model() {
+	stop_animation();
+	animation_player = nullptr;
+	skeletons.clear();
+	for (MeshInstance3D *mesh : skeleton_meshes) {
+		mesh->queue_free();
+	}
+	skeleton_meshes.clear();
 	if (model_root) {
 		model_root->queue_free();
 		model_root = nullptr;
 	}
+}
+
+PackedStringArray SolersModelPreview::get_animation_names() const {
+	PackedStringArray result;
+	if (!animation_player) {
+		return result;
+	}
+	LocalVector<StringName> names;
+	animation_player->get_animation_list(&names);
+	for (const StringName &name : names) {
+		if (name != StringName("RESET")) {
+			result.push_back(name);
+		}
+	}
+	return result;
+}
+
+bool SolersModelPreview::play_animation(const StringName &p_name) {
+	if (!animation_player || !animation_player->has_animation(p_name)) {
+		return false;
+	}
+	animation_player->play(p_name);
+	return true;
+}
+
+void SolersModelPreview::pause_animation() {
+	if (animation_player) {
+		animation_player->pause();
+	}
+}
+
+void SolersModelPreview::stop_animation() {
+	if (animation_player) {
+		animation_player->stop();
+	}
+}
+
+void SolersModelPreview::set_skeleton_visible(bool p_visible) {
+	if (p_visible && skeleton_meshes.is_empty() && Node3DEditor::get_singleton()) {
+		for (Skeleton3D *skeleton : skeletons) {
+			MeshInstance3D *bones = memnew(MeshInstance3D);
+			bones->set_mesh(Skeleton3DGizmoPlugin::get_bones_mesh(skeleton, -1, true));
+			bones->set_transform(skeleton->get_global_transform());
+			bones->set_skeleton_path(skeleton->get_path());
+			Ref<Skin> skin = skeleton->create_skin_from_rest_transforms();
+			skeleton->register_skin(skin);
+			bones->set_skin(skin);
+			viewport->add_child(bones);
+			skeleton_meshes.push_back(bones);
+		}
+	}
+	for (MeshInstance3D *mesh : skeleton_meshes) {
+		mesh->set_visible(p_visible);
+	}
+}
+
+bool SolersModelPreview::is_animation_playing() const {
+	return animation_player && animation_player->is_playing();
 }
 
 void SolersModelPreview::gui_input(const Ref<InputEvent> &p_event) {
@@ -152,6 +232,7 @@ Error SolersModelPreview::load_model(const String &p_path) {
 		return ERR_INVALID_DATA;
 	}
 	viewport->add_child(model_root);
+	_solers_preview_nodes(model_root, skeletons, animation_player);
 	AABB bounds;
 	bool has_bounds = false;
 	_solers_preview_bounds(model_root, Transform3D(), bounds, has_bounds);

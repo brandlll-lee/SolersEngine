@@ -33,7 +33,10 @@
 #include "scene/gui/subviewport_container.h"
 
 class Camera3D;
+class AnimationPlayer;
+class MeshInstance3D;
 class Node3D;
+class Skeleton3D;
 class SubViewport;
 class ViewPanner;
 
@@ -43,6 +46,9 @@ class SolersModelPreview : public SubViewportContainer {
 	SubViewport *viewport = nullptr;
 	Camera3D *camera = nullptr;
 	Node3D *model_root = nullptr;
+	AnimationPlayer *animation_player = nullptr;
+	Vector<Skeleton3D *> skeletons;
+	Vector<MeshInstance3D *> skeleton_meshes;
 	Vector3 model_center;
 	float model_radius = 1.0f;
 	float distance_scale = 1.0f;
@@ -61,7 +67,14 @@ protected:
 public:
 	Error load_model(const String &p_path);
 	void clear_model();
+	PackedStringArray get_animation_names() const;
+	bool play_animation(const StringName &p_name);
+	void pause_animation();
+	void stop_animation();
+	void set_skeleton_visible(bool p_visible);
 	bool has_model() const { return model_root != nullptr; }
+	bool has_skeleton() const { return !skeletons.is_empty(); }
+	bool is_animation_playing() const;
 
 	SolersModelPreview();
 };

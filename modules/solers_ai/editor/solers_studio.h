@@ -72,6 +72,7 @@ class SolersStudio : public PanelContainer {
 	uint64_t preview_generation = 0;
 	ItemList *route_list = nullptr;
 	Control *creation_workspace = nullptr;
+	Control *animation_workspace = nullptr;
 	SolersStudioSelect *preset_button = nullptr;
 	SolersStudioSelect *input_mode_button = nullptr;
 	Label *preset_description = nullptr;
@@ -98,8 +99,15 @@ class SolersStudio : public PanelContainer {
 	SolersSurface *asset_actions = nullptr;
 	Button *empty_generate_button = nullptr, *animation_button = nullptr, *remesh_button = nullptr, *import_button = nullptr;
 	AcceptDialog *remesh_dialog = nullptr;
+	SolersStudioSelect *remesh_provider = nullptr;
 	SolersSchemaForm *remesh_form = nullptr;
 	Dictionary remesh_operation;
+	SolersStudioSelect *animation_provider = nullptr, *animation_clip = nullptr;
+	VBoxContainer *animation_operation_list = nullptr;
+	SolersSchemaForm *animation_form = nullptr;
+	Button *animation_run_button = nullptr, *preview_play_button = nullptr, *preview_stop_button = nullptr, *skeleton_button = nullptr;
+	HBoxContainer *preview_controls = nullptr;
+	Dictionary animation_operation;
 	FileDialog *import_dialog = nullptr;
 	Button *acquire_button = nullptr;
 	SolersStudioSelect *catalog_variant = nullptr;
@@ -112,6 +120,8 @@ class SolersStudio : public PanelContainer {
 	TabContainer *library_tabs = nullptr;
 	Label *attribution_label = nullptr;
 	Dictionary selected_manifest;
+	String menu_asset_id;
+	String import_asset_id;
 	String loaded_model_path;
 	Array project_manifests;
 	HashMap<String, Ref<Texture2D>> project_previews;
@@ -148,6 +158,7 @@ class SolersStudio : public PanelContainer {
 	void _refresh_project_assets();
 	void _reload_project_assets();
 	void _show_manifest(const Dictionary &p_manifest);
+	Dictionary _project_manifest(const String &p_asset_id) const;
 	void _show_result(const Dictionary &p_result, const String &p_success);
 	String _current_route() const;
 	String _current_kind() const;
@@ -172,7 +183,16 @@ class SolersStudio : public PanelContainer {
 	void _delete_asset_confirmed();
 	void _acquire_pressed();
 	void _animation_pressed();
+	void _refresh_animation_workspace();
+	void _animation_provider_selected(int p_index);
+	void _animation_operation_selected(const Dictionary &p_operation);
+	void _animation_run_pressed();
+	void _refresh_preview_controls();
+	void _preview_play_pressed();
+	void _preview_stop_pressed();
+	void _preview_skeleton_toggled(bool p_visible);
 	void _remesh_pressed();
+	void _remesh_provider_selected(int p_index);
 	void _remesh_confirmed();
 	void _import_pressed();
 	void _import_directory_selected(const String &p_directory);

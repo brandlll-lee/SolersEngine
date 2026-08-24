@@ -41,6 +41,8 @@
 #include "editor/themes/editor_scale.h"
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
+#include "scene/3d/skeleton_3d.h"
+#include "scene/animation/animation_player.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
 #include "scene/gui/file_dialog.h"
@@ -49,6 +51,9 @@
 #include "scene/gui/split_container.h"
 #include "scene/gui/texture_rect.h"
 #include "scene/main/scene_tree.h"
+#include "scene/resources/3d/skin.h"
+#include "scene/resources/animation.h"
+#include "scene/resources/animation_library.h"
 #include "scene/resources/environment.h"
 #include "scene/resources/style_box_flat.h"
 #include "tests/test_macros.h"
@@ -56,6 +61,10 @@
 #include "tests/test_utils.h"
 
 #include "modules/modules_enabled.gen.h"
+#ifdef MODULE_GLTF_ENABLED
+#include "modules/gltf/gltf_document.h"
+#include "modules/gltf/gltf_state.h"
+#endif
 #include "modules/solers_ai/editor/solers_asset_grid.h"
 #include "modules/solers_ai/editor/solers_chat_cells.h"
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
@@ -78,6 +87,17 @@ static void _stage_schema_image(const Variant &, const Callable &p_callback) {
 	result["data"] = data;
 	Ref<Image> image = Image::create_empty(1, 1, false, Image::FORMAT_RGBA8);
 	p_callback.call(result, image);
+}
+
+static String selected_asset_callback;
+static String menu_asset_callback;
+
+static void _record_selected_asset(const String &p_asset_id) {
+	selected_asset_callback = p_asset_id;
+}
+
+static void _record_menu_asset(const String &p_asset_id, Control *) {
+	menu_asset_callback = p_asset_id;
 }
 
 class ScopedEditorLanguage {
@@ -217,6 +237,71 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	CHECK(preview_camera->get_global_position() != camera_before_zoom);
 	CHECK(model_preview->load_model("res://missing-solers-preview.glb") != OK);
 	CHECK_FALSE(model_preview->has_model());
+#ifdef MODULE_GLTF_ENABLED
+	const String rigged_path = "user://solers-preview-rigged.glb";
+	Node3D *rigged_source = memnew(Node3D);
+	rigged_source->set_name("RiggedPreview");
+	Skeleton3D *skeleton = memnew(Skeleton3D);
+	skeleton->set_name("Skeleton3D");
+	skeleton->add_bone("Root");
+	rigged_source->add_child(skeleton);
+	Ref<ArrayMesh> mesh;
+	mesh.instantiate();
+	Array arrays;
+	arrays.resize(Mesh::ARRAY_MAX);
+	PackedVector3Array vertices;
+	vertices.push_back(Vector3(-0.5, 0, 0));
+	vertices.push_back(Vector3(0.5, 0, 0));
+	vertices.push_back(Vector3(0, 1, 0));
+	PackedInt32Array bones;
+	PackedFloat32Array weights;
+	for (int i = 0; i < vertices.size(); i++) {
+		for (int influence = 0; influence < 4; influence++) {
+			bones.push_back(0);
+			weights.push_back(influence == 0 ? 1.0 : 0.0);
+		}
+	}
+	arrays[Mesh::ARRAY_VERTEX] = vertices;
+	arrays[Mesh::ARRAY_BONES] = bones;
+	arrays[Mesh::ARRAY_WEIGHTS] = weights;
+	mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
+	MeshInstance3D *skinned_mesh = memnew(MeshInstance3D);
+	skinned_mesh->set_name("SkinnedMesh");
+	skinned_mesh->set_mesh(mesh);
+	rigged_source->add_child(skinned_mesh);
+	skinned_mesh->set_skeleton_path(skinned_mesh->get_path_to(skeleton));
+	skinned_mesh->set_skin(skeleton->create_skin_from_rest_transforms());
+	AnimationPlayer *player = memnew(AnimationPlayer);
+	player->set_name("AnimationPlayer");
+	rigged_source->add_child(player);
+	Ref<Animation> idle;
+	idle.instantiate();
+	idle->set_length(1.0);
+	const int track = idle->add_track(Animation::TYPE_POSITION_3D);
+	idle->track_set_path(track, NodePath("Skeleton3D:Root"));
+	idle->track_insert_key(track, 0.0, Vector3());
+	idle->track_insert_key(track, 1.0, Vector3(0, 0.1, 0));
+	Ref<AnimationLibrary> library;
+	library.instantiate();
+	REQUIRE(library->add_animation("Idle", idle) == OK);
+	REQUIRE(player->add_animation_library(StringName(), library) == OK);
+	Ref<GLTFDocument> document;
+	document.instantiate();
+	Ref<GLTFState> state;
+	state.instantiate();
+	REQUIRE(document->append_from_scene(rigged_source, state) == OK);
+	REQUIRE(document->write_to_filesystem(state, rigged_path) == OK);
+	memdelete(rigged_source);
+	REQUIRE(model_preview->load_model(rigged_path) == OK);
+	CHECK(model_preview->has_skeleton());
+	CHECK(model_preview->get_animation_names().has("Idle"));
+	CHECK(model_preview->play_animation("Idle"));
+	CHECK(model_preview->is_animation_playing());
+	model_preview->pause_animation();
+	model_preview->stop_animation();
+	model_preview->set_skeleton_visible(true);
+	DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(rigged_path));
+#endif
 	stage->queue_free();
 	MessageQueue::get_singleton()->flush();
 	DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(model_path));
@@ -314,18 +399,30 @@ TEST_CASE("[SolersStudio][SceneTree] selectors keep native state with the shared
 	CHECK(Object::cast_to<SolersStudioSelect>(option_nodes[0]) != nullptr);
 	SolersAssetGrid *grid = memnew(SolersAssetGrid);
 	grid->set_theme(SolersUITheme::create());
+	selected_asset_callback.clear();
+	menu_asset_callback.clear();
+	grid->set_callbacks(callable_mp_static(_record_selected_asset), callable_mp_static(_record_menu_asset));
 	host->add_child(grid);
 	grid->add_asset(JSON::parse_string(R"({"id":"busy","status":"running"})"), Ref<Texture2D>());
+	grid->add_asset(JSON::parse_string(R"({"id":"ready","status":"ready"})"), Ref<Texture2D>());
+	grid->set_selected_asset("busy");
 	MessageQueue::get_singleton()->flush();
 	const TypedArray<Node> card_buttons = grid->find_children("*", "Button", true, false);
 	Button *card = card_buttons.size() > 0 ? Object::cast_to<Button>(card_buttons[0]) : nullptr;
 	Button *menu = card_buttons.size() > 1 ? Object::cast_to<Button>(card_buttons[1]) : nullptr;
+	Button *ready_card = card_buttons.size() > 2 ? Object::cast_to<Button>(card_buttons[2]) : nullptr;
+	Button *ready_menu = card_buttons.size() > 3 ? Object::cast_to<Button>(card_buttons[3]) : nullptr;
 	const TypedArray<Node> activity_nodes = grid->find_children("*", "SolersActivityIndicator", true, false);
 	Control *card_activity = activity_nodes.is_empty() ? nullptr : Object::cast_to<Control>(activity_nodes[0]);
-	REQUIRE(bool(card && menu && card_activity));
+	REQUIRE(bool(card && menu && ready_card && ready_menu && card_activity));
 	CHECK(card_activity->get_combined_minimum_size() == Size2(32, 32) * EDSCALE);
 	CHECK(Rect2(Vector2(), card->get_size()).encloses(menu->get_rect()));
-	CHECK(menu->get_mouse_filter() == Control::MOUSE_FILTER_PASS);
+	CHECK(menu->get_mouse_filter() == Control::MOUSE_FILTER_STOP);
+	ready_menu->emit_signal(SceneStringName(pressed));
+	CHECK(menu_asset_callback == "ready");
+	CHECK(selected_asset_callback.is_empty());
+	CHECK(card->is_pressed());
+	CHECK_FALSE(ready_card->is_pressed());
 	card->grab_focus();
 	CHECK(menu->is_visible());
 	grid->clear_assets();
