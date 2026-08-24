@@ -245,3 +245,297 @@ msgstr "当前版本仅启用 3D 工作区。"
 
 msgid "3D preview unavailable."
 msgstr "3D 预览不可用。"
+
+msgid "%d reference images"
+msgstr "%d 张参考图像"
+
+msgid "1 reference image"
+msgstr "1 张参考图像"
+
+msgid "Action ID"
+msgstr "动作 ID"
+
+msgid "Add reference image"
+msgstr "添加参考图像"
+
+msgid "Animation Preset"
+msgstr "动画预设"
+
+msgid "Asset acquisition queued."
+msgstr "资产获取已排队。"
+
+msgid "Asset operation queued."
+msgstr "资产操作已排队。"
+
+msgid "Automatic Metric Size"
+msgstr "自动估算尺寸"
+
+msgid "Catalog asset"
+msgstr "目录资产"
+
+msgid "Check for Updates"
+msgstr "检查更新"
+
+msgid "Choose a variant to add to the project."
+msgstr "选择要添加到项目的版本。"
+
+msgid "Color Preset"
+msgstr "颜色预设"
+
+msgid "Compression"
+msgstr "压缩"
+
+msgid "Custom preset can be further configured in the editor."
+msgstr "可在编辑器中进一步配置自定义预设。"
+
+msgid "Directory Naming Convention"
+msgstr "目录命名规则"
+
+msgid "Display Scale"
+msgstr "显示缩放"
+
+msgid "Downloading"
+msgstr "正在下载"
+
+msgid "Draft"
+msgstr "草稿"
+
+msgid "Edit All Settings"
+msgstr "编辑全部设置"
+
+msgid "Editable Parts"
+msgstr "可编辑部件"
+
+msgid "Enhance Reference"
+msgstr "增强参考图像"
+
+msgid "Estimate Size"
+msgstr "估算尺寸"
+
+msgid "Export UV"
+msgstr "导出 UV"
+
+msgid "Face Limit"
+msgstr "面数限制"
+
+msgid "Failed"
+msgstr "失败"
+
+msgid "FBX Preset"
+msgstr "FBX 预设"
+
+msgid "Flatten Bottom"
+msgstr "压平底部"
+
+msgid "Format"
+msgstr "格式"
+
+msgid "Frame Rate"
+msgstr "帧率"
+
+msgid "Game-ready topology from text or one image"
+msgstr "从文本或单张图像生成游戏就绪拓扑"
+
+msgid "Generate Textures"
+msgstr "生成纹理"
+
+msgid "Generating"
+msgstr "正在生成"
+
+msgid "Geometry Quality"
+msgstr "几何质量"
+
+msgid "Granularity"
+msgstr "粒度"
+
+msgid "Highest detail and fidelity"
+msgstr "最高细节与保真度"
+
+msgid "Highest geometry fidelity"
+msgstr "最高几何保真度"
+
+msgid "Improve Reference"
+msgstr "改善参考图像"
+
+msgid "Inspecting asset..."
+msgstr "正在检查资产..."
+
+msgid "Integer"
+msgstr "整数"
+
+msgid "Interrupted"
+msgstr "已中断"
+
+msgid "Keep Source Mesh"
+msgstr "保留源网格"
+
+msgid "Language"
+msgstr "语言"
+
+msgid "Mesh Pipeline"
+msgstr "网格流程"
+
+msgid "Meshy 7"
+msgstr "Meshy 7"
+
+msgid "Meshy official Animation Library action_id. Use animation_actions from asset.capabilities; do not guess."
+msgstr "Meshy 官方动画库 action_id。请使用 asset.capabilities 返回的 animation_actions，不要猜测。"
+
+msgid "Meshy T2"
+msgstr "Meshy T2"
+
+msgid "Moderation"
+msgstr "内容审核"
+
+msgid "Network Mode"
+msgstr "网络模式"
+
+msgid "Number"
+msgstr "数值"
+
+msgid "Operation"
+msgstr "操作"
+
+msgid "Origin"
+msgstr "原点"
+
+msgid "Output Formats"
+msgstr "输出格式"
+
+msgid "Parts"
+msgstr "部件"
+
+msgid "PBR Maps"
+msgstr "PBR 贴图"
+
+msgid "Pose"
+msgstr "姿势"
+
+msgid "Post Process"
+msgstr "后处理"
+
+msgid "Previewing"
+msgstr "正在预览"
+
+msgid "Prompt"
+msgstr "提示词"
+
+msgid "Quad Topology"
+msgstr "四边形拓扑"
+
+msgid "Queued"
+msgstr "已排队"
+
+msgid "Ready"
+msgstr "就绪"
+
+msgid "Remove Lighting"
+msgstr "移除光照"
+
+msgid "Restart Now"
+msgstr "立即重启"
+
+msgid "Rig Model"
+msgstr "绑定模型"
+
+msgid "Rig Type"
+msgstr "绑定类型"
+
+msgid "Running"
+msgstr "运行中"
+
+msgid "Scale"
+msgstr "缩放"
+
+msgid "Searching catalog..."
+msgstr "正在搜索目录..."
+
+msgid "Segmentation Model"
+msgstr "分割模型"
+
+msgid "Settings changed! The project manager must be restarted for changes to take effect."
+msgstr "设置已更改！必须重启项目管理器才能生效。"
+
+msgid "Single image"
+msgstr "单张图像"
+
+msgid "Skeleton"
+msgstr "骨架"
+
+msgid "Smart Low Poly"
+msgstr "智能低模"
+
+msgid "Smart low-poly topology"
+msgstr "智能低模拓扑"
+
+msgid "Split Connected Parts"
+msgstr "拆分相连部件"
+
+msgid "Style"
+msgstr "风格"
+
+msgid "Style Image URL"
+msgstr "风格图像 URL"
+
+msgid "Style Image URLs"
+msgstr "风格图像 URL 列表"
+
+msgid "Style Prompt"
+msgstr "风格提示词"
+
+msgid "Target Faces"
+msgstr "目标面数"
+
+msgid "Target Polygons"
+msgstr "目标多边形数"
+
+msgid "Text prompt"
+msgstr "文本提示词"
+
+msgid "Texture Alignment"
+msgstr "纹理对齐"
+
+msgid "Texture Image URL"
+msgstr "纹理图像 URL"
+
+msgid "Texture Image URLs"
+msgstr "纹理图像 URL 列表"
+
+msgid "Texture Model"
+msgstr "纹理模型"
+
+msgid "Texture Prompt"
+msgstr "纹理提示词"
+
+msgid "Texture Quality"
+msgstr "纹理质量"
+
+msgid "Texture Resolution"
+msgstr "纹理分辨率"
+
+msgid "The operation failed."
+msgstr "操作失败。"
+
+msgid "Topology"
+msgstr "拓扑"
+
+msgid "Transparent Preview"
+msgstr "透明预览"
+
+msgid "Tripo H3.1"
+msgstr "Tripo H3.1"
+
+msgid "Tripo P1"
+msgstr "Tripo P1"
+
+msgid "Ultra Detail"
+msgstr "超高细节"
+
+msgid "Untitled asset"
+msgstr "未命名资产"
+
+msgid "Up Axis"
+msgstr "向上轴"
+
+msgid "Use Meshy 7 ultra detail for Text-to-3D or single-image generation."
+msgstr "为文本生成 3D 或单图生成启用 Meshy 7 超高细节。"
