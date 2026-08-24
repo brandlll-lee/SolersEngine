@@ -73,12 +73,14 @@ class SolersStudio : public PanelContainer {
 	ItemList *route_list = nullptr;
 	Control *creation_workspace = nullptr;
 	SolersStudioSelect *preset_button = nullptr;
+	SolersStudioSelect *input_mode_button = nullptr;
 	Label *preset_description = nullptr;
 	TextEdit *prompt_edit = nullptr;
 	Button *reference_buttons[4] = {};
 	Button *clear_references_button = nullptr;
+	HBoxContainer *reference_header = nullptr;
+	SolersSurface *reference_surface = nullptr;
 	Control *reference_empty_state = nullptr;
-	CheckButton *multiview_toggle = nullptr;
 	HBoxContainer *reference_aux = nullptr;
 	Button *generate_button = nullptr, *options_toggle = nullptr;
 	SolersSchemaForm *featured_form = nullptr, *generation_form = nullptr;
@@ -141,6 +143,8 @@ class SolersStudio : public PanelContainer {
 	void _refresh_generation_schema();
 	void _route_selected(int p_index);
 	void _preset_selected(int p_index);
+	Dictionary _selected_input_mode() const;
+	void _input_mode_selected(int p_index);
 	void _refresh_project_assets();
 	void _reload_project_assets();
 	void _show_manifest(const Dictionary &p_manifest);
@@ -154,7 +158,6 @@ class SolersStudio : public PanelContainer {
 	void _reference_image_staged(const Dictionary &p_result, const Ref<Image> &p_image, uint64_t p_generation);
 	void _refresh_reference_slots();
 	void _clear_references();
-	void _multiview_toggled(bool p_enabled);
 	void _reference_gui_input(const Ref<InputEvent> &p_event, Button *p_button);
 	void _external_reference_files_dropped(const PackedStringArray &p_files);
 	bool _can_drop_reference(const Point2 &p_point, const Variant &p_data, Control *p_from) const;

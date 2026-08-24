@@ -130,8 +130,8 @@ Dictionary SolersPluginTripo::get_profile() const {
 	profile["supports_catalog"] = false;
 	profile["supports_resume"] = true;
 	profile["generation_presets"] = JSON::parse_string(R"([
-		{"id":"tripo-h3.1","label":"Tripo H3.1","description":"Highest geometry fidelity","default":true,"kind":"3d","options":{"model":"v3.1-20260211","texture":true,"pbr":true,"texture_quality":"detailed","export_uv":true},"min_reference_images":0,"max_reference_images":4,"featured_fields":["texture","pbr","texture_quality","geometry_quality","face_limit"],"presentation":{"controls":{"texture_quality":{"control":"segmented"},"geometry_quality":{"control":"segmented"},"face_limit":{"control":"slider"}}}},
-		{"id":"tripo-p1","label":"Tripo P1","description":"Smart low-poly topology","kind":"3d","options":{"model":"P1-20260311","texture":true,"pbr":true,"export_uv":true},"min_reference_images":0,"max_reference_images":4,"featured_fields":["face_limit","texture","pbr"],"hidden_fields":["quad","smart_low_poly","generate_parts","geometry_quality"],"option_constraints":{"face_limit":{"minimum":50,"maximum":20000}},"presentation":{"controls":{"face_limit":{"control":"slider"}}}}
+		{"id":"tripo-h3.1","label":"Tripo H3.1","description":"Highest geometry fidelity","default":true,"kind":"3d","options":{"model":"v3.1-20260211","texture":true,"pbr":true,"texture_quality":"detailed","export_uv":true},"input_modes":[{"id":"text","label":"Text prompt","default":true,"provider_mode":"text_to_model","provider_endpoint":"/v3/generation/text-to-model","min_reference_images":0,"max_reference_images":0,"hidden_fields":["enable_image_autofix","texture_alignment"]},{"id":"image","label":"Single image","provider_mode":"image_to_model","provider_endpoint":"/v3/generation/image-to-model","min_reference_images":1,"max_reference_images":1},{"id":"multiview","label":"Multi-view","provider_mode":"multiview_to_model","provider_endpoint":"/v3/generation/multiview-to-model","min_reference_images":2,"max_reference_images":4}],"featured_fields":["texture","pbr","texture_quality","geometry_quality","face_limit"],"presentation":{"controls":{"texture_quality":{"control":"segmented"},"geometry_quality":{"control":"segmented"},"face_limit":{"control":"slider"}}}},
+		{"id":"tripo-p1","label":"Tripo P1","description":"Smart low-poly topology","kind":"3d","options":{"model":"P1-20260311","texture":true,"pbr":true,"export_uv":true},"input_modes":[{"id":"text","label":"Text prompt","default":true,"provider_mode":"text_to_model","provider_endpoint":"/v3/generation/text-to-model","min_reference_images":0,"max_reference_images":0,"hidden_fields":["enable_image_autofix","texture_alignment"]},{"id":"image","label":"Single image","provider_mode":"image_to_model","provider_endpoint":"/v3/generation/image-to-model","min_reference_images":1,"max_reference_images":1},{"id":"multiview","label":"Multi-view","provider_mode":"multiview_to_model","provider_endpoint":"/v3/generation/multiview-to-model","min_reference_images":2,"max_reference_images":4}],"featured_fields":["face_limit","texture","pbr"],"hidden_fields":["quad","smart_low_poly","generate_parts","geometry_quality"],"option_constraints":{"face_limit":{"minimum":48,"maximum":20000}},"presentation":{"controls":{"face_limit":{"control":"slider"}}}}
 	])");
 	return profile;
 }
@@ -171,12 +171,7 @@ Dictionary SolersPluginTripo::prepare_generate(const String &p_kind, const Dicti
 	Dictionary options = Dictionary(r_manifest.get("provider_options", Dictionary())).duplicate(true);
 	const Array attachments = r_manifest.get("source_attachments", Array());
 	const String prompt = String(p_args.get("prompt", String())).strip_edges();
-	if (prompt.is_empty() && attachments.is_empty()) {
-		return error_data("INVALID_ARGUMENT", "Tripo requires a prompt or one to four reference images.");
-	}
-	if (attachments.size() > 4) {
-		return error_data("INVALID_ARGUMENT", "Tripo accepts at most four reference images.");
-	}
+	const String input_mode_id = String(p_args.get("input_mode", String()));
 	const Array presets = get_profile().get("generation_presets", Array());
 	Dictionary model_preset;
 	const String default_model = presets.is_empty() ? String() : String(Dictionary(Dictionary(presets[0]).get("options", Dictionary())).get("model", String()));
@@ -191,8 +186,29 @@ Dictionary SolersPluginTripo::prepare_generate(const String &p_kind, const Dicti
 	if (model_preset.is_empty()) {
 		return error_data("INVALID_ARGUMENT", "Unknown Tripo generation model.");
 	}
+	Dictionary input_mode;
+	for (const Variant &value : Array(model_preset.get("input_modes", Array()))) {
+		const Dictionary mode = value;
+		if (mode.get("id", String()) == input_mode_id) {
+			input_mode = mode;
+			break;
+		}
+	}
+	if (input_mode.is_empty()) {
+		return error_data("INVALID_ARGUMENT", "The selected Tripo model does not support this input_mode.");
+	}
+	const int minimum_images = input_mode.get("min_reference_images", 0);
+	const int maximum_images = input_mode.get("max_reference_images", 0);
+	if (attachments.size() < minimum_images || attachments.size() > maximum_images) {
+		return error_data("INVALID_ARGUMENT", vformat("Tripo input_mode '%s' requires %d to %d reference images.", input_mode_id, minimum_images, maximum_images));
+	}
+	if (input_mode_id == "text" ? prompt.is_empty() : !prompt.is_empty()) {
+		return error_data("INVALID_ARGUMENT", input_mode_id == "text" ? "Tripo text input requires a prompt." : "Tripo image inputs do not accept a geometry prompt.");
+	}
 	options["model"] = model;
-	for (const Variant &field : Array(model_preset.get("hidden_fields", Array()))) {
+	Array hidden_fields = Array(model_preset.get("hidden_fields", Array())).duplicate();
+	hidden_fields.append_array(input_mode.get("hidden_fields", Array()));
+	for (const Variant &field : hidden_fields) {
 		if (options.has(field)) {
 			return error_data("INVALID_ARGUMENT", vformat("%s does not support option '%s'.", model, field));
 		}
@@ -225,10 +241,9 @@ Dictionary SolersPluginTripo::prepare_generate(const String &p_kind, const Dicti
 		return error_data("INVALID_ARGUMENT", "pbr requires texture=true.");
 	}
 	r_manifest["provider_options"] = options;
-	const String mode = attachments.is_empty() ? "text_to_model" : attachments.size() == 1 ? "image_to_model"
-																						   : "multiview_to_model";
-	r_manifest["generation_mode"] = mode;
-	r_manifest["provider_endpoint"] = "/v3/generation/" + mode.replace("_", "-");
+	r_manifest["input_mode"] = input_mode_id;
+	r_manifest["generation_mode"] = input_mode.get("provider_mode", String());
+	r_manifest["provider_endpoint"] = input_mode.get("provider_endpoint", String());
 	Dictionary traits;
 	traits["model_state"] = "static_model";
 	r_manifest["traits"] = traits;
@@ -245,9 +260,25 @@ Dictionary SolersPluginTripo::prepare_operation(const Dictionary &p_operation, c
 	return Dictionary();
 }
 
-static Dictionary _tripo_data(const Dictionary &p_response) {
+static Dictionary _tripo_data(const Dictionary &p_response, Dictionary &r_error) {
+	if (!(bool)p_response.get("ok", false)) {
+		r_error = p_response.get("error", SolersPlugin::error_data("PROVIDER_REQUEST_FAILED", "Tripo request failed."));
+		return Dictionary();
+	}
 	const Dictionary parsed = SolersPlugin::parse_json_body(p_response);
-	if ((int64_t)parsed.get("code", -1) != 0 || parsed.get("data", Variant()).get_type() != Variant::DICTIONARY) {
+	const int64_t provider_code = parsed.get("code", -1);
+	if (provider_code != 0) {
+		r_error["code"] = String::num_int64(provider_code);
+		r_error["message"] = parsed.get("message", "Tripo rejected the request.");
+		for (const char *field : { "suggestion", "request_id" }) {
+			if (parsed.has(field)) {
+				r_error[field] = parsed[field];
+			}
+		}
+		return Dictionary();
+	}
+	if (parsed.get("data", Variant()).get_type() != Variant::DICTIONARY) {
+		r_error = SolersPlugin::error_data("BAD_PROVIDER_RESPONSE", "Tripo response did not contain a data object.");
 		return Dictionary();
 	}
 	return parsed["data"];
@@ -269,7 +300,7 @@ String SolersPluginTripo::_upload_attachment(const Ref<SolersPluginJob> &p_job, 
 		r_error = request.get("error", error_data("PRESIGN_FAILED", "Tripo file presigning failed."));
 		return String();
 	}
-	const Dictionary data = _tripo_data(request);
+	const Dictionary data = _tripo_data(request, r_error);
 	const String upload_url = data.get("presigned_url", String());
 	const String token = data.get("file_token", String());
 	if (upload_url.is_empty() || token.is_empty()) {
@@ -291,10 +322,11 @@ Dictionary SolersPluginTripo::_poll_task(const Ref<SolersPluginJob> &p_job, Dict
 	const String task_id = r_state.get("provider_task_id", String());
 	for (int i = 0; i < 90 && !p_job->is_cancelled(); i++) {
 		const Dictionary response = http_request(HTTPClient::METHOD_GET, clean_base_url(p_job->get_base_url()) + "/v3/tasks/" + task_id, p_headers, PackedByteArray(), 60000);
-		detail = _tripo_data(response);
+		Dictionary error;
+		detail = _tripo_data(response, error);
 		if (detail.is_empty()) {
 			r_state["status"] = "failed";
-			r_state["error"] = response.get("error", error_data("BAD_PROVIDER_RESPONSE", "Tripo task query returned no data."));
+			r_state["error"] = error;
 			p_job->set_state(r_state);
 			return Dictionary();
 		}
@@ -331,11 +363,12 @@ Dictionary SolersPluginTripo::_submit_and_poll(const Ref<SolersPluginJob> &p_job
 	r_state["updated_at"] = Time::get_singleton()->get_datetime_string_from_system(true, true);
 	p_job->set_state(r_state);
 	const Dictionary response = http_request(HTTPClient::METHOD_POST, clean_base_url(p_job->get_base_url()) + p_endpoint, p_headers, utf8_bytes(JSON::stringify(p_body)), 120000);
-	const Dictionary data = _tripo_data(response);
+	Dictionary error;
+	const Dictionary data = _tripo_data(response, error);
 	const String task_id = data.get("task_id", String());
 	if (task_id.is_empty()) {
 		r_state["status"] = "failed";
-		r_state["error"] = response.get("error", error_data("BAD_PROVIDER_RESPONSE", "Tripo response did not contain a task id."));
+		r_state["error"] = error.is_empty() ? error_data("BAD_PROVIDER_RESPONSE", "Tripo response did not contain a task id.") : error;
 		p_job->set_state(r_state);
 		return Dictionary();
 	}
@@ -410,8 +443,9 @@ void SolersPluginTripo::run_job(const Ref<SolersPluginJob> &p_job) {
 	Dictionary body;
 	merge_options(body, options);
 	if (String(state.get("operation", "generate")) == "generate") {
+		const String generation_mode = state.get("generation_mode", String());
 		const Array attachments = state.get("source_attachments", Array());
-		if (attachments.is_empty()) {
+		if (generation_mode == "text_to_model") {
 			body["prompt"] = state.get("prompt", String());
 		} else {
 			Array tokens;
@@ -427,7 +461,7 @@ void SolersPluginTripo::run_job(const Ref<SolersPluginJob> &p_job) {
 				}
 				tokens.push_back(token);
 			}
-			if (tokens.size() == 1) {
+			if (generation_mode == "image_to_model") {
 				body["input"] = tokens[0];
 			} else {
 				const char *views[] = { "front", "left", "back", "right" };

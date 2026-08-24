@@ -370,25 +370,29 @@ TEST_CASE("[SolersPluginMeshy] generation schema and validation follow the curre
 	SolersPluginMeshy meshy;
 	Dictionary attachment;
 	attachment["id"] = "img_contract";
+	attachment["mime_type"] = "image/png";
 	Array source_attachments;
 	source_attachments.push_back(attachment);
 
-	auto prepare = [&](const Dictionary &p_options, bool p_with_image) {
+	auto prepare = [&](const Dictionary &p_options, const String &p_mode, bool p_with_image) {
 		Dictionary manifest;
 		manifest["provider_options"] = p_options.duplicate(true);
 		manifest["source_attachments"] = p_with_image ? source_attachments : Array();
 		Dictionary args;
-		args["prompt"] = "isolated game-ready character";
+		args["input_mode"] = p_mode;
+		if (p_mode == "text") {
+			args["prompt"] = "isolated game-ready character";
+		}
 		return meshy.prepare_generate("3d", args, manifest);
 	};
 
 	const Dictionary legacy_options = JSON::parse_string(R"({"model_type":"standard","ai_model":"meshy-5"})");
-	Dictionary rejected = prepare(legacy_options, false);
-	CHECK(rejected.get("code", String()) == "INVALID_ARGUMENT");
+	CHECK(prepare(legacy_options, "text", false).is_empty());
 
 	const Dictionary hero_options = JSON::parse_string(R"({"model_type":"standard","ai_model":"latest","image_enhancement":true,"remove_lighting":true,"ultra_mode":true,"texture_resolution":"8k"})");
-	CHECK(prepare(hero_options, false).is_empty());
-	CHECK_FALSE(prepare(hero_options, true).is_empty());
+	CHECK_FALSE(prepare(hero_options, "text", false).is_empty());
+	CHECK(prepare(hero_options, "image", true).is_empty());
+	CHECK_FALSE(prepare(hero_options, "multiview", true).is_empty());
 
 	const Dictionary schema = meshy.get_generation_options_schema("3d");
 	CHECK_FALSE(schema.has("hd_texture"));
@@ -396,9 +400,10 @@ TEST_CASE("[SolersPluginMeshy] generation schema and validation follow the curre
 	CHECK(Array(Dictionary(schema.get("texture_resolution", Dictionary())).get("enum", Array())).has("8k"));
 	CHECK(schema.has("ultra_mode"));
 	Dictionary native_manifest;
-	native_manifest["provider_options"] = hero_options;
 	Dictionary native_args;
 	native_args["prompt"] = "native import authority";
+	native_args["input_mode"] = "text";
+	native_manifest["provider_options"] = legacy_options;
 	CHECK(meshy.prepare_generate("3d", native_args, native_manifest).is_empty());
 	CHECK_FALSE(native_manifest.has("import_constraints"));
 }
@@ -480,6 +485,7 @@ TEST_CASE("[SolersAssetService] Meshy topology target is an integer contract for
 	args["kind"] = "3d";
 	args["provider"] = "meshy";
 	args["prompt"] = "one isolated wooden bookshelf";
+	args["input_mode"] = "text";
 	args["provider_options"] = provider_options;
 	const Dictionary result = asset_service.generate(args);
 	CHECK_FALSE((bool)result.get("ok", true));
@@ -502,7 +508,7 @@ TEST_CASE("[SolersAssetService] Meshy generation presets project native schema f
 	for (const Variant &value : presets) {
 		const Dictionary preset = value;
 		default_count += (bool)preset.get("default", false) ? 1 : 0;
-		CHECK((int)preset.get("max_reference_images", 0) >= 1);
+		CHECK(Array(preset.get("input_modes", Array())).size() >= 2);
 		CHECK_FALSE(Array(preset.get("featured_fields", Array())).is_empty());
 		CHECK(bool(!Dictionary(preset.get("presentation", Dictionary())).is_empty() && (!(bool)preset.get("default", false) || (Dictionary(Dictionary(preset.get("presentation", Dictionary())).get("controls", Dictionary())).has("target_formats") && Dictionary(Dictionary(preset.get("presentation", Dictionary())).get("controls", Dictionary())).has("texture_image_url")))));
 	}
@@ -524,7 +530,7 @@ TEST_CASE("[SolersPluginTripo] v3 presets and generation constraints follow prov
 	CHECK_FALSE(p1_options.has("smart_low_poly"));
 	CHECK(Array(p1.get("hidden_fields", Array())).has("geometry_quality"));
 	const Dictionary p1_face_limit = Dictionary(p1.get("option_constraints", Dictionary())).get("face_limit", Dictionary());
-	CHECK((int64_t)p1_face_limit.get("minimum", 0) == 50);
+	CHECK((int64_t)p1_face_limit.get("minimum", 0) == 48);
 	CHECK((int64_t)p1_face_limit.get("maximum", 0) == 20000);
 
 	Dictionary manifest;
@@ -536,6 +542,7 @@ TEST_CASE("[SolersPluginTripo] v3 presets and generation constraints follow prov
 	manifest["source_attachments"] = Array();
 	Dictionary args;
 	args["prompt"] = "A game-ready prop";
+	args["input_mode"] = "text";
 	CHECK(tripo.prepare_generate("3d", args, manifest).is_empty());
 	CHECK(manifest.get("provider_endpoint", String()) == "/v3/generation/text-to-model");
 
@@ -545,10 +552,10 @@ TEST_CASE("[SolersPluginTripo] v3 presets and generation constraints follow prov
 	CHECK(conflict.get("code", String()) == "INVALID_ARGUMENT");
 
 	options = p1_options.duplicate(true);
-	options["face_limit"] = 50;
+	options["face_limit"] = 48;
 	manifest["provider_options"] = options;
 	CHECK(tripo.prepare_generate("3d", args, manifest).is_empty());
-	options["face_limit"] = 49;
+	options["face_limit"] = 47;
 	manifest["provider_options"] = options;
 	CHECK(tripo.prepare_generate("3d", args, manifest).get("code", String()) == "INVALID_ARGUMENT");
 	options["face_limit"] = 20001;
@@ -622,6 +629,37 @@ TEST_CASE("[SolersAssetService] global assets delete atomically outside active j
 	const Dictionary result = assets.delete_asset(asset_id);
 	CHECK((bool)result.get("ok", false));
 	CHECK_FALSE(DirAccess::dir_exists_absolute(ProjectSettings::get_singleton()->globalize_path(asset_dir)));
+}
+
+TEST_CASE("[SolersAssetService] asset listing uses the bounded in-memory projection") {
+	const String asset_id = ".solers_asset_projection_contract";
+	const String asset_dir = "user://solers_jobs/" + asset_id;
+	const String manifest_path = asset_dir.path_join("manifest.json");
+	SolersTestPaths cleanup;
+	cleanup.add(asset_dir);
+	REQUIRE(DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(asset_dir)) == OK);
+	Dictionary provider_options;
+	provider_options["opaque_contract"] = String("A").repeat(128 * 1024);
+	Dictionary manifest;
+	manifest["id"] = asset_id;
+	manifest["kind"] = "3d";
+	manifest["name"] = "Projection Contract";
+	manifest["status"] = "failed";
+	manifest["provider_options"] = provider_options;
+	String error;
+	REQUIRE(SolersPlugin::write_json_atomic(manifest_path, manifest, error));
+
+	SolersAssetService assets;
+	const Dictionary listed = solers_test_find_dictionary(assets.list_assets(), SNAME("id"), asset_id);
+	REQUIRE_FALSE(listed.is_empty());
+	CHECK(listed.get("status", String()) == "failed");
+	CHECK_FALSE(listed.has("provider_options"));
+
+	manifest["status"] = "ready";
+	REQUIRE(SolersPlugin::write_json_atomic(manifest_path, manifest, error));
+	CHECK(solers_test_find_dictionary(assets.list_assets(), SNAME("id"), asset_id).get("status", String()) == "failed");
+	CHECK((bool)assets.delete_asset(asset_id).get("ok", false));
+	CHECK(solers_test_find_dictionary(assets.list_assets(), SNAME("id"), asset_id).is_empty());
 }
 
 TEST_CASE("[SolersAssetService] non-terminal asset.status rejects progress polling; job.wait declares host park") {

@@ -116,9 +116,22 @@ static Dictionary _studio_schema_subset(const Dictionary &p_schema, const Array 
 	return selected;
 }
 
-static int _studio_reference_limit(const Dictionary &p_preset, bool p_multiview) {
-	const int maximum = MAX(1, (int)p_preset.get("max_reference_images", 1));
-	return p_multiview ? MIN(maximum, 4) : 1;
+static int _studio_reference_limit(const Dictionary &p_mode) {
+	return CLAMP((int)p_mode.get("max_reference_images", 0), 0, 4);
+}
+
+static String _studio_manifest_status(const Dictionary &p_manifest) {
+	const Dictionary error = p_manifest.get("error", Dictionary());
+	if (!error.is_empty()) {
+		String message = error.get("message", TTRC("The operation failed."));
+		const String code = error.get("code", String());
+		return code.is_empty() ? message : message + "\n" + code;
+	}
+	String stage = TTR(String(p_manifest.get("stage", p_manifest.get("status", String()))).capitalize());
+	if (p_manifest.has("progress")) {
+		stage += "  " + itos(CLAMP((int)p_manifest["progress"], 0, 100)) + "%";
+	}
+	return stage;
 }
 
 String SolersStudio::_current_route() const {
@@ -177,7 +190,13 @@ void SolersStudio::_refresh_providers() {
 				fallback["description"] = profile.get("description", String());
 				fallback["kind"] = kind;
 				fallback["options"] = Dictionary();
-				fallback["max_reference_images"] = 4;
+				Dictionary input_mode;
+				input_mode["id"] = "text";
+				input_mode["label"] = "Text prompt";
+				input_mode["default"] = true;
+				Array input_modes;
+				input_modes.push_back(input_mode);
+				fallback["input_modes"] = input_modes;
 				presets.push_back(fallback);
 			}
 			for (const Variant &value : presets) {
@@ -230,9 +249,40 @@ void SolersStudio::_preset_selected(int p_index) {
 	preset_button->set_disabled(selected_preset.is_empty());
 	preset_button->select(selected_preset.is_empty() ? -1 : p_index);
 	preset_description->set_text(selected_preset.get("description", String()));
-	const bool supports_multiview = (int)selected_preset.get("max_reference_images", 1) > 1;
-	multiview_toggle->set_visible(supports_multiview);
-	multiview_toggle->set_pressed_no_signal(supports_multiview);
+	input_mode_button->clear();
+	int default_mode = -1;
+	for (const Variant &value : Array(selected_preset.get("input_modes", Array()))) {
+		const Dictionary mode = value;
+		input_mode_button->add_item(TTR(mode.get("label", String())));
+		const int index = input_mode_button->get_item_count() - 1;
+		input_mode_button->set_item_metadata(index, mode.get("id", String()));
+		if ((bool)mode.get("default", false)) {
+			default_mode = index;
+		}
+	}
+	input_mode_button->set_disabled(input_mode_button->get_item_count() < 2);
+	_input_mode_selected(default_mode >= 0 ? default_mode : (input_mode_button->get_item_count() > 0 ? 0 : -1));
+}
+
+Dictionary SolersStudio::_selected_input_mode() const {
+	const String selected = _selected_provider(input_mode_button);
+	for (const Variant &value : Array(selected_preset.get("input_modes", Array()))) {
+		const Dictionary mode = value;
+		if (mode.get("id", String()) == selected) {
+			return mode;
+		}
+	}
+	return Dictionary();
+}
+
+void SolersStudio::_input_mode_selected(int p_index) {
+	input_mode_button->select(p_index);
+	const Dictionary mode = _selected_input_mode();
+	const bool text_mode = mode.get("id", String()) == "text";
+	prompt_edit->set_visible(text_mode);
+	const bool references_visible = _studio_reference_limit(mode) > 0;
+	reference_header->set_visible(references_visible);
+	reference_surface->set_visible(references_visible);
 	_refresh_generation_schema();
 	_refresh_reference_slots();
 }
@@ -240,13 +290,19 @@ void SolersStudio::_preset_selected(int p_index) {
 void SolersStudio::_refresh_generation_schema() {
 	SolersPlugin *plugin = SolersPluginRegistry::get_plugin(selected_preset.get("provider", String()));
 	const Dictionary schema = plugin ? plugin->get_generation_options_schema(_current_kind()) : Dictionary();
-	const Array featured = selected_preset.get("featured_fields", Array());
-	const Array hidden = selected_preset.get("hidden_fields", Array());
-	const Dictionary constraints = selected_preset.get("option_constraints", Dictionary());
-	const Dictionary presentation = selected_preset.get("presentation", Dictionary());
+	const Dictionary mode = _selected_input_mode();
+	Array featured = Array(selected_preset.get("featured_fields", Array())).duplicate();
+	featured.append_array(mode.get("featured_fields", Array()));
+	Array hidden = Array(selected_preset.get("hidden_fields", Array())).duplicate();
+	hidden.append_array(mode.get("hidden_fields", Array()));
+	Dictionary constraints = Dictionary(selected_preset.get("option_constraints", Dictionary())).duplicate(true);
+	constraints.merge(mode.get("option_constraints", Dictionary()), true);
+	Dictionary presentation = Dictionary(selected_preset.get("presentation", Dictionary())).duplicate(true);
+	presentation.merge(mode.get("presentation", Dictionary()), true);
 	featured_form->set_schema(_studio_schema_subset(schema, featured, hidden, constraints, false), Dictionary(), presentation);
 	generation_form->set_schema(_studio_schema_subset(schema, featured, hidden, constraints, true), Dictionary(), presentation);
-	const Dictionary defaults = selected_preset.get("options", Dictionary());
+	Dictionary defaults = Dictionary(selected_preset.get("options", Dictionary())).duplicate(true);
+	defaults.merge(mode.get("options", Dictionary()), true);
 	featured_form->set_values(defaults);
 	generation_form->set_values(defaults);
 	const bool enabled = plugin != nullptr;
@@ -262,7 +318,7 @@ void SolersStudio::_catalog_provider_selected(int) {
 void SolersStudio::_reference_files_selected(const PackedStringArray &p_files) {
 	for (const String &path : p_files) {
 		_stage_reference_image(path);
-		if (reference_attachments.size() + pending_reference_images >= _studio_reference_limit(selected_preset, multiview_toggle->is_pressed())) {
+		if (reference_attachments.size() + pending_reference_images >= _studio_reference_limit(_selected_input_mode())) {
 			break;
 		}
 	}
@@ -270,7 +326,7 @@ void SolersStudio::_reference_files_selected(const PackedStringArray &p_files) {
 }
 
 void SolersStudio::_stage_reference_image(const Variant &p_source) {
-	if (reference_attachments.size() + pending_reference_images >= _studio_reference_limit(selected_preset, multiview_toggle->is_pressed())) {
+	if (reference_attachments.size() + pending_reference_images >= _studio_reference_limit(_selected_input_mode())) {
 		return;
 	}
 	pending_reference_images++;
@@ -286,7 +342,7 @@ void SolersStudio::_reference_image_staged(const Dictionary &p_result, const Ref
 		_show_result(p_result, String());
 		return;
 	}
-	if (reference_attachments.size() < _studio_reference_limit(selected_preset, multiview_toggle->is_pressed())) {
+	if (reference_attachments.size() < _studio_reference_limit(_selected_input_mode())) {
 		reference_attachments.push_back(p_result.get("data", Dictionary()));
 		reference_textures.push_back(ImageTexture::create_from_image(p_image));
 	}
@@ -294,7 +350,7 @@ void SolersStudio::_reference_image_staged(const Dictionary &p_result, const Ref
 }
 
 void SolersStudio::_refresh_reference_slots() {
-	const int limit = _studio_reference_limit(selected_preset, multiview_toggle->is_pressed());
+	const int limit = _studio_reference_limit(_selected_input_mode());
 	while (reference_attachments.size() > limit) {
 		reference_attachments.pop_back();
 		reference_textures.pop_back();
@@ -310,7 +366,7 @@ void SolersStudio::_refresh_reference_slots() {
 		reference_buttons[i]->set_button_icon(image.is_valid() ? image : placeholder);
 		reference_buttons[i]->set_expand_icon(image.is_valid());
 	}
-	reference_empty_state->set_visible(reference_textures.is_empty());
+	reference_empty_state->set_visible(limit > 0 && reference_textures.is_empty());
 	reference_aux->set_visible(limit > 1);
 	clear_references_button->set_visible(!reference_attachments.is_empty());
 }
@@ -320,10 +376,6 @@ void SolersStudio::_clear_references() {
 	reference_textures.clear();
 	pending_reference_images = 0;
 	reference_generation++;
-	_refresh_reference_slots();
-}
-
-void SolersStudio::_multiview_toggled(bool) {
 	_refresh_reference_slots();
 }
 
@@ -347,7 +399,7 @@ void SolersStudio::_external_reference_files_dropped(const PackedStringArray &p_
 
 bool SolersStudio::_can_drop_reference(const Point2 &, const Variant &p_data, Control *) const {
 	const Dictionary drag_data = p_data;
-	if (String(drag_data.get("type", String())) != "files") {
+	if (_studio_reference_limit(_selected_input_mode()) == 0 || String(drag_data.get("type", String())) != "files") {
 		return false;
 	}
 	for (const String &path : PackedStringArray(drag_data.get("files", PackedStringArray()))) {
@@ -383,7 +435,8 @@ void SolersStudio::_show_result(const Dictionary &p_result, const String &p_succ
 void SolersStudio::_generate_pressed() {
 	const String kind = _current_kind();
 	const String provider = selected_preset.get("provider", String());
-	if (reference_attachments.size() < (int)selected_preset.get("min_reference_images", 0)) {
+	const Dictionary mode = _selected_input_mode();
+	if (reference_attachments.size() < (int)mode.get("min_reference_images", 0)) {
 		asset_status->set_text(TTRC("Add reference images"));
 		return;
 	}
@@ -394,10 +447,17 @@ void SolersStudio::_generate_pressed() {
 	Dictionary args;
 	args["kind"] = kind;
 	args["provider"] = provider;
-	args["prompt"] = prompt_edit->get_text();
+	args["input_mode"] = mode.get("id", String());
+	if (mode.get("id", String()) == "text") {
+		args["prompt"] = prompt_edit->get_text();
+	}
 	Dictionary provider_options = selected_preset.get("options", Dictionary()).duplicate(true);
+	provider_options.merge(mode.get("options", Dictionary()), true);
 	provider_options.merge(featured_form->get_values(), true);
 	provider_options.merge(generation_form->get_values(), true);
+	for (const Variant &field : Array(mode.get("hidden_fields", Array()))) {
+		provider_options.erase(field);
+	}
 	args["provider_options"] = provider_options;
 	if (!reference_attachments.is_empty()) {
 		Array ids;
@@ -671,21 +731,7 @@ void SolersStudio::_show_manifest(const Dictionary &p_manifest) {
 	selected_manifest = p_manifest;
 	selected_catalog.clear();
 	asset_title->set_text(p_manifest.get("name", p_manifest.get("id", TTRC("Untitled asset"))));
-	const Dictionary error = p_manifest.get("error", Dictionary());
-	if (!error.is_empty()) {
-		String message = error.get("message", TTRC("The operation failed."));
-		const String code = error.get("code", String());
-		if (!code.is_empty()) {
-			message += "\n" + code;
-		}
-		asset_status->set_text(message);
-	} else {
-		String stage = String(p_manifest.get("stage", p_manifest.get("status", String()))).capitalize();
-		if (p_manifest.has("progress")) {
-			stage += "  " + itos(CLAMP((int)p_manifest["progress"], 0, 100)) + "%";
-		}
-		asset_status->set_text(stage);
-	}
+	asset_status->set_text(_studio_manifest_status(p_manifest));
 	preview->set_texture(Ref<Texture2D>());
 	const String preview_file = p_manifest.get("preview_file", String());
 	if (!preview_file.is_empty()) {
@@ -780,6 +826,9 @@ void SolersStudio::_refresh_text() {
 	catalog_query->set_placeholder(_current_route() == "3d" ? TTRC("Search generated assets...") : TTRC("Search catalog..."));
 	library_tabs->set_tab_title(0, TTRC("Catalog"));
 	library_tabs->set_tab_title(1, TTRC("My generations"));
+	if (!selected_manifest.is_empty()) {
+		asset_status->set_text(_studio_manifest_status(selected_manifest));
+	}
 	_refresh_reference_slots();
 	_sync_workspace();
 }
@@ -909,13 +958,15 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	preset_button->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
 	preset_description = _studio_label(creation_column, String(), SNAME("SolersSessionMeta"));
 	preset_description->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	HBoxContainer *reference_header = _studio_add<HBoxContainer>(creation_column);
+	input_mode_button = _studio_add<SolersStudioSelect>(creation_column);
+	input_mode_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+	reference_header = _studio_add<HBoxContainer>(creation_column);
 	Label *reference_title = _studio_label(reference_header, TTRC("Reference images"), SNAME("SolersSessionTitle"));
 	reference_title->set_h_size_flags(SIZE_EXPAND_FILL);
 	clear_references_button = _studio_add<Button>(reference_header);
 	clear_references_button->set_flat(true);
 	clear_references_button->set_button_icon(SolersIcons::get(SNAME("cross"), int(14 * EDSCALE)));
-	SolersSurface *reference_surface = _studio_add<SolersSurface>(creation_column);
+	reference_surface = _studio_add<SolersSurface>(creation_column);
 	reference_surface->set_custom_minimum_size(Size2(0, 210 * EDSCALE));
 	reference_surface->configure(tokens.card, tokens.border, tokens.radius_home_tile, 8, false);
 	VBoxContainer *reference_column = _studio_add<VBoxContainer>(reference_surface);
@@ -967,8 +1018,6 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 		button->set_focus_mode(FOCUS_ALL);
 		button->set_mouse_filter(MOUSE_FILTER_PASS);
 	}
-	multiview_toggle = _studio_add<CheckButton>(creation_column);
-	multiview_toggle->set_text(TTRC("Multi-view"));
 	prompt_edit = _studio_add<TextEdit>(creation_column);
 	prompt_edit->set_theme_type_variation(SNAME("SolersStudioPrompt"));
 	prompt_edit->set_h_size_flags(SIZE_EXPAND_FILL);
@@ -1119,7 +1168,7 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	delete_dialog->set_title(TTRC("Delete asset"));
 	delete_dialog->set_ok_button_text(TTRC("Delete"));
 	popup_list = _studio_add<SolersPopupList>(this);
-	for (SolersStudioSelect *selector : { preset_button, catalog_variant, catalog_provider }) {
+	for (SolersStudioSelect *selector : { preset_button, input_mode_button, catalog_variant, catalog_provider }) {
 		selector->set_popup_list(popup_list);
 		selector->set_fit_to_longest_item(false);
 		selector->set_clip_text(true);
@@ -1129,6 +1178,7 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	}
 	route_list->connect(SceneStringName(item_selected), callable_mp(this, &SolersStudio::_route_selected));
 	preset_button->connect(SceneStringName(item_selected), callable_mp(this, &SolersStudio::_preset_selected));
+	input_mode_button->connect(SceneStringName(item_selected), callable_mp(this, &SolersStudio::_input_mode_selected));
 	catalog_provider->connect(SceneStringName(item_selected), callable_mp(this, &SolersStudio::_catalog_provider_selected));
 	for (Button *button : reference_buttons) {
 		button->connect(SceneStringName(pressed), callable_mp(reference_dialog, &FileDialog::popup_file_dialog));
@@ -1138,7 +1188,6 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	}
 	reference_dialog->connect(SNAME("files_selected"), callable_mp(this, &SolersStudio::_reference_files_selected));
 	clear_references_button->connect(SceneStringName(pressed), callable_mp(this, &SolersStudio::_clear_references));
-	multiview_toggle->connect(SceneStringName(toggled), callable_mp(this, &SolersStudio::_multiview_toggled));
 	options_toggle->connect(SceneStringName(toggled), callable_mp(this, &SolersStudio::_options_toggled));
 	generate_button->connect(SceneStringName(pressed), callable_mp(this, &SolersStudio::_generate_pressed));
 	empty_generate_button->connect(SceneStringName(pressed), callable_mp(this, &SolersStudio::_generate_pressed));
