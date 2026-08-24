@@ -709,6 +709,17 @@ Dictionary SolersPlugin::read_json_file(const String &p_path) {
 	return json->get_data();
 }
 
+Dictionary SolersPlugin::read_module_data(const String &p_path) {
+	const String exe_dir = OS::get_singleton()->get_executable_path().get_base_dir();
+	for (const String &path : { "res://" + p_path, exe_dir.path_join(p_path), exe_dir.path_join("../" + p_path), exe_dir.path_join("../../" + p_path) }) {
+		const Dictionary data = read_json_file(path.simplify_path());
+		if (!data.is_empty()) {
+			return data;
+		}
+	}
+	return Dictionary();
+}
+
 bool SolersPlugin::write_bytes_atomic(const String &p_path, const PackedByteArray &p_bytes, String &r_error) {
 	Error dir_err = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(p_path.get_base_dir()));
 	if (dir_err != OK) {

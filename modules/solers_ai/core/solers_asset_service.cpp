@@ -2057,7 +2057,14 @@ Dictionary SolersAssetService::_run_operation(const Dictionary &p_args, const St
 	Dictionary traits = _solers_asset_traits(source);
 	const Dictionary result_traits = operation.get("result_traits", Dictionary());
 	for (const Variant *key = result_traits.next(nullptr); key; key = result_traits.next(key)) {
-		traits[*key] = result_traits[*key];
+		const Variant value = result_traits[*key];
+		const Dictionary option_ref = value.get_type() == Variant::DICTIONARY ? Dictionary(value) : Dictionary();
+		const String option = option_ref.get("option", String());
+		if (option.is_empty()) {
+			traits[*key] = value;
+		} else if (provider_options.has(option)) {
+			traits[*key] = provider_options[option];
+		}
 	}
 	Dictionary manifest;
 	manifest["id"] = asset_id;
@@ -2810,8 +2817,8 @@ void SolersAssetService::_advance_project_tasks(bool p_allow_new_imports) {
 		if (SolersPlugin *plugin = SolersPluginRegistry::get_plugin(state.get("provider", String()))) {
 			const Array operations = plugin->get_operation_defs();
 			for (int operation_index = 0; operation_index < operations.size(); operation_index++) {
-				const Dictionary task = Dictionary(Dictionary(operations[operation_index]).get("source_inputs", Dictionary())).get("task", Dictionary());
-				const Array manifest_fields = task.get("manifest_fields", Array());
+				const Dictionary task_input = Dictionary(Dictionary(operations[operation_index]).get("source_inputs", Dictionary())).get("task", Dictionary());
+				const Array manifest_fields = task_input.get("manifest_fields", Array());
 				for (int field_index = 0; field_index < manifest_fields.size(); field_index++) {
 					const String field = manifest_fields[field_index];
 					if (state.has(field)) {

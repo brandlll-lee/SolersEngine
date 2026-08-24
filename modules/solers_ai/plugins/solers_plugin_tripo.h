@@ -46,5 +46,6 @@ public:
 	virtual Array get_operation_defs() const override;
 	virtual Dictionary prepare_generate(const String &p_kind, const Dictionary &p_args, Dictionary &r_manifest) const override;
 	virtual Dictionary prepare_operation(const Dictionary &p_operation, const Dictionary &p_source_manifest, Dictionary &r_provider_options) const override;
+	virtual Dictionary capability_extras(const Dictionary &p_manifest) const override;
 	virtual void run_job(const Ref<SolersPluginJob> &p_job) override;
 };

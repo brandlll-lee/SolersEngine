@@ -143,6 +143,7 @@ public:
 	static Dictionary error_result(const String &p_code, const String &p_message, bool p_recoverable = true);
 	static bool write_json_atomic(const String &p_path, const Dictionary &p_data, String &r_error);
 	static Dictionary read_json_file(const String &p_path);
+	static Dictionary read_module_data(const String &p_path);
 	static bool write_bytes_atomic(const String &p_path, const PackedByteArray &p_bytes, String &r_error);
 	static bool copy_file(const String &p_from, const String &p_to, String &r_error);
 	static bool remove_dir_recursive(const String &p_path, String &r_error);

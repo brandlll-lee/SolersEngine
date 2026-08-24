@@ -116,6 +116,9 @@ static Dictionary _operation_def(const String &p_operation_id) {
 	} else if (p_operation_id == "rig_humanoid") {
 		op["label"] = "Rig";
 		op["intent"] = "rig.bind";
+		op["workspace"] = "animation";
+		op["presentation_group"] = "Rigging";
+		op["presentation_order"] = 20;
 		op["description"] = "Create a new rigged version.";
 		op["category"] = "Character";
 		op["provider_operation_id"] = "meshy.openapi.v1.rigging";
@@ -130,6 +133,9 @@ static Dictionary _operation_def(const String &p_operation_id) {
 	} else if (p_operation_id == "animate_humanoid") {
 		op["label"] = "Animate";
 		op["intent"] = "animation.preset";
+		op["workspace"] = "animation";
+		op["presentation_group"] = "Animation";
+		op["presentation_order"] = 30;
 		op["description"] = "Create a new animated version.";
 		op["category"] = "Character";
 		op["provider_operation_id"] = "meshy.openapi.v1.animations";
@@ -311,25 +317,11 @@ Array SolersPluginMeshy::animation_actions() {
 		}
 	}
 
-	Array candidates;
-	candidates.push_back("user://solers_plugin_cache/meshy_animation_actions.json");
-	candidates.push_back("res://modules/solers_ai/data/meshy_animation_actions.json");
-	const String exe_dir = OS::get_singleton()->get_executable_path().get_base_dir();
-	candidates.push_back(exe_dir.path_join("modules/solers_ai/data/meshy_animation_actions.json").simplify_path());
-	candidates.push_back(exe_dir.path_join("../modules/solers_ai/data/meshy_animation_actions.json").simplify_path());
-	candidates.push_back(exe_dir.path_join("../../modules/solers_ai/data/meshy_animation_actions.json").simplify_path());
-
-	for (int i = 0; i < candidates.size(); i++) {
-		const String path = String(candidates[i]);
-		if (!FileAccess::exists(path)) {
-			continue;
-		}
-		memory_actions = _meshy_animation_actions_from_document(read_json_file(path));
-		if (!memory_actions.is_empty()) {
-			return memory_actions.duplicate(true);
-		}
+	memory_actions = _meshy_animation_actions_from_document(read_json_file("user://solers_plugin_cache/meshy_animation_actions.json"));
+	if (memory_actions.is_empty()) {
+		memory_actions = _meshy_animation_actions_from_document(read_module_data("modules/solers_ai/data/meshy_animation_actions.json"));
 	}
-	return Array();
+	return memory_actions.duplicate(true);
 }
 
 bool SolersPluginMeshy::animation_action_exists(int64_t p_action_id) {

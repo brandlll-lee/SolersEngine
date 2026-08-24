@@ -599,25 +599,33 @@ TEST_CASE("[SolersPluginTripo] v3 presets and generation constraints follow prov
 	CHECK(decimate.get("intent", String()) == "geometry.remesh");
 	CHECK(rig.get("intent", String()) == "rig.bind");
 	CHECK(retarget.get("intent", String()) == "animation.preset");
+	CHECK(rig.get("workspace", String()) == "animation");
+	CHECK(retarget.get("presentation_group", String()) == "Animation");
 	CHECK(Dictionary(Dictionary(decimate.get("source_inputs", Dictionary())).get("model", Dictionary())).get("option", String()) == "input");
 	CHECK_FALSE(Dictionary(retarget.get("source_inputs", Dictionary())).has("model"));
 	const Dictionary retarget_properties = Dictionary(retarget.get("options_schema", Dictionary())).get("properties", Dictionary());
-	CHECK(retarget_properties.has("animation"));
+	CHECK_FALSE(retarget_properties.has("animation"));
 	CHECK(retarget_properties.has("animations"));
 	CHECK(retarget_properties.has("bake_animation"));
-	CHECK(Array(Dictionary(retarget.get("options_schema", Dictionary())).get("oneOf", Array())).size() == 2);
-	CHECK_FALSE(retarget_properties.has("preset"));
+	CHECK(Dictionary(retarget_properties.get("animations", Dictionary())).get("enum_source", String()) == "animation_presets");
+	CHECK((int)Dictionary(retarget_properties.get("animations", Dictionary())).get("maxItems", 0) == 5);
 	Dictionary retarget_options;
 	retarget_options["input"] = "task_rigged";
 	CHECK(tripo.prepare_operation(retarget, Dictionary(), retarget_options).get("code", String()) == "INVALID_ARGUMENT");
-	retarget_options["animation"] = "preset:idle";
+	retarget_options["animations"] = JSON::parse_string(R"(["preset:idle"])");
 	CHECK(tripo.prepare_operation(retarget, Dictionary(), retarget_options).is_empty());
+	CHECK(retarget_options.get("animation", String()) == "preset:idle");
+	CHECK_FALSE(retarget_options.has("animations"));
 	Array animations;
 	animations.push_back("preset:walk");
+	animations.push_back("preset:run");
 	retarget_options["animations"] = animations;
-	CHECK(tripo.prepare_operation(retarget, Dictionary(), retarget_options).get("code", String()) == "INVALID_ARGUMENT");
 	retarget_options.erase("animation");
 	CHECK(tripo.prepare_operation(retarget, Dictionary(), retarget_options).is_empty());
+	CHECK(Array(retarget_options.get("animations", Array())).size() == 2);
+	Dictionary rigged;
+	rigged["traits"] = JSON::parse_string(R"({"rig_model":"v2.5-20260210","rig_type":"biped"})");
+	CHECK(Array(tripo.capability_extras(rigged).get("animation_presets", Array())).size() == 11);
 }
 
 TEST_CASE("[SolersAssetService] operation catalog resolves task and model sources across registered providers") {

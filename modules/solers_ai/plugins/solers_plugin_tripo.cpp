@@ -85,6 +85,8 @@ static Dictionary _tripo_operation(const String &p_id) {
 	} else if (p_id == "rig_check") {
 		op["label"] = "Check Rig";
 		op["intent"] = "rig.check";
+		op["workspace"] = "animation";
+		op["presentation_group"] = "Rigging";
 		op["presentation_order"] = 10;
 		op["endpoint"] = "/v3/animations/rig-check";
 		requires["model_state"] = "static_model";
@@ -92,23 +94,27 @@ static Dictionary _tripo_operation(const String &p_id) {
 	} else if (p_id == "rig") {
 		op["label"] = "Rig";
 		op["intent"] = "rig.bind";
+		op["workspace"] = "animation";
+		op["presentation_group"] = "Rigging";
 		op["presentation_order"] = 20;
 		op["endpoint"] = "/v3/animations/rig";
 		requires["model_state"] = "static_model";
-		properties = JSON::parse_string(R"({"model":{"type":"string","enum":["v1.0-20240301","v2.5-20260210"],"default":"v2.5-20260210","label":"Rig Model"},"rig_type":{"type":"string","enum":["biped","quadruped","hexapod","octopod","avian","serpentine","aquatic"],"default":"biped","label":"Rig Type"},"spec":{"type":"string","enum":["tripo","mixamo"],"default":"mixamo","label":"Skeleton"},"out_format":{"type":"string","enum":["glb","fbx"],"default":"glb","label":"Format"}})");
+		properties = JSON::parse_string(R"({"model":{"type":"string","enum":[{"id":"v1.0-20240301","label":"Tripo Rig v1.0","description":"Humanoid rig with the extended biped animation library."},{"id":"v2.5-20260210","label":"Tripo Rig v2.5","description":"Current rig for humanoids and supported creature body types."}],"enum_value":"id","enum_label":"label","default":"v2.5-20260210","label":"Rig Model"},"rig_type":{"type":"string","enum":[{"id":"biped","label":"Biped","description":"A humanoid or character that moves on two legs."},{"id":"quadruped","label":"Quadruped","description":"An animal or creature that moves on four legs."},{"id":"hexapod","label":"Hexapod","description":"An insect-like creature with six legs."},{"id":"octopod","label":"Octopod","description":"A creature with eight limbs, such as an octopus or spider."},{"id":"avian","label":"Avian","description":"A bird or winged creature."},{"id":"serpentine","label":"Serpentine","description":"A snake-like creature with an elongated body and no legs."},{"id":"aquatic","label":"Aquatic","description":"A fish or other swimming creature."}],"enum_value":"id","enum_label":"label","default":"biped","label":"Rig Type"},"spec":{"type":"string","enum":[{"id":"tripo","label":"Tripo","description":"Use Tripo native bone names."},{"id":"mixamo","label":"Mixamo","description":"Use Mixamo-compatible bone names for common animation tools."}],"enum_value":"id","enum_label":"label","default":"mixamo","label":"Skeleton"},"out_format":{"type":"string","enum":[{"id":"glb","label":"GLB","description":"Compact glTF file recommended for Godot and the web."},{"id":"fbx","label":"FBX","description":"Exchange format for DCC and animation tools."}],"enum_value":"id","enum_label":"label","default":"glb","label":"Format"}})");
 		traits["model_state"] = "rigged_model";
 		traits["rig"] = "present";
+		traits["rig_model"] = JSON::parse_string(R"({"option":"model"})");
+		traits["rig_type"] = JSON::parse_string(R"({"option":"rig_type"})");
 	} else if (p_id == "retarget") {
 		op["label"] = "Animate";
 		op["intent"] = "animation.preset";
+		op["workspace"] = "animation";
+		op["presentation_group"] = "Animation";
 		op["presentation_order"] = 30;
 		op["endpoint"] = "/v3/animations/retarget";
 		requires["rig"] = "present";
-		properties = JSON::parse_string(R"({"animation":{"type":"string","label":"Animation"},"animations":{"type":"array","minItems":1,"items":{"type":"string"},"label":"Animations"},"out_format":{"type":"string","enum":["glb","fbx"],"default":"glb","label":"Format"},"bake_animation":{"type":"boolean","default":true,"label":"Bake Animation"},"export_with_geometry":{"type":"boolean","default":true,"label":"Export with Geometry"},"animate_in_place":{"type":"boolean","default":false,"label":"Animate in Place"}})");
-		Array modes;
-		modes.push_back(JSON::parse_string(R"({"required":["animation"],"not":{"required":["animations"]}})"));
-		modes.push_back(JSON::parse_string(R"({"required":["animations"],"not":{"required":["animation"]}})"));
-		schema["oneOf"] = modes;
+		properties = JSON::parse_string(R"({"animations":{"type":"array","minItems":1,"maxItems":5,"items":{"type":"string"},"enum_source":"animation_presets","enum_value":"id","enum_label":"label","label":"Animation Presets"},"out_format":{"type":"string","enum":["glb","fbx"],"default":"glb","label":"Format"},"bake_animation":{"type":"boolean","default":true,"label":"Bake Animation"},"export_with_geometry":{"type":"boolean","default":true,"label":"Export with Geometry"},"animate_in_place":{"type":"boolean","default":false,"label":"Animate in Place"}})");
+		required.push_back("animations");
+		op["presentation"] = JSON::parse_string(R"({"controls":{"animations":{"control":"multi_select"}}})");
 		traits["model_state"] = "animated_model";
 		traits["animation"] = "present";
 	} else {
@@ -272,13 +278,43 @@ Dictionary SolersPluginTripo::prepare_operation(const Dictionary &p_operation, c
 		return error_data("SOURCE_INPUT_MISSING", "Tripo operation requires a task id, file token, or model URL.");
 	}
 	if (p_operation.get("operation_id", String()) == "retarget") {
-		const bool has_animation = !String(r_provider_options.get("animation", String())).strip_edges().is_empty();
-		const bool has_animations = !Array(r_provider_options.get("animations", Array())).is_empty();
-		if (has_animation == has_animations) {
-			return error_data("INVALID_ARGUMENT", "Tripo retarget requires exactly one of animation or animations.");
+		const Array animations = r_provider_options.get("animations", Array());
+		if (animations.is_empty() || animations.size() > 5) {
+			return error_data("INVALID_ARGUMENT", "Tripo retarget requires one to five animation presets.");
+		}
+		if (animations.size() == 1) {
+			r_provider_options.erase("animations");
+			r_provider_options["animation"] = animations[0];
 		}
 	}
 	return Dictionary();
+}
+
+Dictionary SolersPluginTripo::capability_extras(const Dictionary &p_manifest) const {
+	const Dictionary traits = p_manifest.get("traits", Dictionary());
+	const Dictionary options = p_manifest.get("provider_options", Dictionary());
+	const String model = traits.get("rig_model", options.get("model", String()));
+	const String rig_type = traits.get("rig_type", options.get("rig_type", String()));
+	static const Dictionary catalog = read_module_data("modules/solers_ai/data/tripo_animation_presets.json");
+	const Array presets = Dictionary(Dictionary(catalog.get("presets", Dictionary())).get(model, Dictionary())).get(rig_type, Array());
+	Array choices;
+	for (const Variant &value : presets) {
+		if (value.get_type() == Variant::DICTIONARY) {
+			choices.push_back(Dictionary(value).duplicate(true));
+		} else {
+			const String id = value;
+			Dictionary choice;
+			choice["id"] = id;
+			choice["label"] = id.trim_prefix("preset:").replace(":", " ").replace("_", " ").capitalize();
+			choice["description"] = "Animation preset for this rig type.";
+			choices.push_back(choice);
+		}
+	}
+	Dictionary extras;
+	if (!choices.is_empty()) {
+		extras["animation_presets"] = choices;
+	}
+	return extras;
 }
 
 static Dictionary _tripo_data(const Dictionary &p_response, Dictionary &r_error) {
