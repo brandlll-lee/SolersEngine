@@ -64,8 +64,6 @@ public:
 class SolersActivityIndicator : public Control {
 	GDCLASS(SolersActivityIndicator, Control);
 
-	float phase = 0.0f;
-
 protected:
 	void _notification(int p_what);
 	static void _bind_methods() {}

@@ -35,6 +35,7 @@
 #include "core/io/image.h"
 #include "core/object/callable_mp.h"
 #include "core/os/keyboard.h"
+#include "core/os/time.h"
 #include "core/string/ustring.h"
 #include "core/variant/dictionary.h"
 #include "editor/editor_node.h"
@@ -157,10 +158,10 @@ SolersActivityIndicator::SolersActivityIndicator() {
 void SolersActivityIndicator::_notification(int p_what) {
 	if (p_what == NOTIFICATION_INTERNAL_PROCESS) {
 		if (is_visible_in_tree()) {
-			phase = Math::fposmod(phase + float(get_process_delta_time()), 1.4f);
 			queue_redraw();
 		}
 	} else if (p_what == NOTIFICATION_DRAW) {
+		const float phase = Math::fposmod(Time::get_singleton()->get_ticks_msec() / 1000.0f, 1.4f);
 		const float spacing = MIN(get_size().x, get_size().y) / 5.5f;
 		const Vector2 origin = (get_size() - Vector2(spacing * 4.0f, spacing * 4.0f)) * 0.5f;
 		for (int y = 0; y < 5; y++) {

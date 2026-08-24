@@ -105,7 +105,7 @@ void SolersAssetGrid::add_asset(const Dictionary &p_manifest, const Ref<Texture2
 		activity->set_custom_minimum_size(Size2(32, 32) * EDSCALE);
 		center->add_child(activity);
 		card->add_child(center);
-	} else {
+	} else if (p_preview.is_valid()) {
 		TextureRect *image = memnew(TextureRect);
 		image->set_anchors_and_offsets_preset(PRESET_FULL_RECT);
 		image->set_offsets_preset(PRESET_FULL_RECT, PRESET_MODE_MINSIZE, 2 * EDSCALE);
@@ -114,12 +114,25 @@ void SolersAssetGrid::add_asset(const Dictionary &p_manifest, const Ref<Texture2
 		image->set_texture(p_preview);
 		image->set_mouse_filter(MOUSE_FILTER_IGNORE);
 		card->add_child(image);
+	} else {
+		CenterContainer *center = memnew(CenterContainer);
+		center->set_anchors_and_offsets_preset(PRESET_FULL_RECT);
+		center->set_mouse_filter(MOUSE_FILTER_IGNORE);
+		TextureRect *placeholder = memnew(TextureRect);
+		placeholder->set_custom_minimum_size(Size2(32, 32) * EDSCALE);
+		placeholder->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+		const bool failed = status == "failed";
+		placeholder->set_texture(SolersIcons::get(failed ? SNAME("cross") : SNAME("tool_asset"), int(32 * EDSCALE)));
+		placeholder->set_self_modulate(card->get_theme_color(failed ? SNAME("failure_color") : SNAME("placeholder_color"), SNAME("SolersAssetCard")));
+		center->add_child(placeholder);
+		card->add_child(center);
 	}
 
 	Button *more = memnew(Button);
 	more->set_button_icon(SolersIcons::get(SNAME("more"), int(16 * EDSCALE)));
 	more->set_custom_minimum_size(Size2(28, 28) * EDSCALE);
 	more->set_theme_type_variation(SNAME("SolersStudioActionButton"));
+	more->set_mouse_filter(MOUSE_FILTER_PASS);
 	more->set_tooltip_text(TTRC("Asset actions"));
 	more->hide();
 	card->add_child(more);

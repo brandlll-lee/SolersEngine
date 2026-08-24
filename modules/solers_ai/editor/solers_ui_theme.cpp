@@ -418,6 +418,8 @@ Ref<Theme> SolersUITheme::create() {
 	for (const StringName &name : { SceneStringName(hover), SceneStringName(pressed), SNAME("hover_pressed"), SNAME("focus") }) {
 		theme->set_stylebox(name, "SolersAssetCard", asset_card_active);
 	}
+	theme->set_color(SNAME("failure_color"), "SolersAssetCard", editor_error);
+	theme->set_color(SNAME("placeholder_color"), "SolersAssetCard", tokens.text_dim);
 	theme->set_type_variation(SNAME("SolersPopupPanel"), SNAME("PanelContainer"));
 	theme->set_stylebox(SceneStringName(panel), "SolersPopupPanel", _solers_flat(tokens.surface, product_radius, tokens.border, border_width, 6 * EDSCALE));
 	for (const StringName &variation : { SNAME("SolersPopupItem"), SNAME("SolersPopupDangerItem") }) {

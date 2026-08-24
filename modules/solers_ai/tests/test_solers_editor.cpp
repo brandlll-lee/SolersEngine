@@ -145,6 +145,7 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	CHECK(theme->get_type_variation_base(SNAME("SolersStudioScroll")) == SNAME("VScrollBar"));
 	CHECK(theme->has_stylebox(SNAME("grabber_highlight"), SNAME("SolersStudioScroll")));
 	CHECK(theme->get_type_variation_base(SNAME("SolersAssetCard")) == SNAME("Button"));
+	CHECK(theme->get_color(SNAME("failure_color"), SNAME("SolersAssetCard")) != theme->get_color(SNAME("placeholder_color"), SNAME("SolersAssetCard")));
 	CHECK(theme->get_type_variation_base(SNAME("SolersPopupPanel")) == SNAME("PanelContainer"));
 	CHECK(theme->get_type_variation_base(SNAME("SolersPopupItem")) == SNAME("Button"));
 	CHECK(theme->get_type_variation_base(SNAME("SolersPopupDangerItem")) == SNAME("Button"));
@@ -312,6 +313,7 @@ TEST_CASE("[SolersStudio][SceneTree] selectors keep native state with the shared
 	REQUIRE(option_nodes.size() == 1);
 	CHECK(Object::cast_to<SolersStudioSelect>(option_nodes[0]) != nullptr);
 	SolersAssetGrid *grid = memnew(SolersAssetGrid);
+	grid->set_theme(SolersUITheme::create());
 	host->add_child(grid);
 	grid->add_asset(JSON::parse_string(R"({"id":"busy","status":"running"})"), Ref<Texture2D>());
 	MessageQueue::get_singleton()->flush();
@@ -323,8 +325,22 @@ TEST_CASE("[SolersStudio][SceneTree] selectors keep native state with the shared
 	REQUIRE(bool(card && menu && card_activity));
 	CHECK(card_activity->get_combined_minimum_size() == Size2(32, 32) * EDSCALE);
 	CHECK(Rect2(Vector2(), card->get_size()).encloses(menu->get_rect()));
+	CHECK(menu->get_mouse_filter() == Control::MOUSE_FILTER_PASS);
 	card->grab_focus();
 	CHECK(menu->is_visible());
+	grid->clear_assets();
+	grid->add_asset(JSON::parse_string(R"({"id":"failed","status":"failed"})"), Ref<Texture2D>());
+	MessageQueue::get_singleton()->flush();
+	const TypedArray<Node> failed_icons = grid->find_children("*", "TextureRect", true, false);
+	TextureRect *failed_icon = nullptr;
+	const Color failure_color = grid->get_theme()->get_color(SNAME("failure_color"), SNAME("SolersAssetCard"));
+	for (const Variant &node : failed_icons) {
+		TextureRect *candidate = Object::cast_to<TextureRect>(node.operator Object *());
+		failed_icon = candidate && candidate->get_self_modulate() == failure_color ? candidate : failed_icon;
+	}
+	REQUIRE(failed_icon);
+	CHECK(failed_icon->get_combined_minimum_size() == Size2(32, 32) * EDSCALE);
+	CHECK(failed_icon->get_self_modulate() == failure_color);
 
 	host->queue_free();
 	MessageQueue::get_singleton()->flush();
@@ -340,6 +356,8 @@ TEST_CASE("[SolersUI][SceneTree][Editor] editor locale and technical tool chrome
 	CHECK(TranslationServer::get_singleton()->get_editor_domain()->translate("Send", StringName()) != "Send");
 	CHECK(TranslationServer::get_singleton()->get_editor_domain()->translate("New chat", StringName()) == String::utf8("\xE6\x96\xB0\xE5\xBB\xBA\xE5\xAF\xB9\xE8\xAF\x9D"));
 	CHECK(TranslationServer::get_singleton()->get_editor_domain()->translate("Effort", StringName()) != "Effort");
+	CHECK(TranslationServer::get_singleton()->get_editor_domain()->translate("Generating", StringName()) != "Generating");
+	CHECK(TranslationServer::get_singleton()->get_editor_domain()->translate("Text prompt", StringName()) != "Text prompt");
 	CHECK(solers_tool_icon_for_ui_kind("search") == SNAME("tool_search"));
 	CHECK(solers_tool_icon_for_ui_kind("scene") == SNAME("tool_scene"));
 
