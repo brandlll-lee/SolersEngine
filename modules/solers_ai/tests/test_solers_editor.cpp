@@ -47,7 +47,9 @@
 #include "scene/gui/button.h"
 #include "scene/gui/file_dialog.h"
 #include "scene/gui/label.h"
+#include "scene/gui/menu_button.h"
 #include "scene/gui/panel_container.h"
+#include "scene/gui/popup_menu.h"
 #include "scene/gui/split_container.h"
 #include "scene/gui/texture_rect.h"
 #include "scene/main/scene_tree.h"
@@ -144,6 +146,7 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	CHECK(theme->has_stylebox(SNAME("normal"), SNAME("CheckButton")));
 	CHECK(theme->get_type_variation_base(SNAME("SolersPrimaryButton")) == SNAME("Button"));
 	CHECK(theme->has_stylebox(SNAME("normal"), SNAME("SolersPrimaryButton")));
+	CHECK(theme->get_color(SNAME("font_disabled_color"), SNAME("SolersPrimaryButton")) == SolersUITheme::make_tokens().on_primary);
 	CHECK(theme->get_type_variation_base(SNAME("SolersStudioPrompt")) == SNAME("TextEdit"));
 	CHECK(theme->get_type_variation_base(SNAME("SolersStudioSegment")) == SNAME("Button"));
 	CHECK(theme->has_stylebox(SNAME("pressed"), SNAME("SolersStudioSegment")));
@@ -323,7 +326,7 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 }
 
 TEST_CASE("[SolersStudio][SceneTree] schema form projects unknown connector fields without provider branches") {
-	const Dictionary properties = JSON::parse_string(R"({"future_mode":{"type":"string","enum_source":"future_choices","enum_value":"wire_value","enum_label":"display_name","default":"beta"},"future_count":{"type":"integer","minimum":1,"maximum":9,"default":4},"future_enabled":{"type":"boolean","default":true},"future_formats":{"type":"array","items":{"type":"string","enum":["glb","obj"]},"default":["glb"]},"future_prompt":{"type":"string","default":"Detailed"},"future_image":{"type":"string"}})");
+	const Dictionary properties = JSON::parse_string(R"({"future_mode":{"type":"string","enum_source":"future_choices","enum_value":"wire_value","enum_label":"display_name","default":"beta"},"future_count":{"type":"integer","minimum":1,"maximum":9,"default":4},"future_enabled":{"type":"boolean","default":true},"future_formats":{"type":"array","maxItems":1,"items":{"type":"string","enum":["glb","obj"]},"default":["glb"]},"future_prompt":{"type":"string","default":"Detailed"},"future_image":{"type":"string"}})");
 	const Dictionary extras = JSON::parse_string(R"({"future_choices":[{"wire_value":"alpha","display_name":"Alpha"},{"wire_value":"beta","display_name":"Beta"}]})");
 	const Dictionary presentation = JSON::parse_string(R"({"controls":{"future_mode":{"control":"segmented"},"future_count":{"control":"slider"},"future_formats":{"control":"multi_select"},"future_prompt":{"control":"multiline"},"future_image":{"control":"image"}}})");
 	SolersSchemaForm *form = memnew(SolersSchemaForm);
@@ -337,6 +340,19 @@ TEST_CASE("[SolersStudio][SceneTree] schema form projects unknown connector fiel
 	CHECK(Array(form->get_values().get("future_formats", Array())).has("glb"));
 	CHECK(form->get_values().get("future_prompt", String()) == "Detailed");
 	CHECK(form->find_children("*", "SolersSurface", true, false).size() == 1);
+	const TypedArray<Node> menus = form->find_children("*", "MenuButton", true, false);
+	MenuButton *format_selector = nullptr;
+	for (const Variant &node : menus) {
+		MenuButton *candidate = Object::cast_to<MenuButton>(node.operator Object *());
+		format_selector = candidate && candidate->get_meta("field_kind", String()) == "multi_select" ? candidate : format_selector;
+	}
+	REQUIRE(format_selector);
+	PopupMenu *formats = format_selector->get_popup();
+	CHECK(formats->is_search_bar_enabled());
+	CHECK_FALSE(formats->is_hide_on_checkable_item_selection());
+	CHECK(formats->is_item_checked(0));
+	formats->emit_signal(SNAME("id_pressed"), 1);
+	CHECK_FALSE(formats->is_item_checked(1));
 	const String source_path = "user://solers-schema-image.png";
 	Ref<Image> image = Image::create_empty(640, 360, false, Image::FORMAT_RGBA8);
 	REQUIRE(image->save_png(source_path) == OK);
@@ -362,10 +378,12 @@ TEST_CASE("[SolersStudio][SceneTree] schema form projects unknown connector fiel
 	changed["future_mode"] = "alpha";
 	changed["future_count"] = 7;
 	changed["future_enabled"] = false;
+	changed["future_formats"] = JSON::parse_string(R"(["obj"])");
 	form->set_values(changed);
 	CHECK(form->get_values().get("future_mode", String()) == "alpha");
 	CHECK((int)form->get_values().get("future_count", 0) == 7);
 	CHECK_FALSE((bool)form->get_values().get("future_enabled", true));
+	CHECK(Array(form->get_values().get("future_formats", Array())).has("obj"));
 	form->queue_free();
 	MessageQueue::get_singleton()->flush();
 }
@@ -425,6 +443,8 @@ TEST_CASE("[SolersStudio][SceneTree] selectors keep native state with the shared
 	CHECK_FALSE(ready_card->is_pressed());
 	card->grab_focus();
 	CHECK(menu->is_visible());
+	ready_menu->grab_focus();
+	CHECK(ready_menu->is_visible());
 	grid->clear_assets();
 	grid->add_asset(JSON::parse_string(R"({"id":"failed","status":"failed"})"), Ref<Texture2D>());
 	MessageQueue::get_singleton()->flush();

@@ -387,6 +387,7 @@ Ref<Theme> SolersUITheme::create() {
 	for (const StringName &name : { SceneStringName(font_color), SNAME("font_hover_color"), SNAME("font_pressed_color"), SNAME("font_focus_color") }) {
 		theme->set_color(name, "SolersPrimaryButton", tokens.on_primary);
 	}
+	theme->set_color(SNAME("font_disabled_color"), "SolersPrimaryButton", tokens.on_primary);
 	theme->set_type_variation(SNAME("SolersStudioSegment"), SNAME("Button"));
 	theme->set_stylebox(CoreStringName(normal), "SolersStudioSegment", _solers_flat(tokens.surface, card_radius, Color(), 0, 6 * EDSCALE));
 	theme->set_stylebox(SceneStringName(hover), "SolersStudioSegment", _solers_flat(tokens.card_hover, card_radius, Color(), 0, 6 * EDSCALE));

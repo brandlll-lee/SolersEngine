@@ -2,6 +2,7 @@ msgid ""
 msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Language: zh_Hans\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
 
 msgid "CONNECTION"
 msgstr "连接"
@@ -560,3 +561,82 @@ msgstr "向上轴"
 
 msgid "Use Meshy 7 ultra detail for Text-to-3D or single-image generation."
 msgstr "为文本生成 3D 或单图生成启用 Meshy 7 超高细节。"
+
+msgid "Animation Presets"
+msgstr "动画预设"
+
+msgid "Rigging"
+msgstr "骨骼绑定"
+
+msgid "No options available"
+msgstr "没有可用选项"
+
+msgid "Select options..."
+msgstr "选择选项..."
+
+msgid "%d option selected"
+msgid_plural "%d options selected"
+msgstr[0] "已选择 %d 个选项"
+
+msgid "Biped"
+msgstr "双足"
+
+msgid "Quadruped"
+msgstr "四足"
+
+msgid "Hexapod"
+msgstr "六足"
+
+msgid "Octopod"
+msgstr "八足"
+
+msgid "Avian"
+msgstr "鸟类"
+
+msgid "Serpentine"
+msgstr "蛇形"
+
+msgid "Aquatic"
+msgstr "水生"
+
+msgid "A humanoid or character that moves on two legs."
+msgstr "适用于用两条腿行动的人形或角色。"
+
+msgid "An animal or creature that moves on four legs."
+msgstr "适用于用四条腿行动的动物或生物。"
+
+msgid "An insect-like creature with six legs."
+msgstr "适用于拥有六条腿的昆虫类生物。"
+
+msgid "A creature with eight limbs, such as an octopus or spider."
+msgstr "适用于章鱼、蜘蛛等拥有八条肢体的生物。"
+
+msgid "A bird or winged creature."
+msgstr "适用于鸟类或有翅膀的生物。"
+
+msgid "A snake-like creature with an elongated body and no legs."
+msgstr "适用于身体细长、没有腿的蛇形生物。"
+
+msgid "A fish or other swimming creature."
+msgstr "适用于鱼类或其他游泳生物。"
+
+msgid "Humanoid rig with the extended biped animation library."
+msgstr "人形骨架，可使用扩展的双足动画库。"
+
+msgid "Current rig for humanoids and supported creature body types."
+msgstr "当前版本骨架，支持人形及多种生物体型。"
+
+msgid "Use Tripo native bone names."
+msgstr "使用 Tripo 原生骨骼命名。"
+
+msgid "Use Mixamo-compatible bone names for common animation tools."
+msgstr "使用兼容 Mixamo 的骨骼命名，便于接入常用动画工具。"
+
+msgid "Compact glTF file recommended for Godot and the web."
+msgstr "紧凑的 glTF 文件，推荐用于 Godot 和 Web。"
+
+msgid "Exchange format for DCC and animation tools."
+msgstr "适用于 DCC 与动画工具交换的格式。"
+
+msgid "Animation preset for this rig type."
+msgstr "适用于当前骨架类型的动画预设。"

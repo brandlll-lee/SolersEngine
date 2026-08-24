@@ -131,17 +131,9 @@ static const SolersStudioRoute &_studio_route(const String &p_id) {
 	return studio_routes[1];
 }
 
-struct SolersAnimationIntent {
-	const char *id;
-	const char *label;
-};
-
-static constexpr SolersAnimationIntent animation_intents[] = {
-	{ "rig.check", "Check rig compatibility" },
-	{ "rig.bind", "Bind skeleton" },
-	{ "animation.text", "Text to animation" },
-	{ "animation.preset", "Preset animation" },
-};
+static bool _studio_operation_less(const Variant &p_left, const Variant &p_right) {
+	return int(Dictionary(p_left).get("presentation_order", 0)) < int(Dictionary(p_right).get("presentation_order", 0));
+}
 
 static Dictionary _studio_schema_subset(const Dictionary &p_schema, const Array &p_include, const Array &p_exclude, const Dictionary &p_constraints, bool p_remaining) {
 	const Dictionary properties = p_schema.has("properties") ? Dictionary(p_schema["properties"]) : p_schema;
@@ -278,7 +270,6 @@ void SolersStudio::_route_selected(int) {
 	library_tabs->set_tabs_visible(!project_library);
 	_refresh_providers();
 	_refresh_project_assets();
-	_refresh_animation_workspace();
 	_sync_workspace();
 }
 
@@ -567,12 +558,13 @@ void SolersStudio::_catalog_search_pressed() {
 	_start_catalog_work("search", args);
 }
 void SolersStudio::_finish_catalog_work() {
+	const bool owns_catalog = String(_studio_route(_current_route()).library) == "catalog";
 	if (catalog_result_ready.is_set()) {
 		catalog_result_ready.clear();
 		const Dictionary result = catalog_result;
-		if (!(bool)result.get("ok", false)) {
+		if (owns_catalog && !(bool)result.get("ok", false)) {
 			_show_result(result, String());
-		} else {
+		} else if (owns_catalog) {
 			const Dictionary result_data = result.get("data", Dictionary());
 			if (catalog_action == "search") {
 				catalog_list->clear();
@@ -586,7 +578,7 @@ void SolersStudio::_finish_catalog_work() {
 				_sync_library_empty_states();
 				asset_status->set_text(vformat(TTRN("%d catalog asset", "%d catalog assets", catalog_list->get_item_count()), catalog_list->get_item_count()));
 			} else {
-				capability_data = result_data;
+				catalog_capabilities = result_data;
 				catalog_variant->clear();
 				for (const Variant &value : Array(result_data.get("variants", Array()))) {
 					const Dictionary variant = value;
@@ -605,7 +597,7 @@ void SolersStudio::_finish_catalog_work() {
 		previews = catalog_previews;
 		catalog_previews.clear();
 	}
-	for (const Variant &value : previews) {
+	for (const Variant &value : owns_catalog ? previews : Array()) {
 		const Dictionary item_preview = value;
 		const int index = item_preview.get("index", -1);
 		const Ref<Image> image = item_preview.get("image", Ref<Image>());
@@ -653,7 +645,7 @@ void SolersStudio::_acquire_pressed() {
 	args["provider"] = _selected_provider(catalog_provider);
 	args["asset_id"] = selected_catalog.get("asset_id", selected_catalog.get("id", String()));
 	args["variant"] = catalog_variant->get_selected_metadata();
-	args["source_version"] = capability_data.get("source_version", String());
+	args["source_version"] = catalog_capabilities.get("source_version", String());
 	_show_result(assets->catalog_acquire(args, String()), TTRC("Asset acquisition queued."));
 }
 void SolersStudio::_refresh_project_assets() {
@@ -815,7 +807,7 @@ void SolersStudio::_show_manifest(const Dictionary &p_manifest) {
 	Dictionary capability_args;
 	capability_args["asset_id"] = p_manifest.get("id", String());
 	const Dictionary result = assets->capabilities(capability_args);
-	capability_data = result.get("data", Dictionary());
+	asset_capabilities = result.get("data", Dictionary());
 	_refresh_animation_workspace();
 	_refresh_preview_controls();
 	_sync_workspace();
@@ -856,7 +848,7 @@ void SolersStudio::_sync_workspace() {
 	asset_actions->set_visible(ready && model_workspace);
 	asset_status->set_visible(empty || !ready || preview_failed);
 	bool has_remesh = false;
-	for (const Variant &value : Array(capability_data.get("available_operations", Array()))) {
+	for (const Variant &value : Array(asset_capabilities.get("available_operations", Array()))) {
 		has_remesh |= Dictionary(value).get("intent", String()) == "geometry.remesh";
 	}
 	const bool model_actions = String(route_info.bottom_action) == "model";
@@ -913,21 +905,17 @@ void SolersStudio::_refresh_animation_workspace() {
 	}
 	const String selected_provider = _selected_provider(animation_provider);
 	Array providers;
-	for (const Variant &value : Array(capability_data.get("available_operations", Array()))) {
+	const String workspace = _studio_route(_current_route()).workspace;
+	for (const Variant &value : Array(asset_capabilities.get("available_operations", Array()))) {
 		const Dictionary operation = value;
-		const String intent = operation.get("intent", String());
-		bool animation_intent = false;
-		for (const SolersAnimationIntent &candidate : animation_intents) {
-			animation_intent |= intent == candidate.id;
-		}
 		const String provider = operation.get("provider", String());
-		if (animation_intent && !providers.has(provider)) {
+		if (operation.get("workspace", String()) == workspace && !providers.has(provider)) {
 			providers.push_back(provider);
 		}
 	}
 	animation_provider->clear();
 	int selected = -1;
-	const Dictionary contexts = capability_data.get("provider_contexts", Dictionary());
+	const Dictionary contexts = asset_capabilities.get("provider_contexts", Dictionary());
 	for (const Variant &value : providers) {
 		const String provider = value;
 		const Dictionary context = contexts.get(provider, Dictionary());
@@ -954,22 +942,29 @@ void SolersStudio::_animation_provider_selected(int p_index) {
 		child->queue_free();
 	}
 	const String provider = _selected_provider(animation_provider);
-	for (const SolersAnimationIntent &intent : animation_intents) {
-		for (const Variant &value : Array(capability_data.get("available_operations", Array()))) {
-			const Dictionary operation = value;
-			if (operation.get("provider", String()) != provider || operation.get("intent", String()) != intent.id) {
-				continue;
-			}
-			_studio_label(animation_operation_list, TTR(intent.label), SNAME("SolersSessionMeta"));
-			Button *button = _studio_add<Button>(animation_operation_list);
-			button->set_text(TTR(operation.get("label", String())));
-			button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
-			button->set_theme_type_variation(SNAME("SolersStudioActionButton"));
-			button->connect(SceneStringName(pressed), callable_mp(this, &SolersStudio::_animation_operation_selected).bind(operation));
-			if (animation_operation.is_empty()) {
-				_animation_operation_selected(operation);
-			}
-			break;
+	Array operations;
+	for (const Variant &value : Array(asset_capabilities.get("available_operations", Array()))) {
+		const Dictionary operation = value;
+		if (operation.get("provider", String()) == provider && operation.get("workspace", String()) == _studio_route(_current_route()).workspace) {
+			operations.push_back(operation);
+		}
+	}
+	operations.sort_custom(callable_mp_static(_studio_operation_less));
+	String group;
+	for (const Variant &value : operations) {
+		const Dictionary operation = value;
+		const String next_group = operation.get("presentation_group", operation.get("category", String()));
+		if (!next_group.is_empty() && next_group != group) {
+			group = next_group;
+			_studio_label(animation_operation_list, TTR(group), SNAME("SolersSessionMeta"));
+		}
+		Button *button = _studio_add<Button>(animation_operation_list);
+		button->set_text(TTR(operation.get("label", String())));
+		button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+		button->set_theme_type_variation(SNAME("SolersStudioActionButton"));
+		button->connect(SceneStringName(pressed), callable_mp(this, &SolersStudio::_animation_operation_selected).bind(operation));
+		if (animation_operation.is_empty()) {
+			_animation_operation_selected(operation);
 		}
 	}
 	animation_provider->set_disabled(animation_provider->get_item_count() == 0);
@@ -983,7 +978,7 @@ void SolersStudio::_animation_provider_selected(int p_index) {
 void SolersStudio::_animation_operation_selected(const Dictionary &p_operation) {
 	animation_operation = p_operation;
 	const String provider = p_operation.get("provider", String());
-	const Dictionary context = Dictionary(capability_data.get("provider_contexts", Dictionary())).get(provider, Dictionary());
+	const Dictionary context = Dictionary(asset_capabilities.get("provider_contexts", Dictionary())).get(provider, Dictionary());
 	animation_form->set_schema(p_operation.get("options_schema", Dictionary()), context, p_operation.get("presentation", Dictionary()));
 	animation_run_button->set_text(TTR(p_operation.get("label", TTRC("Run operation"))));
 	animation_run_button->set_disabled(p_operation.is_empty());
@@ -1056,8 +1051,8 @@ void SolersStudio::_preview_skeleton_toggled(bool p_visible) {
 void SolersStudio::_remesh_pressed() {
 	const String selected_provider = _selected_provider(remesh_provider);
 	remesh_provider->clear();
-	const Dictionary contexts = capability_data.get("provider_contexts", Dictionary());
-	for (const Variant &value : Array(capability_data.get("available_operations", Array()))) {
+	const Dictionary contexts = asset_capabilities.get("provider_contexts", Dictionary());
+	for (const Variant &value : Array(asset_capabilities.get("available_operations", Array()))) {
 		const Dictionary operation = value;
 		if (operation.get("intent", String()) != "geometry.remesh") {
 			continue;
@@ -1084,14 +1079,14 @@ void SolersStudio::_remesh_provider_selected(int p_index) {
 	remesh_provider->select(p_index);
 	remesh_operation.clear();
 	const String provider = _selected_provider(remesh_provider);
-	for (const Variant &value : Array(capability_data.get("available_operations", Array()))) {
+	for (const Variant &value : Array(asset_capabilities.get("available_operations", Array()))) {
 		const Dictionary operation = value;
 		if (operation.get("provider", String()) == provider && operation.get("intent", String()) == "geometry.remesh") {
 			remesh_operation = operation;
 			break;
 		}
 	}
-	const Dictionary context = Dictionary(capability_data.get("provider_contexts", Dictionary())).get(provider, Dictionary());
+	const Dictionary context = Dictionary(asset_capabilities.get("provider_contexts", Dictionary())).get(provider, Dictionary());
 	remesh_form->set_schema(remesh_operation.get("options_schema", Dictionary()), context, remesh_operation.get("presentation", Dictionary()));
 }
 

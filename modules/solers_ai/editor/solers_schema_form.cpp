@@ -45,7 +45,9 @@
 #include "scene/gui/file_dialog.h"
 #include "scene/gui/label.h"
 #include "scene/gui/line_edit.h"
+#include "scene/gui/menu_button.h"
 #include "scene/gui/option_button.h"
+#include "scene/gui/popup_menu.h"
 #include "scene/gui/slider.h"
 #include "scene/gui/spin_box.h"
 #include "scene/gui/text_edit.h"
@@ -120,12 +122,10 @@ Control *SolersSchemaForm::_create_field(const StringName &p_name, const Diction
 		enum_values = Dictionary(p_schema.get("items", Dictionary())).get("enum", enum_values);
 	}
 	Control *field = nullptr;
-	if (!enum_values.is_empty() && (control_type == "segmented" || control_type == "multi_select")) {
+	if (!enum_values.is_empty() && control_type == "segmented") {
 		HBoxContainer *segments = memnew(HBoxContainer);
 		Ref<ButtonGroup> group;
-		if (control_type == "segmented") {
-			group.instantiate();
-		}
+		group.instantiate();
 		const String value_key = p_schema.get("enum_value", "id");
 		const String label_key = p_schema.get("enum_label", "label");
 		const Dictionary labels = p_presentation.get("labels", Dictionary());
@@ -145,12 +145,39 @@ Control *SolersSchemaForm::_create_field(const StringName &p_name, const Diction
 			}
 			segment->set_h_size_flags(SIZE_EXPAND_FILL);
 			segment->set_meta("value", id);
-			segment->set_pressed(control_type == "multi_select" ? p_default.get_type() == Variant::ARRAY && Array(p_default).has(id) : id == p_default);
+			segment->set_pressed(id == p_default);
 			segments->add_child(segment);
 		}
 		segments->set_meta("button_group", group);
-		segments->set_meta("field_kind", control_type);
+		segments->set_meta("field_kind", "segmented");
 		field = segments;
+	} else if (control_type == "multi_select" && (!enum_values.is_empty() || !enum_source.is_empty())) {
+		MenuButton *options = memnew(MenuButton);
+		PopupMenu *popup = options->get_popup();
+		popup->set_hide_on_checkable_item_selection(false);
+		popup->set_search_bar_enabled(true);
+		const String value_key = p_schema.get("enum_value", "id");
+		const String label_key = p_schema.get("enum_label", "label");
+		for (int i = 0; i < enum_values.size(); i++) {
+			const Variant value = enum_values[i];
+			Variant id = value;
+			String label = String(value);
+			String description;
+			if (value.get_type() == Variant::DICTIONARY) {
+				const Dictionary item = value;
+				id = item.get(value_key, item.get("value", Variant()));
+				label = item.get(label_key, item.get("name", String(id)));
+				description = item.get("description", String());
+			}
+			popup->add_check_item(TTR(label), i);
+			popup->set_item_metadata(i, id);
+			popup->set_item_tooltip(i, TTR(description));
+			popup->set_item_checked(i, p_default.get_type() == Variant::ARRAY && Array(p_default).has(id));
+		}
+		popup->connect(SNAME("id_pressed"), callable_mp(this, &SolersSchemaForm::_multi_select_pressed).bind(options));
+		options->set_disabled(enum_values.is_empty());
+		options->set_meta("field_kind", "multi_select");
+		field = options;
 	} else if (!enum_values.is_empty()) {
 		SolersStudioSelect *options = memnew(SolersStudioSelect);
 		options->set_popup_list(popup_list);
@@ -255,7 +282,50 @@ Control *SolersSchemaForm::_create_field(const StringName &p_name, const Diction
 	}
 	field->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	field->set_meta("schema", p_schema);
+	if (MenuButton *options = Object::cast_to<MenuButton>(field)) {
+		_update_multi_select(options);
+	}
 	return field;
+}
+
+void SolersSchemaForm::_multi_select_pressed(int p_id, MenuButton *p_field) {
+	PopupMenu *popup = p_field->get_popup();
+	const int index = popup->get_item_index(p_id);
+	ERR_FAIL_INDEX(index, popup->get_item_count());
+	const int maximum = Dictionary(p_field->get_meta("schema", Dictionary())).get("maxItems", 0);
+	int selected = 0;
+	for (int i = 0; i < popup->get_item_count(); i++) {
+		selected += popup->is_item_checked(i);
+	}
+	if (popup->is_item_checked(index) || maximum <= 0 || selected < maximum) {
+		popup->toggle_item_checked(index);
+	}
+	_update_multi_select(p_field);
+}
+
+void SolersSchemaForm::_update_multi_select(MenuButton *p_field) {
+	PopupMenu *popup = p_field->get_popup();
+	const int maximum = Dictionary(p_field->get_meta("schema", Dictionary())).get("maxItems", 0);
+	int selected = 0;
+	String selected_label;
+	for (int i = 0; i < popup->get_item_count(); i++) {
+		if (popup->is_item_checked(i)) {
+			selected++;
+			selected_label = popup->get_item_text(i);
+		}
+	}
+	for (int i = 0; i < popup->get_item_count(); i++) {
+		popup->set_item_disabled(i, maximum > 0 && selected >= maximum && !popup->is_item_checked(i));
+	}
+	if (popup->get_item_count() == 0) {
+		p_field->set_text(TTRC("No options available"));
+	} else if (selected == 0) {
+		p_field->set_text(TTRC("Select options..."));
+	} else if (selected == 1) {
+		p_field->set_text(selected_label);
+	} else {
+		p_field->set_text(vformat(TTRN("%d option selected", "%d options selected", selected), selected));
+	}
 }
 void SolersSchemaForm::set_schema(const Dictionary &p_schema, const Dictionary &p_extras, const Dictionary &p_presentation) {
 	fields.clear();
@@ -310,10 +380,10 @@ Dictionary SolersSchemaForm::get_values() const {
 			value = pressed->get_meta("value", Variant());
 		} else if (field_kind == "multi_select") {
 			Array selected;
-			for (int i = 0; i < field->get_child_count(); i++) {
-				Button *segment = Object::cast_to<Button>(field->get_child(i));
-				if (segment && segment->is_pressed()) {
-					selected.push_back(segment->get_meta("value", Variant()));
+			const PopupMenu *popup = Object::cast_to<MenuButton>(field)->get_popup();
+			for (int i = 0; i < popup->get_item_count(); i++) {
+				if (popup->is_item_checked(i)) {
+					selected.push_back(popup->get_item_metadata(i));
 				}
 			}
 			value = selected;
@@ -346,12 +416,15 @@ Dictionary SolersSchemaForm::get_values() const {
 				continue;
 			}
 		} else if (LineEdit *line = Object::cast_to<LineEdit>(field)) {
-			const String text = line->get_text().strip_edges();
-			if (text.is_empty()) {
+			const String line_text = line->get_text().strip_edges();
+			if (line_text.is_empty()) {
 				continue;
 			}
-			value = type == "integer" ? Variant(text.to_int()) : type == "number" ? Variant(text.to_float())
-																				  : Variant(text);
+			if (type == "integer") {
+				value = line_text.to_int();
+			} else {
+				value = type == "number" ? Variant(line_text.to_float()) : Variant(line_text);
+			}
 		}
 		if (value.get_type() != Variant::NIL) {
 			values[entry.key] = value;
@@ -377,10 +450,12 @@ void SolersSchemaForm::set_values(const Dictionary &p_values) {
 				}
 			}
 		} else if (field_kind == "multi_select") {
-			for (int i = 0; i < field->get_child_count(); i++) {
-				Button *segment = Object::cast_to<Button>(field->get_child(i));
-				segment->set_pressed(Array(value).has(segment->get_meta("value", Variant())));
+			MenuButton *options = Object::cast_to<MenuButton>(field);
+			PopupMenu *popup = options->get_popup();
+			for (int i = 0; i < popup->get_item_count(); i++) {
+				popup->set_item_checked(i, Array(value).has(popup->get_item_metadata(i)));
 			}
+			_update_multi_select(options);
 		} else if (field_kind == "slider") {
 			Object::cast_to<HSlider>(field->get_child(0))->set_value(value);
 		} else if (OptionButton *options = Object::cast_to<OptionButton>(field)) {

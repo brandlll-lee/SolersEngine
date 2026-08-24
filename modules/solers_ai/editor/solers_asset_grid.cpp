@@ -42,7 +42,7 @@
 #include "scene/gui/texture_rect.h"
 
 static void _sync_asset_menu(Button *p_card, Button *p_menu) {
-	p_menu->set_visible(p_card->is_hovered() || p_card->has_focus() || p_menu->has_focus());
+	p_menu->set_visible(p_card->has_point(p_card->get_local_mouse_position()) || p_card->has_focus() || p_menu->has_focus());
 }
 
 SolersAssetGrid::SolersAssetGrid() {

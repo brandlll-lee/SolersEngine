@@ -33,6 +33,7 @@
 class Button;
 class Image;
 class InputEvent;
+class MenuButton;
 class SolersPopupList;
 class SolersSchemaForm : public VBoxContainer {
 	GDCLASS(SolersSchemaForm, VBoxContainer);
@@ -46,6 +47,8 @@ class SolersSchemaForm : public VBoxContainer {
 	void _drop_image(const Point2 &, const Variant &p_data, Control *p_field, Button *p_pick);
 	void _replace_images(const PackedStringArray &p_files, Control *p_field, Button *p_pick);
 	void _image_staged(const Dictionary &p_result, const Ref<Image> &p_image, ObjectID p_field_id, ObjectID p_pick_id, uint64_t p_generation, int p_slot);
+	void _multi_select_pressed(int p_id, MenuButton *p_field);
+	void _update_multi_select(MenuButton *p_field);
 
 protected:
 	static void _bind_methods() {}

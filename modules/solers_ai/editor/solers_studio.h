@@ -126,7 +126,8 @@ class SolersStudio : public PanelContainer {
 	Array project_manifests;
 	HashMap<String, Ref<Texture2D>> project_previews;
 	Dictionary selected_catalog;
-	Dictionary capability_data;
+	Dictionary asset_capabilities;
+	Dictionary catalog_capabilities;
 	Dictionary selected_preset;
 	Array generation_presets;
 	SolersPopupList *popup_list = nullptr;
