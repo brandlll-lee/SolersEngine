@@ -50,6 +50,7 @@
 #include "scene/gui/menu_button.h"
 #include "scene/gui/panel_container.h"
 #include "scene/gui/popup_menu.h"
+#include "scene/gui/scroll_container.h"
 #include "scene/gui/split_container.h"
 #include "scene/gui/texture_rect.h"
 #include "scene/main/scene_tree.h"
@@ -392,6 +393,9 @@ TEST_CASE("[SolersStudio][SceneTree] selectors keep native state with the shared
 	Control *host = memnew(Control);
 	SolersPopupList *popup = memnew(SolersPopupList);
 	Button *anchor = memnew(Button);
+	host->set_size(Size2(420, 240) * EDSCALE);
+	anchor->set_position(Size2(24, 196) * EDSCALE);
+	anchor->set_size(Size2(160, 32) * EDSCALE);
 	host->add_child(anchor);
 	host->add_child(popup);
 	SceneTree::get_singleton()->get_root()->add_child(host);
@@ -407,6 +411,25 @@ TEST_CASE("[SolersStudio][SceneTree] selectors keep native state with the shared
 	escape->set_pressed(true);
 	popup->unhandled_key_input(escape);
 	CHECK_FALSE(popup->is_visible());
+	Array overflow_items;
+	const int overflow_count = int(host->get_size().y / (34 * EDSCALE)) + 2;
+	for (int i = 0; i < overflow_count; i++) {
+		Dictionary item;
+		item["id"] = itos(i);
+		item["label"] = "Synthetic item " + itos(i);
+		overflow_items.push_back(item);
+	}
+	popup->popup(anchor, overflow_items, itos(overflow_count - 1), Callable());
+	MessageQueue::get_singleton()->flush();
+	PanelContainer *popup_panel = Object::cast_to<PanelContainer>(popup->get_child(1));
+	REQUIRE(popup_panel);
+	ScrollContainer *popup_scroll = Object::cast_to<ScrollContainer>(popup_panel->get_child(0));
+	REQUIRE(popup_scroll);
+	CHECK(popup_panel->get_position().y < anchor->get_position().y);
+	CHECK(popup_panel->get_rect().get_end().y <= host->get_size().y);
+	CHECK(popup_scroll->is_following_focus());
+	CHECK(popup_scroll->get_size().y < Object::cast_to<Control>(popup_scroll->get_child(0))->get_combined_minimum_size().y);
+	popup->close();
 	SolersSchemaForm *form = memnew(SolersSchemaForm);
 	form->set_popup_list(popup);
 	host->add_child(form);
@@ -475,6 +498,8 @@ TEST_CASE("[SolersUI][SceneTree][Editor] editor locale and technical tool chrome
 	CHECK(TranslationServer::get_singleton()->get_editor_domain()->translate("Effort", StringName()) != "Effort");
 	CHECK(TranslationServer::get_singleton()->get_editor_domain()->translate("Generating", StringName()) != "Generating");
 	CHECK(TranslationServer::get_singleton()->get_editor_domain()->translate("Text prompt", StringName()) != "Text prompt");
+	CHECK(TranslationServer::get_singleton()->get_editor_domain()->translate("Highest detail and fidelity", StringName()) != "Highest detail and fidelity");
+	CHECK(TranslationServer::get_singleton()->get_editor_domain()->translate("Smart low-poly topology", StringName()) != "Smart low-poly topology");
 	CHECK(solers_tool_icon_for_ui_kind("search") == SNAME("tool_search"));
 	CHECK(solers_tool_icon_for_ui_kind("scene") == SNAME("tool_scene"));
 

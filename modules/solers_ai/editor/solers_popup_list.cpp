@@ -37,6 +37,8 @@
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
 #include "scene/gui/panel_container.h"
+#include "scene/gui/scroll_container.h"
+#include "scene/resources/style_box.h"
 #include "servers/text/text_server.h"
 
 SolersPopupList::SolersPopupList() {
@@ -58,9 +60,16 @@ SolersPopupList::SolersPopupList() {
 	panel->set_theme_type_variation(SNAME("SolersPopupPanel"));
 	add_child(panel);
 
+	scroll = memnew(ScrollContainer);
+	scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_SHOW_NEVER);
+	scroll->set_vertical_scroll_mode(ScrollContainer::SCROLL_MODE_AUTO);
+	scroll->set_follow_focus(true);
+	panel->add_child(scroll);
+
 	rows = memnew(VBoxContainer);
+	rows->set_h_size_flags(SIZE_EXPAND_FILL);
 	rows->add_theme_constant_override("separation", int(4 * EDSCALE));
-	panel->add_child(rows);
+	scroll->add_child(rows);
 }
 
 void SolersPopupList::_dismissed() {
@@ -125,10 +134,21 @@ void SolersPopupList::popup(Control *p_anchor, const Array &p_items, const Strin
 		rows->add_child(row);
 	}
 
+	const float gap = 4 * EDSCALE;
+	const Control *bounds_control = get_parent_control();
+	const Vector2 bounds_origin = bounds_control ? bounds_control->get_global_position() - get_global_position() : Vector2();
+	const Vector2 bounds_size = bounds_control ? bounds_control->get_size() : get_size();
 	const Vector2 anchor_position = p_anchor->get_global_position() - get_global_position();
-	const float width = MAX(p_minimum_width, p_anchor->get_size().x);
-	panel->set_position(anchor_position + Vector2(0, p_anchor->get_size().y + 4 * EDSCALE));
-	panel->set_size(Size2(width, 0));
+	const float width = MIN(MAX(p_minimum_width, p_anchor->get_size().x), MAX(bounds_size.x - gap * 2, 0.0f));
+	const float natural_height = rows->get_combined_minimum_size().y + panel->get_theme_stylebox(SceneStringName(panel))->get_minimum_size().y;
+	const float available_below = MAX(bounds_origin.y + bounds_size.y - anchor_position.y - p_anchor->get_size().y - gap, 0.0f);
+	const float available_above = MAX(anchor_position.y - bounds_origin.y - gap, 0.0f);
+	const bool open_below = natural_height <= available_below || available_below >= available_above;
+	const float height = MIN(natural_height, open_below ? available_below : available_above);
+	const float x = CLAMP(anchor_position.x, bounds_origin.x + gap, MAX(bounds_origin.x + gap, bounds_origin.x + bounds_size.x - width - gap));
+	const float y = open_below ? anchor_position.y + p_anchor->get_size().y + gap : anchor_position.y - height - gap;
+	panel->set_position(Vector2(x, y));
+	panel->set_size(Size2(width, height));
 	panel->set_custom_minimum_size(Size2(width, 0));
 	show();
 	if (focus_row) {

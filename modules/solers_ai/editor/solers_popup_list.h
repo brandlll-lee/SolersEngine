@@ -37,6 +37,7 @@
 
 class Button;
 class PanelContainer;
+class ScrollContainer;
 class VBoxContainer;
 
 class SolersPopupList : public Control {
@@ -44,6 +45,7 @@ class SolersPopupList : public Control {
 
 	Button *dismiss = nullptr;
 	PanelContainer *panel = nullptr;
+	ScrollContainer *scroll = nullptr;
 	VBoxContainer *rows = nullptr;
 	Callable selected_callback;
 	ObjectID anchor_id;

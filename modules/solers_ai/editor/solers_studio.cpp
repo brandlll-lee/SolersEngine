@@ -236,9 +236,9 @@ void SolersStudio::_refresh_providers() {
 				const int index = generation_presets.size();
 				preset["icon"] = SolersIcons::provider_logo(profile.get("catalog_provider", id), int(18 * EDSCALE));
 				generation_presets.push_back(preset);
-				preset_button->add_item(preset.get("label", String()));
+				preset_button->add_item(TTR(preset.get("label", String())));
 				preset_button->set_item_icon(index, preset.get("icon", Ref<Texture2D>()));
-				preset_button->set_item_tooltip(index, preset.get("description", String()));
+				preset_button->set_item_tooltip(index, TTR(preset.get("description", String())));
 				if ((bool)preset.get("default", false)) {
 					default_preset = index;
 				}
@@ -248,7 +248,7 @@ void SolersStudio::_refresh_providers() {
 			}
 		}
 		if ((bool)profile.get("supports_catalog", false)) {
-			catalog_provider->add_item(label);
+			catalog_provider->add_item(TTR(label));
 			catalog_provider->set_item_metadata(catalog_provider->get_item_count() - 1, id);
 			if (id == selected_catalog_provider) {
 				catalog_provider->select(catalog_provider->get_item_count() - 1);
@@ -277,7 +277,7 @@ void SolersStudio::_preset_selected(int p_index) {
 	selected_preset = p_index >= 0 && p_index < generation_presets.size() ? Dictionary(generation_presets[p_index]) : Dictionary();
 	preset_button->set_disabled(selected_preset.is_empty());
 	preset_button->select(selected_preset.is_empty() ? -1 : p_index);
-	preset_description->set_text(selected_preset.get("description", String()));
+	preset_description->set_text(TTR(selected_preset.get("description", String())));
 	input_mode_button->clear();
 	int default_mode = -1;
 	for (const Variant &value : Array(selected_preset.get("input_modes", Array()))) {
