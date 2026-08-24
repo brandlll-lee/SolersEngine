@@ -373,7 +373,6 @@ static int _solers_capture_settle_frames(const Ref<World3D> &p_world, const Ref<
 void SolersObservationService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_project_info"), &SolersObservationService::get_project_info);
 	ClassDB::bind_method(D_METHOD("get_project_settings_summary"), &SolersObservationService::get_project_settings_summary);
-	ClassDB::bind_method(D_METHOD("list_project_files", "max_files"), &SolersObservationService::list_project_files, DEFVAL(512));
 	ClassDB::bind_method(D_METHOD("search_project", "args", "token_budget"), &SolersObservationService::search_project, DEFVAL(INT32_MAX));
 	ClassDB::bind_method(D_METHOD("observe_path", "path"), &SolersObservationService::observe_path);
 	ClassDB::bind_method(D_METHOD("digest_packed_scene", "path", "max_nodes"), &SolersObservationService::digest_packed_scene, DEFVAL(96));
@@ -1150,35 +1149,6 @@ Dictionary SolersObservationService::get_project_settings_summary() const {
 	summary["display/window/size/viewport_height"] = GLOBAL_GET("display/window/size/viewport_height");
 	summary["project_settings_path"] = project_settings->get_resource_path().path_join("project.godot");
 	return summary;
-}
-
-// Path lists are fed back into the model context; keep them bounded.
-static constexpr int SOLERS_FILE_LIST_HARD_CAP = 2000;
-
-Dictionary SolersObservationService::list_project_files(int p_max_files) const {
-	Dictionary result;
-	const int max_files = CLAMP(p_max_files, 1, SOLERS_FILE_LIST_HARD_CAP);
-	PackedStringArray snapshot;
-	bool available;
-	{
-		MutexLock lock(project_files_mutex);
-		snapshot = project_files;
-		available = project_files_ready;
-	}
-	Array files;
-	for (int i = 0; i < MIN(max_files, snapshot.size()); i++) {
-		files.push_back(snapshot[i]);
-	}
-	result["available"] = available;
-	if (!available) {
-		result["code"] = "EDITOR_INDEX_UPDATING";
-	}
-	result["files"] = files;
-	result["count"] = files.size();
-	result["scanned_count"] = snapshot.size();
-	result["truncated"] = snapshot.size() > max_files;
-	result["source"] = "editor_index";
-	return result;
 }
 
 static bool _solers_text_search_extension(const String &p_extension) {

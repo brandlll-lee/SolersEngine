@@ -95,7 +95,7 @@ void SolersAgentRuntime::bind_dock(SolersDock *p_dock) {
 	if (!p_dock) {
 		return;
 	}
-	p_dock->set_services(observation_service, tool_registry, action_timeline, permission_manager, mcp_adapter, rpc_server, settings_service);
+	p_dock->set_services(observation_service, tool_registry, action_timeline, permission_manager, settings_service);
 	p_dock->set_agent_session(agent_session);
 }
 

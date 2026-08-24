@@ -57,12 +57,10 @@ class SolersAgentSession;
 class SolersAssistantCell;
 class SolersGlyphButton;
 class SolersContextRing;
-class SolersMCPAdapter;
 class SolersPermissionManager;
 class SolersPMAIView;
 class SolersPlanCapsule;
 class SolersObservationService;
-class SolersRpcServer;
 class SolersSelectChip;
 class SolersSettingsService;
 class SolersStatusCell;
@@ -164,8 +162,6 @@ class SolersDock : public PanelContainer {
 	SolersActionTimeline *action_timeline = nullptr;
 	SolersPermissionManager *permission_manager = nullptr;
 	SolersAgentSession *agent_session = nullptr;
-	SolersMCPAdapter *mcp_adapter = nullptr;
-	SolersRpcServer *rpc_server = nullptr;
 	SolersSettingsService *settings_service = nullptr;
 	Callable session_select_callback;
 	Callable new_session_callback;
@@ -269,7 +265,7 @@ protected:
 	void _notification(int p_what);
 
 public:
-	void set_services(SolersObservationService *p_observation_service, SolersToolRegistry *p_tool_registry, SolersActionTimeline *p_action_timeline, SolersPermissionManager *p_permission_manager, SolersMCPAdapter *p_mcp_adapter, SolersRpcServer *p_rpc_server, SolersSettingsService *p_settings_service);
+	void set_services(SolersObservationService *p_observation_service, SolersToolRegistry *p_tool_registry, SolersActionTimeline *p_action_timeline, SolersPermissionManager *p_permission_manager, SolersSettingsService *p_settings_service);
 	void make_visible();
 	void set_agent_session(SolersAgentSession *p_agent_session);
 	void start_new_chat();

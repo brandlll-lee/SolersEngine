@@ -109,7 +109,6 @@ public:
 	Dictionary describe_render_state(Viewport *p_viewport, Camera3D *p_camera = nullptr, Node *p_scene_root = nullptr) const;
 	Dictionary get_project_info() const;
 	Dictionary get_project_settings_summary() const;
-	Dictionary list_project_files(int p_max_files = 512) const;
 	Dictionary search_project(const Dictionary &p_args, int p_token_budget = INT32_MAX) const;
 	// Front door: bounded digest for any res:// selection (directory / Resource / file).
 	// Kind comes from DirAccess + ResourceLoader / EditorFileSystem — not mention token names.

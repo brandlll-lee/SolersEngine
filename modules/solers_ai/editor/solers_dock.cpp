@@ -86,9 +86,6 @@
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
 #include "modules/solers_ai/llm/solers_llm_message.h"
 #include "modules/solers_ai/llm/solers_models_dev.h"
-#include "modules/solers_ai/protocol/solers_mcp_adapter.h"
-#include "modules/solers_ai/protocol/solers_rpc_server.h"
-
 constexpr int SOLERS_MENTION_VISIBLE_ROWS = 4;
 // Space reserved for a timeline row that has never been laid out. Only the
 // scrollbar range depends on it: the measured height replaces it the first time
@@ -2476,13 +2473,11 @@ void SolersDock::_notification(int p_what) {
 	}
 }
 
-void SolersDock::set_services(SolersObservationService *p_observation_service, SolersToolRegistry *p_tool_registry, SolersActionTimeline *p_action_timeline, SolersPermissionManager *p_permission_manager, SolersMCPAdapter *p_mcp_adapter, SolersRpcServer *p_rpc_server, SolersSettingsService *p_settings_service) {
+void SolersDock::set_services(SolersObservationService *p_observation_service, SolersToolRegistry *p_tool_registry, SolersActionTimeline *p_action_timeline, SolersPermissionManager *p_permission_manager, SolersSettingsService *p_settings_service) {
 	observation_service = p_observation_service;
 	tool_registry = p_tool_registry;
 	action_timeline = p_action_timeline;
 	permission_manager = p_permission_manager;
-	mcp_adapter = p_mcp_adapter;
-	rpc_server = p_rpc_server;
 	settings_service = p_settings_service;
 	if (provider_settings_view && p_settings_service) {
 		provider_settings_view->bind_services(p_settings_service, p_permission_manager);
