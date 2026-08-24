@@ -69,6 +69,8 @@ class SolersAssetService : public Object {
 	Vector<InputTask *> input_tasks;
 	mutable Mutex terminal_events_mutex;
 	Array terminal_events;
+	mutable Mutex asset_index_mutex;
+	HashMap<String, Dictionary> asset_index;
 	HashMap<String, Dictionary> project_imports;
 	mutable Mutex project_imports_mutex;
 	mutable Mutex catalog_cache_mutex;
@@ -92,6 +94,8 @@ class SolersAssetService : public Object {
 	Dictionary _ok(const Variant &p_data) const;
 	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
 	Dictionary _provider_config(const String &p_kind, const String &p_provider) const;
+	static Dictionary _asset_list_item(const Dictionary &p_manifest);
+	void _index_asset(const Dictionary &p_manifest);
 	Dictionary _manifest_for_asset(const String &p_asset_id) const;
 	void _cleanup_finished_task(const String &p_asset_id) const;
 	Dictionary _queue_manifest(const Dictionary &p_manifest, const Dictionary &p_provider_config);

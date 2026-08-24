@@ -664,6 +664,7 @@ void SolersAssetService::_set_task_state(Task *p_task, const Dictionary &p_state
 	}
 	String error;
 	if (SolersPlugin::write_json_atomic(_manifest_path(p_task->asset_id), p_state, error) && p_task->service) {
+		p_task->service->_index_asset(p_state);
 		p_task->service->revision.increment();
 	}
 }
@@ -1090,6 +1091,26 @@ void SolersAssetService::_run_task(Task *p_task) {
 	state["updated_at"] = Time::get_singleton()->get_datetime_string_from_system(true, true);
 	_set_task_state(p_task, state);
 	_download_preview(p_task, state, job->get_preview_url());
+}
+
+Dictionary SolersAssetService::_asset_list_item(const Dictionary &p_manifest) {
+	Dictionary item;
+	const char *fields[] = { "id", "kind", "name", "provider", "status", "stage", "progress", "preview_file", "error", "model_file", "files", "entrypoints", "project_entrypoints", "polycount", "vertex_count", "target_dir", "traits", "provider_task_id", "operation", "parent_asset_id", "source_provider", "source_asset_id", "source_variant", "source_version", "license", "attribution", "created_at", "updated_at" };
+	for (const char *field : fields) {
+		if (p_manifest.has(field)) {
+			item[field] = p_manifest[field];
+		}
+	}
+	return item;
+}
+
+void SolersAssetService::_index_asset(const Dictionary &p_manifest) {
+	const String asset_id = p_manifest.get("id", String());
+	if (asset_id.is_empty()) {
+		return;
+	}
+	MutexLock lock(asset_index_mutex);
+	asset_index[asset_id] = _asset_list_item(p_manifest);
 }
 
 Dictionary SolersAssetService::_manifest_for_asset(const String &p_asset_id) const {
@@ -2155,12 +2176,16 @@ Dictionary SolersAssetService::status(const Dictionary &p_args) const {
 
 Array SolersAssetService::list_assets() const {
 	Array assets;
-	PackedStringArray ids = DirAccess::get_directories_at(_asset_root());
+	MutexLock lock(asset_index_mutex);
+	PackedStringArray ids;
+	for (const KeyValue<String, Dictionary> &entry : asset_index) {
+		ids.push_back(entry.key);
+	}
 	ids.sort();
 	for (int i = ids.size() - 1; i >= 0; i--) {
-		Dictionary manifest = _manifest_for_asset(ids[i]);
-		if (!manifest.is_empty()) {
-			assets.push_back(manifest);
+		const Dictionary *item = asset_index.getptr(ids[i]);
+		if (item) {
+			assets.push_back(item->duplicate(true));
 		}
 	}
 	return assets;
@@ -2183,6 +2208,10 @@ Dictionary SolersAssetService::delete_asset(const String &p_asset_id) {
 	String error;
 	if (!SolersPlugin::remove_dir_recursive(_asset_dir(asset_id), error)) {
 		return _error("DELETE_FAILED", error);
+	}
+	{
+		MutexLock lock(asset_index_mutex);
+		asset_index.erase(asset_id);
 	}
 	revision.increment();
 	Dictionary data;
@@ -2925,6 +2954,7 @@ SolersAssetService::SolersAssetService() {
 	const PackedStringArray dirs = DirAccess::get_directories_at(_asset_root());
 	for (int i = 0; i < dirs.size(); i++) {
 		Dictionary manifest = SolersPlugin::read_json_file(_manifest_path(dirs[i]));
+		_index_asset(manifest);
 		const String status = String(manifest.get("status", String())).to_lower();
 		if (status == "ready" || status == "importing") {
 			if (status == "ready" && String(manifest.get("target_dir", String())).is_empty()) {
@@ -2952,7 +2982,9 @@ SolersAssetService::SolersAssetService() {
 			manifest["error"] = _error_data("RECOVERY_REQUIRES_ACTION", "The asset's plugin cannot resume unfinished provider work.");
 			manifest["updated_at"] = Time::get_singleton()->get_datetime_string_from_system(true, true);
 			String error;
-			SolersPlugin::write_json_atomic(_manifest_path(dirs[i]), manifest, error);
+			if (SolersPlugin::write_json_atomic(_manifest_path(dirs[i]), manifest, error)) {
+				_index_asset(manifest);
+			}
 			continue;
 		}
 		const Dictionary config = _provider_config(manifest.get("kind", String()), provider);
