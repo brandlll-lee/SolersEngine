@@ -1789,6 +1789,7 @@ void SolersToolRegistry::_register_asset_tools() {
 	}
 	SolersAssetService *svc = asset_service;
 	Array generation_plugin_ids;
+	Array operation_plugin_ids;
 	Array generation_kinds;
 	Array catalog_plugin_ids;
 	Array catalog_kinds;
@@ -1806,6 +1807,9 @@ void SolersToolRegistry::_register_asset_tools() {
 		const String id = String(profile.get("id", String())).strip_edges().to_lower();
 		const String label = String(profile.get("label", id));
 		const Array kinds = profile.get("kinds", Array());
+		if (!plugin->get_operation_defs().is_empty()) {
+			append_unique(operation_plugin_ids, id);
+		}
 		if ((bool)profile.get("supports_generation", false)) {
 			append_unique(generation_plugin_ids, id);
 			generation_labels += generation_labels.is_empty() ? label : ", " + label;
@@ -2045,8 +2049,16 @@ void SolersToolRegistry::_register_asset_tools() {
 				accesses.push_back(project);
 				return accesses; });
 
-	_add_observe_exposed("asset.capabilities", "List operations exposed by the plugin that created a project asset. asset_id accepts a job id or a res:// .solers.json sidecar path.", R"({"type":"object","properties":{"asset_id":{"type":"string","minLength":1,"description":"Job id or res:// .solers.json sidecar path."}},"required":["asset_id"],"additionalProperties":false})", SolersToolExposure::DEFERRED, [svc](const SolersToolContext &, const Dictionary &a) { return svc->capabilities(a); }, {}, {}, {}, SolersToolUiKind::ASSET);
-	_add("asset.run_operation", "Run an operation advertised by asset.capabilities and import the derived result directly into the project. The source may be a current job id or a res:// .solers.json sidecar.", R"({"type":"object","properties":{"asset_id":{"type":"string","minLength":1,"description":"Source job id or res:// .solers.json sidecar path."},"operation_id":{"type":"string","minLength":1},"options":{"type":"object"},"raw_provider_options":{"type":"object","description":"Advanced plugin-native options. Requires raw_confirmed=true."},"raw_confirmed":{"type":"boolean"},"target_dir":{"type":"string","description":"Optional res:// destination for the derived asset."},"import_profile":{"type":"string","enum":["runtime","baked_static"]},"max_triangles":{"type":"integer","minimum":0},"map_types":{"type":"array","items":{"type":"string"},"uniqueItems":true}},"required":["asset_id","operation_id"],"additionalProperties":false})", SolersPermissionManager::PERMISSION_EDIT_FILES, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DEFERRED, [svc](const SolersToolContext &ctx, const Dictionary &a) { return svc->run_operation_for_session(a, ctx.session_id); }, SolersToolExecution::MAIN_THREAD, [](const Dictionary &a) {
+	_add_observe_exposed("asset.capabilities", "List compatible operations from every registered Solers plugin for a project asset. asset_id accepts a job id or a res:// .solers.json sidecar path.", R"({"type":"object","properties":{"asset_id":{"type":"string","minLength":1,"description":"Job id or res:// .solers.json sidecar path."}},"required":["asset_id"],"additionalProperties":false})", SolersToolExposure::DEFERRED, [svc](const SolersToolContext &, const Dictionary &a) { return svc->capabilities(a); }, {}, {}, {}, SolersToolUiKind::ASSET);
+	Dictionary operation_schema = JSON::parse_string(R"({"type":"object","properties":{"asset_id":{"type":"string","minLength":1,"description":"Source job id or res:// .solers.json sidecar path."},"provider":{"type":"string"},"operation_id":{"type":"string","minLength":1},"options":{"type":"object"},"raw_provider_options":{"type":"object","description":"Advanced plugin-native options. Requires raw_confirmed=true."},"raw_confirmed":{"type":"boolean"},"target_dir":{"type":"string","description":"Optional res:// destination for the derived asset."},"import_profile":{"type":"string","enum":["runtime","baked_static"]},"max_triangles":{"type":"integer","minimum":0},"map_types":{"type":"array","items":{"type":"string"},"uniqueItems":true}},"required":["asset_id","provider","operation_id"],"additionalProperties":false})");
+	Dictionary operation_properties = operation_schema["properties"];
+	Dictionary operation_provider = operation_properties["provider"];
+	operation_provider["enum"] = operation_plugin_ids;
+	operation_provider["description"] = "Registered provider returned with the selected asset.capabilities operation.";
+	operation_properties["provider"] = operation_provider;
+	operation_schema["properties"] = operation_properties;
+	const CharString operation_json = JSON::stringify(operation_schema).utf8();
+	_add("asset.run_operation", "Run one provider-qualified operation advertised by asset.capabilities and import the derived result directly into the project. The source may be a current job id or a res:// .solers.json sidecar.", operation_json.get_data(), SolersPermissionManager::PERMISSION_EDIT_FILES, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DEFERRED, [svc](const SolersToolContext &ctx, const Dictionary &a) { return svc->run_operation_for_session(a, ctx.session_id); }, SolersToolExecution::MAIN_THREAD, [](const Dictionary &a) {
 				Array accesses;
 				Dictionary source;
 				source["mode"] = "read";

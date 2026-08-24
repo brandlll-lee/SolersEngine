@@ -360,17 +360,6 @@ void SolersPlugin::merge_options(Dictionary &r_body, const Dictionary &p_options
 	}
 }
 
-String SolersPlugin::first_manifest_field(const Dictionary &p_manifest, const Array &p_fields) {
-	for (int i = 0; i < p_fields.size(); i++) {
-		const String field = String(p_fields[i]);
-		const String value = String(p_manifest.get(field, String())).strip_edges();
-		if (!value.is_empty()) {
-			return value;
-		}
-	}
-	return String();
-}
-
 static String _solers_header_value(const List<String> &p_headers, const String &p_name) {
 	const String needle = p_name.to_lower() + ":";
 	for (const String &header : p_headers) {

@@ -149,7 +149,6 @@ public:
 	static String safe_slug(const String &p_text);
 	static String clean_base_url(const String &p_base_url);
 	static void merge_options(Dictionary &r_body, const Dictionary &p_options);
-	static String first_manifest_field(const Dictionary &p_manifest, const Array &p_fields);
 	static Array rank_catalog_assets(const Array &p_assets, const String &p_query);
 	static String match_catalog_variant_id(const Array &p_variants, const String &p_id);
 	static Dictionary project_import_selection(const Array &p_files, const Array &p_declared_import_files, const Array &p_declared_entrypoints);

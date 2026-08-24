@@ -44,9 +44,6 @@ static Dictionary _tripo_operation(const String &p_id) {
 		requires;
 	requires["kind"] = "3d";
 	requires["status"] = "ready";
-	Array task_fields;
-	task_fields.push_back("provider_task_id");
-	requires["task_id_fields"] = task_fields;
 	Dictionary schema;
 	schema["type"] = "object";
 	Dictionary properties;
@@ -56,45 +53,62 @@ static Dictionary _tripo_operation(const String &p_id) {
 
 	if (p_id == "texture") {
 		op["label"] = "Retexture";
+		op["intent"] = "material.retexture";
 		op["endpoint"] = "/v3/models/texture";
 		properties = JSON::parse_string(R"({"model":{"type":"string","enum":["v3.0-20250812","v2.5-20250123"],"default":"v3.0-20250812","label":"Texture Model"},"texture_quality":{"type":"string","enum":["standard","detailed","extreme"],"default":"detailed","label":"Texture Quality"},"pbr":{"type":"boolean","default":true,"label":"PBR Maps"},"texture_prompt":{"type":"object","label":"Texture Prompt","properties":{"text":{"type":"string","label":"Prompt"}},"required":["text"]},"part_names":{"type":"array","label":"Parts","items":{"type":"string"}}})");
 	} else if (p_id == "convert") {
 		op["label"] = "Convert";
+		op["intent"] = "model.convert";
 		op["endpoint"] = "/v3/models/convert";
 		properties = JSON::parse_string(R"({"format":{"type":"string","enum":["GLTF","USDZ","FBX","OBJ","STL","3MF"],"label":"Format"},"quad":{"type":"boolean","label":"Quad Topology"},"face_limit":{"type":"integer","minimum":1,"label":"Face Limit"},"flatten_bottom":{"type":"boolean","label":"Flatten Bottom"},"scale":{"type":"number","exclusiveMinimum":0,"label":"Scale"},"axis":{"type":"string","enum":["Y_UP","Z_UP"],"label":"Up Axis"},"fbx_preset":{"type":"string","enum":["blender","3dsmax","mixamo"],"label":"FBX Preset"}})");
 		required.push_back("format");
 	} else if (p_id == "segment") {
 		op["label"] = "Split Parts";
+		op["intent"] = "geometry.segment";
 		op["endpoint"] = "/v3/mesh/segment";
 		properties = JSON::parse_string(R"({"model":{"type":"string","enum":["v1.0-20250506","v2.0-20260430"],"default":"v2.0-20260430","label":"Segmentation Model"},"segmentation_granularity":{"type":"string","enum":["simple","balanced","detailed"],"default":"balanced","label":"Granularity"},"split_by_connectivity":{"type":"boolean","default":true,"label":"Split Connected Parts"}})");
 		traits["parts"] = "segmented";
 	} else if (p_id == "complete") {
 		op["label"] = "Complete Parts";
+		op["intent"] = "geometry.complete";
 		op["endpoint"] = "/v3/mesh/complete";
 		properties = Dictionary();
 	} else if (p_id == "decimate") {
 		op["label"] = "Optimize";
+		op["intent"] = "geometry.remesh";
 		op["endpoint"] = "/v3/mesh/decimate";
-		properties = JSON::parse_string(R"({"face_limit":{"type":"integer","minimum":100,"label":"Target Faces"},"quad":{"type":"boolean","label":"Quad Topology"}})");
+		properties = JSON::parse_string(R"({"model":{"type":"string","enum":["v2.0-20260430","v1.0-20250506"],"default":"v2.0-20260430","label":"Decimation Model"},"face_limit":{"type":"integer","minimum":100,"label":"Target Faces"},"quad":{"type":"boolean","label":"Quad Topology"},"bake":{"type":"boolean","default":true,"label":"Bake Textures"},"part_names":{"type":"array","label":"Parts","items":{"type":"string"}}})");
 		required.push_back("face_limit");
 		Array remediates;
 		remediates.push_back("triangle_budget");
 		op["remediates"] = remediates;
 	} else if (p_id == "rig_check") {
 		op["label"] = "Check Rig";
+		op["intent"] = "rig.check";
+		op["presentation_order"] = 10;
 		op["endpoint"] = "/v3/animations/rig-check";
+		requires["model_state"] = "static_model";
 		properties = Dictionary();
 	} else if (p_id == "rig") {
 		op["label"] = "Rig";
+		op["intent"] = "rig.bind";
+		op["presentation_order"] = 20;
 		op["endpoint"] = "/v3/animations/rig";
+		requires["model_state"] = "static_model";
 		properties = JSON::parse_string(R"({"model":{"type":"string","enum":["v1.0-20240301","v2.5-20260210"],"default":"v2.5-20260210","label":"Rig Model"},"rig_type":{"type":"string","enum":["biped","quadruped","hexapod","octopod","avian","serpentine","aquatic"],"default":"biped","label":"Rig Type"},"spec":{"type":"string","enum":["tripo","mixamo"],"default":"mixamo","label":"Skeleton"},"out_format":{"type":"string","enum":["glb","fbx"],"default":"glb","label":"Format"}})");
 		traits["model_state"] = "rigged_model";
 		traits["rig"] = "present";
 	} else if (p_id == "retarget") {
 		op["label"] = "Animate";
+		op["intent"] = "animation.preset";
+		op["presentation_order"] = 30;
 		op["endpoint"] = "/v3/animations/retarget";
-		properties = JSON::parse_string(R"({"preset":{"type":"string","label":"Animation Preset"},"out_format":{"type":"string","enum":["glb","fbx"],"default":"glb","label":"Format"}})");
-		required.push_back("preset");
+		requires["rig"] = "present";
+		properties = JSON::parse_string(R"({"animation":{"type":"string","label":"Animation"},"animations":{"type":"array","minItems":1,"items":{"type":"string"},"label":"Animations"},"out_format":{"type":"string","enum":["glb","fbx"],"default":"glb","label":"Format"},"bake_animation":{"type":"boolean","default":true,"label":"Bake Animation"},"export_with_geometry":{"type":"boolean","default":true,"label":"Export with Geometry"},"animate_in_place":{"type":"boolean","default":false,"label":"Animate in Place"}})");
+		Array modes;
+		modes.push_back(JSON::parse_string(R"({"required":["animation"],"not":{"required":["animations"]}})"));
+		modes.push_back(JSON::parse_string(R"({"required":["animations"],"not":{"required":["animation"]}})"));
+		schema["oneOf"] = modes;
 		traits["model_state"] = "animated_model";
 		traits["animation"] = "present";
 	} else {
@@ -105,6 +119,9 @@ static Dictionary _tripo_operation(const String &p_id) {
 	op["category"] = p_id == "rig" || p_id == "rig_check" || p_id == "retarget" ? "Animation" : "Model";
 	op["stage"] = p_id == "texture" ? "texturing" : p_id + "ing";
 	op["docs"] = "https://developers.tripo3d.ai/en/docs" + String(op["endpoint"]).trim_prefix("/v3");
+	op["source_inputs"] = p_id == "retarget"
+			? JSON::parse_string(R"({"task":{"option":"input","manifest_fields":["provider_task_id"]}})")
+			: JSON::parse_string(R"({"task":{"option":"input","manifest_fields":["provider_task_id"]},"model":{"option":"input","formats":["glb","gltf","fbx","obj","stl","3mf"]}})");
 	schema["properties"] = properties;
 	schema["required"] = required;
 	op["options_schema"] = schema;
@@ -251,12 +268,16 @@ Dictionary SolersPluginTripo::prepare_generate(const String &p_kind, const Dicti
 }
 
 Dictionary SolersPluginTripo::prepare_operation(const Dictionary &p_operation, const Dictionary &p_source_manifest, Dictionary &r_provider_options) const {
-	const Array fields = Dictionary(p_operation.get("requires", Dictionary())).get("task_id_fields", Array());
-	const String task_id = first_manifest_field(p_source_manifest, fields);
-	if (task_id.is_empty()) {
-		return error_data("SOURCE_TASK_MISSING", "Tripo operation requires the source provider task id.");
+	if (String(r_provider_options.get("input", String())).strip_edges().is_empty()) {
+		return error_data("SOURCE_INPUT_MISSING", "Tripo operation requires a task id, file token, or model URL.");
 	}
-	r_provider_options["input"] = task_id;
+	if (p_operation.get("operation_id", String()) == "retarget") {
+		const bool has_animation = !String(r_provider_options.get("animation", String())).strip_edges().is_empty();
+		const bool has_animations = !Array(r_provider_options.get("animations", Array())).is_empty();
+		if (has_animation == has_animations) {
+			return error_data("INVALID_ARGUMENT", "Tripo retarget requires exactly one of animation or animations.");
+		}
+	}
 	return Dictionary();
 }
 
@@ -382,6 +403,8 @@ bool SolersPluginTripo::_download_result(const Ref<SolersPluginJob> &p_job, Dict
 	const String url = output.get("model_url", String());
 	if (url.is_empty()) {
 		if (String(r_state.get("operation", String())) == "rig_check") {
+			r_state["operation_task_id"] = r_state.get("provider_task_id", String());
+			r_state["provider_task_id"] = r_state.get("source_provider_input", String());
 			r_state["rig_check"] = output;
 			r_state["provider_response"] = p_detail;
 			r_state["credits_consumed"] = p_detail.get("credits_consumed", 0.0);
@@ -478,6 +501,23 @@ void SolersPluginTripo::run_job(const Ref<SolersPluginJob> &p_job) {
 		const Dictionary definition = _tripo_operation(state.get("operation", String()));
 		endpoint = definition.get("endpoint", String());
 		stage = definition.get("stage", String());
+		const String model_path = body.get("input", String());
+		if (!model_path.is_empty() && FileAccess::exists(model_path)) {
+			Dictionary attachment;
+			attachment["local_path"] = model_path;
+			Dictionary upload_error;
+			const String token = _upload_attachment(p_job, attachment, headers, upload_error);
+			if (token.is_empty()) {
+				state["status"] = "failed";
+				state["error"] = upload_error;
+				p_job->set_state(state);
+				return;
+			}
+			body["input"] = token;
+		}
+		if (String(state.get("operation", String())) == "rig_check") {
+			state["source_provider_input"] = body.get("input", String());
+		}
 	}
 	const Dictionary detail = _submit_and_poll(p_job, state, endpoint, headers, body, stage);
 	if (!detail.is_empty() && _download_result(p_job, state, detail)) {

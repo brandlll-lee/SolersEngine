@@ -487,20 +487,6 @@ static Dictionary _solers_asset_traits(const Dictionary &p_manifest) {
 	return Dictionary(p_manifest.get("traits", Dictionary())).duplicate(true);
 }
 
-static bool _solers_schema_ui_supported(const Dictionary &p_schema) {
-	const Dictionary properties = p_schema.get("properties", Dictionary());
-	const Array required = p_schema.get("required", Array());
-	for (int i = 0; i < required.size(); i++) {
-		const String name = String(required[i]);
-		const Dictionary property = properties.get(name, Dictionary());
-		const String type = String(property.get("type", String()));
-		if (type != "string" && type != "boolean" && type != "integer") {
-			return false;
-		}
-	}
-	return true;
-}
-
 static bool _solers_normalize_integer_options(Dictionary &r_options, const Dictionary &p_properties, String &r_error) {
 	for (const Variant *K = p_properties.next(nullptr); K; K = p_properties.next(K)) {
 		const String name = String(*K);
@@ -536,43 +522,14 @@ static bool _solers_normalize_integer_options(Dictionary &r_options, const Dicti
 	return true;
 }
 
-static bool _solers_manifest_matches_operation(const Dictionary &p_manifest, const Dictionary &p_operation, String &r_reason) {
-	const Dictionary
-		requires
-	= p_operation.get("requires", Dictionary());
-	const String required_kind = String(requires.get("kind", String()));
-	if (!required_kind.is_empty() && String(p_manifest.get("kind", String())).to_lower() != required_kind) {
-		r_reason = "Asset kind does not match.";
-		return false;
-	}
-	const String required_status = String(requires.get("status", String()));
-	String actual_status = _solers_asset_status(p_manifest);
-	if (actual_status == "imported") {
-		actual_status = "ready";
-	}
-	if (!required_status.is_empty() && actual_status != required_status) {
-		r_reason = "Asset status does not match.";
-		return false;
-	}
-	const Dictionary traits = _solers_asset_traits(p_manifest);
-	for (const Variant *key = requires.next(nullptr); key; key = requires.next(key)) {
-		const String name = String(*key);
-		if (name == "kind" || name == "status" || name == "task_id_fields") {
-			continue;
-		}
-		if (traits.get(name, Variant()) != requires[*key]) {
-			r_reason = "Asset traits do not match.";
-			return false;
+static String _solers_first_manifest_field(const Dictionary &p_manifest, const Array &p_fields) {
+	for (int i = 0; i < p_fields.size(); i++) {
+		const String value = String(p_manifest.get(p_fields[i], String())).strip_edges();
+		if (!value.is_empty()) {
+			return value;
 		}
 	}
-	const Array task_id_fields =
-		requires
-			.get("task_id_fields", Array());
-	if (!task_id_fields.is_empty() && SolersPlugin::first_manifest_field(p_manifest, task_id_fields).is_empty()) {
-		r_reason = "Provider task id is missing.";
-		return false;
-	}
-	return true;
+	return String();
 }
 
 Dictionary SolersAssetService::_provider_config(const String &p_kind, const String &p_provider) const {
@@ -1898,6 +1855,97 @@ Dictionary SolersAssetService::_queue_manifest(const Dictionary &p_manifest, con
 	return _ok(p_manifest.duplicate(true));
 }
 
+Dictionary SolersAssetService::_resolve_operation_source(const Dictionary &p_manifest, const Dictionary &p_operation) const {
+	Dictionary result;
+	const Dictionary requirements = p_operation.get("requires", Dictionary());
+	const String required_kind = String(requirements.get("kind", String())).to_lower();
+	if (!required_kind.is_empty() && String(p_manifest.get("kind", String())).to_lower() != required_kind) {
+		result["reason"] = "Asset kind does not match.";
+		return result;
+	}
+	String status = _solers_asset_status(p_manifest);
+	if (status == "imported") {
+		status = "ready";
+	}
+	const String required_status = String(requirements.get("status", String())).to_lower();
+	if (!required_status.is_empty() && status != required_status) {
+		result["reason"] = "Asset status does not match.";
+		return result;
+	}
+	const Dictionary traits = _solers_asset_traits(p_manifest);
+	for (const Variant *key = requirements.next(nullptr); key; key = requirements.next(key)) {
+		const String name = String(*key);
+		if (name != "kind" && name != "status" && traits.get(name, Variant()) != requirements[*key]) {
+			result["reason"] = "Asset traits do not match.";
+			return result;
+		}
+	}
+
+	const Dictionary source_inputs = p_operation.get("source_inputs", Dictionary());
+	const Dictionary task = source_inputs.get("task", Dictionary());
+	const String provider = String(p_operation.get("provider", String())).to_lower();
+	if (String(p_manifest.get("provider", String())).to_lower() == provider && !task.is_empty()) {
+		const String value = _solers_first_manifest_field(p_manifest, task.get("manifest_fields", Array()));
+		if (!value.is_empty()) {
+			result["available"] = true;
+			result["option"] = task.get("option", String());
+			result["value"] = value;
+			return result;
+		}
+	}
+
+	const Dictionary model = source_inputs.get("model", Dictionary());
+	if (!model.is_empty()) {
+		const String path = resolve_model_file(p_manifest);
+		const Array formats = model.get("formats", Array());
+		if (!path.is_empty() && (formats.is_empty() || formats.has(path.get_extension().to_lower()))) {
+			result["available"] = true;
+			result["option"] = model.get("option", String());
+			result["value"] = path;
+			return result;
+		}
+	}
+	result["reason"] = "No compatible source input is available for this provider.";
+	return result;
+}
+
+Dictionary SolersAssetService::_operation_catalog(const Dictionary &p_manifest) const {
+	Array operations;
+	Array available_operations;
+	Dictionary provider_contexts;
+	for (SolersPlugin *plugin : SolersPluginRegistry::get_plugins()) {
+		const Array defs = plugin->get_operation_defs();
+		if (defs.is_empty()) {
+			continue;
+		}
+		const Dictionary profile = plugin->get_profile();
+		const String provider = String(profile.get("id", String())).to_lower();
+		Dictionary context = plugin->capability_extras(p_manifest).duplicate(true);
+		context["label"] = profile.get("label", provider);
+		context["configured"] = is_provider_configured(String(p_manifest.get("kind", String())), provider);
+		provider_contexts[provider] = context;
+		for (int i = 0; i < defs.size(); i++) {
+			Dictionary operation = Dictionary(defs[i]).duplicate(true);
+			operation["provider"] = provider;
+			operation["provider_label"] = context["label"];
+			const Dictionary source = _resolve_operation_source(p_manifest, operation);
+			const bool available = source.get("available", false);
+			operation["available"] = available;
+			if (available) {
+				available_operations.push_back(operation);
+			} else {
+				operation["reason"] = source.get("reason", "Operation is unavailable.");
+			}
+			operations.push_back(operation);
+		}
+	}
+	Dictionary result;
+	result["operations"] = operations;
+	result["available_operations"] = available_operations;
+	result["provider_contexts"] = provider_contexts;
+	return result;
+}
+
 Dictionary SolersAssetService::capabilities(const Dictionary &p_args) const {
 	const String asset_id = String(p_args.get("asset_id", String())).strip_edges();
 	if (asset_id.is_empty()) {
@@ -1907,38 +1955,12 @@ Dictionary SolersAssetService::capabilities(const Dictionary &p_args) const {
 	if (manifest.is_empty()) {
 		return _error("NOT_FOUND", "Asset was not found.");
 	}
-	SolersPlugin *plugin = SolersPluginRegistry::get_plugin(manifest.get("provider", String()));
-	if (!plugin) {
-		return _error("PLUGIN_NOT_FOUND", "The asset's Solers plugin is not registered.");
-	}
-	Array operations;
-	Array available_operations;
-	const Array defs = plugin->get_operation_defs();
-	for (int i = 0; i < defs.size(); i++) {
-		Dictionary operation = Dictionary(defs[i]).duplicate(true);
-		String reason;
-		const bool available = _solers_manifest_matches_operation(manifest, operation, reason);
-		operation["available"] = available;
-		operation["ui_supported"] = available && _solers_schema_ui_supported(operation.get("options_schema", Dictionary()));
-		if (!available) {
-			operation["reason"] = reason;
-		} else {
-			available_operations.push_back(operation);
-		}
-		operations.push_back(operation);
-	}
-	Dictionary data;
+	Dictionary data = _operation_catalog(manifest);
 	data["asset_id"] = asset_id;
-	data["operations"] = operations;
-	data["available_operations"] = available_operations;
 	const Dictionary animations = manifest.get("animations", Dictionary());
 	const Dictionary basic_animations = animations.get("basic", Dictionary());
 	if (!basic_animations.is_empty()) {
 		data["basic_animations"] = basic_animations;
-	}
-	const Dictionary extras = plugin->capability_extras(manifest);
-	for (const Variant *key = extras.next(nullptr); key; key = extras.next(key)) {
-		data[*key] = extras[*key];
 	}
 	return _ok(data);
 }
@@ -1952,31 +1974,34 @@ Dictionary SolersAssetService::_run_operation(const Dictionary &p_args, const St
 	if (operation_id.is_empty()) {
 		return _error("INVALID_ARGUMENT", "operation_id is required.");
 	}
+	const String provider = String(p_args.get("provider", String())).strip_edges().to_lower();
+	if (provider.is_empty()) {
+		return _error("INVALID_ARGUMENT", "provider is required.");
+	}
 	const Dictionary source = _manifest_for_asset(source_asset_id);
 	if (source.is_empty()) {
 		return _error("NOT_FOUND", "Source asset was not found.");
 	}
 	const String source_job_id = String(source.get("id", source_asset_id));
-	const String provider = String(source.get("provider", String())).to_lower();
 	SolersPlugin *plugin = SolersPluginRegistry::get_plugin(provider);
 	if (!plugin) {
-		return _error("PLUGIN_NOT_FOUND", "The source asset's Solers plugin is not registered.");
+		return _error("PLUGIN_NOT_FOUND", "The selected Solers plugin is not registered.");
 	}
 	Dictionary operation;
-	const Array defs = plugin->get_operation_defs();
-	for (int i = 0; i < defs.size(); i++) {
-		const Dictionary candidate = defs[i];
-		if (String(candidate.get("operation_id", String())) == operation_id) {
+	const Array operations = _operation_catalog(source).get("operations", Array());
+	for (int i = 0; i < operations.size(); i++) {
+		const Dictionary candidate = operations[i];
+		if (String(candidate.get("provider", String())) == provider && String(candidate.get("operation_id", String())) == operation_id) {
 			operation = candidate;
 			break;
 		}
 	}
 	if (operation.is_empty()) {
-		return _error("OPERATION_NOT_FOUND", "Asset operation is not supported by this provider.");
+		return _error("OPERATION_NOT_FOUND", "Asset operation is not registered by the selected provider.");
 	}
-	String reason;
-	if (!_solers_manifest_matches_operation(source, operation, reason)) {
-		return _error("OPERATION_NOT_AVAILABLE", reason);
+	const Dictionary source_binding = _resolve_operation_source(source, operation);
+	if (!(bool)source_binding.get("available", false)) {
+		return _error("OPERATION_NOT_AVAILABLE", source_binding.get("reason", "Operation is unavailable."));
 	}
 	Dictionary options = p_args.get("options", Dictionary());
 	Dictionary raw_provider_options = p_args.get("raw_provider_options", Dictionary());
@@ -2001,15 +2026,16 @@ Dictionary SolersAssetService::_run_operation(const Dictionary &p_args, const St
 	if (!_solers_normalize_integer_options(options, properties, normalize_error) || !_solers_normalize_integer_options(raw_provider_options, properties, normalize_error)) {
 		return _error("INVALID_ARGUMENT", normalize_error);
 	}
-	const Dictionary
-		requires
-	= operation.get("requires", Dictionary());
-	const String source_task_id = SolersPlugin::first_manifest_field(source, requires.get("task_id_fields", Array()));
 	const String kind = String(source.get("kind", String())).to_lower();
 	const Dictionary provider_config = _provider_config(kind, provider);
 	Dictionary provider_options;
 	SolersPlugin::merge_options(provider_options, options);
 	SolersPlugin::merge_options(provider_options, raw_provider_options);
+	const Dictionary source_inputs = operation.get("source_inputs", Dictionary());
+	for (const Variant *key = source_inputs.next(nullptr); key; key = source_inputs.next(key)) {
+		provider_options.erase(Dictionary(source_inputs[*key]).get("option", String()));
+	}
+	provider_options[source_binding.get("option", String())] = source_binding.get("value", Variant());
 	const Dictionary prepare_error = plugin->prepare_operation(operation, source, provider_options);
 	if (!prepare_error.is_empty()) {
 		return _error(prepare_error.get("code", "PLUGIN_ARGUMENT_ERROR"), prepare_error.get("message", "Plugin rejected the operation request."));
@@ -2040,6 +2066,8 @@ Dictionary SolersAssetService::_run_operation(const Dictionary &p_args, const St
 	manifest["prompt"] = prompt;
 	manifest["profile"] = source.get("profile", "game_default");
 	manifest["provider"] = provider;
+	manifest["source_provider"] = source.get("provider", String());
+	manifest["source_asset_id"] = source_job_id;
 	manifest["base_url"] = provider_config.get("base_url", String());
 	manifest["provider_options"] = provider_options;
 	manifest["target_dir"] = project_request["target_dir"];
@@ -2052,7 +2080,6 @@ Dictionary SolersAssetService::_run_operation(const Dictionary &p_args, const St
 	manifest["operation_label"] = label;
 	manifest["provider_operation_id"] = operation.get("provider_operation_id", String());
 	manifest["docs"] = operation.get("docs", String());
-	manifest["source_task_id"] = source_task_id;
 	manifest["traits"] = traits;
 	manifest["status"] = "queued";
 	manifest["stage"] = "queued";
@@ -2468,31 +2495,27 @@ Dictionary SolersAssetService::start_project_import(const Dictionary &p_args) {
 			source_geometry.push_back(entry);
 		}
 		if (source_triangle_count > max_triangles) {
-			// Remediation is assembled from this asset's actual capabilities so
-			// the model is never pointed at an operation its provider cannot run.
 			String remediation_operation;
-			SolersPlugin *plugin = SolersPluginRegistry::get_plugin(manifest.get("provider", String()));
-			const Array operation_defs = plugin ? plugin->get_operation_defs() : Array();
-			for (int i = 0; i < operation_defs.size(); i++) {
-				const Dictionary operation = operation_defs[i];
-				if (!Array(operation.get("remediates", Array())).has("triangle_budget")) {
-					continue;
-				}
-				String availability_reason;
-				if (_solers_manifest_matches_operation(manifest, operation, availability_reason)) {
+			String remediation_provider;
+			const Array operations = _operation_catalog(manifest).get("available_operations", Array());
+			for (int i = 0; i < operations.size(); i++) {
+				const Dictionary operation = operations[i];
+				if (Array(operation.get("remediates", Array())).has("triangle_budget")) {
 					remediation_operation = operation.get("operation_id", String());
+					remediation_provider = operation.get("provider", String());
 					break;
 				}
 			}
 			const String remediation = !remediation_operation.is_empty()
-					? vformat("Run asset.run_operation with operation_id=\"%s\" or acquire a lower-poly variant.", remediation_operation)
-					: String("This asset's provider does not offer a remesh operation; acquire a lower-poly variant instead.");
+					? vformat("Run asset.run_operation with provider=\"%s\" and operation_id=\"%s\", or acquire a lower-poly variant.", remediation_provider, remediation_operation)
+					: String("No registered provider can remesh this asset; acquire a lower-poly variant instead.");
 			Dictionary error = _error("TOPOLOGY_BUDGET_EXCEEDED", vformat("The asset's source geometry contains %d triangles, exceeding the import budget of %d (%s). %s", source_triangle_count, max_triangles, triangle_budget_source, remediation));
 			Dictionary data;
 			data["triangle_count"] = source_triangle_count;
 			data["max_triangles"] = max_triangles;
 			data["triangle_budget_source"] = triangle_budget_source;
 			data["remediation_operation"] = remediation_operation;
+			data["remediation_provider"] = remediation_provider;
 			data["files"] = source_geometry;
 			error["data"] = data;
 			return error;
@@ -2787,9 +2810,10 @@ void SolersAssetService::_advance_project_tasks(bool p_allow_new_imports) {
 		if (SolersPlugin *plugin = SolersPluginRegistry::get_plugin(state.get("provider", String()))) {
 			const Array operations = plugin->get_operation_defs();
 			for (int operation_index = 0; operation_index < operations.size(); operation_index++) {
-				const Array task_id_fields = Dictionary(Dictionary(operations[operation_index]).get("requires", Dictionary())).get("task_id_fields", Array());
-				for (int field_index = 0; field_index < task_id_fields.size(); field_index++) {
-					const String field = task_id_fields[field_index];
+				const Dictionary task = Dictionary(Dictionary(operations[operation_index]).get("source_inputs", Dictionary())).get("task", Dictionary());
+				const Array manifest_fields = task.get("manifest_fields", Array());
+				for (int field_index = 0; field_index < manifest_fields.size(); field_index++) {
+					const String field = manifest_fields[field_index];
 					if (state.has(field)) {
 						sidecar[field] = state[field];
 					}

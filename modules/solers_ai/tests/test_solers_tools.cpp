@@ -65,6 +65,7 @@
 #include "modules/solers_ai/llm/solers_protocol_anthropic_messages.h"
 #include "modules/solers_ai/llm/solers_protocol_openai_chat.h"
 #include "modules/solers_ai/llm/solers_protocol_openai_responses.h"
+#include "modules/solers_ai/plugins/solers_plugin.h"
 #include "modules/solers_ai/tests/support/solers_test_state.h"
 #ifdef MODULE_GLTF_ENABLED
 #include "modules/gltf/extensions/gltf_document_extension_convert_importer_mesh.h"
@@ -194,6 +195,29 @@ TEST_CASE("[SolersToolRegistry] registers tools by lookup, not a hardcoded catal
 	CHECK_FALSE((bool)data.get("has_optional_empty", true));
 	CHECK((bool)data.get("has_required_empty", false));
 	CHECK((bool)data.get("has_unknown_empty", false));
+}
+
+TEST_CASE("[SolersToolRegistry] asset operations expose the provider-qualified registry contract") {
+	SolersAssetService assets;
+	SolersToolRegistry registry;
+	registry.set_asset_service(&assets);
+	registry.register_default_tools();
+	const Dictionary tool = solers_test_find_dictionary(registry.list_tools(), SNAME("name"), "asset.run_operation");
+	REQUIRE_FALSE(tool.is_empty());
+	const Dictionary schema = tool.get("input_schema", Dictionary());
+	const Dictionary properties = schema.get("properties", Dictionary());
+	const Array providers = Dictionary(properties.get("provider", Dictionary())).get("enum", Array());
+	CHECK(Array(schema.get("required", Array())).has("provider"));
+	CHECK(String(Dictionary(properties.get("provider", Dictionary())).get("description", String())).contains("asset.capabilities"));
+	int operation_plugins = 0;
+	for (SolersPlugin *plugin : SolersPluginRegistry::get_plugins()) {
+		if (plugin->get_operation_defs().is_empty()) {
+			continue;
+		}
+		operation_plugins++;
+		CHECK(providers.has(String(Dictionary(plugin->get_profile()).get("id", String())).to_lower()));
+	}
+	CHECK(providers.size() == operation_plugins);
 }
 
 TEST_CASE("[SolersPermissionManager] third-party addon code always requires explicit approval") {

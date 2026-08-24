@@ -100,6 +100,8 @@ class SolersAssetService : public Object {
 	void _cleanup_finished_task(const String &p_asset_id) const;
 	Dictionary _queue_manifest(const Dictionary &p_manifest, const Dictionary &p_provider_config);
 	Dictionary _generate(const Dictionary &p_args, const String &p_session_id);
+	Dictionary _resolve_operation_source(const Dictionary &p_manifest, const Dictionary &p_operation) const;
+	Dictionary _operation_catalog(const Dictionary &p_manifest) const;
 	Dictionary _run_operation(const Dictionary &p_args, const String &p_session_id);
 	void _advance_project_tasks(bool p_allow_new_imports);
 

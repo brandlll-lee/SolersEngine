@@ -38,6 +38,7 @@
 #include "core/templates/pair.h"
 #include "editor/asset_library/editor_asset_installer.h"
 #include "tests/test_macros.h"
+#include "tests/test_utils.h"
 
 #include "modules/solers_ai/core/solers_asset_service.h"
 #include "modules/solers_ai/core/solers_mention.h"
@@ -122,6 +123,19 @@ public:
 		Dictionary properties;
 		properties["density"] = density;
 		return properties;
+	}
+
+	Array get_operation_defs() const override {
+		Dictionary operation;
+		operation["operation_id"] = "future_process";
+		operation["intent"] = "future.process";
+		operation["label"] = "Future Process";
+		operation["requires"] = JSON::parse_string(R"({"kind":"novel-geometry","status":"ready"})");
+		operation["source_inputs"] = JSON::parse_string(R"({"task":{"option":"source_id","manifest_fields":["future_task_id"]},"model":{"option":"source_file","formats":["future"]}})");
+		operation["options_schema"] = JSON::parse_string(R"({"type":"object","properties":{"strength":{"type":"number"}}})");
+		Array result;
+		result.push_back(operation);
+		return result;
 	}
 
 	void run_job(const Ref<SolersPluginJob> &p_job) override {
@@ -277,6 +291,11 @@ TEST_CASE("[SolersPluginRegistry] an unknown connector extends every registry-dr
 	CHECK(Array(Dictionary(properties.get("provider", Dictionary())).get("enum", Array())).has("synthetic-future"));
 	CHECK(Array(Dictionary(properties.get("kind", Dictionary())).get("enum", Array())).has("novel-geometry"));
 	CHECK(Dictionary(Dictionary(properties.get("provider_options", Dictionary())).get("properties", Dictionary())).has("density"));
+	const Dictionary run_operation = solers_test_find_dictionary(registry.list_tools(), SNAME("name"), "asset.run_operation");
+	const Dictionary operation_schema = run_operation.get("input_schema", Dictionary());
+	const Dictionary operation_properties = operation_schema.get("properties", Dictionary());
+	CHECK(Array(Dictionary(operation_properties.get("provider", Dictionary())).get("enum", Array())).has("synthetic-future"));
+	CHECK(Array(operation_schema.get("required", Array())).has("provider"));
 	Dictionary request = JSON::parse_string(R"({"kind":"novel-geometry","provider":"synthetic-future","prompt":"global asset"})");
 	const Dictionary queued = asset_service.generate(request);
 	REQUIRE(queued.get("ok", false));
@@ -423,32 +442,36 @@ TEST_CASE("[SolersPluginMeshy] offline operation contracts") {
 	CHECK(resize.get("endpoint", String()) == "/openapi/v1/resize");
 	CHECK(uv_unwrap.get("endpoint", String()) == "/openapi/v1/uv-unwrap");
 	CHECK(Array(Dictionary(convert.get("options_schema", Dictionary())).get("required", Array())).has("target_formats"));
+	CHECK(convert.get("intent", String()) == "model.convert");
+	const Dictionary convert_sources = convert.get("source_inputs", Dictionary());
+	CHECK(Dictionary(convert_sources.get("task", Dictionary())).get("option", String()) == "input_task_id");
+	CHECK(Dictionary(convert_sources.get("model", Dictionary())).get("option", String()) == "model_url");
 	const Dictionary animation_properties = Dictionary(animate.get("options_schema", Dictionary())).get("properties", Dictionary());
 	const Dictionary action = animation_properties.get("action_id", Dictionary());
 	CHECK(action.get("enum_source", String()) == "animation_actions");
 	CHECK(action.get("enum_value", String()) == "action_id");
 
 	Dictionary source;
-	source["provider_task_id"] = "meshy-source-task";
 	source["polycount"] = 40000;
 
 	Dictionary convert_options;
-	convert_options["input_task_id"] = "unrelated-task";
+	convert_options["input_task_id"] = "authoritative-source";
 	Array convert_formats;
 	convert_formats.push_back("STL");
 	convert_options["target_formats"] = convert_formats;
 	Dictionary result = meshy.prepare_operation(convert, source, convert_options);
 	CHECK(result.is_empty());
-	CHECK(convert_options.get("input_task_id", String()) == "meshy-source-task");
+	CHECK(convert_options.get("input_task_id", String()) == "authoritative-source");
 	const Array normalized_formats = convert_options.get("target_formats", Array());
 	CHECK(normalized_formats.size() == 1);
 	CHECK(String(normalized_formats[0]) == "stl");
 
 	Dictionary resize_options;
+	resize_options["model_url"] = "data:model/gltf-binary;base64,contract";
 	resize_options["resize_height"] = 1.8;
 	result = meshy.prepare_operation(resize, source, resize_options);
 	CHECK(result.is_empty());
-	CHECK(resize_options.get("input_task_id", String()) == "meshy-source-task");
+	CHECK(String(resize_options.get("model_url", String())).begins_with("data:"));
 
 	Dictionary conflicting_resize_options;
 	conflicting_resize_options["resize_height"] = 1.8;
@@ -467,14 +490,16 @@ TEST_CASE("[SolersPluginMeshy] offline operation contracts") {
 	Dictionary oversized_source = source.duplicate(true);
 	oversized_source["polycount"] = 40001;
 	Dictionary uv_options;
+	uv_options["input_task_id"] = "authoritative-source";
 	result = meshy.prepare_operation(uv_unwrap, oversized_source, uv_options);
 	CHECK_FALSE(result.is_empty());
 	CHECK(result.get("code", String()) == "UV_UNWRAP_FACE_LIMIT");
 
 	uv_options.clear();
+	uv_options["input_task_id"] = "authoritative-source";
 	result = meshy.prepare_operation(uv_unwrap, source, uv_options);
 	CHECK(result.is_empty());
-	CHECK(uv_options.get("input_task_id", String()) == "meshy-source-task");
+	CHECK(uv_options.get("input_task_id", String()) == "authoritative-source");
 }
 
 TEST_CASE("[SolersAssetService] Meshy topology target is an integer contract for Text-to-3D") {
@@ -565,6 +590,104 @@ TEST_CASE("[SolersPluginTripo] v3 presets and generation constraints follow prov
 	options["smart_low_poly"] = false;
 	manifest["provider_options"] = options;
 	CHECK(tripo.prepare_generate("3d", args, manifest).get("code", String()) == "INVALID_ARGUMENT");
+
+	const Array operations = tripo.get_operation_defs();
+	const Dictionary decimate = solers_test_find_dictionary(operations, SNAME("operation_id"), "decimate");
+	const Dictionary rig = solers_test_find_dictionary(operations, SNAME("operation_id"), "rig");
+	const Dictionary retarget = solers_test_find_dictionary(operations, SNAME("operation_id"), "retarget");
+	REQUIRE(bool(!decimate.is_empty() && !rig.is_empty() && !retarget.is_empty()));
+	CHECK(decimate.get("intent", String()) == "geometry.remesh");
+	CHECK(rig.get("intent", String()) == "rig.bind");
+	CHECK(retarget.get("intent", String()) == "animation.preset");
+	CHECK(Dictionary(Dictionary(decimate.get("source_inputs", Dictionary())).get("model", Dictionary())).get("option", String()) == "input");
+	CHECK_FALSE(Dictionary(retarget.get("source_inputs", Dictionary())).has("model"));
+	const Dictionary retarget_properties = Dictionary(retarget.get("options_schema", Dictionary())).get("properties", Dictionary());
+	CHECK(retarget_properties.has("animation"));
+	CHECK(retarget_properties.has("animations"));
+	CHECK(retarget_properties.has("bake_animation"));
+	CHECK(Array(Dictionary(retarget.get("options_schema", Dictionary())).get("oneOf", Array())).size() == 2);
+	CHECK_FALSE(retarget_properties.has("preset"));
+	Dictionary retarget_options;
+	retarget_options["input"] = "task_rigged";
+	CHECK(tripo.prepare_operation(retarget, Dictionary(), retarget_options).get("code", String()) == "INVALID_ARGUMENT");
+	retarget_options["animation"] = "preset:idle";
+	CHECK(tripo.prepare_operation(retarget, Dictionary(), retarget_options).is_empty());
+	Array animations;
+	animations.push_back("preset:walk");
+	retarget_options["animations"] = animations;
+	CHECK(tripo.prepare_operation(retarget, Dictionary(), retarget_options).get("code", String()) == "INVALID_ARGUMENT");
+	retarget_options.erase("animation");
+	CHECK(tripo.prepare_operation(retarget, Dictionary(), retarget_options).is_empty());
+}
+
+TEST_CASE("[SolersAssetService] operation catalog resolves task and model sources across registered providers") {
+	REQUIRE(SolersPluginRegistry::get_plugin("meshy"));
+	REQUIRE(SolersPluginRegistry::get_plugin("tripo"));
+	const String asset_id = ".solers_operation_catalog_contract";
+	const String asset_dir = "user://solers_jobs/" + asset_id;
+	const String model_path = asset_dir.path_join("source.glb");
+	SolersTestPaths cleanup;
+	cleanup.add(asset_dir);
+	REQUIRE(DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(asset_dir)) == OK);
+	Ref<FileAccess> model = FileAccess::open(model_path, FileAccess::WRITE);
+	REQUIRE(model.is_valid());
+	model->store_buffer(FileAccess::get_file_as_bytes(TestUtils::get_data_path("models/suzanne.glb")));
+	model.unref();
+
+	Dictionary traits;
+	traits["model_state"] = "static_model";
+	Array files;
+	files.push_back(model_path);
+	Dictionary manifest;
+	manifest["id"] = asset_id;
+	manifest["provider"] = "meshy";
+	manifest["provider_task_id"] = "meshy-task";
+	manifest["kind"] = "3d";
+	manifest["status"] = "ready";
+	manifest["traits"] = traits;
+	manifest["files"] = files;
+	String write_error;
+	REQUIRE(SolersPlugin::write_json_atomic(asset_dir.path_join("manifest.json"), manifest, write_error));
+
+	SolersAssetService assets;
+	Dictionary capability_args;
+	capability_args["asset_id"] = asset_id;
+	Dictionary capabilities = assets.capabilities(capability_args);
+	REQUIRE(capabilities.get("ok", false));
+	Dictionary data = capabilities.get("data", Dictionary());
+	const Dictionary contexts = data.get("provider_contexts", Dictionary());
+	CHECK(contexts.has("meshy"));
+	CHECK(contexts.has("tripo"));
+	bool meshy_remesh = false;
+	bool tripo_remesh = false;
+	for (const Variant &value : Array(data.get("available_operations", Array()))) {
+		const Dictionary operation = value;
+		meshy_remesh |= operation.get("provider", String()) == "meshy" && operation.get("intent", String()) == "geometry.remesh";
+		tripo_remesh |= operation.get("provider", String()) == "tripo" && operation.get("intent", String()) == "geometry.remesh";
+	}
+	CHECK(meshy_remesh);
+	CHECK(tripo_remesh);
+
+	Dictionary operation_args;
+	operation_args["asset_id"] = asset_id;
+	operation_args["operation_id"] = "remesh";
+	const Dictionary missing_provider = assets.run_operation(operation_args);
+	CHECK_FALSE((bool)missing_provider.get("ok", true));
+	CHECK(Dictionary(missing_provider.get("error", Dictionary())).get("code", String()) == "INVALID_ARGUMENT");
+
+	REQUIRE(DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(model_path)) == OK);
+	capabilities = assets.capabilities(capability_args);
+	REQUIRE(capabilities.get("ok", false));
+	data = capabilities.get("data", Dictionary());
+	meshy_remesh = false;
+	tripo_remesh = false;
+	for (const Variant &value : Array(data.get("available_operations", Array()))) {
+		const Dictionary operation = value;
+		meshy_remesh |= operation.get("provider", String()) == "meshy" && operation.get("intent", String()) == "geometry.remesh";
+		tripo_remesh |= operation.get("provider", String()) == "tripo" && operation.get("intent", String()) == "geometry.remesh";
+	}
+	CHECK(meshy_remesh);
+	CHECK_FALSE(tripo_remesh);
 }
 
 TEST_CASE("[SolersPlugin] HTTP transport preserves method and native status facts") {

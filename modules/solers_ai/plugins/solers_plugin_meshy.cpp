@@ -57,27 +57,24 @@ static Dictionary _operation_def(const String &p_operation_id) {
 
 	if (p_operation_id == "refine") {
 		op["label"] = "Refine to Ready";
+		op["intent"] = "model.refine";
 		op["description"] = "Create a ready project version.";
 		op["category"] = "Model";
 		op["provider_operation_id"] = "meshy.openapi.v2.text-to-3d.refine";
 		op["endpoint"] = "/openapi/v2/text-to-3d";
 		requirement["status"] = "draft";
-		Array task_id_fields;
-		task_id_fields.push_back("preview_task_id");
-		task_id_fields.push_back("provider_task_id");
-		requirement["task_id_fields"] = task_id_fields;
+		op["source_inputs"] = JSON::parse_string(R"({"task":{"option":"preview_task_id","manifest_fields":["preview_task_id","provider_task_id"]}})");
 		result_traits["model_state"] = "static_model";
 	} else if (p_operation_id == "remesh") {
 		op["label"] = "Optimize";
+		op["intent"] = "geometry.remesh";
 		op["description"] = "Create a new optimized version.";
 		op["category"] = "Geometry";
 		op["provider_operation_id"] = "meshy.openapi.v1.remesh";
 		op["endpoint"] = "/openapi/v1/remesh";
 		requirement["status"] = "ready";
 		requirement["model_state"] = "static_model";
-		Array task_id_fields;
-		task_id_fields.push_back("provider_task_id");
-		requirement["task_id_fields"] = task_id_fields;
+		op["source_inputs"] = JSON::parse_string(R"({"task":{"option":"input_task_id","manifest_fields":["provider_task_id"]},"model":{"option":"model_url","formats":["glb","gltf","obj","fbx"]}})");
 		Array topology;
 		topology.push_back("triangle");
 		topology.push_back("quad");
@@ -101,15 +98,14 @@ static Dictionary _operation_def(const String &p_operation_id) {
 		op["presentation"] = JSON::parse_string(R"({"controls":{"target_polycount":{"control":"slider"},"topology":{"control":"segmented"}}})");
 	} else if (p_operation_id == "retexture") {
 		op["label"] = "Restyle";
+		op["intent"] = "material.retexture";
 		op["description"] = "Create a new material version.";
 		op["category"] = "Material";
 		op["provider_operation_id"] = "meshy.openapi.v1.retexture";
 		op["endpoint"] = "/openapi/v1/retexture";
 		requirement["status"] = "ready";
 		requirement["model_state"] = "static_model";
-		Array task_id_fields;
-		task_id_fields.push_back("provider_task_id");
-		requirement["task_id_fields"] = task_id_fields;
+		op["source_inputs"] = JSON::parse_string(R"({"task":{"option":"input_task_id","manifest_fields":["provider_task_id"]},"model":{"option":"model_url","formats":["glb","gltf","obj","fbx"]}})");
 		const Dictionary style_schema = JSON::parse_string(R"({"properties":{"text_style_prompt":{"type":"string","label":"Style Prompt"},"image_style_url":{"type":"string","label":"Style Image URL"},"multiview_image_urls":{"type":"array","label":"Style Image URLs","items":{"type":"string"},"minItems":1,"maxItems":4},"texture_resolution":{"type":"string","label":"Texture Resolution","enum":["2k","4k","8k"]}},"oneOf":[{"required":["text_style_prompt"]},{"required":["image_style_url"]},{"required":["multiview_image_urls"]}]})");
 		const Dictionary style_properties = style_schema.get("properties", Dictionary());
 		for (const Variant *key = style_properties.next(nullptr); key; key = style_properties.next(key)) {
@@ -119,31 +115,28 @@ static Dictionary _operation_def(const String &p_operation_id) {
 		result_traits["model_state"] = "static_model";
 	} else if (p_operation_id == "rig_humanoid") {
 		op["label"] = "Rig";
+		op["intent"] = "rig.bind";
 		op["description"] = "Create a new rigged version.";
 		op["category"] = "Character";
 		op["provider_operation_id"] = "meshy.openapi.v1.rigging";
 		op["endpoint"] = "/openapi/v1/rigging";
 		requirement["status"] = "ready";
 		requirement["model_state"] = "static_model";
-		Array task_id_fields;
-		task_id_fields.push_back("provider_task_id");
-		requirement["task_id_fields"] = task_id_fields;
+		op["source_inputs"] = JSON::parse_string(R"({"task":{"option":"input_task_id","manifest_fields":["provider_task_id"]},"model":{"option":"model_url","formats":["glb"]}})");
 		properties["humanoid_confirmed"] = _option_schema("boolean", "This is a humanoid character");
 		required.push_back("humanoid_confirmed");
 		result_traits["model_state"] = "rigged_model";
 		result_traits["rig"] = "humanoid";
 	} else if (p_operation_id == "animate_humanoid") {
 		op["label"] = "Animate";
+		op["intent"] = "animation.preset";
 		op["description"] = "Create a new animated version.";
 		op["category"] = "Character";
 		op["provider_operation_id"] = "meshy.openapi.v1.animations";
 		op["endpoint"] = "/openapi/v1/animations";
 		requirement["status"] = "ready";
 		requirement["rig"] = "humanoid";
-		Array task_id_fields;
-		task_id_fields.push_back("rig_task_id");
-		task_id_fields.push_back("provider_task_id");
-		requirement["task_id_fields"] = task_id_fields;
+		op["source_inputs"] = JSON::parse_string(R"({"task":{"option":"rig_task_id","manifest_fields":["rig_task_id","provider_task_id"]}})");
 		const Dictionary animation_properties = JSON::parse_string(R"({"action_id":{"type":"integer","label":"Action ID","description":"Meshy official Animation Library action_id. Use animation_actions from asset.capabilities; do not guess.","enum_source":"animation_actions","enum_value":"action_id","enum_label":"name"},"post_process":{"type":"object","label":"Post Process","properties":{"operation_type":{"type":"string","label":"Operation","enum":["change_fps"]},"fps":{"type":"integer","label":"Frame Rate","enum":[24,25,30,60]}},"required":["operation_type","fps"]}})");
 		properties["action_id"] = animation_properties["action_id"];
 		properties["post_process"] = animation_properties["post_process"];
@@ -153,15 +146,14 @@ static Dictionary _operation_def(const String &p_operation_id) {
 		result_traits["animation"] = "present";
 	} else if (p_operation_id == "convert") {
 		op["label"] = "Convert Format";
+		op["intent"] = "model.convert";
 		op["description"] = "Create project-ready model files in requested formats.";
 		op["category"] = "Model";
 		op["provider_operation_id"] = "meshy.openapi.v1.convert";
 		op["endpoint"] = "/openapi/v1/convert";
 		requirement["status"] = "ready";
 		requirement["model_state"] = "static_model";
-		Array task_id_fields;
-		task_id_fields.push_back("provider_task_id");
-		requirement["task_id_fields"] = task_id_fields;
+		op["source_inputs"] = JSON::parse_string(R"({"task":{"option":"input_task_id","manifest_fields":["provider_task_id"]},"model":{"option":"model_url","formats":["glb","gltf","obj","fbx","stl"]}})");
 		Array formats;
 		formats.push_back("glb");
 		formats.push_back("fbx");
@@ -181,15 +173,14 @@ static Dictionary _operation_def(const String &p_operation_id) {
 		result_traits["model_state"] = "static_model";
 	} else if (p_operation_id == "resize") {
 		op["label"] = "Resize";
+		op["intent"] = "model.resize";
 		op["description"] = "Set a real-world model dimension or let Meshy estimate it.";
 		op["category"] = "Model";
 		op["provider_operation_id"] = "meshy.openapi.v1.resize";
 		op["endpoint"] = "/openapi/v1/resize";
 		requirement["status"] = "ready";
 		requirement["model_state"] = "static_model";
-		Array task_id_fields;
-		task_id_fields.push_back("provider_task_id");
-		requirement["task_id_fields"] = task_id_fields;
+		op["source_inputs"] = JSON::parse_string(R"({"task":{"option":"input_task_id","manifest_fields":["provider_task_id"]},"model":{"option":"model_url","formats":["glb","gltf","obj","fbx","stl"]}})");
 		Dictionary height = _option_schema("number", "Height (m)");
 		height["exclusiveMinimum"] = 0.0;
 		properties["resize_height"] = height;
@@ -223,15 +214,14 @@ static Dictionary _operation_def(const String &p_operation_id) {
 		result_traits["model_state"] = "static_model";
 	} else if (p_operation_id == "uv_unwrap") {
 		op["label"] = "UV Unwrap";
+		op["intent"] = "geometry.unwrap";
 		op["description"] = "Create a clean UV layout for a mesh up to 40,000 faces.";
 		op["category"] = "Geometry";
 		op["provider_operation_id"] = "meshy.openapi.v1.uv-unwrap";
 		op["endpoint"] = "/openapi/v1/uv-unwrap";
 		requirement["status"] = "ready";
 		requirement["model_state"] = "static_model";
-		Array task_id_fields;
-		task_id_fields.push_back("provider_task_id");
-		requirement["task_id_fields"] = task_id_fields;
+		op["source_inputs"] = JSON::parse_string(R"({"task":{"option":"input_task_id","manifest_fields":["provider_task_id"]},"model":{"option":"model_url","formats":["glb","gltf","obj","fbx"]}})");
 		result_traits["model_state"] = "static_model";
 		result_traits["uv_layout"] = "unwrapped";
 		result_traits["material_state"] = "placeholder";
@@ -640,7 +630,6 @@ Dictionary SolersPluginMeshy::prepare_generate(const String &p_kind, const Dicti
 
 Dictionary SolersPluginMeshy::prepare_operation(const Dictionary &p_operation, const Dictionary &p_source_manifest, Dictionary &r_provider_options) const {
 	const String operation_id = String(p_operation.get("operation_id", String()));
-	const String source_task_id = first_manifest_field(p_source_manifest, Dictionary(p_operation.get("requires", Dictionary())).get("task_id_fields", Array()));
 	if (operation_id == "rig_humanoid" && !(bool)r_provider_options.get("humanoid_confirmed", false)) {
 		return error_data("HUMANOID_CONFIRMATION_REQUIRED", "Rigging requires confirming this is a humanoid character.");
 	}
@@ -665,17 +654,9 @@ Dictionary SolersPluginMeshy::prepare_operation(const Dictionary &p_operation, c
 		r_provider_options["mode"] = "refine";
 		r_provider_options.erase("input_task_id");
 		r_provider_options.erase("model_url");
-		r_provider_options["preview_task_id"] = source_task_id;
 		if (!r_provider_options.has("enable_pbr")) {
 			r_provider_options["enable_pbr"] = true;
 		}
-	} else if (operation_id == "animate_humanoid") {
-		r_provider_options.erase("input_task_id");
-		r_provider_options.erase("model_url");
-		r_provider_options["rig_task_id"] = source_task_id;
-	} else {
-		r_provider_options.erase("model_url");
-		r_provider_options["input_task_id"] = source_task_id;
 	}
 
 	String option_error;
@@ -789,13 +770,13 @@ static String _attachment_data_uri(const Dictionary &p_attachment, String &r_err
 	const String path = String(p_attachment.get("local_path", String())).strip_edges();
 	const String mime = String(p_attachment.get("mime_type", String())).strip_edges();
 	if (path.is_empty() || mime.is_empty()) {
-		r_error = "Image attachment is missing local_path or mime_type.";
+		r_error = "Attachment is missing local_path or mime_type.";
 		return String();
 	}
 	Error read_error = OK;
 	const PackedByteArray bytes = FileAccess::get_file_as_bytes(path, &read_error);
 	if (read_error != OK || bytes.is_empty()) {
-		r_error = vformat("Failed to read image attachment: %s", path);
+		r_error = vformat("Failed to read attachment: %s", path);
 		return String();
 	}
 	return vformat("data:%s;base64,%s", mime, CryptoCore::b64_encode_str(bytes.ptr(), bytes.size()));
@@ -1125,6 +1106,18 @@ void SolersPluginMeshy::run_job(const Ref<SolersPluginJob> &p_job) {
 		}
 		Dictionary body;
 		merge_options(body, provider_options);
+		const String model_path = body.get("model_url", String());
+		if (!model_path.is_empty() && FileAccess::exists(model_path)) {
+			Dictionary attachment;
+			attachment["local_path"] = model_path;
+			attachment["mime_type"] = model_path.get_extension().to_lower() == "glb" ? "model/gltf-binary" : "application/octet-stream";
+			String model_error;
+			body["model_url"] = _attachment_data_uri(attachment, model_error);
+			if (String(body["model_url"]).is_empty()) {
+				p_job->fail("MODEL_READ_FAILED", model_error);
+				return;
+			}
+		}
 		const Dictionary detail = _submit_and_poll(p_job, state, base_url + endpoint, headers, body, stage);
 		if (detail.is_empty() || !_download_model(p_job, state, detail)) {
 			return;
