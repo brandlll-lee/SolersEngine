@@ -795,11 +795,8 @@ void SolersStudio::_show_manifest(const Dictionary &p_manifest) {
 			loaded_model_path = model_path;
 		}
 	}
-	String project_path;
-	for (const Variant &value : Array(p_manifest.get("project_entrypoints", Array()))) {
-		project_path = value;
-		break;
-	}
+	const Array project_entrypoints = p_manifest.get("project_entrypoints", Array());
+	const String project_path = project_entrypoints.is_empty() ? String() : String(project_entrypoints[0]);
 	if (!project_path.is_empty() && EditorResourcePreview::get_singleton()) {
 		preview_generation++;
 		EditorResourcePreview::get_singleton()->queue_resource_preview(project_path, callable_mp(this, &SolersStudio::_preview_ready).bind(preview_generation));
