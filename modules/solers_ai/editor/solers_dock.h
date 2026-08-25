@@ -129,13 +129,10 @@ class SolersDock : public PanelContainer {
 	// Cached model rows for search filtering.
 	Array model_submenu_entries;
 	MarginContainer *approval_overlay_inset = nullptr;
-	PanelContainer *approval_overlay_card = nullptr;
 	Label *approval_tool_label = nullptr;
-	Label *approval_summary_label = nullptr;
 	Button *approval_once_button = nullptr;
 	Button *approval_always_button = nullptr;
 	Button *approval_reject_button = nullptr;
-	Button *approval_submit_button = nullptr;
 
 	// Live turn state: cells updated in place as session events stream in.
 	SolersThinkingCell *active_thinking_cell = nullptr;
@@ -145,8 +142,6 @@ class SolersDock : public PanelContainer {
 	SolersStatusCell *status_cell = nullptr;
 	HashMap<String, SolersToolCell *> tool_cells_by_id;
 	SolersToolCell *last_started_tool_cell = nullptr;
-	String approval_choice = "once";
-	bool approval_always_confirming = false;
 	int active_approval_id = 0;
 	int composer_margin_px = -1;
 	bool scroll_to_bottom_deferred = false;
@@ -220,7 +215,6 @@ class SolersDock : public PanelContainer {
 	void _on_agent_turn_waiting(const Dictionary &p_waiting);
 	void _on_agent_plan_updated(const String &p_explanation, const Array &p_plan);
 	void _sync_approval_panel();
-	void _set_approval_choice(const String &p_choice);
 	void _submit_current_approval();
 	void _on_chat_input_gui_input(const Ref<InputEvent> &p_event);
 	void _on_chat_input_text_changed();
@@ -258,7 +252,6 @@ class SolersDock : public PanelContainer {
 	SolersAssistantCell *_ensure_text_cell();
 	void _finish_turn_cells();
 	void _clear_chat_view(bool p_show_empty);
-	PanelContainer *_create_panel_card(const Color &p_color, const Color &p_border_color, int p_radius = 12, int p_padding = 12) const;
 	Control *_create_empty_state() const;
 
 protected:

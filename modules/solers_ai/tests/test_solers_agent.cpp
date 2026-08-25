@@ -37,6 +37,7 @@
 #include "core/os/os.h"
 #include "editor/themes/editor_scale.h"
 #include "scene/gui/box_container.h"
+#include "scene/gui/button.h"
 #include "scene/gui/scroll_container.h"
 #include "scene/main/scene_tree.h"
 #include "scene/main/window.h"
@@ -271,6 +272,9 @@ TEST_CASE("[SolersSession][SceneTree][Editor] journal rows preserve terminal sem
 	SceneTree::get_singleton()->get_root()->add_child(dock);
 	dock->set_agent_session(&restored);
 	dock->load_chat_history(timeline);
+	SolersPermissionManager permissions;
+	permissions.request_user_approval("object.transaction", Dictionary({ { "scope", "scene" } }), SolersPermissionManager::PERMISSION_EDIT_SCENE);
+	dock->set_services(nullptr, nullptr, nullptr, &permissions, nullptr);
 	MessageQueue::get_singleton()->flush();
 	Node *approval_mode = dock->find_child("ApprovalModeOption", true, false);
 	HBoxContainer *composer_toolbar = Object::cast_to<HBoxContainer>(dock->find_child("ComposerToolbar", true, false));
@@ -307,6 +311,18 @@ TEST_CASE("[SolersSession][SceneTree][Editor] journal rows preserve terminal sem
 	Control *history_editor = Object::cast_to<Control>(dock->find_child("HistoryMessageEditorSurface", true, false));
 	REQUIRE(history_editor != nullptr);
 	CHECK_FALSE(history_editor->is_visible());
+	PanelContainer *question = Object::cast_to<PanelContainer>(dock->find_child("QuestionPanel", true, false));
+	Button *allow_once = Object::cast_to<Button>(dock->find_child("QuestionAllowOnce", true, false));
+	Button *allow_always = Object::cast_to<Button>(dock->find_child("QuestionAllowAlways", true, false));
+	Button *deny = Object::cast_to<Button>(dock->find_child("QuestionDeny", true, false));
+	Button *submit = Object::cast_to<Button>(dock->find_child("QuestionSubmit", true, false));
+	REQUIRE(bool(question && allow_once && allow_always && deny && submit));
+	CHECK(question->is_visible_in_tree());
+	CHECK(question->get_theme_type_variation() == SNAME("SolersQuestionPanel"));
+	CHECK(allow_once->is_pressed());
+	allow_always->set_pressed(true);
+	CHECK((allow_always->is_pressed() && !allow_once->is_pressed() && !deny->is_pressed()));
+	CHECK(submit->get_theme_type_variation() == SNAME("SolersPrimaryButton"));
 
 	scroll->set_v_scroll((int)scroll->get_v_scroll_bar()->get_max());
 	dock->set_size(Size2(480, 720));

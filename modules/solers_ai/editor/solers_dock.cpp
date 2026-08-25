@@ -401,13 +401,6 @@ static String solers_tool_ui_kind_for_name(const SolersToolRegistry *p_registry,
 	return tool.get("ui_kind", String());
 }
 
-PanelContainer *SolersDock::_create_panel_card(const Color &p_color, const Color &p_border_color, int p_radius, int p_padding) const {
-	PanelContainer *panel = memnew(PanelContainer);
-	panel->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	panel->add_theme_style_override("panel", solers_make_stylebox(p_color, p_border_color, p_radius, p_padding));
-	return panel;
-}
-
 Control *SolersDock::_create_empty_state() const {
 	VBoxContainer *state = memnew(VBoxContainer);
 	state->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -2363,48 +2356,15 @@ void SolersDock::_sync_approval_panel() {
 	const int request_id = request.get("id", 0);
 	if (active_approval_id != request_id) {
 		active_approval_id = request_id;
-		approval_choice = "once";
-		approval_always_confirming = false;
+		approval_once_button->set_pressed(true);
 	}
 	approval_overlay_inset->set_visible(true);
 
 	const String tool = String(request.get("tool", String()));
-	const String permission = String(request.get("permission", String()));
-	const Dictionary args = request.get("args", Dictionary());
-
 	if (approval_tool_label) {
 		approval_tool_label->set_text(tool);
 	}
-	if (approval_summary_label) {
-		String summary = solers_summarize_tool_args(JSON::stringify(args, "", false, true));
-		if (summary.is_empty()) {
-			summary = permission;
-		} else {
-			summary = vformat("%s - %s", permission, summary);
-		}
-		approval_summary_label->set_text(summary);
-	}
-	_set_approval_choice(approval_choice);
 	_update_send_enabled();
-}
-
-void SolersDock::_set_approval_choice(const String &p_choice) {
-	approval_choice = p_choice;
-	if (p_choice != "always") {
-		approval_always_confirming = false;
-	}
-	if (approval_once_button) {
-		approval_once_button->set_text(p_choice == "once" ? TTR("1  Allow once *") : TTR("1  Allow once"));
-	}
-	if (approval_always_button) {
-		approval_always_button->set_text(p_choice == "always" ? TTR("2  Allow always *") : TTR("2  Allow always"));
-	}
-	if (approval_reject_button) {
-		approval_reject_button->set_text(p_choice == "reject" ? TTR("3  Deny *") : TTR("3  Deny"));
-	}
-	if (approval_submit_button) {
-		approval_submit_button->set_text(approval_always_confirming ? TTR("Confirm") : TTR("Submit"));
-	}
 }
 
 void SolersDock::_submit_current_approval() {
@@ -2418,21 +2378,15 @@ void SolersDock::_submit_current_approval() {
 	}
 	Dictionary request = pending[0];
 	const int request_id = request.get("id", 0);
-	if (approval_choice == "reject") {
+	if (approval_reject_button->is_pressed()) {
 		permission_manager->reject_request(request_id);
-	} else if (approval_choice == "always") {
-		if (!approval_always_confirming) {
-			approval_always_confirming = true;
-			_set_approval_choice("always");
-			return;
-		}
+	} else if (approval_always_button->is_pressed()) {
 		const int permission_id = request.get("permission_id", (int)SolersPermissionManager::PERMISSION_OBSERVE);
 		permission_manager->set_auto_approve_permission((SolersPermissionManager::Permission)permission_id, true);
 		permission_manager->approve_request(request_id);
 	} else {
 		permission_manager->approve_request(request_id);
 	}
-	approval_always_confirming = false;
 	_refresh_status();
 	_sync_approval_panel();
 }
@@ -2646,58 +2600,65 @@ SolersDock::SolersDock() {
 	approval_overlay_inset->set_visible(false);
 	chat_column->add_child(approval_overlay_inset);
 
-	approval_overlay_card = _create_panel_card(Color(0.104, 0.106, 0.112), Color(1.0, 0.49, 0.20, 0.34), 14, 12);
-	approval_overlay_card->set_custom_minimum_size(Size2(0, 118 * EDSCALE));
+	PanelContainer *approval_overlay_card = memnew(PanelContainer);
+	approval_overlay_card->set_name("QuestionPanel");
+	approval_overlay_card->set_theme_type_variation(SNAME("SolersQuestionPanel"));
 	approval_overlay_inset->add_child(approval_overlay_card);
 
 	VBoxContainer *approval_box = memnew(VBoxContainer);
 	approval_box->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	approval_box->add_theme_constant_override("separation", 4 * EDSCALE);
+	approval_box->add_theme_constant_override("separation", 8 * EDSCALE);
 	approval_overlay_card->add_child(approval_box);
 
 	HBoxContainer *approval_header = memnew(HBoxContainer);
 	approval_header->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	approval_header->add_theme_constant_override("separation", 8 * EDSCALE);
 	approval_box->add_child(approval_header);
+	TextureRect *approval_icon = memnew(TextureRect);
+	approval_icon->set_texture(SolersIcons::get(SNAME("shield"), int(14 * EDSCALE)));
+	approval_icon->set_custom_minimum_size(Size2(18, 18) * EDSCALE);
+	approval_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_CENTERED);
+	approval_header->add_child(approval_icon);
 
 	Label *approval_title = memnew(Label(TTR("Allow using this tool?")));
+	approval_title->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	approval_header->add_child(approval_title);
 
 	approval_tool_label = memnew(Label);
 	approval_tool_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	approval_tool_label->set_theme_type_variation(SNAME("SolersQuestionTool"));
 	approval_tool_label->set_clip_text(true);
 	approval_tool_label->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
-	approval_tool_label->add_theme_color_override("font_color", SOLERS_TEXT_BODY);
-	approval_header->add_child(approval_tool_label);
+	approval_box->add_child(approval_tool_label);
 
-	approval_summary_label = memnew(Label);
-	approval_summary_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	approval_summary_label->set_clip_text(true);
-	approval_summary_label->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
-	approval_summary_label->add_theme_color_override("font_color", SOLERS_TEXT_DIM);
-	approval_box->add_child(approval_summary_label);
-
-	HBoxContainer *approval_actions = memnew(HBoxContainer);
+	VBoxContainer *approval_actions = memnew(VBoxContainer);
 	approval_actions->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	approval_actions->add_theme_constant_override("separation", 2 * EDSCALE);
 	approval_box->add_child(approval_actions);
+	Ref<ButtonGroup> approval_button_group;
+	approval_button_group.instantiate();
 
-	approval_once_button = memnew(Button(TTR("Allow once")));
-	approval_once_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	approval_once_button->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_set_approval_choice).bind("once"));
-	approval_actions->add_child(approval_once_button);
+	auto add_question_choice = [&](Button *&r_button, const String &p_text, const StringName &p_name) {
+		r_button = memnew(Button(p_text));
+		r_button->set_name(p_name);
+		r_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		r_button->set_toggle_mode(true);
+		r_button->set_button_group(approval_button_group);
+		r_button->set_theme_type_variation(SNAME("SolersQuestionChoice"));
+		approval_actions->add_child(r_button);
+	};
+	add_question_choice(approval_once_button, TTR("1  Allow once"), SNAME("QuestionAllowOnce"));
+	add_question_choice(approval_always_button, TTR("2  Always allow this permission"), SNAME("QuestionAllowAlways"));
+	add_question_choice(approval_reject_button, TTR("3  Deny"), SNAME("QuestionDeny"));
 
-	approval_always_button = memnew(Button(TTR("Allow always")));
-	approval_always_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	approval_always_button->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_set_approval_choice).bind("always"));
-	approval_actions->add_child(approval_always_button);
-
-	approval_reject_button = memnew(Button(TTR("Deny")));
-	approval_reject_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	approval_reject_button->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_set_approval_choice).bind("reject"));
-	approval_actions->add_child(approval_reject_button);
-
-	approval_submit_button = memnew(Button(TTR("Submit")));
+	HBoxContainer *approval_footer = memnew(HBoxContainer);
+	approval_footer->set_alignment(BoxContainer::ALIGNMENT_END);
+	approval_box->add_child(approval_footer);
+	Button *approval_submit_button = memnew(Button(TTR("Submit")));
+	approval_submit_button->set_name("QuestionSubmit");
+	approval_submit_button->set_theme_type_variation(SNAME("SolersPrimaryButton"));
 	approval_submit_button->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_submit_current_approval));
-	approval_box->add_child(approval_submit_button);
+	approval_footer->add_child(approval_submit_button);
 	composer_inset = memnew(MarginContainer);
 	composer_inset->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	composer_inset->add_theme_constant_override("margin_left", 20 * EDSCALE);
