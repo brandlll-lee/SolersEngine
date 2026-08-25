@@ -121,8 +121,8 @@ jobs:
         shell: pwsh
         run: |
           $editor = (Resolve-Path "${{ matrix.bin }}").Path
+          & $editor --headless --test --test-case="*Solers*" --no-colors
           Push-Location modules/solers_ai/tests/editor_layout_project
-          & $editor --headless --path . --test --test-case="*Solers*" --no-colors
           & $editor --headless --editor --path .
           Pop-Location
           python modules/solers_ai/tests/terrain3d_smoke.py $editor
