@@ -118,8 +118,8 @@ static constexpr SolersStudioRoute studio_routes[] = {
 	{ "image", "Images", "photo_ai", "image", "unavailable", "catalog", "acquire" },
 	{ "animation", "Animation", "run_sprint", "3d", "animation", "project", "import" },
 	{ "audio", "Audio", "vinyl", "audio", "unavailable", "catalog", "acquire" },
-	{ "material", "Materials", "adjustments", "material", "unavailable", "catalog", "acquire" },
-	{ "hdri", "HDRI", "cloud", "hdri", "unavailable", "catalog", "acquire" },
+	{ "material", "Materials", "adjustments", "material", "catalog", "catalog", "acquire" },
+	{ "hdri", "HDRI", "cloud", "hdri", "catalog", "catalog", "acquire" },
 };
 
 static const SolersStudioRoute &_studio_route(const String &p_id) {
@@ -262,12 +262,15 @@ void SolersStudio::_refresh_providers() {
 void SolersStudio::_route_selected(int) {
 	const SolersStudioRoute &route = _studio_route(_current_route());
 	const bool project_library = String(route.library) == "project";
+	const bool catalog_workspace = String(route.workspace) == "catalog";
+	creation_surface->set_visible(!catalog_workspace);
+	center_surface->set_visible(!catalog_workspace);
 	creation_workspace->set_visible(String(route.workspace) == "generation");
 	animation_workspace->set_visible(String(route.workspace) == "animation");
 	catalog_query->set_placeholder(project_library ? TTRC("Search generated assets...") : TTRC("Search catalog..."));
 	library_tabs->set_current_tab(project_library ? 1 : 0);
 	library_tabs->set_tab_hidden(0, project_library);
-	library_tabs->set_tabs_visible(!project_library);
+	library_tabs->set_tabs_visible(!project_library && !catalog_workspace);
 	_refresh_providers();
 	_refresh_project_assets();
 	_sync_workspace();
@@ -343,6 +346,9 @@ void SolersStudio::_catalog_provider_selected(int) {
 	const Dictionary profile = plugin ? plugin->get_profile() : Dictionary();
 	attribution_label->set_text(profile.get("attribution", String()));
 	catalog_query->set_editable(String(_studio_route(_current_route()).library) == "project" || plugin != nullptr);
+	if (plugin && String(_studio_route(_current_route()).workspace) == "catalog") {
+		_catalog_search_pressed();
+	}
 }
 void SolersStudio::_reference_files_selected(const PackedStringArray &p_files) {
 	for (const String &path : p_files) {
@@ -512,14 +518,15 @@ void SolersStudio::_catalog_thread_func(void *p_userdata) {
 		const Array items = Dictionary(result.get("data", Dictionary())).get("assets", Array());
 		const String provider = studio->catalog_args.get("provider", String());
 		for (int i = 0; i < items.size() && !studio->catalog_cancel.is_set(); i++) {
-			const String url = Dictionary(items[i]).get("preview_url", String());
+			const Dictionary item = items[i];
+			const String url = item.get("preview_url", String());
 			if (url.is_empty()) {
 				continue;
 			}
 			const Dictionary preview_result = studio->assets->fetch_provider_preview(provider, url, &studio->catalog_cancel);
 			if ((bool)preview_result.get("ok", false)) {
 				Dictionary item_preview;
-				item_preview["index"] = i;
+				item_preview["asset_id"] = item.get("asset_id", String());
 				item_preview["image"] = preview_result.get("data", Ref<Image>());
 				MutexLock lock(studio->catalog_previews_mutex);
 				studio->catalog_previews.push_back(item_preview);
@@ -555,8 +562,34 @@ void SolersStudio::_catalog_search_pressed() {
 	args["provider"] = _selected_provider(catalog_provider);
 	args["query"] = catalog_query->get_text();
 	args["limit"] = 30;
+	args["offset"] = 0;
+	catalog_items.clear();
+	catalog_total = 0;
+	selected_catalog.clear();
+	catalog_capabilities.clear();
+	catalog_grid->clear_assets();
+	catalog_variant->clear();
+	_sync_library_empty_states();
 	_start_catalog_work("search", args);
 }
+
+void SolersStudio::_catalog_load_next_page() {
+	if (String(_studio_route(_current_route()).library) != "catalog" || catalog_thread.is_started() || catalog_items.size() >= catalog_total) {
+		return;
+	}
+	VScrollBar *scroll_bar = catalog_grid->get_v_scroll_bar();
+	if (scroll_bar->get_value() < scroll_bar->get_max() - scroll_bar->get_page()) {
+		return;
+	}
+	Dictionary args;
+	args["kind"] = _current_kind();
+	args["provider"] = _selected_provider(catalog_provider);
+	args["query"] = catalog_query->get_text();
+	args["limit"] = 30;
+	args["offset"] = catalog_items.size();
+	_start_catalog_work("search", args);
+}
+
 void SolersStudio::_finish_catalog_work() {
 	const bool owns_catalog = String(_studio_route(_current_route()).library) == "catalog";
 	if (catalog_result_ready.is_set()) {
@@ -567,16 +600,18 @@ void SolersStudio::_finish_catalog_work() {
 		} else if (owns_catalog) {
 			const Dictionary result_data = result.get("data", Dictionary());
 			if (catalog_action == "search") {
-				catalog_list->clear();
-				const Ref<Texture2D> placeholder = SolersIcons::get(SNAME("tool_asset"), int(54 * EDSCALE));
+				catalog_total = result_data.get("total", 0);
 				for (const Variant &value : Array(result_data.get("assets", Array()))) {
 					const Dictionary item = value;
-					const String title = item.get("display_name", item.get("name", item.get("asset_id", String())));
-					const int index = catalog_list->add_item(title, placeholder);
-					catalog_list->set_item_metadata(index, item);
+					Dictionary card = item.duplicate(true);
+					card["id"] = item.get("asset_id", String());
+					card["name"] = item.get("display_name", item.get("name", card["id"]));
+					card["status"] = "catalog";
+					catalog_items.push_back(item);
+					catalog_grid->add_asset(card, Ref<Texture2D>());
 				}
 				_sync_library_empty_states();
-				asset_status->set_text(vformat(TTRN("%d catalog asset", "%d catalog assets", catalog_list->get_item_count()), catalog_list->get_item_count()));
+				asset_status->set_text(vformat(TTRN("%d catalog asset", "%d catalog assets", catalog_items.size()), catalog_items.size()));
 			} else {
 				catalog_capabilities = result_data;
 				catalog_variant->clear();
@@ -599,12 +634,12 @@ void SolersStudio::_finish_catalog_work() {
 	}
 	for (const Variant &value : owns_catalog ? previews : Array()) {
 		const Dictionary item_preview = value;
-		const int index = item_preview.get("index", -1);
+		const String asset_id = item_preview.get("asset_id", String());
 		const Ref<Image> image = item_preview.get("image", Ref<Image>());
-		if (index >= 0 && index < catalog_list->get_item_count() && image.is_valid() && !image->is_empty()) {
+		if (!asset_id.is_empty() && image.is_valid() && !image->is_empty()) {
 			const Ref<ImageTexture> item_texture = ImageTexture::create_from_image(image);
-			catalog_list->set_item_icon(index, item_texture);
-			if (catalog_list->is_selected(index)) {
+			catalog_grid->set_asset_preview(asset_id, item_texture);
+			if (selected_catalog.get("asset_id", String()) == asset_id) {
 				preview->set_texture(item_texture);
 				_sync_workspace();
 			}
@@ -613,21 +648,29 @@ void SolersStudio::_finish_catalog_work() {
 	if (catalog_done.is_set()) {
 		catalog_thread.wait_to_finish();
 		catalog_done.clear();
+		callable_mp(this, &SolersStudio::_catalog_load_next_page).call_deferred();
 	}
 }
 void SolersStudio::_sync_library_empty_states() {
-	catalog_empty->set_visible(catalog_list->get_item_count() == 0);
+	catalog_empty->set_visible(catalog_grid->get_asset_count() == 0);
 	project_empty->set_visible(project_grid->get_asset_count() == 0);
 }
-void SolersStudio::_catalog_selected(int p_index) {
-	if (p_index < 0 || p_index >= catalog_list->get_item_count()) {
+void SolersStudio::_catalog_selected(const String &p_asset_id) {
+	selected_catalog.clear();
+	for (const Variant &value : catalog_items) {
+		const Dictionary item = value;
+		if (item.get("asset_id", String()) == p_asset_id) {
+			selected_catalog = item;
+			break;
+		}
+	}
+	if (selected_catalog.is_empty()) {
 		return;
 	}
-	selected_catalog = catalog_list->get_item_metadata(p_index);
 	selected_manifest.clear();
 	asset_title->set_text(selected_catalog.get("display_name", selected_catalog.get("name", TTRC("Catalog asset"))));
 	asset_status->set_text(selected_catalog.get("description", String()));
-	preview->set_texture(catalog_list->get_item_icon(p_index));
+	preview->set_texture(SolersIcons::get(SNAME("tool_asset"), int(54 * EDSCALE)));
 	catalog_variant->clear();
 	_sync_workspace();
 	Dictionary args;
@@ -640,13 +683,12 @@ void SolersStudio::_acquire_pressed() {
 	if (selected_catalog.is_empty() || catalog_variant->get_selected() < 0) {
 		return;
 	}
-	Dictionary args;
-	args["kind"] = _current_kind();
-	args["provider"] = _selected_provider(catalog_provider);
-	args["asset_id"] = selected_catalog.get("asset_id", selected_catalog.get("id", String()));
-	args["variant"] = catalog_variant->get_selected_metadata();
-	args["source_version"] = catalog_capabilities.get("source_version", String());
-	_show_result(assets->catalog_acquire(args, String()), TTRC("Asset acquisition queued."));
+	pending_catalog_acquire["kind"] = _current_kind();
+	pending_catalog_acquire["provider"] = _selected_provider(catalog_provider);
+	pending_catalog_acquire["asset_id"] = selected_catalog.get("asset_id", selected_catalog.get("id", String()));
+	pending_catalog_acquire["variant"] = catalog_variant->get_selected_metadata();
+	pending_catalog_acquire["source_version"] = catalog_capabilities.get("source_version", String());
+	import_dialog->popup_file_dialog();
 }
 void SolersStudio::_refresh_project_assets() {
 	const String selected_id = selected_manifest.get("id", String());
@@ -746,6 +788,7 @@ void SolersStudio::_asset_menu_action(const String &p_action) {
 	}
 	if (p_action == "import") {
 		import_asset_id = menu_asset_id;
+		pending_catalog_acquire.clear();
 		import_dialog->popup_file_dialog();
 	} else if (p_action == "delete") {
 		pending_delete_asset_id = menu_asset_id;
@@ -815,7 +858,7 @@ void SolersStudio::_sync_workspace() {
 	const SolersStudioRoute &route_info = _studio_route(route);
 	const bool model_workspace = String(route_info.workspace) == "generation" || String(route_info.workspace) == "animation";
 	const bool has_manifest = model_workspace && !selected_manifest.is_empty();
-	const bool has_catalog = route == "assets" && !selected_catalog.is_empty();
+	const bool has_catalog = String(route_info.library) == "catalog" && !selected_catalog.is_empty();
 	const bool empty = !has_manifest && !has_catalog;
 	const String status = String(selected_manifest.get("status", String())).to_lower();
 	const bool busy = has_manifest && (status == "queued" || status == "running");
@@ -1109,10 +1152,18 @@ void SolersStudio::_import_pressed() {
 		return;
 	}
 	import_asset_id = selected_manifest.get("id", String());
+	pending_catalog_acquire.clear();
 	import_dialog->popup_file_dialog();
 }
 
 void SolersStudio::_import_directory_selected(const String &p_directory) {
+	if (!pending_catalog_acquire.is_empty()) {
+		Dictionary args = pending_catalog_acquire;
+		pending_catalog_acquire.clear();
+		args["target_dir"] = p_directory;
+		_show_result(assets->catalog_acquire(args, String()), TTRC("Asset acquisition queued."));
+		return;
+	}
 	Dictionary args;
 	args["asset_id"] = import_asset_id;
 	args["target_dir"] = p_directory;
@@ -1178,7 +1229,8 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	columns->set_h_size_flags(SIZE_EXPAND_FILL);
 	columns->set_v_size_flags(SIZE_EXPAND_FILL);
 	columns->add_theme_constant_override(SNAME("separation"), int(10 * EDSCALE));
-	SolersSurface *creation_surface = _studio_add<SolersSurface>(columns);
+	creation_surface = _studio_add<SolersSurface>(columns);
+	creation_surface->set_name("StudioCreationSurface");
 	creation_surface->set_h_size_flags(SIZE_EXPAND_FILL);
 	creation_surface->set_v_size_flags(SIZE_EXPAND_FILL);
 	creation_surface->configure(tokens.surface, tokens.border, tokens.radius_home_tile, 12, false);
@@ -1313,7 +1365,8 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	animation_run_button->set_theme_type_variation(SNAME("SolersPrimaryButton"));
 	animation_run_button->set_custom_minimum_size(Size2(0, 44 * EDSCALE));
 
-	SolersSurface *center_surface = _studio_add<SolersSurface>(columns);
+	center_surface = _studio_add<SolersSurface>(columns);
+	center_surface->set_name("StudioCenterSurface");
 	center_surface->set_h_size_flags(SIZE_EXPAND_FILL);
 	center_surface->set_v_size_flags(SIZE_EXPAND_FILL);
 	center_surface->set_stretch_ratio(2.0f);
@@ -1379,11 +1432,8 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 		button->set_theme_type_variation(SNAME("SolersStudioActionButton"));
 		button->set_custom_minimum_size(Size2(38, 34) * EDSCALE);
 	}
-	catalog_variant = _studio_add<SolersStudioSelect>(center);
-	acquire_button = _studio_add<Button>(center);
-	acquire_button->set_theme_type_variation(SNAME("SolersPrimaryButton"));
-
 	SolersSurface *library_surface = _studio_add<SolersSurface>(columns);
+	library_surface->set_name("StudioLibrarySurface");
 	library_surface->set_h_size_flags(SIZE_EXPAND_FILL);
 	library_surface->set_v_size_flags(SIZE_EXPAND_FILL);
 	library_surface->configure(tokens.surface, tokens.border, tokens.radius_home_tile, 12, false);
@@ -1414,18 +1464,14 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	catalog_provider = _studio_add<SolersStudioSelect>(catalog);
 	PanelContainer *catalog_stack = _studio_add<PanelContainer>(catalog);
 	catalog_stack->set_v_size_flags(SIZE_EXPAND_FILL);
-	catalog_list = _studio_add<ItemList>(catalog_stack);
-	catalog_list->set_icon_mode(ItemList::ICON_MODE_TOP);
-	catalog_list->set_fixed_icon_size(Size2i(92, 92) * EDSCALE);
-	catalog_list->set_fixed_column_width(int(100 * EDSCALE));
-	catalog_list->set_same_column_width(true);
-	catalog_list->set_max_columns(0);
-	catalog_list->set_max_text_lines(2);
-	catalog_list->set_v_size_flags(SIZE_EXPAND_FILL);
-	catalog_list->get_v_scroll_bar()->set_theme_type_variation(SNAME("SolersStudioScroll"));
+	catalog_grid = _studio_add<SolersAssetGrid>(catalog_stack);
+	catalog_grid->set_v_size_flags(SIZE_EXPAND_FILL);
 	catalog_empty = _studio_empty_state(catalog_stack, &catalog_empty_label);
 	attribution_label = _studio_label(catalog, String(), SNAME("SolersSessionMeta"));
 	attribution_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	catalog_variant = _studio_add<SolersStudioSelect>(catalog);
+	acquire_button = _studio_add<Button>(catalog);
+	acquire_button->set_theme_type_variation(SNAME("SolersPrimaryButton"));
 	PanelContainer *project = _studio_add<PanelContainer>(library_tabs);
 	project->set_name("Project");
 	project_grid = _studio_add<SolersAssetGrid>(project);
@@ -1483,7 +1529,8 @@ SolersStudio::SolersStudio(SolersAssetService *p_assets, SolersDock *p_dock) :
 	catalog_query->connect(SceneStringName(text_changed), callable_mp(this, &SolersStudio::_refresh_project_assets).unbind(1));
 	creation_scroll->connect(SceneStringName(mouse_entered), callable_mp(this, &SolersStudio::_creation_scroll_hovered).bind(true));
 	creation_scroll->connect(SceneStringName(mouse_exited), callable_mp(this, &SolersStudio::_creation_scroll_hovered).bind(false));
-	catalog_list->connect(SceneStringName(item_selected), callable_mp(this, &SolersStudio::_catalog_selected));
+	catalog_grid->set_callbacks(callable_mp(this, &SolersStudio::_catalog_selected), Callable());
+	catalog_grid->get_v_scroll_bar()->connect(SceneStringName(value_changed), callable_mp(this, &SolersStudio::_catalog_load_next_page).unbind(1));
 	project_grid->set_callbacks(callable_mp(this, &SolersStudio::_project_selected), callable_mp(this, &SolersStudio::_asset_menu_requested));
 	acquire_button->connect(SceneStringName(pressed), callable_mp(this, &SolersStudio::_acquire_pressed));
 	animation_button->connect(SceneStringName(pressed), callable_mp(this, &SolersStudio::_animation_pressed));

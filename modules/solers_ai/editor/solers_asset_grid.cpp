@@ -105,46 +105,61 @@ void SolersAssetGrid::add_asset(const Dictionary &p_manifest, const Ref<Texture2
 		activity->set_custom_minimum_size(Size2(32, 32) * EDSCALE);
 		center->add_child(activity);
 		card->add_child(center);
-	} else if (p_preview.is_valid()) {
+	} else {
 		TextureRect *image = memnew(TextureRect);
+		image->set_name("AssetPreview");
 		image->set_anchors_and_offsets_preset(PRESET_FULL_RECT);
 		image->set_offsets_preset(PRESET_FULL_RECT, PRESET_MODE_MINSIZE, 2 * EDSCALE);
 		image->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
-		image->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_COVERED);
-		image->set_texture(p_preview);
 		image->set_mouse_filter(MOUSE_FILTER_IGNORE);
+		if (p_preview.is_valid()) {
+			image->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_COVERED);
+			image->set_texture(p_preview);
+		} else {
+			const bool failed = status == "failed";
+			image->set_custom_minimum_size(Size2(32, 32) * EDSCALE);
+			image->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+			image->set_texture(SolersIcons::get(failed ? SNAME("cross") : SNAME("tool_asset"), int(32 * EDSCALE)));
+			image->set_self_modulate(card->get_theme_color(failed ? SNAME("failure_color") : SNAME("placeholder_color"), SNAME("SolersAssetCard")));
+		}
 		card->add_child(image);
-	} else {
-		CenterContainer *center = memnew(CenterContainer);
-		center->set_anchors_and_offsets_preset(PRESET_FULL_RECT);
-		center->set_mouse_filter(MOUSE_FILTER_IGNORE);
-		TextureRect *placeholder = memnew(TextureRect);
-		placeholder->set_custom_minimum_size(Size2(32, 32) * EDSCALE);
-		placeholder->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
-		const bool failed = status == "failed";
-		placeholder->set_texture(SolersIcons::get(failed ? SNAME("cross") : SNAME("tool_asset"), int(32 * EDSCALE)));
-		placeholder->set_self_modulate(card->get_theme_color(failed ? SNAME("failure_color") : SNAME("placeholder_color"), SNAME("SolersAssetCard")));
-		center->add_child(placeholder);
-		card->add_child(center);
 	}
 
-	Button *more = memnew(Button);
-	more->set_button_icon(SolersIcons::get(SNAME("more"), int(16 * EDSCALE)));
-	more->set_custom_minimum_size(Size2(28, 28) * EDSCALE);
-	more->set_theme_type_variation(SNAME("SolersStudioActionButton"));
-	more->set_mouse_filter(MOUSE_FILTER_STOP);
-	more->set_tooltip_text(TTRC("Asset actions"));
-	more->hide();
-	card->add_child(more);
-	more->set_anchors_and_offsets_preset(PRESET_BOTTOM_RIGHT, PRESET_MODE_MINSIZE, int(4 * EDSCALE));
-	more->set_grow_direction_preset(PRESET_BOTTOM_RIGHT);
-	more->connect(SceneStringName(pressed), callable_mp(this, &SolersAssetGrid::_asset_menu_pressed).bind(asset_id, more));
-	const Callable sync_menu = callable_mp_static(_sync_asset_menu).bind(card, more);
-	for (const StringName &signal : { SceneStringName(mouse_entered), SceneStringName(mouse_exited), SceneStringName(focus_entered), SceneStringName(focus_exited) }) {
-		card->connect(signal, sync_menu);
-		more->connect(signal, sync_menu);
+	if (menu_callback.is_valid()) {
+		Button *more = memnew(Button);
+		more->set_button_icon(SolersIcons::get(SNAME("more"), int(16 * EDSCALE)));
+		more->set_custom_minimum_size(Size2(28, 28) * EDSCALE);
+		more->set_theme_type_variation(SNAME("SolersStudioActionButton"));
+		more->set_mouse_filter(MOUSE_FILTER_STOP);
+		more->set_tooltip_text(TTRC("Asset actions"));
+		more->hide();
+		card->add_child(more);
+		more->set_anchors_and_offsets_preset(PRESET_BOTTOM_RIGHT, PRESET_MODE_MINSIZE, int(4 * EDSCALE));
+		more->set_grow_direction_preset(PRESET_BOTTOM_RIGHT);
+		more->connect(SceneStringName(pressed), callable_mp(this, &SolersAssetGrid::_asset_menu_pressed).bind(asset_id, more));
+		const Callable sync_menu = callable_mp_static(_sync_asset_menu).bind(card, more);
+		for (const StringName &signal : { SceneStringName(mouse_entered), SceneStringName(mouse_exited), SceneStringName(focus_entered), SceneStringName(focus_exited) }) {
+			card->connect(signal, sync_menu);
+			more->connect(signal, sync_menu);
+		}
 	}
 	asset_count++;
+}
+
+void SolersAssetGrid::set_asset_preview(const String &p_asset_id, const Ref<Texture2D> &p_preview) {
+	for (int i = 0; i < grid->get_child_count(); i++) {
+		Button *card = Object::cast_to<Button>(grid->get_child(i));
+		if (!card || card->get_meta(SNAME("asset_id"), String()) != p_asset_id) {
+			continue;
+		}
+		TextureRect *image = Object::cast_to<TextureRect>(card->find_child("AssetPreview", false, false));
+		if (image) {
+			image->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_COVERED);
+			image->set_self_modulate(Color(1, 1, 1));
+			image->set_texture(p_preview);
+		}
+		return;
+	}
 }
 
 void SolersAssetGrid::_asset_pressed(const String &p_asset_id) {

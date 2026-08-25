@@ -327,20 +327,6 @@ Ref<Theme> SolersUITheme::create() {
 	}
 	theme->set_constant(SNAME("h_separation"), "SolersStudioRail", int(8 * EDSCALE));
 	theme->set_constant(SNAME("v_separation"), "SolersStudioRail", int(10 * EDSCALE));
-	theme->set_type_variation(SNAME("SolersStudioAssetGrid"), SNAME("ItemList"));
-	theme->set_stylebox(SceneStringName(panel), "SolersStudioAssetGrid", _solers_flat(tokens.surface, 0, Color(), 0, 4 * EDSCALE));
-	const Color grid_accent = EditorNode::get_singleton() ? EditorNode::get_singleton()->get_editor_theme()->get_color(SNAME("accent_color"), EditorStringName(Editor)) : tokens.text;
-	const Ref<StyleBoxFlat> grid_idle = _solers_flat(Color(0, 0, 0, 0), card_radius, Color(), 0, 2 * EDSCALE);
-	const Ref<StyleBoxFlat> grid_active = _solers_flat(Color(0, 0, 0, 0), card_radius, grid_accent, border_width, 2 * EDSCALE);
-	grid_active->set_expand_margin_all(-2 * EDSCALE);
-	theme->set_stylebox(SNAME("hovered"), "SolersStudioAssetGrid", grid_active);
-	for (const StringName &name : { SNAME("selected"), SNAME("selected_focus"), SNAME("hovered_selected"), SNAME("hovered_selected_focus") }) {
-		theme->set_stylebox(name, "SolersStudioAssetGrid", grid_active);
-	}
-	theme->set_stylebox(SNAME("cursor"), "SolersStudioAssetGrid", grid_idle);
-	theme->set_stylebox(SNAME("cursor_unfocused"), "SolersStudioAssetGrid", grid_idle);
-	theme->set_constant(SNAME("h_separation"), "SolersStudioAssetGrid", int(10 * EDSCALE));
-	theme->set_constant(SNAME("v_separation"), "SolersStudioAssetGrid", int(10 * EDSCALE));
 	theme->set_type_variation(SNAME("SolersStudioScroll"), SNAME("VScrollBar"));
 	const Ref<StyleBoxFlat> scroll_empty = _solers_flat(Color(0, 0, 0, 0), 3 * EDSCALE, Color(0, 0, 0, 0), 0, 0);
 	theme->set_stylebox(SNAME("scroll"), "SolersStudioScroll", scroll_empty);

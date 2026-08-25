@@ -57,6 +57,7 @@ protected:
 public:
 	void clear_assets();
 	void add_asset(const Dictionary &p_manifest, const Ref<Texture2D> &p_preview);
+	void set_asset_preview(const String &p_asset_id, const Ref<Texture2D> &p_preview);
 	void set_selected_asset(const String &p_asset_id);
 	void set_callbacks(const Callable &p_selected, const Callable &p_menu);
 	int get_asset_count() const { return asset_count; }

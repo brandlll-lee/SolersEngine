@@ -99,6 +99,9 @@ func _check_layout() -> void:
 	var rail: ItemList = studio.find_child("StudioRail", true, false) if studio else null
 	var library_search: Control = studio.find_child("StudioLibrarySearch", true, false) if studio else null
 	var library_tabs: TabContainer = studio.find_child("StudioLibraryTabs", true, false) if studio else null
+	var creation_surface: Control = studio.find_child("StudioCreationSurface", true, false) if studio else null
+	var center_surface: Control = studio.find_child("StudioCenterSurface", true, false) if studio else null
+	var library_surface: Control = studio.find_child("StudioLibrarySurface", true, false) if studio else null
 	var generate: Button = studio.find_child("GenerateButton", true, false) if studio else null
 	var composer := solers.find_child("ComposerInput", true, false) as TextEdit
 	if not _check(studio != null and creation_scroll != null and rail != null and library_search != null and library_tabs != null and generate != null and composer != null, "The Studio layout contract is unavailable"):
@@ -112,6 +115,13 @@ func _check_layout() -> void:
 		return
 	if not _check(generate.get_global_rect().end.y <= viewport_bottom and composer.get_global_rect().end.y <= viewport_bottom, "Studio pushed an editor composer below the visible window"):
 		return
+	for item in rail.item_count:
+		if rail.get_item_metadata(item) in [&"material", &"hdri"]:
+			rail.select(item)
+			rail.item_selected.emit(item)
+			await get_tree().process_frame
+			if not _check(not creation_surface.visible and not center_surface.visible and library_surface.visible and not library_tabs.tabs_visible, "A catalog workspace still exposes the creation or preview columns"):
+				return
 
 	var left_split := base.find_child("DockVSplitLeftL", true, false)
 	if not _check(left_split != null and left_split.get_parent() is SplitContainer, "Left host is not resizable by the native split"):

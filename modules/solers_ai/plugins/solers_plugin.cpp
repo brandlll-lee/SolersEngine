@@ -846,6 +846,9 @@ struct SolersCatalogRelevanceSort {
 
 Array SolersPlugin::rank_catalog_assets(const Array &p_assets, const String &p_query) {
 	const String normalized_query = p_query.strip_edges().to_lower();
+	if (normalized_query.is_empty()) {
+		return p_assets.duplicate(true);
+	}
 	const PackedStringArray terms = _solers_catalog_terms(normalized_query);
 	Vector<Dictionary> matches;
 	for (int i = 0; i < p_assets.size(); i++) {

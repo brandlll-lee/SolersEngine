@@ -1936,7 +1936,6 @@ void SolersToolRegistry::_register_asset_tools() {
 	catalog_search_properties["kind"] = catalog_kind_schema;
 	Dictionary query_schema;
 	query_schema["type"] = "string";
-	query_schema["minLength"] = 1;
 	catalog_search_properties["query"] = query_schema;
 	Dictionary limit_schema;
 	limit_schema["type"] = "integer";
@@ -1957,7 +1956,7 @@ void SolersToolRegistry::_register_asset_tools() {
 	catalog_search_schema["required"] = catalog_search_required;
 	catalog_search_schema["additionalProperties"] = false;
 	const CharString catalog_search_json = JSON::stringify(catalog_search_schema).utf8();
-	const CharString catalog_search_description = vformat("Search lightweight metadata through a registered catalog plugin (%s). Inspect a selected result before acquiring it.", catalog_labels).utf8();
+	const CharString catalog_search_description = vformat("Browse or search lightweight metadata through a registered catalog plugin (%s). Inspect a selected result before acquiring it.", catalog_labels).utf8();
 	_add("asset.catalog.search", catalog_search_description.get_data(), catalog_search_json.get_data(), SolersPermissionManager::PERMISSION_NETWORK, SolersToolMutationPolicy::READ_ONLY, Vector<String>(), SolersToolExposure::DEFERRED, [svc](const SolersToolContext &ctx, const Dictionary &a) { return svc->catalog_search(_solers_apply_plugin_mention(ctx, a, "supports_catalog"), ctx.cancel_requested); }, SolersToolExecution::WORKER_THREAD, [](const Dictionary &a) {
 				Array accesses;
 				Dictionary access;

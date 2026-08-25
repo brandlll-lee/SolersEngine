@@ -71,6 +71,8 @@ class SolersStudio : public PanelContainer {
 	uint64_t asset_revision = 0;
 	uint64_t preview_generation = 0;
 	ItemList *route_list = nullptr;
+	SolersSurface *creation_surface = nullptr;
+	SolersSurface *center_surface = nullptr;
 	Control *creation_workspace = nullptr;
 	Control *animation_workspace = nullptr;
 	SolersStudioSelect *preset_button = nullptr;
@@ -113,7 +115,7 @@ class SolersStudio : public PanelContainer {
 	SolersStudioSelect *catalog_variant = nullptr;
 	SolersStudioSelect *catalog_provider = nullptr;
 	LineEdit *catalog_query = nullptr;
-	ItemList *catalog_list = nullptr;
+	SolersAssetGrid *catalog_grid = nullptr;
 	SolersAssetGrid *project_grid = nullptr;
 	Control *catalog_empty = nullptr, *project_empty = nullptr;
 	Label *catalog_empty_label = nullptr, *project_empty_label = nullptr;
@@ -124,8 +126,11 @@ class SolersStudio : public PanelContainer {
 	String import_asset_id;
 	String loaded_model_path;
 	Array project_manifests;
+	Array catalog_items;
 	HashMap<String, Ref<Texture2D>> project_previews;
 	Dictionary selected_catalog;
+	Dictionary pending_catalog_acquire;
+	int catalog_total = 0;
 	Dictionary asset_capabilities;
 	Dictionary catalog_capabilities;
 	Dictionary selected_preset;
@@ -177,7 +182,8 @@ class SolersStudio : public PanelContainer {
 	void _options_toggled(bool p_visible);
 	void _generate_pressed();
 	void _catalog_search_pressed();
-	void _catalog_selected(int p_index);
+	void _catalog_load_next_page();
+	void _catalog_selected(const String &p_asset_id);
 	void _project_selected(const String &p_asset_id);
 	void _asset_menu_requested(const String &p_asset_id, Control *p_anchor);
 	void _asset_menu_action(const String &p_action);

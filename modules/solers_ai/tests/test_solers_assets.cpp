@@ -942,6 +942,8 @@ TEST_CASE("[SolersAssetService] catalog ranking uses partial term coverage and s
 	CHECK(Dictionary(ranked[1]).get("asset_id", String()) == "wooden_chair");
 	CHECK(Array(Dictionary(ranked[1]).get("matched_terms", Array())).has("wood"));
 	CHECK_FALSE(Dictionary(ranked[1]).has("_rank_primary"));
+	const Array catalog = SolersPlugin::rank_catalog_assets(candidates, String());
+	CHECK(catalog == candidates);
 }
 
 } // namespace TestSolersAssets

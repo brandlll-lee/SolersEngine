@@ -146,8 +146,8 @@ bool SolersPluginAmbientCG::_extract_archive(const Ref<SolersPluginJob> &p_job, 
 Dictionary SolersPluginAmbientCG::catalog_search(const Dictionary &p_args, const SafeFlag *p_cancel_requested) {
 	const String query = String(p_args.get("query", String())).strip_edges();
 	const String kind = String(p_args.get("kind", String())).strip_edges().to_lower();
-	if (query.is_empty() || (kind != "material" && kind != "hdri" && kind != "3d")) {
-		return error_result("INVALID_ARGUMENT", "ambientCG search requires a query and kind material, hdri, or 3d.");
+	if (kind != "material" && kind != "hdri" && kind != "3d") {
+		return error_result("INVALID_ARGUMENT", "ambientCG catalog requires kind material, hdri, or 3d.");
 	}
 	const int limit = MAX(1, MIN((int)p_args.get("limit", 20), 50));
 	const int offset = MAX(0, (int)p_args.get("offset", 0));

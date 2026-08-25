@@ -159,13 +159,6 @@ TEST_CASE("[SolersUITheme][SceneTree] typography and pane chrome stay inside the
 	REQUIRE(rail_selected.is_valid());
 	CHECK(rail_selected->get_border_width(SIDE_LEFT) == 0);
 	CHECK(theme->get_constant(SNAME("v_separation"), SNAME("SolersStudioRail")) > 0);
-	CHECK(theme->get_type_variation_base(SNAME("SolersStudioAssetGrid")) == SNAME("ItemList"));
-	Ref<StyleBoxFlat> grid_selected = theme->get_stylebox(SNAME("selected"), SNAME("SolersStudioAssetGrid"));
-	REQUIRE(grid_selected.is_valid());
-	CHECK(grid_selected->get_bg_color().a == 0.0f);
-	CHECK(grid_selected->get_border_width(SIDE_LEFT) > 0);
-	CHECK(grid_selected->get_expand_margin(SIDE_LEFT) < 0.0f);
-	CHECK(theme->get_constant(SNAME("h_separation"), SNAME("SolersStudioAssetGrid")) > 0);
 	CHECK(theme->get_type_variation_base(SNAME("SolersStudioScroll")) == SNAME("VScrollBar"));
 	CHECK(theme->has_stylebox(SNAME("grabber_highlight"), SNAME("SolersStudioScroll")));
 	CHECK(theme->get_type_variation_base(SNAME("SolersAssetCard")) == SNAME("Button"));
@@ -481,9 +474,14 @@ TEST_CASE("[SolersStudio][SceneTree] selectors keep native state with the shared
 	REQUIRE(failed_icon);
 	CHECK(failed_icon->get_combined_minimum_size() == Size2(32, 32) * EDSCALE);
 	CHECK(failed_icon->get_self_modulate() == failure_color);
+	const Ref<Texture2D> replacement = SolersIcons::get(SNAME("photo_ai"), 32);
+	grid->set_asset_preview("failed", replacement);
+	CHECK(failed_icon->get_texture()->get_rid() == replacement->get_rid());
+	CHECK(failed_icon->get_stretch_mode() == TextureRect::STRETCH_KEEP_ASPECT_COVERED);
+	CHECK(failed_icon->get_self_modulate() == Color(1, 1, 1));
 
-	host->queue_free();
-	MessageQueue::get_singleton()->flush();
+	memdelete(host);
+	SolersIcons::clear_cache();
 }
 
 TEST_CASE("[SolersUI][SceneTree][Editor] editor locale and technical tool chrome have separate authorities") {
