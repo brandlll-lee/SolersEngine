@@ -1248,7 +1248,7 @@ Dictionary SolersObservationService::inspect_project_delivery(const Dictionary &
 
 	Array input_actions;
 	if (InputMap *input_map = InputMap::get_singleton()) {
-		for (const StringName &action : input_map->get_actions()) {
+		for (const StringName action : input_map->get_actions()) {
 			const List<Ref<InputEvent>> *events = input_map->action_get_events(action);
 			input_actions.push_back(Dictionary({ { "name", action }, { "event_count", events ? events->size() : 0 } }));
 		}
