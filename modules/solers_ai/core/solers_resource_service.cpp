@@ -457,8 +457,46 @@ Dictionary solers_variant_wire_shape(Variant::Type p_type) {
 	return Dictionary({ { "encoding", "named_members" }, { "members", members } });
 }
 
+bool solers_decode_wire_variant(const Variant &p_value, Variant &r_out, String &r_error) {
+	if (p_value.get_type() == Variant::ARRAY) {
+		const Array source = p_value;
+		Array decoded;
+		decoded.resize(source.size());
+		for (int i = 0; i < source.size(); i++) {
+			if (!solers_decode_wire_variant(source[i], decoded[i], r_error)) {
+				return false;
+			}
+		}
+		r_out = decoded;
+		return true;
+	}
+	if (p_value.get_type() != Variant::DICTIONARY) {
+		r_out = p_value;
+		return true;
+	}
+
+	const Dictionary source = p_value;
+	if (source.has("class_name") && source.has("properties") && !source.has("object_id") && !source.has("path")) {
+		const PropertyInfo resource_info(Variant::OBJECT, SNAME("value"), PROPERTY_HINT_RESOURCE_TYPE, String(), PROPERTY_USAGE_DEFAULT, Resource::get_class_static());
+		return solers_coerce_variant_value(resource_info, source, r_out, r_error);
+	}
+	Dictionary decoded;
+	for (const Variant *key = source.next(nullptr); key; key = source.next(key)) {
+		Variant value = source[*key];
+		if (!solers_decode_wire_variant(value, value, r_error)) {
+			return false;
+		}
+		decoded[*key] = value;
+	}
+	r_out = decoded;
+	return true;
+}
+
 static bool _solers_coerce_value(const PropertyInfo &p_info, const Variant &p_value, Variant &r_out, String &r_error) {
-	if (p_info.type == Variant::NIL || (p_info.type != Variant::OBJECT && p_value.get_type() == p_info.type)) {
+	if (p_info.type == Variant::NIL || ((p_info.type == Variant::ARRAY || p_info.type == Variant::DICTIONARY) && p_value.get_type() == p_info.type)) {
+		return solers_decode_wire_variant(p_value, r_out, r_error);
+	}
+	if (p_info.type != Variant::OBJECT && p_value.get_type() == p_info.type) {
 		r_out = p_value;
 		return true;
 	}

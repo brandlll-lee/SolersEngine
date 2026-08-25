@@ -42,6 +42,7 @@
 #include "core/io/json.h"
 #include "core/io/resource_loader.h"
 #include "core/io/resource_uid.h"
+#include "core/input/input_map.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "core/os/os.h"
@@ -1151,6 +1152,119 @@ Dictionary SolersObservationService::get_project_settings_summary() const {
 	return summary;
 }
 
+static bool _solers_append_bounded(Array &r_results, const Dictionary &p_entry, int p_max_results, int p_token_budget, int &r_tokens);
+
+Dictionary SolersObservationService::inspect_project_delivery(const Dictionary &p_args, int p_token_budget) const {
+	ProjectSettings *settings = ProjectSettings::get_singleton();
+	ERR_FAIL_NULL_V(settings, Dictionary());
+	Array blockers;
+	Array roots = p_args.get("roots", Array());
+	const String main_scene = GLOBAL_GET("application/run/main_scene");
+	if (!main_scene.is_empty()) {
+		roots.push_back(main_scene);
+	}
+	List<PropertyInfo> setting_properties;
+	settings->get_property_list(&setting_properties);
+	for (const PropertyInfo &property : setting_properties) {
+		const String name = property.name;
+		if (name.begins_with("autoload/")) {
+			const String path = String(settings->get_setting(name)).trim_prefix("*");
+			if (!path.is_empty()) {
+				roots.push_back(path);
+			}
+		}
+	}
+
+	Array normalized_roots;
+	Vector<String> queue;
+	HashSet<String> reachable;
+	for (int i = 0; i < roots.size(); i++) {
+		String path;
+		String error;
+		if (!_normalize_project_path(roots[i], path, error)) {
+			blockers.push_back(Dictionary({ { "code", "INVALID_ROOT" }, { "path", roots[i] }, { "message", error } }));
+			continue;
+		}
+		if (!reachable.has(path)) {
+			reachable.insert(path);
+			queue.push_back(path);
+			normalized_roots.push_back(path);
+		}
+	}
+	for (int queue_index = 0; queue_index < queue.size(); queue_index++) {
+		const String path = queue[queue_index];
+		if (!FileAccess::exists(path)) {
+			blockers.push_back(Dictionary({ { "code", "MISSING_DEPENDENCY" }, { "path", path } }));
+			continue;
+		}
+		List<String> dependencies;
+		ResourceLoader::get_dependencies(path, &dependencies, true);
+		for (const String &raw_dependency : dependencies) {
+			const String dependency = ResourceUID::ensure_path(raw_dependency.get_slice("::", 0));
+			if (dependency.begins_with("res://") && !reachable.has(dependency)) {
+				reachable.insert(dependency);
+				queue.push_back(dependency);
+			}
+		}
+	}
+
+	PackedStringArray files;
+	{
+		MutexLock lock(project_files_mutex);
+		files = project_files;
+	}
+	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
+	if (!project_files_ready || !filesystem || filesystem->is_scanning() || filesystem->is_importing()) {
+		blockers.push_back(Dictionary({ { "code", "PROJECT_INDEX_UNAVAILABLE" }, { "message", "EditorFileSystem has not committed a stable project index." } }));
+	}
+	Dictionary hashes;
+	Array unreferenced;
+	int report_tokens = 0;
+	bool truncated = false;
+	for (int i = 0; i < files.size(); i++) {
+		const String path = files[i];
+		int file_index = -1;
+		EditorFileSystemDirectory *directory = filesystem ? filesystem->find_file(path, &file_index) : nullptr;
+		if (directory && !directory->get_file_import_is_valid(file_index)) {
+			blockers.push_back(Dictionary({ { "code", "INVALID_IMPORT" }, { "path", path } }));
+		}
+		if (FileAccess::exists(path)) {
+			const String sha = FileAccess::get_sha256(path);
+			Array group = hashes.get(sha, Array());
+			group.push_back(path);
+			hashes[sha] = group;
+		}
+		if (!reachable.has(path)) {
+			truncated |= !_solers_append_bounded(unreferenced, Dictionary({ { "path", path } }), INT32_MAX, p_token_budget, report_tokens);
+		}
+	}
+	Array duplicate_groups;
+	for (const Variant *sha = hashes.next(nullptr); sha; sha = hashes.next(sha)) {
+		const Array paths = hashes[*sha];
+		if (paths.size() > 1) {
+			truncated |= !_solers_append_bounded(duplicate_groups, Dictionary({ { "sha256", *sha }, { "paths", paths } }), INT32_MAX, p_token_budget, report_tokens);
+		}
+	}
+
+	Array input_actions;
+	if (InputMap *input_map = InputMap::get_singleton()) {
+		for (const StringName &action : input_map->get_actions()) {
+			const List<Ref<InputEvent>> *events = input_map->action_get_events(action);
+			input_actions.push_back(Dictionary({ { "name", action }, { "event_count", events ? events->size() : 0 } }));
+		}
+	}
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	Node *edited_root = EditorInterface::get_singleton() ? EditorInterface::get_singleton()->get_edited_scene_root() : nullptr;
+	if (edited_root && undo_redo) {
+		const int history_id = EditorNode::get_editor_data().get_current_edited_scene_history_id();
+		if (history_id != EditorUndoRedoManager::INVALID_HISTORY && undo_redo->is_history_unsaved(history_id)) {
+			blockers.push_back(Dictionary({ { "code", "UNSAVED_SCENE" }, { "path", edited_root->get_scene_file_path() } }));
+		}
+	}
+
+	return Dictionary({ { "status", "complete" }, { "roots", normalized_roots }, { "reachable_count", reachable.size() }, { "project_file_count", files.size() }, { "input_actions", input_actions }, { "unreferenced_from_roots", unreferenced }, { "duplicate_content", duplicate_groups }, { "blockers", blockers }, { "truncated", truncated } });
+}
+
 static bool _solers_text_search_extension(const String &p_extension) {
 	return p_extension == "gd" || p_extension == "cs" || p_extension == "shader" || p_extension == "gdshader" ||
 			p_extension == "tscn" || p_extension == "tres" || p_extension == "cfg" || p_extension == "json" ||
@@ -2182,9 +2296,30 @@ void SolersObservationService::_finish_runtime_query(Dictionary p_result) {
 	if (runtime_query.is_empty()) {
 		return;
 	}
-	p_result["target"] = runtime_query.get("target", String());
+	const String target = runtime_query.get("target", String());
+	p_result["target"] = target;
 	p_result["runtime_epoch"] = (int64_t)runtime_epoch;
-	runtime_query["result"] = p_result;
+	runtime_query["result"] = _runtime_observation_result(p_result);
+}
+
+Dictionary SolersObservationService::_runtime_observation_result(Dictionary p_result) const {
+	if (String(p_result.get("status", String())) == "pending") {
+		return p_result;
+	}
+	const bool source_available = p_result.get("available", true);
+	Array missing = p_result.get("errors", Array());
+	const String reason = p_result.get("reason", String());
+	if (!reason.is_empty()) {
+		missing.push_back(Dictionary({ { "reason", reason } }));
+	}
+	Dictionary availability;
+	availability["state"] = !source_available ? "unavailable" : missing.is_empty() ? "complete"
+															 : "partial";
+	availability["missing"] = missing;
+	p_result.erase("available");
+	p_result["status"] = "complete";
+	p_result["availability"] = availability;
+	return p_result;
 }
 
 void SolersObservationService::_bind_runtime_debugger() {
@@ -2257,7 +2392,7 @@ Dictionary SolersObservationService::observe_runtime(const Dictionary &p_args, i
 			result["available"] = false;
 			result["reason"] = p_reason;
 			result["runtime"] = get_runtime_status();
-			return result;
+			return _runtime_observation_result(result);
 		};
 		const uint64_t request_id = (int64_t)p_args.get("_runtime_request", 0);
 		if (request_id > 0) {
@@ -2311,7 +2446,7 @@ Dictionary SolersObservationService::observe_runtime(const Dictionary &p_args, i
 		if (!(bool)status.get("is_breaked", false)) {
 			result["reason"] = "runtime_not_breaked";
 		}
-		return result;
+		return _runtime_observation_result(result);
 	}
 	const uint64_t since_cursor = p_args.has("since_cursor") ? (int64_t)p_args["since_cursor"] : (target == "performance" ? runtime_cursor : 0);
 	const bool include_events = (bool)p_args.get("include_events", false);
@@ -2394,7 +2529,7 @@ Dictionary SolersObservationService::observe_runtime(const Dictionary &p_args, i
 			}
 		}
 	}
-	return result;
+	return _runtime_observation_result(result);
 }
 
 bool SolersObservationService::get_runtime_property(uint64_t p_epoch, const NodePath &p_node_path, ObjectID p_object_id, const StringName &p_property, Variant &r_value, PropertyInfo &r_info, String &r_observation_id) const {

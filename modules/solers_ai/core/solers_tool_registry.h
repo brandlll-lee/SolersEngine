@@ -95,14 +95,16 @@ class SolersToolRegistry : public Object {
 			SolersFunctionTool::CompletionHandler p_completion_handler = {},
 			std::function<SolersPermissionManager::Permission(const Dictionary &)> p_permission_resolver = {},
 			std::function<SolersToolMutationPolicy(const Dictionary &)> p_mutation_policy_resolver = {},
-			SolersToolUiKind p_ui_kind = SolersToolUiKind::DEFAULT);
+			SolersToolUiKind p_ui_kind = SolersToolUiKind::DEFAULT,
+			const SolersToolHostPolicy &p_host = {});
 	void _add_observe_exposed(const char *p_name, const char *p_description, const char *p_schema_json,
 			SolersToolExposure p_exposure, SolersFunctionTool::Handler p_handler,
 			std::function<Array(const Dictionary &)> p_resource_access = {},
 			SolersFunctionTool::PollHandler p_poll_handler = {},
 			SolersFunctionTool::ReadyHandler p_ready_handler = {},
 			SolersToolUiKind p_ui_kind = SolersToolUiKind::OBSERVE,
-			SolersToolExecution p_execution = SolersToolExecution::MAIN_THREAD);
+			SolersToolExecution p_execution = SolersToolExecution::MAIN_THREAD,
+			const SolersToolHostPolicy &p_host = {});
 	void _add_observe(const char *p_name, const char *p_description, const char *p_schema_json,
 			SolersFunctionTool::Handler p_handler, std::function<Array(const Dictionary &)> p_resource_access = {},
 			SolersFunctionTool::PollHandler p_poll_handler = {},
@@ -157,6 +159,7 @@ public:
 	void register_tool(SolersTool *p_tool);
 	Array list_tools() const;
 	Dictionary get_tool_definition(const StringName &p_name) const;
+	Dictionary build_delivery_report(const Dictionary &p_args = Dictionary(), int p_token_budget = INT32_MAX) const;
 	uint64_t get_tool_catalog_revision() const { return tool_catalog_revision; }
 	String get_skill_catalog_prompt() const;
 	String get_model_tool_name(const StringName &p_name) const;

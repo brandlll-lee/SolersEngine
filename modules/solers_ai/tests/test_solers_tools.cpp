@@ -563,6 +563,8 @@ TEST_CASE("[SolersToolRegistry] ClassDB member queries match whitespace-separate
 	const Dictionary capture_tool = solers_test_find_dictionary(registry.list_tools(), SNAME("name"), "render.capture");
 	CHECK(String(capture_tool.get("description", String())).contains("Spatial facts are observed independently"));
 	CHECK(Dictionary(Dictionary(capture_tool.get("input_schema", Dictionary())).get("properties", Dictionary())).has("focus_paths"));
+	CHECK_FALSE((bool)capture_tool.get("cacheable", true));
+	CHECK(PackedStringArray(capture_tool.get("required_model_inputs", PackedStringArray())).has("image"));
 
 	Dictionary class_request;
 	class_request["class_name"] = "CameraAttributesPhysical";
@@ -867,6 +869,7 @@ TEST_CASE("[SolersToolRegistry] built-ins retain deferred exposure and remain di
 	const Array catalog = registry.list_tools();
 	CHECK(solers_test_find_dictionary(catalog, SNAME("name"), "tool.search").get("exposure", String()) == "direct");
 	CHECK(solers_test_find_dictionary(catalog, SNAME("name"), "export.run_preset").get("exposure", String()) == "deferred");
+	CHECK(solers_test_find_dictionary(catalog, SNAME("name"), "project.delivery_report").get("exposure", String()) == "deferred");
 	const Dictionary result = search_deferred_tools(registry, "export preset", 10);
 	CHECK((bool)result.get("ok", false));
 	CHECK(search_result_has_tool(result, "export.run_preset"));
@@ -1273,6 +1276,8 @@ TEST_CASE("[SolersToolRegistry] direct asset jobs declare their project writes")
 	SolersToolRegistry registry;
 	registry.set_asset_service(&assets);
 	registry.register_default_tools();
+	const Dictionary generate_definition = registry.get_tool_definition(SNAME("asset.generate"));
+	CHECK(PackedStringArray(generate_definition.get("attachment_args", PackedStringArray())).has("input_attachments"));
 
 	Dictionary generate_args;
 	generate_args["kind"] = "synthetic_kind";
@@ -1350,18 +1355,32 @@ TEST_CASE("[SolersRuntimeInput][SceneTree] complete action states validate befor
 	input_map->add_action(second);
 
 	TestEngineDebugger debugger;
-	auto apply = [&](const Array &p_actions) {
+	Node *probe = memnew(Node);
+	probe->set_name("SolersInputProbe");
+	SceneTree::get_singleton()->get_root()->add_child(probe);
+	const Array observations({ Dictionary({ { "node_path", probe->get_path() }, { "properties", Array({ "process_mode" }) } }) });
+	auto apply = [&](const Array &p_actions, bool p_valid = true) {
 		bool captured = false;
-		const Error err = debugger.capture_parse(SNAME("solers"), "set_input_actions", { "input-contract", 7, p_actions }, captured);
+		debugger.last_message = String();
+		const Error err = debugger.capture_parse(SNAME("solers"), "set_input_actions", { "input-contract", 7, p_actions, 2, observations }, captured);
 		CHECK(err == OK);
 		CHECK(captured);
+		if (p_valid) {
+			SceneTree::get_singleton()->emit_signal(SNAME("physics_frame"));
+			CHECK(debugger.last_message.is_empty());
+			SceneTree::get_singleton()->emit_signal(SNAME("physics_frame"));
+			CHECK(debugger.last_message == "solers:input_result");
+			const Dictionary data = debugger.last_data[0];
+			CHECK(Dictionary(data.get("availability", Dictionary())).get("state", String()) == "complete");
+			CHECK((int)data.get("physics_frames", 0) == 2);
+		}
 	};
 	apply(Array({ Dictionary({ { "name", first }, { "strength", 0.75 } }) }));
 	CHECK(input->is_action_pressed(first));
 	CHECK(Math::is_equal_approx(input->get_action_strength(first), 0.75f));
 	CHECK_FALSE(input->is_action_pressed(second));
 
-	apply(Array({ Dictionary({ { "name", first }, { "strength", 0.25 } }), Dictionary({ { "name", "solers_missing_action" }, { "strength", 1.0 } }) }));
+	apply(Array({ Dictionary({ { "name", first }, { "strength", 0.25 } }), Dictionary({ { "name", "solers_missing_action" }, { "strength", 1.0 } }) }), false);
 	CHECK(input->is_action_pressed(first));
 	CHECK(Math::is_equal_approx(input->get_action_strength(first), 0.75f));
 
@@ -1371,6 +1390,8 @@ TEST_CASE("[SolersRuntimeInput][SceneTree] complete action states validate befor
 	apply(Array());
 	CHECK_FALSE(input->is_action_pressed(first));
 	CHECK_FALSE(input->is_action_pressed(second));
+	probe->queue_free();
+	MessageQueue::get_singleton()->flush();
 	input_map->erase_action(first);
 	input_map->erase_action(second);
 
@@ -1382,6 +1403,8 @@ TEST_CASE("[SolersRuntimeInput][SceneTree] complete action states validate befor
 	const Dictionary properties = Dictionary(tool.get("input_schema", Dictionary())).get("properties", Dictionary());
 	CHECK(Array(Dictionary(properties.get("action", Dictionary())).get("enum", Array())).has("set_input_actions"));
 	CHECK(properties.has("observation_id"));
+	CHECK(properties.has("physics_frames"));
+	CHECK((int)Dictionary(properties.get("observations", Dictionary())).get("minItems", 0) == 1);
 	CHECK_FALSE(properties.has("expected_value"));
 	const Dictionary action_item = Dictionary(properties.get("actions", Dictionary())).get("items", Dictionary());
 	CHECK(Array(action_item.get("required", Array())).has("name"));

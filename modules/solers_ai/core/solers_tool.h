@@ -103,6 +103,13 @@ enum class SolersToolUiKind {
 	SHIELD,
 };
 
+struct SolersToolHostPolicy {
+	bool timeline_visible = true;
+	bool cacheable = true;
+	PackedStringArray attachment_args;
+	PackedStringArray required_model_inputs;
+};
+
 // Authoritative capability metadata. Permission/approval/redaction are decided
 // from these structured facts — never from matching the tool name. Adding a
 // new tool with new risk characteristics needs no change to the orchestrator.
@@ -127,6 +134,7 @@ struct SolersToolCapability {
 	// (replaces the old per-tool-name `if` redaction in the dispatcher).
 	Vector<String> redact_args;
 	SolersToolUiKind ui_kind = SolersToolUiKind::DEFAULT;
+	SolersToolHostPolicy host;
 };
 
 // Per-call context handed to every tool, mirroring opencode's `Tool.Context`.

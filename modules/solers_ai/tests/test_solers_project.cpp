@@ -36,6 +36,7 @@
 #include "core/io/image.h"
 #include "core/io/json.h"
 #include "core/io/resource_loader.h"
+#include "core/input/input_event.h"
 #include "core/object/message_queue.h"
 #include "editor/editor_node.h"
 #include "editor/editor_undo_redo_manager.h"
@@ -310,6 +311,19 @@ TEST_CASE("[SolersResourceService] property coercion accepts named and nested Go
 	memdelete(mesh_instance);
 }
 
+TEST_CASE("[SolersResourceService] wire decoding preserves nested containers and constructs Resources") {
+	Variant decoded;
+	String error;
+	const Dictionary wire({ { "action", Dictionary({ { "deadzone", 0.5 }, { "events", Array({ Dictionary({ { "class_name", "InputEventKey" }, { "properties", Dictionary({ { "physical_keycode", Key::W } }) } }) }) } }) } });
+	REQUIRE(solers_decode_wire_variant(wire, decoded, error));
+	const Dictionary decoded_action = Dictionary(decoded).get("action", Dictionary());
+	const Array events = decoded_action.get("events", Array());
+	REQUIRE(events.size() == 1);
+	const Ref<InputEventKey> event = events[0];
+	REQUIRE(event.is_valid());
+	CHECK(event->get_physical_keycode() == Key::W);
+}
+
 #ifdef MODULE_CSG_ENABLED
 
 TEST_CASE("[SceneTree][SolersCSG] native boolean output exposes mesh and collision facts") {
@@ -383,13 +397,29 @@ TEST_CASE("[SolersObservationService] runtime views require native debugger auth
 		Dictionary args;
 		args["target"] = target;
 		const Dictionary observed = observation_service.observe_runtime(args);
-		CHECK_FALSE((bool)observed.get("available", false));
+		CHECK_FALSE(observed.has("available"));
+		CHECK(observed.get("status", String()) == "complete");
+		CHECK(Dictionary(observed.get("availability", Dictionary())).get("state", String()) == "unavailable");
 	}
 	Variant value;
 	const ObjectID object_id((uint64_t)1);
 	PropertyInfo info;
 	String observation_id;
 	CHECK_FALSE(observation_service.get_runtime_property(0, NodePath("/root/Player"), object_id, SNAME("position"), value, info, observation_id));
+}
+
+TEST_CASE("[SolersObservationService] delivery inspection reports native project facts without deleting advisories") {
+	SolersObservationService observation;
+	const Dictionary report = observation.inspect_project_delivery(Dictionary({ { "roots", Array({ "res://missing_delivery_root.tscn" }) } }), 4096);
+	CHECK(report.get("status", String()) == "complete");
+	CHECK(report.has("input_actions"));
+	const Array blockers = report.get("blockers", Array());
+	bool missing_root = false;
+	for (const Variant &item : blockers) {
+		missing_root = missing_root || Dictionary(item).get("code", String()) == "MISSING_DEPENDENCY";
+	}
+	CHECK(missing_root);
+	CHECK_FALSE(report.has("verification"));
 }
 
 #ifdef DEBUG_ENABLED

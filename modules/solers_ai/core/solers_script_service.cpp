@@ -454,9 +454,9 @@ void SolersScriptService::_apply_project_settings(const Dictionary &p_values, co
 Dictionary SolersScriptService::edit_project(const Dictionary &p_args) {
 	const String operation = String(p_args.get("operation", String())).strip_edges();
 	if (operation == "settings") {
-		const Dictionary values = p_args.get("values", Dictionary());
+		const Dictionary wire_values = p_args.get("values", Dictionary());
 		const PackedStringArray erase = p_args.get("erase", PackedStringArray());
-		if (values.is_empty() && erase.is_empty()) {
+		if (wire_values.is_empty() && erase.is_empty()) {
 			return _error("INVALID_ARGUMENT", "project.edit settings requires values or erase.");
 		}
 		ProjectSettings *settings = ProjectSettings::get_singleton();
@@ -464,13 +464,20 @@ Dictionary SolersScriptService::edit_project(const Dictionary &p_args) {
 		if (!settings || !undo_redo) {
 			return _error("PROJECT_SETTINGS_UNAVAILABLE", "ProjectSettings or EditorUndoRedoManager is unavailable.", false);
 		}
+		Dictionary values;
 		Dictionary previous_values;
 		PackedStringArray previous_missing;
-		for (const Variant *key = values.next(nullptr); key; key = values.next(key)) {
+		for (const Variant *key = wire_values.next(nullptr); key; key = wire_values.next(key)) {
 			const String setting = String(*key).strip_edges();
 			if (setting.is_empty()) {
 				return _error("INVALID_SETTING", "Project setting names cannot be empty.");
 			}
+			Variant value;
+			String decode_error;
+			if (!solers_decode_wire_variant(wire_values[*key], value, decode_error)) {
+				return _error("INVALID_SETTING_VALUE", vformat("Project setting '%s' is invalid: %s", setting, decode_error));
+			}
+			values[setting] = value;
 			if (settings->has_setting(setting)) {
 				previous_values[setting] = settings->get(setting);
 			} else {

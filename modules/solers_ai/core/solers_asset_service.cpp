@@ -1820,6 +1820,7 @@ Dictionary SolersAssetService::wait_jobs(const Dictionary &p_args, const String 
 	Dictionary data;
 	data["pending_ids"] = pending_ids;
 	data["terminal"] = terminal;
+	data["background_jobs"] = Dictionary({ { "pending_ids", pending_ids }, { "terminal", terminal } });
 	data["waiting"] = !pending_ids.is_empty();
 	if (!pending_ids.is_empty()) {
 		// Host authority: the session parks after this tool result and resumes

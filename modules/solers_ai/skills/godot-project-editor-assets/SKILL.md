@@ -45,3 +45,4 @@ Use for project settings, folder layout, imports, resources, editor state, addon
 2. After generate/acquire: imported `res://` paths load; provenance exists.
 3. Reopen scene/project; `runtime.observe` for import errors.
 4. Addon path: inspect Contract, then validate ClassDB types exist post-enable.
+5. `project.delivery_report`; resolve blockers and report duplicate/unreferenced assets as advisories, never automatic deletions.

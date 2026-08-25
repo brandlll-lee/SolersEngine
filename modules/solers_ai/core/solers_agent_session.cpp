@@ -81,10 +81,6 @@ struct SolersAgentSession::PendingToolExecution {
 	uint64_t started_msec = 0;
 };
 
-static bool _is_session_tool(const String &p_name) {
-	return p_name == "update_plan";
-}
-
 static Dictionary _update_plan_schema() {
 	Dictionary status;
 	status["type"] = "string";
@@ -262,6 +258,7 @@ void SolersAgentSession::_register_session_tools() {
 	SolersToolCapability capability;
 	capability.permission = SolersPermissionManager::PERMISSION_OBSERVE;
 	capability.mutation_policy = SolersToolMutationPolicy::READ_ONLY;
+	capability.host.timeline_visible = false;
 	tool_registry->register_tool(memnew(SolersFunctionTool(
 			"update_plan",
 			"Optionally replace the concise UI progress plan. This does not control tool access or task completion.",
@@ -351,7 +348,7 @@ static void _solers_project_timeline_event(const Dictionary &p_event, Array &r_e
 		Array calls = Array(p_event.get("tool_calls", Array())).duplicate(true);
 		for (int i = calls.size() - 1; i >= 0; i--) {
 			const Dictionary call = calls[i];
-			if (_is_session_tool(call.get("canonical_name", call.get("name", String())))) {
+			if (!(bool)call.get("timeline_visible", true)) {
 				calls.remove_at(i);
 			}
 		}
@@ -715,10 +712,10 @@ Error SolersAgentSession::_write_transcript_event_durable(const String &p_type, 
 			bool found = false;
 		} check{ r_event_id, p_type };
 		solers_transcript_foreach_session(session_id, &check, [](void *p_data, const String &p_line) -> bool {
-			DurableCheck &check = *static_cast<DurableCheck *>(p_data);
+			DurableCheck &state = *static_cast<DurableCheck *>(p_data);
 			Dictionary stored;
-			check.found = solers_transcript_parse_record(p_line, stored) && (int64_t)stored.get("event_id", 0) == check.id && String(stored.get("event_type", String())) == check.type;
-			return !check.found;
+			state.found = solers_transcript_parse_record(p_line, stored) && (int64_t)stored.get("event_id", 0) == state.id && String(stored.get("event_type", String())) == state.type;
+			return !state.found;
 		});
 		if (!check.found) {
 			return flush_error;
@@ -1595,11 +1592,13 @@ Dictionary SolersAgentSession::_surface_tool_call(const Dictionary &p_call) {
 	}
 
 	const bool was_announced = (bool)call.get("ui_announced", false);
+	const String canonical_name = call.get("canonical_name", String());
+	const Dictionary definition = tool_registry ? tool_registry->get_tool_definition(StringName(canonical_name)) : Dictionary();
+	call["timeline_visible"] = definition.get("timeline_visible", true);
 	call["ui_announced"] = true;
 	streamed_tool_calls[id] = call;
-	const String canonical_name = call.get("canonical_name", String());
 	const String arguments = call.get("arguments", String());
-	if (_is_session_tool(canonical_name)) {
+	if (!(bool)call["timeline_visible"]) {
 		return call;
 	}
 	if (was_announced) {
@@ -1859,6 +1858,7 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 	turn_tool_calls = 0;
 	turn_duplicate_observations = 0;
 	turn_successful_mutations = 0;
+	completion_blocker_fingerprint = String();
 	_ensure_godot_log_audit(true);
 
 	Dictionary turn_started;
@@ -2063,6 +2063,9 @@ void SolersAgentSession::_on_model_turn_complete() {
 	}
 	if (pending_tool_calls.is_empty()) {
 		const String final_text = current_text;
+		if (!_accept_completion_or_continue(final_text)) {
+			return;
+		}
 		if (!current_text.is_empty()) {
 			emit_signal(SNAME("assistant_message"), current_text);
 		}
@@ -2149,6 +2152,43 @@ void SolersAgentSession::_on_model_turn_complete() {
 	current_reasoning = String();
 	phase = PHASE_TOOLS;
 	SOLERS_TRACE("session.tools", vformat("entering tool queue (%d call(s))", tool_queue.size()));
+}
+
+bool SolersAgentSession::_accept_completion_or_continue(const String &p_message) {
+	if (turn_successful_mutations == 0 || !tool_registry) {
+		return true;
+	}
+	Dictionary facts = tool_registry->build_delivery_report();
+	Array blockers = facts.get("blockers", Array());
+	if (turn_runtime_owned && tool_registry->observation_service) {
+		const Dictionary runtime = tool_registry->observation_service->observe_runtime(Dictionary({ { "target", "stack" } }), SolersContextManager::TOOL_RESULT_MAX_TOKENS);
+		if ((int)runtime.get("epoch_error_count", 0) > 0) {
+			blockers.push_back(Dictionary({ { "code", "RUNTIME_ERRORS" }, { "count", runtime.get("epoch_error_count", 0) }, { "runtime_epoch", runtime.get("runtime_epoch", 0) } }));
+		}
+	}
+	if (blockers.is_empty()) {
+		return true;
+	}
+	facts["blockers"] = blockers;
+	const String fingerprint = JSON::stringify(blockers, "", false, true).sha256_text();
+	if (fingerprint == completion_blocker_fingerprint) {
+		_finish_turn("failed", p_message, Dictionary({ { "code", "DELIVERY_BLOCKED" }, { "message", "Godot delivery facts remained blocked after the model was asked to correct them." }, { "facts", facts } }));
+		return false;
+	}
+	completion_blocker_fingerprint = fingerprint;
+	Dictionary message;
+	message["role"] = SolersContextManager::MODEL_CONTEXT_ROLE;
+	message["content"] = "Godot rejected task completion. Resolve the authoritative blockers, verify again, then report the outcome:\n" + JSON::stringify(facts, "", false, true);
+	message["origin"] = "completion_facts";
+	message["ephemeral"] = true;
+	messages.push_back(message);
+	_write_transcript_event("model_context", message);
+	current_text = String();
+	current_reasoning = String();
+	pending_tool_calls.clear();
+	streamed_tool_calls.clear();
+	_dispatch_model_request();
+	return false;
 }
 
 void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_message, const Dictionary &p_error) {
@@ -2578,10 +2618,14 @@ void SolersAgentSession::_schedule_tool_execution(int p_queue_index, const Strin
 	deferred_args = p_args.duplicate(true);
 	deferred_initial_args = deferred_args;
 	deferred_resource_accesses = tool_registry ? tool_registry->resolve_resource_access(StringName(p_canonical_name), p_args) : Array();
-	if (p_canonical_name == "asset.generate") {
-		Array ids = deferred_args.get("input_attachments", Array());
-		if (!ids.is_empty()) {
-			deferred_args["_attachments"] = _attachments_for_ids(ids);
+	const Dictionary definition = tool_registry ? tool_registry->get_tool_definition(StringName(p_canonical_name)) : Dictionary();
+	if (!definition.is_empty()) {
+		Array attachments;
+		for (const String &argument : PackedStringArray(definition.get("attachment_args", PackedStringArray()))) {
+			attachments.append_array(_attachments_for_ids(deferred_args.get(argument, Array())));
+		}
+		if (!attachments.is_empty()) {
+			deferred_args["_attachments"] = attachments;
 		}
 	}
 	deferred_result = Dictionary();
@@ -2608,11 +2652,14 @@ void SolersAgentSession::_execute_deferred_tool(uint64_t p_token) {
 		deferred_done = true;
 		return;
 	}
-	if (deferred_canonical_name == "render.capture") {
-		if (_active_model_input_support("image") == 0) {
-			deferred_result = _tool_denied_result("VISION_CAPABILITY_REQUIRED", "The selected model does not support image input, so viewport captures cannot be returned to it.");
-			deferred_done = true;
-			return;
+	const Dictionary definition = tool_registry->get_tool_definition(StringName(deferred_canonical_name));
+	if (!definition.is_empty()) {
+		for (const String &input : PackedStringArray(definition.get("required_model_inputs", PackedStringArray()))) {
+			if (_active_model_input_support(input) == 0) {
+				deferred_result = _tool_denied_result("MODEL_INPUT_CAPABILITY_REQUIRED", vformat("The selected model does not support required '%s' tool input.", input));
+				deferred_done = true;
+				return;
+			}
 		}
 	}
 	SOLERS_TRACE("session.exec_tool", vformat("BEGIN %s", deferred_canonical_name));
@@ -2780,7 +2827,8 @@ void SolersAgentSession::_poll_tool_executing() {
 	// frames and the user-driven editor camera change without a revision
 	// bump), and in-flight pending envelopes (their capture_id is consumed by
 	// the poll loop).
-	const bool cacheable = canonical_name != "render.capture" && !result.has("attachments") && !Dictionary(result.get("data", Dictionary())).has("poll_args");
+	const Dictionary definition = tool_registry ? tool_registry->get_tool_definition(StringName(canonical_name)) : Dictionary();
+	const bool cacheable = (bool)definition.get("cacheable", true) && !result.has("attachments") && !Dictionary(result.get("data", Dictionary())).has("poll_args");
 	if (tool_succeeded && cacheable && tool_registry && tool_registry->is_read_only(StringName(canonical_name), args)) {
 		readonly_cache[_readonly_cache_key(StringName(canonical_name), args)] = result.duplicate(true);
 	}
@@ -2827,20 +2875,22 @@ void SolersAgentSession::_deliver_tool_result(const String &p_id, const String &
 	const String content = SolersContextManager::clamp_to_tokens(JSON::stringify(result, "", false, true), SolersContextManager::TOOL_RESULT_MAX_TOKENS);
 	_write_transcript_tool(p_id, p_canonical_name, p_args, result, content);
 	const uint64_t duration_msec = tool_completed_msec >= tool_started_msec ? tool_completed_msec - tool_started_msec : 0;
-	if (!_is_session_tool(p_canonical_name)) {
+	const Dictionary definition = tool_registry ? tool_registry->get_tool_definition(StringName(p_canonical_name)) : Dictionary();
+	if ((bool)definition.get("timeline_visible", true)) {
 		emit_signal(SNAME("tool_call_finished"), p_id, p_canonical_name, result, (int64_t)duration_msec);
 	}
 
 	// Runtime ownership follows the authoritative post-state so turn cleanup
 	// stops only the game instance started by this session.
 	const Dictionary data = result.get("data", Dictionary());
-	if (p_canonical_name == "job.wait" && (bool)result.get("ok", false)) {
+	const Dictionary background_jobs = data.get("background_jobs", Dictionary());
+	if (!background_jobs.is_empty() && (bool)result.get("ok", false)) {
 		waiting_background_asset_ids.clear();
-		const Array pending_ids = data.get("pending_ids", Array());
+		const Array pending_ids = background_jobs.get("pending_ids", Array());
 		for (int i = 0; i < pending_ids.size(); i++) {
 			waiting_background_asset_ids.insert(String(pending_ids[i]));
 		}
-		const Array terminal = data.get("terminal", Array());
+		const Array terminal = background_jobs.get("terminal", Array());
 		for (int terminal_index = 0; terminal_index < terminal.size(); terminal_index++) {
 			const String asset_id = String(Dictionary(terminal[terminal_index]).get("id", String()));
 			if (asset_id.is_empty()) {

@@ -822,7 +822,7 @@ void SolersToolRegistry::_add(const char *p_name, const char *p_description, con
 		SolersFunctionTool::PollHandler p_poll_handler, SolersFunctionTool::ReadyHandler p_ready_handler, SolersFunctionTool::CompletionHandler p_completion_handler,
 		std::function<SolersPermissionManager::Permission(const Dictionary &)> p_permission_resolver,
 		std::function<SolersToolMutationPolicy(const Dictionary &)> p_mutation_policy_resolver,
-		SolersToolUiKind p_ui_kind) {
+		SolersToolUiKind p_ui_kind, const SolersToolHostPolicy &p_host) {
 	SolersToolCapability cap;
 	cap.permission = p_permission;
 	cap.permission_resolver = std::move(p_permission_resolver);
@@ -832,6 +832,7 @@ void SolersToolRegistry::_add(const char *p_name, const char *p_description, con
 	cap.resource_access = std::move(p_resource_access);
 	cap.redact_args = p_redact;
 	cap.ui_kind = p_ui_kind;
+	cap.host = p_host;
 	SolersTool *tool = memnew(SolersFunctionTool(StringName(String::utf8(p_name)), String::utf8(p_description),
 			_schema(p_schema_json), p_exposure, cap, std::move(p_handler), std::move(p_poll_handler), std::move(p_ready_handler), std::move(p_completion_handler)));
 	_register(tool);
@@ -840,10 +841,10 @@ void SolersToolRegistry::_add(const char *p_name, const char *p_description, con
 void SolersToolRegistry::_add_observe_exposed(const char *p_name, const char *p_description, const char *p_schema_json,
 		SolersToolExposure p_exposure, SolersFunctionTool::Handler p_handler,
 		std::function<Array(const Dictionary &)> p_resource_access, SolersFunctionTool::PollHandler p_poll_handler, SolersFunctionTool::ReadyHandler p_ready_handler,
-		SolersToolUiKind p_ui_kind, SolersToolExecution p_execution) {
+		SolersToolUiKind p_ui_kind, SolersToolExecution p_execution, const SolersToolHostPolicy &p_host) {
 	_add(p_name, p_description, p_schema_json, SolersPermissionManager::PERMISSION_OBSERVE, SolersToolMutationPolicy::READ_ONLY,
 			Vector<String>(), p_exposure, std::move(p_handler),
-			p_execution, std::move(p_resource_access), std::move(p_poll_handler), std::move(p_ready_handler), {}, {}, {}, p_ui_kind);
+			p_execution, std::move(p_resource_access), std::move(p_poll_handler), std::move(p_ready_handler), {}, {}, {}, p_ui_kind, p_host);
 }
 
 void SolersToolRegistry::_add_observe(const char *p_name, const char *p_description, const char *p_schema_json,
@@ -1402,6 +1403,31 @@ static GameViewDebugger *_solers_game_view_debugger() {
 	return nullptr;
 }
 
+Dictionary SolersToolRegistry::build_delivery_report(const Dictionary &p_args, int p_token_budget) const {
+	ERR_FAIL_NULL_V(observation_service, Dictionary());
+	Dictionary report = observation_service->inspect_project_delivery(p_args, p_token_budget);
+	if (!resource_service) {
+		return report;
+	}
+	const Dictionary export_result = resource_service->validate_export_presets(Dictionary({ { "debug", p_args.get("debug_export", false) } }));
+	if (!(bool)export_result.get("ok", false)) {
+		report["export"] = export_result;
+		return report;
+	}
+	const Dictionary export_data = export_result.get("data", Dictionary());
+	report["export"] = export_data;
+	Array blockers = report.get("blockers", Array());
+	Array advisories = report.get("advisories", Array());
+	if ((int)export_data.get("preset_count", 0) == 0) {
+		advisories.push_back(Dictionary({ { "code", "NO_EXPORT_PRESET" } }));
+	} else if (!(bool)export_data.get("valid", false)) {
+		blockers.push_back(Dictionary({ { "code", "INVALID_EXPORT_PRESET" }, { "error_count", export_data.get("error_count", 0) }, { "missing_template_count", export_data.get("missing_template_count", 0) } }));
+	}
+	report["blockers"] = blockers;
+	report["advisories"] = advisories;
+	return report;
+}
+
 Dictionary SolersToolRegistry::_run_control(const Dictionary &p_args, const String &p_call_id) const {
 	EditorInterface *editor_interface = EditorInterface::get_singleton();
 	ERR_FAIL_NULL_V(editor_interface, _error("EDITOR_INTERFACE_UNAVAILABLE", "EditorInterface is not available.", false));
@@ -1419,11 +1445,13 @@ Dictionary SolersToolRegistry::_run_control(const Dictionary &p_args, const Stri
 		}
 		const int64_t epoch = p_args.get("runtime_epoch", 0);
 		const int64_t current_epoch = observation_service->get_runtime_status().get("runtime_epoch", 0);
-		if (p_call_id.is_empty() || epoch <= 0 || epoch != current_epoch || !p_args.has("actions")) {
-			return _error("STALE_RUNTIME_EPOCH", "set_input_actions requires actions and the current runtime_epoch returned by runtime.observe.");
+		const int physics_frames = p_args.get("physics_frames", 0);
+		const Variant observations = p_args.get("observations", Variant());
+		if (p_call_id.is_empty() || epoch <= 0 || epoch != current_epoch || !p_args.has("actions") || physics_frames <= 0 || observations.get_type() != Variant::ARRAY || Array(observations).is_empty()) {
+			return _error("STALE_RUNTIME_EPOCH", "set_input_actions requires actions, positive physics_frames, observations, and the current runtime_epoch returned by runtime.observe.");
 		}
 		observation_service->clear_runtime_control_result();
-		debugger->send_message("solers:set_input_actions", { p_call_id, epoch, p_args["actions"] });
+		debugger->send_message("solers:set_input_actions", { p_call_id, epoch, p_args["actions"], physics_frames, observations });
 		Dictionary poll_args;
 		poll_args["action"] = action;
 		poll_args["call_id"] = p_call_id;
@@ -1590,6 +1618,10 @@ Dictionary SolersToolRegistry::_poll_runtime_control(const Dictionary &p_args) c
 		data["action"] = action;
 		data["runtime_epoch"] = epoch;
 		data["input_state_applied"] = true;
+		data["physics_frames"] = result.get("physics_frames", 0);
+		data["before"] = result.get("before", Array());
+		data["after"] = result.get("after", Array());
+		data["availability"] = result.get("availability", Dictionary());
 		return _ok(data);
 	}
 	if (action == "set_property") {
@@ -1598,7 +1630,7 @@ Dictionary SolersToolRegistry::_poll_runtime_control(const Dictionary &p_args) c
 		if (observed.get("status", String()) == "pending") {
 			return _ok(observed);
 		}
-		if (!(bool)observed.get("available", false)) {
+		if (String(Dictionary(observed.get("availability", Dictionary())).get("state", String())) != "complete") {
 			return _error("RUNTIME_VERIFY_UNAVAILABLE", "The native debugger could not read the runtime property.");
 		}
 		const NodePath node_path = NodePath(p_args.get("node_path", String()));
@@ -1695,7 +1727,11 @@ void SolersToolRegistry::_register_observation_tools() {
 				}
 				return _ok(file); }, _access_by_arg("read", "project:", "path"), {}, {}, SolersToolUiKind::READ);
 	_add_observe("runtime.observe", "Observe one canonical runtime snapshot through Godot's native debugger. Scene returns typed property receipts; spatial returns post-draw subtree AABBs, camera projection, and physics ray facts.", R"({"type":"object","properties":{"target":{"type":"string","enum":["scene","spatial","stack","performance"]},"node_paths":{"type":"array","items":{"type":"string","pattern":"^/"},"maxItems":64,"uniqueItems":true},"focus_paths":{"type":"array","items":{"type":"string","pattern":"^/"},"minItems":1,"maxItems":32,"uniqueItems":true},"path_prefix":{"type":"string","pattern":"^/"},"name_contains":{"type":"string"},"class_name":{"type":"string"},"cursor":{"type":"integer","minimum":0},"properties":{"type":"array","items":{"type":"string","minLength":1},"maxItems":64,"uniqueItems":true},"max_results":{"type":"integer","minimum":1}},"required":["target"],"additionalProperties":false})", [this, obs](const SolersToolContext &ctx, const Dictionary &a) { return _ok(obs->observe_runtime(a, ctx.result_token_budget)); }, {}, [this, obs](const SolersToolContext &ctx, const Dictionary &a) { return _ok(obs->observe_runtime(a, ctx.result_token_budget)); }, [obs](const SolersToolContext &, const Dictionary &a) { return obs->is_runtime_observation_ready(a); });
-	_add_observe_exposed("render.capture", "Capture content-addressed visual evidence from an explicit native state. Edited-scene receipts bind pixels to the World3D fingerprint; runtime receipts bind pixels to the runtime epoch. Spatial facts are observed independently. debug_draw uses Godot's Viewport enum; inspect it with engine.describe.", R"({"type":"object","properties":{"target":{"type":"string","enum":["editor","camera","top_down","orthographic","runtime"]},"source_state":{"type":"object","properties":{"history_id":{"type":"integer"},"version":{"type":"integer","minimum":0},"root_object_id":{"type":"string","pattern":"^-?[0-9]+$"}},"required":["history_id","version"],"additionalProperties":true},"node_path":{"type":"string"},"axis":{"type":"string","enum":["x","y","z"]},"direction":{"type":"string","enum":["positive","negative"]},"focus_paths":{"type":"array","items":{"type":"string"}},"section_position":{"type":"number"},"debug_draw":{"type":"integer","minimum":0}},"required":["target"],"additionalProperties":false})", SolersToolExposure::DIRECT, [obs](const SolersToolContext &, const Dictionary &a) { return obs->capture_viewport(a); }, {}, [obs](const SolersToolContext &, const Dictionary &a) { return obs->poll_viewport_capture(a); }, [obs](const SolersToolContext &, const Dictionary &a) { return obs->is_viewport_capture_ready(a); }, SolersToolUiKind::CAPTURE);
+	_add_observe_exposed("project.delivery_report", "Inspect current project delivery facts through ProjectSettings, ResourceLoader, EditorFileSystem, InputMap, UndoRedo, and EditorExport. Unreferenced and duplicate files are advisories, never automatic deletion decisions.", R"({"type":"object","properties":{"roots":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","pattern":"^res://"},"description":"Additional authoritative roots for dynamically loaded content."},"debug_export":{"type":"boolean"}},"additionalProperties":false})", SolersToolExposure::DEFERRED, [this](const SolersToolContext &ctx, const Dictionary &a) { return _ok(build_delivery_report(a, ctx.result_token_budget)); });
+	SolersToolHostPolicy capture_host;
+	capture_host.cacheable = false;
+	capture_host.required_model_inputs.push_back("image");
+	_add_observe_exposed("render.capture", "Capture content-addressed visual evidence from an explicit native state. Edited-scene receipts bind pixels to the World3D fingerprint; runtime receipts bind pixels to the runtime epoch. Spatial facts are observed independently. debug_draw uses Godot's Viewport enum; inspect it with engine.describe.", R"({"type":"object","properties":{"target":{"type":"string","enum":["editor","camera","top_down","orthographic","runtime"]},"source_state":{"type":"object","properties":{"history_id":{"type":"integer"},"version":{"type":"integer","minimum":0},"root_object_id":{"type":"string","pattern":"^-?[0-9]+$"}},"required":["history_id","version"],"additionalProperties":true},"node_path":{"type":"string"},"axis":{"type":"string","enum":["x","y","z"]},"direction":{"type":"string","enum":["positive","negative"]},"focus_paths":{"type":"array","items":{"type":"string"}},"section_position":{"type":"number"},"debug_draw":{"type":"integer","minimum":0}},"required":["target"],"additionalProperties":false})", SolersToolExposure::DIRECT, [obs](const SolersToolContext &, const Dictionary &a) { return obs->capture_viewport(a); }, {}, [obs](const SolersToolContext &, const Dictionary &a) { return obs->poll_viewport_capture(a); }, [obs](const SolersToolContext &, const Dictionary &a) { return obs->is_viewport_capture_ready(a); }, SolersToolUiKind::CAPTURE, SolersToolExecution::MAIN_THREAD, capture_host);
 
 	if (resource_service) {
 		SolersResourceService *svc = resource_service;
@@ -1751,7 +1787,7 @@ void SolersToolRegistry::_register_script_tools() {
 
 void SolersToolRegistry::_register_runtime_tools() {
 	const SolersPermissionManager::Permission run_project = SolersPermissionManager::PERMISSION_RUN_PROJECT;
-	_add("runtime.control", "Control Godot's active debugger, apply the complete Solers-owned input action state, or make one preconditioned runtime-only property change. Omitted input actions are released; an empty actions array releases all.", R"({"type":"object","properties":{"action":{"type":"string","enum":["play_current_scene","stop","suspend","resume","next_frame","debug_break","debug_continue","debug_step","debug_next","debug_out","set_input_actions","set_property"]},"runtime_epoch":{"type":"integer","minimum":0},"actions":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"object","properties":{"name":{"type":"string","minLength":1},"strength":{"type":"number","exclusiveMinimum":0,"maximum":1}},"required":["name","strength"],"additionalProperties":false}},"node_path":{"type":"string","pattern":"^/"},"object_id":{"type":"string","pattern":"^-?[0-9]+$"},"property":{"type":"string","minLength":1},"observation_id":{"type":"string","minLength":64,"maxLength":64},"value":{}},"required":["action"],"additionalProperties":false})", run_project, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DIRECT, [this](const SolersToolContext &ctx, const Dictionary &a) { return _run_control(a, ctx.call_id); }, SolersToolExecution::MAIN_THREAD, [](const Dictionary &) {
+	_add("runtime.control", "Control Godot's active debugger, apply the complete Solers-owned input action state across declared physics frames with before/after property facts, or make one preconditioned runtime-only property change. Omitted input actions are released; an empty actions array releases all.", R"({"type":"object","properties":{"action":{"type":"string","enum":["play_current_scene","stop","suspend","resume","next_frame","debug_break","debug_continue","debug_step","debug_next","debug_out","set_input_actions","set_property"]},"runtime_epoch":{"type":"integer","minimum":0},"actions":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"object","properties":{"name":{"type":"string","minLength":1},"strength":{"type":"number","exclusiveMinimum":0,"maximum":1}},"required":["name","strength"],"additionalProperties":false}},"physics_frames":{"type":"integer","minimum":1},"observations":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","properties":{"node_path":{"type":"string","pattern":"^/"},"properties":{"type":"array","minItems":1,"maxItems":32,"uniqueItems":true,"items":{"type":"string","minLength":1}}},"required":["node_path","properties"],"additionalProperties":false}},"node_path":{"type":"string","pattern":"^/"},"object_id":{"type":"string","pattern":"^-?[0-9]+$"},"property":{"type":"string","minLength":1},"observation_id":{"type":"string","minLength":64,"maxLength":64},"value":{}},"required":["action"],"additionalProperties":false})", run_project, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DIRECT, [this](const SolersToolContext &ctx, const Dictionary &a) { return _run_control(a, ctx.call_id); }, SolersToolExecution::MAIN_THREAD, [](const Dictionary &) {
 				Array accesses;
 				Dictionary access;
 				access["mode"] = "write";
@@ -1997,6 +2033,8 @@ void SolersToolRegistry::_register_asset_tools() {
 	generate_schema["additionalProperties"] = false;
 	const CharString generate_json = JSON::stringify(generate_schema).utf8();
 	const CharString generate_description = vformat("Generate an asset through a registered Solers plugin (%s), stage its output under user://solers_jobs, and import it into res://. Read the selected plugin's provider_options schema; the job is terminal only after Godot verifies imported resources.", generation_labels).utf8();
+	SolersToolHostPolicy generate_host;
+	generate_host.attachment_args.push_back("input_attachments");
 	_add("asset.generate", generate_description.get_data(), generate_json.get_data(), SolersPermissionManager::PERMISSION_EDIT_FILES, SolersToolMutationPolicy::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DEFERRED, [svc](const SolersToolContext &ctx, const Dictionary &a) { return svc->generate_for_session(_solers_apply_plugin_mention(ctx, a, "supports_generation"), ctx.session_id); }, SolersToolExecution::MAIN_THREAD, [](const Dictionary &a) {
 				Array accesses;
 				Dictionary job;
@@ -2008,7 +2046,7 @@ void SolersToolRegistry::_register_asset_tools() {
 				const String target = String(a.get("target_dir", String())).strip_edges();
 				project["key"] = "project:" + (target.is_empty() ? "res://assets/" + String(a.get("kind", "asset")) : target.replace_char('\\', '/').simplify_path());
 				accesses.push_back(project);
-				return accesses; });
+				return accesses; }, {}, {}, {}, {}, {}, SolersToolUiKind::DEFAULT, generate_host);
 
 	Dictionary acquire_schema;
 	acquire_schema["type"] = "object";
@@ -2384,11 +2422,12 @@ Dictionary SolersToolRegistry::_tool_to_dictionary(const SolersTool *p_tool) con
 	tool["execution"] = cap.execution == SolersToolExecution::WORKER_THREAD ? "worker" : "main_thread";
 	tool["exposure"] = _exposure_name(p_tool->exposure());
 	tool["ui_kind"] = _ui_kind_name(cap.ui_kind);
+	tool["timeline_visible"] = cap.host.timeline_visible;
+	tool["cacheable"] = cap.host.cacheable;
+	tool["attachment_args"] = cap.host.attachment_args;
+	tool["required_model_inputs"] = cap.host.required_model_inputs;
 	tool["input_schema"] = p_tool->parameters_schema().duplicate(true);
-	Dictionary object_schema;
-	object_schema["type"] = "object";
-	object_schema["properties"] = Dictionary();
-	tool["output_schema"] = object_schema;
+	tool["output_schema"] = Dictionary({ { "type", "object" }, { "properties", Dictionary() } });
 	return tool;
 }
 

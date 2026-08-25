@@ -91,6 +91,7 @@ class SolersObservationService : public Object {
 	void _runtime_debug_data(const String &p_message, const Array &p_data);
 	void _runtime_tree_updated();
 	void _runtime_stack_dump(const Array &p_frames);
+	Dictionary _runtime_observation_result(Dictionary p_result) const;
 	void _finish_runtime_query(Dictionary p_result);
 	bool _is_runtime_visual_ready() const;
 	bool _request_runtime_screenshot(const String &p_capture_id);
@@ -109,6 +110,7 @@ public:
 	Dictionary describe_render_state(Viewport *p_viewport, Camera3D *p_camera = nullptr, Node *p_scene_root = nullptr) const;
 	Dictionary get_project_info() const;
 	Dictionary get_project_settings_summary() const;
+	Dictionary inspect_project_delivery(const Dictionary &p_args, int p_token_budget = INT32_MAX) const;
 	Dictionary search_project(const Dictionary &p_args, int p_token_budget = INT32_MAX) const;
 	// Front door: bounded digest for any res:// selection (directory / Resource / file).
 	// Kind comes from DirAccess + ResourceLoader / EditorFileSystem — not mention token names.

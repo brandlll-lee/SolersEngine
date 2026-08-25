@@ -192,8 +192,44 @@ static Dictionary _solers_runtime_spatial_facts(Node *p_focus, Camera3D *p_camer
 	return facts;
 }
 
+static Variant _solers_runtime_wire_value(const Variant &p_value);
+
+static Dictionary _solers_runtime_property_snapshot(const Array &p_requests) {
+	Array values;
+	Array missing;
+	Window *root = SceneTree::get_singleton() ? SceneTree::get_singleton()->get_root() : nullptr;
+	for (int i = 0; i < p_requests.size(); i++) {
+		if (p_requests[i].get_type() != Variant::DICTIONARY) {
+			missing.push_back(Dictionary({ { "request_index", i }, { "reason", "invalid_observation" } }));
+			continue;
+		}
+		const Dictionary request = p_requests[i];
+		const String path = request.get("node_path", String());
+		Node *node = root ? root->get_node_or_null(NodePath(path)) : nullptr;
+		if (!node) {
+			missing.push_back(Dictionary({ { "node_path", path }, { "reason", "node_not_found" } }));
+			continue;
+		}
+		Dictionary properties;
+		const Array names = request.get("properties", Array());
+		for (int property_index = 0; property_index < names.size(); property_index++) {
+			const StringName name = names[property_index];
+			bool valid = false;
+			const Variant value = _solers_runtime_wire_value(node->get(name, &valid));
+			if (valid) {
+				properties[name] = value;
+			} else {
+				missing.push_back(Dictionary({ { "node_path", path }, { "property", name }, { "reason", "property_not_found" } }));
+			}
+		}
+		values.push_back(Dictionary({ { "node_path", path }, { "object_id", solers_object_id_to_string(node->get_instance_id()) }, { "properties", properties } }));
+	}
+	return Dictionary({ { "values", values }, { "missing", missing } });
+}
+
 class SolersRuntimeBridge : public Object {
 	Array pending_frames;
+	Array pending_inputs;
 	bool frame_callback_requested = false;
 
 public:
@@ -239,6 +275,38 @@ public:
 			result["spatial"] = spatial;
 			result["spatial_sha256"] = JSON::stringify(spatial, "", false, true).sha256_text();
 			_solers_send_runtime_result("solers:frame_result", result);
+		}
+	}
+
+	void request_input(const String &p_call_id, int64_t p_runtime_epoch, int p_physics_frames, const Array &p_observations) {
+		SceneTree *tree = SceneTree::get_singleton();
+		ERR_FAIL_NULL(tree);
+		pending_inputs.push_back(Dictionary({ { "call_id", p_call_id }, { "runtime_epoch", p_runtime_epoch }, { "remaining_frames", p_physics_frames }, { "physics_frames", p_physics_frames }, { "observations", p_observations }, { "before", _solers_runtime_property_snapshot(p_observations) } }));
+		if (!tree->is_connected(SNAME("physics_frame"), callable_mp(this, &SolersRuntimeBridge::physics_frame))) {
+			tree->connect(SNAME("physics_frame"), callable_mp(this, &SolersRuntimeBridge::physics_frame));
+		}
+	}
+
+	void physics_frame() {
+		for (int i = pending_inputs.size() - 1; i >= 0; i--) {
+			Dictionary request = pending_inputs[i];
+			const int remaining = (int)request.get("remaining_frames", 1) - 1;
+			if (remaining > 0) {
+				request["remaining_frames"] = remaining;
+				pending_inputs[i] = request;
+				continue;
+			}
+			const Dictionary after = _solers_runtime_property_snapshot(request.get("observations", Array()));
+			const Dictionary before = request.get("before", Dictionary());
+			Array missing = before.get("missing", Array());
+			missing.append_array(Array(after.get("missing", Array())));
+			Dictionary result({ { "call_id", request.get("call_id", String()) }, { "runtime_epoch", request.get("runtime_epoch", 0) }, { "physics_frames", request.get("physics_frames", 0) } });
+			result["before"] = before.get("values", Array());
+			result["after"] = after.get("values", Array());
+			result["availability"] = Dictionary({ { "state", missing.is_empty() ? "complete" : "partial" }, { "missing", missing } });
+			result["ok"] = true;
+			_solers_send_runtime_result("solers:input_result", result);
+			pending_inputs.remove_at(i);
 		}
 	}
 };
@@ -339,15 +407,13 @@ static void _solers_observe_runtime_objects(const String &p_call_id, int64_t p_r
 	_solers_send_runtime_result("solers:objects_result", result);
 }
 
-static void _solers_send_input_result(const String &p_call_id, int64_t p_runtime_epoch, bool p_ok, const String &p_code = String(), const String &p_message = String()) {
+static void _solers_send_input_error(const String &p_call_id, int64_t p_runtime_epoch, const String &p_code, const String &p_message) {
 	Dictionary result;
 	result["call_id"] = p_call_id;
 	result["runtime_epoch"] = p_runtime_epoch;
-	result["ok"] = p_ok;
-	if (!p_ok) {
-		result["code"] = p_code;
-		result["message"] = p_message;
-	}
+	result["ok"] = false;
+	result["code"] = p_code;
+	result["message"] = p_message;
 	_solers_send_runtime_result("solers:input_result", result);
 }
 
@@ -371,15 +437,15 @@ static Error _solers_capture_runtime(void *, const String &p_message, const Arra
 		}
 		return OK;
 	}
-	if (p_args.size() != 3 || call_id.is_empty() || runtime_epoch <= 0 || p_args[2].get_type() != Variant::ARRAY) {
-		_solers_send_input_result(call_id, runtime_epoch, false, "INVALID_INPUT_REQUEST", "set_input_actions requires call_id, runtime_epoch, and an actions array.");
+	if (p_args.size() != 5 || call_id.is_empty() || runtime_epoch <= 0 || p_args[2].get_type() != Variant::ARRAY || p_args[3].get_type() != Variant::INT || (int64_t)p_args[3] <= 0 || p_args[4].get_type() != Variant::ARRAY || !solers_runtime_bridge) {
+		_solers_send_input_error(call_id, runtime_epoch, "INVALID_INPUT_REQUEST", "set_input_actions requires call_id, runtime_epoch, actions, positive physics_frames, and observations.");
 		return OK;
 	}
 
 	Input *input = Input::get_singleton();
 	InputMap *input_map = InputMap::get_singleton();
 	if (!input || !input_map) {
-		_solers_send_input_result(call_id, runtime_epoch, false, "INPUT_UNAVAILABLE", "Godot Input and InputMap must be initialized.");
+		_solers_send_input_error(call_id, runtime_epoch, "INPUT_UNAVAILABLE", "Godot Input and InputMap must be initialized.");
 		return OK;
 	}
 
@@ -387,24 +453,25 @@ static Error _solers_capture_runtime(void *, const String &p_message, const Arra
 	HashSet<StringName> next_actions;
 	for (int i = 0; i < actions.size(); i++) {
 		if (actions[i].get_type() != Variant::DICTIONARY) {
-			_solers_send_input_result(call_id, runtime_epoch, false, "INVALID_INPUT_ACTION", "Every input action must be an object with name and strength.");
+			_solers_send_input_error(call_id, runtime_epoch, "INVALID_INPUT_ACTION", "Every input action must be an object with name and strength.");
 			return OK;
 		}
 		const Dictionary action = actions[i];
 		const StringName name = action.get("name", StringName());
 		const Variant strength_value = action.get("strength", Variant());
 		if (name.is_empty() || (strength_value.get_type() != Variant::INT && strength_value.get_type() != Variant::FLOAT)) {
-			_solers_send_input_result(call_id, runtime_epoch, false, "INVALID_INPUT_ACTION", "Every input action requires a non-empty name and numeric strength.");
+			_solers_send_input_error(call_id, runtime_epoch, "INVALID_INPUT_ACTION", "Every input action requires a non-empty name and numeric strength.");
 			return OK;
 		}
 		const double strength = strength_value;
 		if (!Math::is_finite(strength) || strength <= 0.0 || strength > 1.0 || next_actions.has(name) || !input_map->has_action(name)) {
-			_solers_send_input_result(call_id, runtime_epoch, false, "INVALID_INPUT_ACTION", vformat("Input action '%s' is unknown, duplicated, or has strength outside (0, 1].", name));
+			_solers_send_input_error(call_id, runtime_epoch, "INVALID_INPUT_ACTION", vformat("Input action '%s' is unknown, duplicated, or has strength outside (0, 1].", name));
 			return OK;
 		}
 		next_actions.insert(name);
 	}
 
+	const Array observations = p_args[4];
 	for (const StringName &action : solers_owned_input_actions) {
 		if (!next_actions.has(action) && input_map->has_action(action)) {
 			input->action_release(action);
@@ -415,7 +482,7 @@ static Error _solers_capture_runtime(void *, const String &p_message, const Arra
 		input->action_press(action.get("name", StringName()), (double)action.get("strength", 0.0));
 	}
 	solers_owned_input_actions = next_actions;
-	_solers_send_input_result(call_id, runtime_epoch, true);
+	solers_runtime_bridge->request_input(call_id, runtime_epoch, (int64_t)p_args[3], observations);
 	return OK;
 }
 

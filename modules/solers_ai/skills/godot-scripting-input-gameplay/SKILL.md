@@ -63,6 +63,6 @@ cfg.save("user://save.cfg")
 ## Verify
 1. `project.search` / `script.edit` / `script.validate`.
 2. Confirm InputMap actions exist in project settings before `runtime.control` play.
-3. `runtime.control` play → set InputMap actions → independently observe scene/spatial state and capture runtime pixels → release all actions.
+3. `runtime.control` play → hold the complete action state for declared `physics_frames` while observing owner properties before/after → release all actions.
 4. `runtime.observe` digest for errors; confirm pause/`process_mode` behavior if used.
-5. Re-open the project if Autoload or InputMap changed.
+5. `project.delivery_report`; re-open the project if Autoload or InputMap changed.
