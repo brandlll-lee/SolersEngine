@@ -641,20 +641,17 @@ msgstr "适用于 DCC 与动画工具交换的格式。"
 msgid "Animation preset for this rig type."
 msgstr "适用于当前骨架类型的动画预设。"
 
-msgid "Allow using this tool?"
-msgstr "允许使用此工具吗？"
+msgid "Permission required"
+msgstr "需要权限"
 
-msgid "1  Allow once"
-msgstr "1  仅允许本次"
+msgid "Allow once"
+msgstr "仅允许本次"
 
-msgid "2  Always allow this permission"
-msgstr "2  始终允许此权限"
+msgid "Always allow"
+msgstr "始终允许"
 
-msgid "3  Deny"
-msgstr "3  拒绝"
-
-msgid "Submit"
-msgstr "提交"
+msgid "Deny"
+msgstr "拒绝"
 
 msgid "Awaiting approval"
 msgstr "等待授权"

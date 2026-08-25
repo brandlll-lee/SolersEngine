@@ -374,21 +374,6 @@ Ref<Theme> SolersUITheme::create() {
 		theme->set_color(name, "SolersPrimaryButton", tokens.on_primary);
 	}
 	theme->set_color(SNAME("font_disabled_color"), "SolersPrimaryButton", tokens.on_primary);
-	theme->set_type_variation(SNAME("SolersQuestionPanel"), SNAME("PanelContainer"));
-	theme->set_stylebox(SceneStringName(panel), "SolersQuestionPanel", _solers_flat(tokens.card, product_radius, tokens.border, border_width, 14 * EDSCALE));
-	theme->set_type_variation(SNAME("SolersQuestionTool"), SNAME("Label"));
-	theme->set_stylebox(CoreStringName(normal), "SolersQuestionTool", _solers_flat(tokens.surface, card_radius, Color(), 0, 8 * EDSCALE));
-	theme->set_color(SceneStringName(font_color), "SolersQuestionTool", tokens.text);
-	theme->set_type_variation(SNAME("SolersQuestionChoice"), SNAME("Button"));
-	theme->set_stylebox(CoreStringName(normal), "SolersQuestionChoice", _solers_flat(Color(0, 0, 0, 0), card_radius, Color(), 0, 8 * EDSCALE));
-	theme->set_stylebox(SceneStringName(hover), "SolersQuestionChoice", _solers_flat(tokens.card_hover, card_radius, Color(), 0, 8 * EDSCALE));
-	for (const StringName &name : { SceneStringName(pressed), SNAME("hover_pressed") }) {
-		theme->set_stylebox(name, "SolersQuestionChoice", _solers_flat(tokens.card_selected, card_radius, tokens.border_strong, border_width, 8 * EDSCALE));
-	}
-	theme->set_stylebox(SNAME("focus"), "SolersQuestionChoice", control_focus);
-	for (const StringName &name : { SceneStringName(font_color), SNAME("font_hover_color"), SNAME("font_pressed_color") }) {
-		theme->set_color(name, "SolersQuestionChoice", tokens.text);
-	}
 	theme->set_type_variation(SNAME("SolersStudioSegment"), SNAME("Button"));
 	theme->set_stylebox(CoreStringName(normal), "SolersStudioSegment", _solers_flat(tokens.surface, card_radius, Color(), 0, 6 * EDSCALE));
 	theme->set_stylebox(SceneStringName(hover), "SolersStudioSegment", _solers_flat(tokens.card_hover, card_radius, Color(), 0, 6 * EDSCALE));

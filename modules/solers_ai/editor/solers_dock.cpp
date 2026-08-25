@@ -1822,7 +1822,6 @@ void SolersDock::_on_chat_input_gui_input(const Ref<InputEvent> &p_event) {
 	}
 
 	if (permission_manager && permission_manager->get_pending_request_count() > 0) {
-		_submit_current_approval();
 		chat_input->accept_event();
 		return;
 	}
@@ -2328,46 +2327,30 @@ void SolersDock::_update_send_enabled() {
 }
 
 void SolersDock::_sync_approval_panel() {
-	if (!approval_overlay_inset) {
+	if (!permission_prompt_inset) {
 		return;
 	}
 	if (!permission_manager) {
-		approval_overlay_inset->set_visible(false);
+		permission_prompt_inset->set_visible(false);
 		_update_send_enabled();
 		return;
 	}
 
-	Array pending = permission_manager->list_pending_requests();
-	if (permission_manager->is_auto_approve_all()) {
-		for (int i = 0; i < pending.size(); i++) {
-			const Dictionary request = pending[i];
-			permission_manager->approve_request(request.get("id", 0));
-		}
-		pending = permission_manager->list_pending_requests();
-	}
+	const Array pending = permission_manager->list_pending_requests();
 	if (pending.is_empty()) {
-		active_approval_id = 0;
-		approval_overlay_inset->set_visible(false);
+		permission_prompt_inset->set_visible(false);
 		_update_send_enabled();
 		return;
 	}
 
 	const Dictionary request = pending[0];
-	const int request_id = request.get("id", 0);
-	if (active_approval_id != request_id) {
-		active_approval_id = request_id;
-		approval_once_button->set_pressed(true);
-	}
-	approval_overlay_inset->set_visible(true);
-
-	const String tool = String(request.get("tool", String()));
-	if (approval_tool_label) {
-		approval_tool_label->set_text(tool);
-	}
+	permission_prompt_inset->set_visible(true);
+	permission_tool_label->set_text(request.get("tool", String()));
+	permission_detail_label->set_text(String(request.get("permission", String())).replace("_", " ").capitalize() + "\n" + solers_summarize_tool_args(JSON::stringify(request.get("args", Dictionary()))));
 	_update_send_enabled();
 }
 
-void SolersDock::_submit_current_approval() {
+void SolersDock::_resolve_current_approval(bool p_approve, bool p_remember) {
 	if (!permission_manager) {
 		return;
 	}
@@ -2378,14 +2361,14 @@ void SolersDock::_submit_current_approval() {
 	}
 	Dictionary request = pending[0];
 	const int request_id = request.get("id", 0);
-	if (approval_reject_button->is_pressed()) {
-		permission_manager->reject_request(request_id);
-	} else if (approval_always_button->is_pressed()) {
-		const int permission_id = request.get("permission_id", (int)SolersPermissionManager::PERMISSION_OBSERVE);
-		permission_manager->set_auto_approve_permission((SolersPermissionManager::Permission)permission_id, true);
+	if (p_approve) {
+		if (p_remember) {
+			const int permission_id = request.get("permission_id", (int)SolersPermissionManager::PERMISSION_OBSERVE);
+			permission_manager->set_auto_approve_permission((SolersPermissionManager::Permission)permission_id, true);
+		}
 		permission_manager->approve_request(request_id);
 	} else {
-		permission_manager->approve_request(request_id);
+		permission_manager->reject_request(request_id);
 	}
 	_refresh_status();
 	_sync_approval_panel();
@@ -2589,76 +2572,51 @@ SolersDock::SolersDock() {
 	chat_scroll->get_v_scroll_bar()->connect(SNAME("value_changed"), callable_mp(this, &SolersDock::_update_timeline_window).unbind(1));
 	chat_scroll->connect(SNAME("resized"), callable_mp(this, &SolersDock::_update_timeline_window));
 
-	/* Approval prompt — shown inline above the composer when a tool is blocked. */
+	permission_prompt_inset = memnew(MarginContainer);
+	permission_prompt_inset->add_theme_constant_override("margin_left", 20 * EDSCALE);
+	permission_prompt_inset->add_theme_constant_override("margin_right", 20 * EDSCALE);
+	permission_prompt_inset->add_theme_constant_override("margin_bottom", 8 * EDSCALE);
+	permission_prompt_inset->hide();
+	chat_column->add_child(permission_prompt_inset);
 
-	approval_overlay_inset = memnew(MarginContainer);
-	approval_overlay_inset->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	approval_overlay_inset->add_theme_constant_override("margin_left", 20 * EDSCALE);
-	approval_overlay_inset->add_theme_constant_override("margin_right", 20 * EDSCALE);
-	approval_overlay_inset->add_theme_constant_override("margin_top", 0);
-	approval_overlay_inset->add_theme_constant_override("margin_bottom", 8 * EDSCALE);
-	approval_overlay_inset->set_visible(false);
-	chat_column->add_child(approval_overlay_inset);
+	SolersSurface *permission_prompt = memnew(SolersSurface);
+	permission_prompt->set_name("PermissionPrompt");
+	solers_configure_prompt_surface(permission_prompt);
+	permission_prompt_inset->add_child(permission_prompt);
+	VBoxContainer *permission_box = memnew(VBoxContainer);
+	permission_box->add_theme_constant_override("separation", 8 * EDSCALE);
+	permission_prompt->add_child(permission_box);
 
-	PanelContainer *approval_overlay_card = memnew(PanelContainer);
-	approval_overlay_card->set_name("QuestionPanel");
-	approval_overlay_card->set_theme_type_variation(SNAME("SolersQuestionPanel"));
-	approval_overlay_inset->add_child(approval_overlay_card);
+	Label *permission_title = memnew(Label(TTR("Permission required")));
+	permission_title->set_theme_type_variation(SNAME("SolersSessionTitle"));
+	permission_box->add_child(permission_title);
 
-	VBoxContainer *approval_box = memnew(VBoxContainer);
-	approval_box->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	approval_box->add_theme_constant_override("separation", 8 * EDSCALE);
-	approval_overlay_card->add_child(approval_box);
+	permission_tool_label = memnew(Label);
+	permission_tool_label->set_name("PermissionTool");
+	permission_tool_label->set_theme_type_variation(SNAME("SolersSessionTitle"));
+	permission_tool_label->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+	permission_box->add_child(permission_tool_label);
+	permission_detail_label = memnew(Label);
+	permission_detail_label->set_name("PermissionDetails");
+	permission_detail_label->set_theme_type_variation(SNAME("SolersSessionMeta"));
+	permission_detail_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	permission_box->add_child(permission_detail_label);
 
-	HBoxContainer *approval_header = memnew(HBoxContainer);
-	approval_header->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	approval_header->add_theme_constant_override("separation", 8 * EDSCALE);
-	approval_box->add_child(approval_header);
-	TextureRect *approval_icon = memnew(TextureRect);
-	approval_icon->set_texture(SolersIcons::get(SNAME("shield"), int(14 * EDSCALE)));
-	approval_icon->set_custom_minimum_size(Size2(18, 18) * EDSCALE);
-	approval_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_CENTERED);
-	approval_header->add_child(approval_icon);
-
-	Label *approval_title = memnew(Label(TTR("Allow using this tool?")));
-	approval_title->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	approval_header->add_child(approval_title);
-
-	approval_tool_label = memnew(Label);
-	approval_tool_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	approval_tool_label->set_theme_type_variation(SNAME("SolersQuestionTool"));
-	approval_tool_label->set_clip_text(true);
-	approval_tool_label->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
-	approval_box->add_child(approval_tool_label);
-
-	VBoxContainer *approval_actions = memnew(VBoxContainer);
-	approval_actions->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	approval_actions->add_theme_constant_override("separation", 2 * EDSCALE);
-	approval_box->add_child(approval_actions);
-	Ref<ButtonGroup> approval_button_group;
-	approval_button_group.instantiate();
-
-	auto add_question_choice = [&](Button *&r_button, const String &p_text, const StringName &p_name) {
-		r_button = memnew(Button(p_text));
-		r_button->set_name(p_name);
-		r_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		r_button->set_toggle_mode(true);
-		r_button->set_button_group(approval_button_group);
-		r_button->set_theme_type_variation(SNAME("SolersQuestionChoice"));
-		approval_actions->add_child(r_button);
+	HBoxContainer *permission_actions = memnew(HBoxContainer);
+	permission_actions->set_alignment(BoxContainer::ALIGNMENT_END);
+	permission_actions->add_theme_constant_override("separation", 6 * EDSCALE);
+	permission_box->add_child(permission_actions);
+	auto add_permission_action = [&](const String &p_text, const StringName &p_name, bool p_approve, bool p_remember, bool p_primary) {
+		Button *button = memnew(Button(p_text));
+		button->set_name(p_name);
+		button->set_custom_minimum_size(Size2(120, 36) * EDSCALE);
+		button->set_theme_type_variation(p_primary ? SNAME("SolersPrimaryButton") : SNAME("SolersStudioSegment"));
+		button->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_resolve_current_approval).bind(p_approve, p_remember));
+		permission_actions->add_child(button);
 	};
-	add_question_choice(approval_once_button, TTR("1  Allow once"), SNAME("QuestionAllowOnce"));
-	add_question_choice(approval_always_button, TTR("2  Always allow this permission"), SNAME("QuestionAllowAlways"));
-	add_question_choice(approval_reject_button, TTR("3  Deny"), SNAME("QuestionDeny"));
-
-	HBoxContainer *approval_footer = memnew(HBoxContainer);
-	approval_footer->set_alignment(BoxContainer::ALIGNMENT_END);
-	approval_box->add_child(approval_footer);
-	Button *approval_submit_button = memnew(Button(TTR("Submit")));
-	approval_submit_button->set_name("QuestionSubmit");
-	approval_submit_button->set_theme_type_variation(SNAME("SolersPrimaryButton"));
-	approval_submit_button->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_submit_current_approval));
-	approval_footer->add_child(approval_submit_button);
+	add_permission_action(TTR("Deny"), SNAME("PermissionDeny"), false, false, false);
+	add_permission_action(TTR("Always allow"), SNAME("PermissionAllowAlways"), true, true, false);
+	add_permission_action(TTR("Allow once"), SNAME("PermissionAllowOnce"), true, false, true);
 	composer_inset = memnew(MarginContainer);
 	composer_inset->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	composer_inset->add_theme_constant_override("margin_left", 20 * EDSCALE);

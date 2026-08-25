@@ -38,6 +38,7 @@
 #include "editor/themes/editor_scale.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
+#include "scene/gui/label.h"
 #include "scene/gui/scroll_container.h"
 #include "scene/main/scene_tree.h"
 #include "scene/main/window.h"
@@ -273,7 +274,7 @@ TEST_CASE("[SolersSession][SceneTree][Editor] journal rows preserve terminal sem
 	dock->set_agent_session(&restored);
 	dock->load_chat_history(timeline);
 	SolersPermissionManager permissions;
-	permissions.request_user_approval("object.transaction", Dictionary({ { "scope", "scene" } }), SolersPermissionManager::PERMISSION_EDIT_SCENE);
+	const Dictionary denied_request = permissions.request_user_approval("object.transaction", Dictionary({ { "scope", "scene" } }), SolersPermissionManager::PERMISSION_EDIT_SCENE);
 	dock->set_services(nullptr, nullptr, nullptr, &permissions, nullptr);
 	MessageQueue::get_singleton()->flush();
 	Node *approval_mode = dock->find_child("ApprovalModeOption", true, false);
@@ -311,18 +312,27 @@ TEST_CASE("[SolersSession][SceneTree][Editor] journal rows preserve terminal sem
 	Control *history_editor = Object::cast_to<Control>(dock->find_child("HistoryMessageEditorSurface", true, false));
 	REQUIRE(history_editor != nullptr);
 	CHECK_FALSE(history_editor->is_visible());
-	PanelContainer *question = Object::cast_to<PanelContainer>(dock->find_child("QuestionPanel", true, false));
-	Button *allow_once = Object::cast_to<Button>(dock->find_child("QuestionAllowOnce", true, false));
-	Button *allow_always = Object::cast_to<Button>(dock->find_child("QuestionAllowAlways", true, false));
-	Button *deny = Object::cast_to<Button>(dock->find_child("QuestionDeny", true, false));
-	Button *submit = Object::cast_to<Button>(dock->find_child("QuestionSubmit", true, false));
-	REQUIRE(bool(question && allow_once && allow_always && deny && submit));
-	CHECK(question->is_visible_in_tree());
-	CHECK(question->get_theme_type_variation() == SNAME("SolersQuestionPanel"));
-	CHECK(allow_once->is_pressed());
-	allow_always->set_pressed(true);
-	CHECK((allow_always->is_pressed() && !allow_once->is_pressed() && !deny->is_pressed()));
-	CHECK(submit->get_theme_type_variation() == SNAME("SolersPrimaryButton"));
+	SolersSurface *permission_prompt = Object::cast_to<SolersSurface>(dock->find_child("PermissionPrompt", true, false));
+	Button *allow_once = Object::cast_to<Button>(dock->find_child("PermissionAllowOnce", true, false));
+	Button *allow_always = Object::cast_to<Button>(dock->find_child("PermissionAllowAlways", true, false));
+	Button *deny = Object::cast_to<Button>(dock->find_child("PermissionDeny", true, false));
+	Label *permission_tool = Object::cast_to<Label>(dock->find_child("PermissionTool", true, false));
+	Label *permission_details = Object::cast_to<Label>(dock->find_child("PermissionDetails", true, false));
+	REQUIRE(bool(permission_prompt && allow_once && allow_always && deny && permission_tool && permission_details));
+	CHECK(permission_prompt->is_visible_in_tree());
+	CHECK(permission_tool->get_text() == "object.transaction");
+	CHECK(permission_details->get_text().contains("scene"));
+	CHECK(dock->find_child("QuestionPanel", true, false) == nullptr);
+	deny->emit_signal(SceneStringName(pressed));
+	CHECK(permissions.get_request_decision(denied_request.get("id", 0)) == SolersPermissionManager::DECISION_REJECTED);
+	const Dictionary once_request = permissions.request_user_approval("resource.edit", Dictionary(), SolersPermissionManager::PERMISSION_EDIT_FILES);
+	dock->set_services(nullptr, nullptr, nullptr, &permissions, nullptr);
+	allow_once->emit_signal(SceneStringName(pressed));
+	CHECK(permissions.get_request_decision(once_request.get("id", 0)) == SolersPermissionManager::DECISION_APPROVED);
+	permissions.request_user_approval("network.fetch", Dictionary(), SolersPermissionManager::PERMISSION_NETWORK);
+	dock->set_services(nullptr, nullptr, nullptr, &permissions, nullptr);
+	allow_always->emit_signal(SceneStringName(pressed));
+	CHECK(permissions.get_auto_approve_permission(SolersPermissionManager::PERMISSION_NETWORK));
 
 	scroll->set_v_scroll((int)scroll->get_v_scroll_bar()->get_max());
 	dock->set_size(Size2(480, 720));
