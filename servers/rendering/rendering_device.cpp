@@ -8322,7 +8322,7 @@ Error RenderingDevice::initialize(RenderingContextDriver *p_context, DisplayServ
 
 	Error err;
 	RenderingContextDriver::SurfaceID main_surface = 0;
-	is_main_instance = (singleton == this) && (p_main_window != DisplayServerEnums::INVALID_WINDOW_ID);
+	is_main_instance = (singleton == nullptr) && (p_main_window != DisplayServerEnums::INVALID_WINDOW_ID);
 	if (p_main_window != DisplayServerEnums::INVALID_WINDOW_ID) {
 		// Retrieve the surface from the main window if it was specified.
 		main_surface = p_context->surface_get_from_window(p_main_window);
@@ -8598,6 +8598,10 @@ Error RenderingDevice::initialize(RenderingContextDriver *p_context, DisplayServ
 
 	// Find the best method available for VRS on the current hardware.
 	_vrs_detect_method();
+
+	if (is_main_instance) {
+		singleton = this;
+	}
 
 	return OK;
 }
@@ -9874,10 +9878,6 @@ RenderingDevice::~RenderingDevice() {
 }
 
 RenderingDevice::RenderingDevice() {
-	if (singleton == nullptr) {
-		singleton = this;
-	}
-
 	render_thread_id = Thread::get_caller_id();
 }
 
