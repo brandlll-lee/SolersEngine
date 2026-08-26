@@ -58,7 +58,7 @@ public:
 
 	static Array repair_tool_pairing(const Array &p_messages);
 	static Array project_completed_turns(const Array &p_messages);
-	int project_consumed_tool_arguments(Array &r_messages);
+	static Array project_tool_evidence(const Array &p_messages);
 
 	static int estimate_tokens(const String &p_text);
 	static int estimate_messages_tokens(const Array &p_messages);

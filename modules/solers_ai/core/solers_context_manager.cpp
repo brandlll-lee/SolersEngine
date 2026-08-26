@@ -214,60 +214,49 @@ Array SolersContextManager::project_completed_turns(const Array &p_messages) {
 	return projected;
 }
 
-int SolersContextManager::project_consumed_tool_arguments(Array &r_messages) {
-	HashSet<String> consumed_calls;
+Array SolersContextManager::project_tool_evidence(const Array &p_messages) {
+	HashSet<String> completed_calls;
 	bool has_later_assistant = false;
-	for (int i = r_messages.size() - 1; i >= 0; i--) {
-		const Dictionary message = r_messages[i];
+	for (int i = p_messages.size() - 1; i >= 0; i--) {
+		const Dictionary message = p_messages[i];
 		const String role = message.get("role", String());
 		if (role == String(SolersLLMRole::ASSISTANT)) {
 			has_later_assistant = true;
 		} else if (role == String(SolersLLMRole::TOOL) && has_later_assistant) {
 			const String call_id = message.get("tool_call_id", String());
 			if (!call_id.is_empty()) {
-				consumed_calls.insert(call_id);
+				completed_calls.insert(call_id);
 			}
 		}
 	}
 
-	int saved_tokens = 0;
-	for (int i = 0; i < r_messages.size(); i++) {
-		Dictionary message = r_messages[i];
-		if (String(message.get("role", String())) != String(SolersLLMRole::ASSISTANT)) {
-			continue;
-		}
-		Array calls = Array(message.get("tool_calls", Array())).duplicate(true);
-		bool changed = false;
-		for (int call_index = 0; call_index < calls.size(); call_index++) {
-			Dictionary call = calls[call_index];
-			if (!consumed_calls.has(call.get("id", String()))) {
-				continue;
+	Array projected;
+	for (int i = 0; i < p_messages.size(); i++) {
+		Dictionary message = Dictionary(p_messages[i]).duplicate(true);
+		const String role = message.get("role", String());
+		if (role == String(SolersLLMRole::ASSISTANT)) {
+			const Array calls = message.get("tool_calls", Array());
+			Array active_calls;
+			for (int call_index = 0; call_index < calls.size(); call_index++) {
+				const Dictionary call = calls[call_index];
+				if (!completed_calls.has(call.get("id", String()))) {
+					active_calls.push_back(call);
+				}
 			}
-			const String arguments = call.get("arguments", String("{}"));
-			const Variant parsed = JSON::parse_string(arguments);
-			if (parsed.get_type() == Variant::DICTIONARY && (bool)Dictionary(parsed).get("consumed", false)) {
-				continue;
+			if (active_calls.is_empty()) {
+				message.erase("tool_calls");
+			} else {
+				message["tool_calls"] = active_calls;
 			}
-			const String replacement = JSON::stringify(Dictionary({ { "consumed", true }, { "original_sha256", arguments.sha256_text() }, { "original_bytes", arguments.utf8().length() } }));
-			const int saving = estimate_tokens(arguments) - estimate_tokens(replacement);
-			if (saving <= 0) {
-				continue;
-			}
-			call["arguments"] = replacement;
-			calls[call_index] = call;
-			saved_tokens += saving;
-			changed = true;
+		} else if (role == String(SolersLLMRole::TOOL) && completed_calls.has(message.get("tool_call_id", String()))) {
+			message["role"] = MODEL_CONTEXT_ROLE;
+			message["origin"] = "tool_evidence";
+			message.erase("tool_call_id");
+			message.erase("name");
 		}
-		if (changed) {
-			message["tool_calls"] = calls;
-			r_messages[i] = message;
-		}
+		projected.push_back(message);
 	}
-	if (saved_tokens > 0) {
-		authoritative_tokens = 0;
-		covered_message_count = 0;
-	}
-	return saved_tokens;
+	return projected;
 }
 
 String SolersContextManager::_build_summary_text(const String &p_summary) {

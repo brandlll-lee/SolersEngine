@@ -1263,9 +1263,6 @@ Error SolersAgentSession::_dispatch_model_request() {
 	}
 	_append_background_asset_deltas(false);
 	_flush_pending_steering();
-	if (context_manager) {
-		context_manager->project_consumed_tool_arguments(messages);
-	}
 	// Drop prior-turn usage so compaction headroom is not computed from a
 	// stale prompt total that already included the previous max_output reserve.
 	last_usage.clear();
@@ -1285,7 +1282,7 @@ Error SolersAgentSession::_dispatch_model_request() {
 		system_prompt = _default_system_prompt();
 	}
 	const Array tools = _collect_tools();
-	Array request_messages = messages.duplicate(true);
+	Array request_messages = context_manager ? context_manager->project_tool_evidence(messages) : messages.duplicate(true);
 	// Dynamic engine facts ride at the end. Attachment projection then replaces
 	// previously consumed image bytes with stable hash references; the system,
 	// tools, and text history remain cacheable.
@@ -1297,7 +1294,7 @@ Error SolersAgentSession::_dispatch_model_request() {
 		transient.push_back(environment_message);
 		request_transient_tokens = SolersContextManager::estimate_messages_tokens(transient);
 	}
-	if (context_manager && context_manager->should_compact(messages, system_prompt, cached_request_tool_tokens, context_window, max_output_tokens, request_transient_tokens)) {
+	if (context_manager && context_manager->should_compact(request_messages, system_prompt, cached_request_tool_tokens, context_window, max_output_tokens, request_transient_tokens)) {
 		if (phase == PHASE_COMPACTING) {
 			const Dictionary error = _error("COMPACTION_TARGET_NOT_REACHED", "The accepted context projection no longer fits the current engine state.").get("error", Dictionary());
 			_finish_turn("failed", error.get("message", String()), error);

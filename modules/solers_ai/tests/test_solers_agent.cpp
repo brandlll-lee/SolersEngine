@@ -141,7 +141,7 @@ TEST_CASE("[SolersContextManager] completed-turn projection preserves the exact 
 	CHECK(continued.contains("Continue exactly."));
 }
 
-TEST_CASE("[SolersContextManager] consumed calls project arguments without rewriting tool evidence") {
+TEST_CASE("[SolersContextManager] completed tool evidence is outside tool-call syntax") {
 	Array history;
 	history.push_back(make_user_message("Inspect the scene.", 1));
 	Array consumed_calls = make_tool_calls("consumed", "object.transaction");
@@ -160,17 +160,21 @@ TEST_CASE("[SolersContextManager] consumed calls project arguments without rewri
 	history.push_back(SolersLLMMessage::assistant("Verifying pixels.", live_calls));
 	history.push_back(SolersLLMMessage::tool_result("live", "render.capture", "exact image receipt"));
 
-	SolersContextManager manager;
-	CHECK(manager.project_consumed_tool_arguments(history) > 0);
-	const String wire = JSON::stringify(history);
-	const String projected_arguments = Dictionary(Array(Dictionary(history[1]).get("tool_calls", Array()))[0]).get("arguments", String());
-	const Dictionary projection = JSON::parse_string(projected_arguments);
-	CHECK(projection.get("consumed", false));
-	CHECK(projection.get("original_sha256", String()) == consumed_arguments.sha256_text());
-	CHECK(Dictionary(Array(Dictionary(history[4]).get("tool_calls", Array()))[0]).get("arguments", String()) == live_arguments);
-	CHECK(wire.contains("scene_after"));
-	CHECK(wire.contains("exact image receipt"));
-	CHECK(manager.project_consumed_tool_arguments(history) == 0);
+	const String canonical = JSON::stringify(history);
+	const Array projected = SolersContextManager::project_tool_evidence(history);
+	const String wire = JSON::stringify(projected);
+	CHECK(JSON::stringify(history) == canonical);
+	CHECK(projected.size() == history.size());
+	CHECK_FALSE(wire.contains(consumed_arguments));
+	CHECK_FALSE(wire.contains("consumed"));
+	CHECK_FALSE(wire.contains("original_sha256"));
+	CHECK(Dictionary(projected[2]).get("role", String()) == SolersContextManager::MODEL_CONTEXT_ROLE);
+	CHECK(Dictionary(projected[2]).get("origin", String()) == "tool_evidence");
+	CHECK_FALSE(Dictionary(projected[2]).has("tool_call_id"));
+	CHECK(String(Dictionary(projected[2]).get("content", String())).contains("scene_after"));
+	CHECK(Dictionary(Array(Dictionary(projected[4]).get("tool_calls", Array()))[0]).get("arguments", String()) == live_arguments);
+	CHECK(Dictionary(projected[5]).get("role", String()) == SolersLLMRole::TOOL);
+	CHECK(String(Dictionary(projected[5]).get("content", String())) == "exact image receipt");
 }
 
 TEST_CASE("[SolersContextManager] envelope clamp keeps head and tail under the token budget") {
