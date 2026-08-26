@@ -37,6 +37,7 @@
 #include "core/os/os.h"
 #include "core/templates/pair.h"
 #include "editor/asset_library/editor_asset_installer.h"
+#include "editor/file_system/editor_file_system.h"
 #include "tests/test_macros.h"
 #include "tests/test_utils.h"
 
@@ -81,7 +82,8 @@ class ScopedPluginRegistration {
 	SolersPlugin *plugin = nullptr;
 
 public:
-	explicit ScopedPluginRegistration(SolersPlugin *p_plugin) : plugin(p_plugin) {
+	explicit ScopedPluginRegistration(SolersPlugin *p_plugin) :
+			plugin(p_plugin) {
 		SolersPluginRegistry::register_plugin(plugin);
 	}
 
@@ -301,7 +303,7 @@ TEST_CASE("[SolersPluginRegistry] an unknown connector extends every registry-dr
 	REQUIRE(queued.get("ok", false));
 	const Dictionary queued_manifest = queued.get("data", Dictionary());
 	CHECK(String(queued_manifest.get("target_dir", "invalid")).is_empty());
-	cleanup.add("user://solers_jobs/" + String(queued_manifest.get("id", String())));
+	cleanup.add(SolersAssetService::asset_root().path_join(queued_manifest.get("id", String())));
 	const String partial = "Create with @synthetic-fut";
 	int mention_start = -1;
 	CHECK(SolersMention::query_at(partial, partial.length(), mention_start) == "synthetic-fut");
@@ -331,7 +333,7 @@ TEST_CASE("[SolersPluginRegistry] an unknown connector extends every registry-dr
 
 TEST_CASE("[SolersAssetService][SceneTree] direct texture-set import follows requested manifest roles") {
 	const String asset_id = ".solers_map_role_import_contract";
-	const String asset_dir = "user://solers_jobs/" + asset_id;
+	const String asset_dir = SolersAssetService::asset_root().path_join(asset_id);
 	const String source_dir = asset_dir.path_join("source");
 	const String target_dir = "res://.solers_map_role_import_contract";
 	SolersTestPaths cleanup;
@@ -383,6 +385,19 @@ TEST_CASE("[SolersAssetService][SceneTree] direct texture-set import follows req
 	CHECK(FileAccess::exists(target_dir.path_join("color.png")));
 	CHECK(FileAccess::exists(target_dir.path_join("normal.png")));
 	CHECK_FALSE(FileAccess::exists(target_dir.path_join("detail.png")));
+
+	manifest.erase("map_files");
+	manifest["maps"] = Array({ "surface_color", "surface_normal" });
+	String write_error;
+	REQUIRE(SolersPlugin::write_json_atomic(asset_dir.path_join("manifest.json"), manifest, write_error));
+	args["map_types"] = Array({ "surface_occlusion" });
+	SolersAssetService reloaded_asset_service;
+	const Dictionary unavailable = reloaded_asset_service.start_project_import(args);
+	CHECK_FALSE((bool)unavailable.get("ok", true));
+	const Dictionary unavailable_error = unavailable.get("error", Dictionary());
+	CHECK(unavailable_error.get("code", String()) == "INVALID_MAP_SELECTION");
+	CHECK(String(unavailable_error.get("message", String())).contains("surface_occlusion"));
+	CHECK(Array(Dictionary(unavailable.get("data", Dictionary())).get("available_map_types", Array())) == Array({ "surface_color", "surface_normal" }));
 }
 
 TEST_CASE("[SolersPluginMeshy] generation schema and validation follow the current provider contract") {
@@ -632,7 +647,7 @@ TEST_CASE("[SolersAssetService] operation catalog resolves task and model source
 	REQUIRE(SolersPluginRegistry::get_plugin("meshy"));
 	REQUIRE(SolersPluginRegistry::get_plugin("tripo"));
 	const String asset_id = ".solers_operation_catalog_contract";
-	const String asset_dir = "user://solers_jobs/" + asset_id;
+	const String asset_dir = SolersAssetService::asset_root().path_join(asset_id);
 	const String model_path = asset_dir.path_join("source.glb");
 	SolersTestPaths cleanup;
 	cleanup.add(asset_dir);
@@ -747,7 +762,7 @@ TEST_CASE("[SolersPlugin] HTTP transport preserves method and native status fact
 
 TEST_CASE("[SolersAssetService] global assets delete atomically outside active jobs") {
 	const String asset_id = ".solers_delete_contract";
-	const String asset_dir = "user://solers_jobs/" + asset_id;
+	const String asset_dir = SolersAssetService::asset_root().path_join(asset_id);
 	SolersTestPaths cleanup;
 	cleanup.add(asset_dir);
 	REQUIRE(DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(asset_dir)) == OK);
@@ -764,7 +779,7 @@ TEST_CASE("[SolersAssetService] global assets delete atomically outside active j
 
 TEST_CASE("[SolersAssetService] asset listing uses the bounded in-memory projection") {
 	const String asset_id = ".solers_asset_projection_contract";
-	const String asset_dir = "user://solers_jobs/" + asset_id;
+	const String asset_dir = SolersAssetService::asset_root().path_join(asset_id);
 	const String manifest_path = asset_dir.path_join("manifest.json");
 	SolersTestPaths cleanup;
 	cleanup.add(asset_dir);
@@ -779,12 +794,39 @@ TEST_CASE("[SolersAssetService] asset listing uses the bounded in-memory project
 	manifest["provider_options"] = provider_options;
 	String error;
 	REQUIRE(SolersPlugin::write_json_atomic(manifest_path, manifest, error));
+	const String sidecar_path = "res://.solers_asset_projection_contract.solers.json";
+	cleanup.add(sidecar_path);
+	Dictionary sidecar;
+	sidecar["job_id"] = asset_id;
+	sidecar["plugin"] = "synthetic";
+	sidecar["status"] = "imported";
+	sidecar["files"] = Array({ "res://current_asset.glb" });
+	sidecar["entrypoints"] = Array({ "res://current_asset.glb" });
+	REQUIRE(SolersPlugin::write_json_atomic(sidecar_path, sidecar, error));
 
 	SolersAssetService assets;
 	const Dictionary listed = solers_test_find_dictionary(assets.list_assets(), SNAME("id"), asset_id);
 	REQUIRE_FALSE(listed.is_empty());
 	CHECK(listed.get("status", String()) == "failed");
 	CHECK_FALSE(listed.has("provider_options"));
+	CHECK_FALSE(listed.get("in_current_project", false));
+
+	const Dictionary sidecar_result = assets.status(Dictionary({ { "asset_id", sidecar_path } }));
+	REQUIRE(sidecar_result.get("ok", false));
+	const Dictionary sidecar_data = sidecar_result.get("data", Dictionary());
+	CHECK(sidecar_data.get("id", String()) == asset_id);
+	CHECK(sidecar_data.get("provider", String()) == "synthetic");
+	CHECK(sidecar_data.get("sidecar_file", String()) == sidecar_path);
+	CHECK(Array(sidecar_data.get("entrypoints", Array())) == Array({ "res://current_asset.glb" }));
+	if (EditorFileSystem *filesystem = EditorFileSystem::get_singleton()) {
+		filesystem->update_file(sidecar_path);
+		if (filesystem->find_file(sidecar_path, nullptr)) {
+			const Dictionary project_listed = solers_test_find_dictionary(assets.list_assets(), SNAME("id"), asset_id);
+			CHECK(project_listed.get("in_current_project", false));
+			CHECK(Array(project_listed.get("project_entrypoints", Array())) == Array({ "res://current_asset.glb" }));
+			CHECK(project_listed.get("sidecar_file", String()) == sidecar_path);
+		}
+	}
 
 	manifest["status"] = "ready";
 	REQUIRE(SolersPlugin::write_json_atomic(manifest_path, manifest, error));
@@ -795,7 +837,7 @@ TEST_CASE("[SolersAssetService] asset listing uses the bounded in-memory project
 
 TEST_CASE("[SolersAssetService] non-terminal asset.status rejects progress polling; job.wait declares host park") {
 	const String asset_id = ".solers_background_wait_contract";
-	const String asset_dir = "user://solers_jobs/" + asset_id;
+	const String asset_dir = SolersAssetService::asset_root().path_join(asset_id);
 	const String manifest_path = asset_dir.path_join("manifest.json");
 	SolersTestPaths cleanup;
 	cleanup.add(asset_dir);

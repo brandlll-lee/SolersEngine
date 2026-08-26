@@ -880,7 +880,7 @@ void SolersStudio::_sync_workspace() {
 	const int64_t vertex_count = selected_manifest.get("vertex_count", 0);
 	geometry_stats->set_text(polycount > 0 || vertex_count > 0 ? vformat(TTRC("%s polygons | %s vertices"), String::num_int64(polycount), String::num_int64(vertex_count)) : String());
 	geometry_stats->set_visible(!geometry_stats->get_text().is_empty());
-	const bool ready = has_manifest && status == "ready";
+	const bool ready = has_manifest && (status == "ready" || status == "imported");
 	const bool preview_failed = ready && model_workspace && !has_model;
 	if (preview_failed) {
 		asset_status->set_text(TTRC("3D preview unavailable."));
@@ -895,8 +895,11 @@ void SolersStudio::_sync_workspace() {
 	animation_button->set_visible(model_actions);
 	remesh_button->set_visible(model_actions);
 	remesh_button->set_disabled(!has_remesh);
+	const bool in_current_project = selected_manifest.get("in_current_project", false);
 	import_button->set_visible(model_actions || String(route_info.bottom_action) == "import");
-	import_button->set_text(String(route_info.bottom_action) == "import" ? TTRC("Import to current project") : String());
+	import_button->set_disabled(in_current_project);
+	import_button->set_text(String(route_info.bottom_action) == "import" ? (in_current_project ? TTRC("In current project") : TTRC("Import to current project")) : String());
+	import_button->set_tooltip_text(in_current_project ? TTRC("This asset is available in the current project") : TTRC("Import to project"));
 	preview_controls->set_visible(route == "animation" && has_model);
 	const bool has_variant = has_catalog && catalog_variant->get_item_count() > 0;
 	catalog_variant->set_visible(has_variant);

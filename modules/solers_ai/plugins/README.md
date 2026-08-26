@@ -21,4 +21,4 @@ Store BYOK under `solers/plugins/<profile.id>/`; registry revisions drive consum
 ## Built-in Tripo connector
 
 The Tripo connector uses the versioned `https://openapi.tripo3d.ai/v3` contract.
-Its profile publishes H3.1 (`v3.1-20260211`) and P1 (`P1-20260311`) as generation presets, so Studio discovers them without provider-specific UI branches. Generated files are downloaded into `user://solers_jobs`; provider URLs are never treated as persistent assets.
+Its profile publishes H3.1 (`v3.1-20260211`) and P1 (`P1-20260311`) as generation presets, so Studio discovers them without provider-specific UI branches. Generated files are downloaded into the global Studio vault; provider URLs are never treated as persistent assets.

@@ -441,12 +441,14 @@ Dictionary SolersAssetService::_error_data(const String &p_code, const String &p
 	return error;
 }
 
-String SolersAssetService::_asset_root() {
-	return "user://solers_jobs";
+String SolersAssetService::asset_root() {
+	const EditorPaths *editor_paths = EditorPaths::get_singleton();
+	const String data_dir = editor_paths ? editor_paths->get_data_dir() : OS::get_singleton()->get_data_path().path_join(OS::get_singleton()->get_godot_dir_name());
+	return data_dir.path_join("solers/assets");
 }
 
 String SolersAssetService::_asset_dir(const String &p_asset_id) {
-	return _asset_root().path_join(p_asset_id);
+	return asset_root().path_join(p_asset_id);
 }
 
 String SolersAssetService::_manifest_path(const String &p_asset_id) {
@@ -1052,7 +1054,7 @@ void SolersAssetService::_run_task(Task *p_task) {
 
 Dictionary SolersAssetService::_asset_list_item(const Dictionary &p_manifest) {
 	Dictionary item;
-	const char *fields[] = { "id", "kind", "name", "provider", "status", "stage", "progress", "preview_file", "error", "model_file", "files", "entrypoints", "project_entrypoints", "polycount", "vertex_count", "target_dir", "traits", "provider_task_id", "operation", "parent_asset_id", "source_provider", "source_asset_id", "source_variant", "source_version", "license", "attribution", "created_at", "updated_at" };
+	const char *fields[] = { "id", "kind", "name", "provider", "status", "stage", "progress", "preview_file", "error", "model_file", "files", "entrypoints", "polycount", "vertex_count", "traits", "provider_task_id", "operation", "parent_asset_id", "source_provider", "source_asset_id", "source_variant", "source_version", "license", "attribution", "created_at", "updated_at" };
 	for (const char *field : fields) {
 		if (p_manifest.has(field)) {
 			item[field] = p_manifest[field];
@@ -2125,7 +2127,7 @@ Array SolersAssetService::pending_terminal_events(const String &p_session_id) co
 	if (p_session_id.is_empty()) {
 		return out;
 	}
-	const PackedStringArray dirs = DirAccess::get_directories_at(_asset_root());
+	const PackedStringArray dirs = DirAccess::get_directories_at(asset_root());
 	for (int i = 0; i < dirs.size(); i++) {
 		const Dictionary manifest = SolersPlugin::read_json_file(_manifest_path(dirs[i]));
 		const String status = String(manifest.get("status", String())).to_lower();
@@ -2141,7 +2143,7 @@ bool SolersAssetService::has_active_tasks(const String &p_session_id) const {
 	if (p_session_id.is_empty()) {
 		return false;
 	}
-	const PackedStringArray dirs = DirAccess::get_directories_at(_asset_root());
+	const PackedStringArray dirs = DirAccess::get_directories_at(asset_root());
 	for (int i = 0; i < dirs.size(); i++) {
 		const Dictionary manifest = SolersPlugin::read_json_file(_manifest_path(dirs[i]));
 		if (String(manifest.get("session_id", String())) != p_session_id) {
@@ -2209,7 +2211,33 @@ Dictionary SolersAssetService::status(const Dictionary &p_args) const {
 	return _ok(manifest);
 }
 
+static void _solers_collect_project_assets(EditorFileSystemDirectory *p_directory, HashMap<String, Dictionary> &r_assets) {
+	if (!p_directory) {
+		return;
+	}
+	for (int i = 0; i < p_directory->get_file_count(); i++) {
+		const String path = p_directory->get_file_path(i);
+		if (!path.ends_with(".solers.json")) {
+			continue;
+		}
+		Dictionary sidecar = SolersPlugin::read_json_file(path);
+		const String asset_id = sidecar.get("job_id", String());
+		if (asset_id.is_empty()) {
+			continue;
+		}
+		sidecar["sidecar_file"] = path;
+		r_assets[asset_id] = sidecar;
+	}
+	for (int i = 0; i < p_directory->get_subdir_count(); i++) {
+		_solers_collect_project_assets(p_directory->get_subdir(i), r_assets);
+	}
+}
+
 Array SolersAssetService::list_assets() const {
+	HashMap<String, Dictionary> project_assets;
+	if (EditorFileSystem *filesystem = _solers_editor_filesystem()) {
+		_solers_collect_project_assets(filesystem->get_filesystem(), project_assets);
+	}
 	Array assets;
 	MutexLock lock(asset_index_mutex);
 	PackedStringArray ids;
@@ -2220,7 +2248,15 @@ Array SolersAssetService::list_assets() const {
 	for (int i = ids.size() - 1; i >= 0; i--) {
 		const Dictionary *item = asset_index.getptr(ids[i]);
 		if (item) {
-			assets.push_back(item->duplicate(true));
+			Dictionary current = item->duplicate(true);
+			const Dictionary *project_asset = project_assets.getptr(ids[i]);
+			current["in_current_project"] = project_asset != nullptr;
+			if (project_asset) {
+				current["project_files"] = project_asset->get("files", Array());
+				current["project_entrypoints"] = project_asset->get("entrypoints", Array());
+				current["sidecar_file"] = project_asset->get("sidecar_file", String());
+			}
+			assets.push_back(current);
 		}
 	}
 	return assets;
@@ -2262,7 +2298,7 @@ Dictionary SolersAssetService::stage_input_image(const Ref<Image> &p_image) cons
 	if (bytes.is_empty()) {
 		return _error("IMAGE_ENCODE_FAILED", "The reference image could not be encoded as PNG.");
 	}
-	const String input_dir = _asset_root().path_join(".inputs");
+	const String input_dir = asset_root().path_join(".inputs");
 	if (DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(input_dir)) != OK) {
 		return _error("WRITE_FAILED", "The global Solers input directory could not be created.");
 	}
@@ -2392,18 +2428,20 @@ Dictionary SolersAssetService::start_project_import(const Dictionary &p_args) {
 		requested_map_types = requested_maps;
 	}
 	const Dictionary map_files = manifest.get("map_files", Dictionary());
-	if (String(manifest.get("kind", String())) == "material" && !map_files.is_empty()) {
-		Array available_map_types = map_files.keys();
+	Array available_map_types = map_files.is_empty() ? Array(manifest.get("maps", Array())) : map_files.keys();
+	if (String(manifest.get("kind", String())) == "material" && (!available_map_types.is_empty() || !requested_map_types.is_empty())) {
 		available_map_types.sort();
 		if (requested_map_types.is_empty()) {
 			requested_map_types = available_map_types;
 		}
 		HashSet<String> selected_map_types;
-		declared_import_files.clear();
-		declared_entrypoints.clear();
+		if (!map_files.is_empty()) {
+			declared_import_files.clear();
+			declared_entrypoints.clear();
+		}
 		for (int i = 0; i < requested_map_types.size(); i++) {
 			const String map_type = String(requested_map_types[i]).strip_edges();
-			if (map_type.is_empty() || selected_map_types.has(map_type) || !map_files.has(map_type)) {
+			if (map_type.is_empty() || selected_map_types.has(map_type) || !available_map_types.has(map_type)) {
 				Dictionary error = _error("INVALID_MAP_SELECTION", vformat("map_types contains an empty, duplicate, or unavailable role: %s", map_type));
 				Dictionary data;
 				data["available_map_types"] = available_map_types;
@@ -2411,8 +2449,10 @@ Dictionary SolersAssetService::start_project_import(const Dictionary &p_args) {
 				return error;
 			}
 			selected_map_types.insert(map_type);
-			declared_import_files.push_back(map_files[map_type]);
-			declared_entrypoints.push_back(map_files[map_type]);
+			if (!map_files.is_empty()) {
+				declared_import_files.push_back(map_files[map_type]);
+				declared_entrypoints.push_back(map_files[map_type]);
+			}
 		}
 	}
 	const Dictionary selection = SolersPlugin::project_import_selection(source_files, declared_import_files, declared_entrypoints);
@@ -2814,6 +2854,7 @@ void SolersAssetService::_advance_project_tasks(bool p_allow_new_imports) {
 		sidecar["attribution"] = state.get("attribution", String());
 		sidecar["files"] = data.get("files", Array());
 		sidecar["entrypoints"] = data.get("entrypoints", Array());
+		sidecar["map_types"] = data.get("map_types", Array());
 		sidecar["target_dir"] = data.get("target_dir", state.get("target_dir", String()));
 		if (SolersPlugin *plugin = SolersPluginRegistry::get_plugin(state.get("provider", String()))) {
 			const Array operations = plugin->get_operation_defs();
@@ -2978,12 +3019,12 @@ void SolersAssetService::poll(bool p_allow_new_imports) {
 }
 
 SolersAssetService::SolersAssetService() {
-	const Error root_error = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(_asset_root()));
+	const Error root_error = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(asset_root()));
 	if (root_error != OK) {
-		ERR_PRINT(vformat("Unable to initialize the Solers job staging directory at %s (error %d).", _asset_root(), root_error));
+		ERR_PRINT(vformat("Unable to initialize the Solers job staging directory at %s (error %d).", asset_root(), root_error));
 		return;
 	}
-	const PackedStringArray dirs = DirAccess::get_directories_at(_asset_root());
+	const PackedStringArray dirs = DirAccess::get_directories_at(asset_root());
 	for (int i = 0; i < dirs.size(); i++) {
 		Dictionary manifest = SolersPlugin::read_json_file(_manifest_path(dirs[i]));
 		_index_asset(manifest);

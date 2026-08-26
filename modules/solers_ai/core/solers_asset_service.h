@@ -77,7 +77,6 @@ class SolersAssetService : public Object {
 	Dictionary addon_inspections;
 	SafeNumeric<uint64_t> revision{ 1 };
 
-	static String _asset_root();
 	static String _asset_dir(const String &p_asset_id);
 	static String _manifest_path(const String &p_asset_id);
 	static String _source_dir(const String &p_asset_id);
@@ -109,6 +108,7 @@ protected:
 	static void _bind_methods();
 
 public:
+	static String asset_root();
 	static bool is_trusted_addon(const Dictionary &p_args);
 	Dictionary generate(const Dictionary &p_args);
 	Dictionary generate_for_session(const Dictionary &p_args, const String &p_session_id);

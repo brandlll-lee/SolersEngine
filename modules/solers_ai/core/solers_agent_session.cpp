@@ -3129,8 +3129,13 @@ bool SolersAgentSession::enqueue_background_asset(const Dictionary &p_manifest) 
 			delivery[field] = p_manifest[field];
 		}
 	}
+	Array map_types;
 	if (p_manifest.has("map_files")) {
-		Array map_types = Dictionary(p_manifest["map_files"]).keys();
+		map_types = Dictionary(p_manifest["map_files"]).keys();
+	} else if (p_manifest.get("maps", Variant()).get_type() == Variant::ARRAY) {
+		map_types = p_manifest["maps"];
+	}
+	if (!map_types.is_empty()) {
 		map_types.sort();
 		delivery["map_types"] = map_types;
 	}
