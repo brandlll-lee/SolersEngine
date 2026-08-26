@@ -46,11 +46,15 @@
 #include "scene/resources/3d/primitive_meshes.h"
 #include "scene/resources/animation.h"
 #include "scene/resources/animation_library.h"
+#include "scene/resources/material.h"
 #include "scene/resources/packed_scene.h"
 #include "tests/test_macros.h"
 #include "tests/test_utils.h"
 
 #include "modules/modules_enabled.gen.h"
+#ifdef MODULE_CSG_ENABLED
+#include "modules/csg/csg_shape.h"
+#endif
 #include "modules/solers_ai/core/solers_asset_service.h"
 #include "modules/solers_ai/core/solers_builtin_skills.h"
 #include "modules/solers_ai/core/solers_file_checkpoint.h"
@@ -690,8 +694,8 @@ TEST_CASE("[SolersResourceService] PropertyInfo coercion and animation inventory
 	DirectionalLight3D *light = memnew(DirectionalLight3D);
 	REQUIRE(solers_coerce_property_value(light, SNAME("light_color"), Dictionary({ { "r", 0.1 }, { "g", 0.2 }, { "b", 0.3 }, { "a", 1.0 } }), value, error));
 	CHECK(Color(value).is_equal_approx(Color(0.1, 0.2, 0.3, 1.0)));
-	CHECK_FALSE(solers_coerce_property_value(light, SNAME("light_color"), "#19334c", value, error));
-	CHECK(error.contains("Could not construct Color from String"));
+	REQUIRE(solers_coerce_property_value(light, SNAME("light_color"), "#19334c", value, error));
+	CHECK(Color(value).is_equal_approx(Color("#19334c")));
 	memdelete(light);
 	REQUIRE(solers_coerce_variant_value(PropertyInfo(Variant::VECTOR3, "position"), Dictionary({ { "x", 1.0 }, { "y", 2.0 }, { "z", 3.0 } }), value, error));
 	CHECK(value.get_type() == Variant::VECTOR3);
@@ -759,7 +763,7 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 
 	Dictionary create;
 	create["op"] = "create";
-	create["class_name"] = "Environment";
+	create["class_name"] = "StandardMaterial3D";
 	create["path"] = path;
 	Array create_operations;
 	create_operations.push_back(create);
@@ -775,7 +779,7 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 	query["target"] = "resource";
 	query["path"] = path;
 	Array queried_properties;
-	queried_properties.push_back("background_color");
+	queried_properties.push_back("albedo_color");
 	query["properties"] = queried_properties;
 	context.call_id = "query_resource";
 	const Dictionary observed = registry.call_tool_with_context(SNAME("object.query"), query, context);
@@ -787,7 +791,8 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 	update["path"] = path;
 	expected_resource["sha256"] = String("0000000000000000000000000000000000000000000000000000000000000000");
 	Dictionary properties;
-	properties["background_color"] = solers_summarize_display_value(Color(0.25, 0.5, 0.75, 1.0));
+	properties["albedo_color"] = "#4080bfff";
+	properties["albedo_texture"] = Variant();
 	update["properties"] = properties;
 	Array update_operations;
 	update_operations.push_back(update);
@@ -820,18 +825,19 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 	CHECK(updated_sha.length() == 64);
 	context.call_id = "verify_resource";
 	const Dictionary verified = registry.call_tool_with_context(SNAME("object.query"), query, context);
-	const Dictionary color = Dictionary(Dictionary(Dictionary(verified.get("data", Dictionary())).get("properties", Dictionary())).get("background_color", Dictionary())).get("value", Dictionary());
-	CHECK(Math::is_equal_approx((double)color.get("r", 0.0), 0.25));
-	CHECK(Math::is_equal_approx((double)color.get("b", 0.0), 0.75));
+	const Dictionary color = Dictionary(Dictionary(Dictionary(verified.get("data", Dictionary())).get("properties", Dictionary())).get("albedo_color", Dictionary())).get("value", Dictionary());
+	CHECK(Math::is_equal_approx((double)color.get("r", 0.0), (double)Color("#4080bfff").r));
+	CHECK(Math::is_equal_approx((double)color.get("b", 0.0), (double)Color("#4080bfff").b));
 
-	update_args["expected_state"] = Dictionary({ { "resources", Array({ verified.get("data", Dictionary()) }) } });
-	properties["background_color"] = "Color(1, 0, 0, 1)";
-	update["properties"] = properties;
-	update_operations[0] = update;
-	update_args["operations"] = update_operations;
-	context.call_id = "reject_scalar_color";
-	CHECK_FALSE((bool)registry.call_tool_with_context(SNAME("object.transaction"), update_args, context).get("ok", true));
-	CHECK(FileAccess::get_sha256(path) == updated_sha);
+	const String failure_path = "res://.solers_transaction_failure.tres";
+	cleanup.add(failure_path);
+	Dictionary invalid_create({ { "op", "create" }, { "path", failure_path } });
+	create_args["operations"] = Array({ invalid_create });
+	context.call_id = "resource_failure";
+	const Dictionary failed = registry.call_tool_with_context(SNAME("object.transaction"), create_args, context);
+	CHECK_FALSE((bool)failed.get("ok", true));
+	CHECK(String(Dictionary(failed.get("error", Dictionary())).get("message", String())).contains("class_name is required"));
+	CHECK_FALSE(FileAccess::exists(failure_path));
 
 	Dictionary revert_args;
 	revert_args["reversal_id"] = mutation.get("reversal_id", String());
@@ -1157,6 +1163,50 @@ TEST_CASE("[SolersToolRegistry][SceneTree][GLTF] object.query returns native mes
 	}
 	memdelete(root);
 	CHECK(Dictionary(missing.get("error", Dictionary())).get("code", String()) == "NODE_QUERY_FAILED");
+}
+#endif
+
+#ifdef MODULE_CSG_ENABLED
+TEST_CASE("[SolersToolRegistry][SceneTree][CSG] object.query returns native material mapping facts") {
+	Node3D *root = memnew(Node3D);
+	CSGBox3D *box = memnew(CSGBox3D);
+	box->set_name("MappingContract");
+	root->add_child(box);
+	box->set_owner(root);
+	Ref<StandardMaterial3D> material;
+	material.instantiate();
+	material->set_uv1_scale(Vector3(0.75, 1.25, 2.5));
+	material->set_flag(BaseMaterial3D::FLAG_UV1_USE_TRIPLANAR, true);
+	material->set_flag(BaseMaterial3D::FLAG_UV1_USE_WORLD_TRIPLANAR, true);
+	material->set_uv1_triplanar_blend_sharpness(23.0);
+	material->set_feature(BaseMaterial3D::FEATURE_NORMAL_MAPPING, true);
+	box->set_material(material);
+
+	SolersReflectionService reflection;
+	SolersObservationService observation;
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
+	SolersToolRegistry registry;
+	registry.set_reflection_service(&reflection);
+	registry.set_observation_service(&observation);
+	registry.set_permission_manager(&permissions);
+	registry.register_default_tools();
+	{
+		ScopedEditedSceneRoot edited_scene(SceneTree::get_singleton(), root);
+		const Dictionary args({ { "target", "scene" }, { "node_paths", Array({ "MappingContract" }) } });
+		const Array nodes = Dictionary(registry.call_tool(SNAME("object.query"), args).get("data", Dictionary())).get("nodes", Array());
+		REQUIRE(nodes.size() == 1);
+		const Dictionary facts = Dictionary(nodes[0]).get("material", Dictionary());
+		CHECK(facts.get("source", String()) == "csg_material");
+		const Dictionary uv1 = facts.get("uv1", Dictionary());
+		CHECK(Array(uv1.get("scale", Array())) == Array({ 0.75, 1.25, 2.5 }));
+		CHECK(uv1.get("triplanar", false));
+		CHECK(uv1.get("world_triplanar", false));
+		CHECK(Math::is_equal_approx((double)uv1.get("triplanar_sharpness", 0.0), 23.0));
+		const Dictionary normal = Dictionary(facts.get("channels", Dictionary())).get("normal", Dictionary());
+		CHECK(normal.get("enabled", false));
+	}
+	memdelete(root);
 }
 #endif
 

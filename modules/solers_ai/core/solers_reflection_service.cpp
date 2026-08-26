@@ -2342,6 +2342,29 @@ static Dictionary _solers_particles_facts(GeometryInstance3D *p_particles) {
 	return facts;
 }
 
+static Dictionary _solers_base_material_facts(const Ref<Material> &p_material) {
+	Dictionary facts;
+	facts["active_material"] = solers_summarize_display_value(p_material);
+	BaseMaterial3D *material = Object::cast_to<BaseMaterial3D>(p_material.ptr());
+	if (!material) {
+		return facts;
+	}
+	facts["shading_mode"] = (int)material->get_shading_mode();
+	facts["transparency"] = (int)material->get_transparency();
+	facts["texture_filter"] = (int)material->get_texture_filter();
+	facts["texture_repeat"] = material->get_flag(BaseMaterial3D::FLAG_USE_TEXTURE_REPEAT);
+	Dictionary channels;
+	channels["albedo"] = Dictionary({ { "color", _solers_color_array(material->get_albedo()) }, { "texture", solers_summarize_display_value(material->get_texture(BaseMaterial3D::TEXTURE_ALBEDO)) } });
+	channels["metallic"] = Dictionary({ { "value", material->get_metallic() }, { "texture", solers_summarize_display_value(material->get_texture(BaseMaterial3D::TEXTURE_METALLIC)) } });
+	channels["roughness"] = Dictionary({ { "value", material->get_roughness() }, { "texture", solers_summarize_display_value(material->get_texture(BaseMaterial3D::TEXTURE_ROUGHNESS)) } });
+	channels["normal"] = Dictionary({ { "enabled", material->get_feature(BaseMaterial3D::FEATURE_NORMAL_MAPPING) }, { "scale", material->get_normal_scale() }, { "texture", solers_summarize_display_value(material->get_texture(BaseMaterial3D::TEXTURE_NORMAL)) } });
+	channels["ambient_occlusion"] = Dictionary({ { "enabled", material->get_feature(BaseMaterial3D::FEATURE_AMBIENT_OCCLUSION) }, { "light_affect", material->get_ao_light_affect() }, { "texture", solers_summarize_display_value(material->get_texture(BaseMaterial3D::TEXTURE_AMBIENT_OCCLUSION)) } });
+	channels["height"] = Dictionary({ { "enabled", material->get_feature(BaseMaterial3D::FEATURE_HEIGHT_MAPPING) }, { "scale", material->get_heightmap_scale() }, { "texture", solers_summarize_display_value(material->get_texture(BaseMaterial3D::TEXTURE_HEIGHTMAP)) } });
+	facts["channels"] = channels;
+	facts["uv1"] = Dictionary({ { "scale", _solers_vector3_array(material->get_uv1_scale()) }, { "offset", _solers_vector3_array(material->get_uv1_offset()) }, { "triplanar", material->get_flag(BaseMaterial3D::FLAG_UV1_USE_TRIPLANAR) }, { "world_triplanar", material->get_flag(BaseMaterial3D::FLAG_UV1_USE_WORLD_TRIPLANAR) }, { "triplanar_sharpness", material->get_uv1_triplanar_blend_sharpness() } });
+	return facts;
+}
+
 static Dictionary _solers_material_facts(MeshInstance3D *p_mesh_instance) {
 	Dictionary facts;
 	const Ref<Mesh> mesh = p_mesh_instance->get_mesh();
@@ -2355,16 +2378,8 @@ static Dictionary _solers_material_facts(MeshInstance3D *p_mesh_instance) {
 		surface["index"] = i;
 		String source;
 		const Ref<Material> active = _solers_resolved_material(p_mesh_instance, i, &source);
-		surface["active_material"] = solers_summarize_display_value(active);
 		surface["source"] = source;
-		if (BaseMaterial3D *base_material = Object::cast_to<BaseMaterial3D>(active.ptr())) {
-			surface["shading_mode"] = (int)base_material->get_shading_mode();
-			surface["albedo"] = _solers_color_array(base_material->get_albedo());
-			surface["albedo_texture"] = solers_summarize_display_value(base_material->get_texture(BaseMaterial3D::TEXTURE_ALBEDO));
-			surface["metallic"] = base_material->get_metallic();
-			surface["roughness"] = base_material->get_roughness();
-			surface["transparency"] = (int)base_material->get_transparency();
-		}
+		surface.merge(_solers_base_material_facts(active), true);
 		surfaces.push_back(surface);
 	}
 	facts["surfaces"] = surfaces;
@@ -2401,17 +2416,20 @@ Dictionary SolersReflectionService::_subsystem_facts(Node *p_node) const {
 		csg_facts["collision_enabled"] = csg->is_using_collision();
 #endif
 		facts["csg"] = csg_facts;
-		Dictionary material;
+		Ref<Material> shape_material;
 		const Variant csg_material = ClassDB::has_property(p_node->get_class(), SNAME("material")) ? p_node->get("material") : Variant();
 		if (csg_material.get_type() == Variant::OBJECT) {
-			material["csg_material"] = solers_summarize_display_value(csg_material);
+			shape_material = csg_material;
 		}
+		Ref<Material> material_override;
 		if (GeometryInstance3D *geometry = Object::cast_to<GeometryInstance3D>(p_node)) {
-			material["material_override"] = solers_summarize_display_value(geometry->get_material_override());
-			const bool has_override = geometry->get_material_override().is_valid();
-			const bool has_csg = csg_material.get_type() == Variant::OBJECT && ((Ref<Resource>)csg_material).is_valid();
-			material["resolved"] = has_override ? "material_override" : (has_csg ? "csg_material" : "none");
+			material_override = geometry->get_material_override();
 		}
+		const Ref<Material> active = material_override.is_valid() ? material_override : shape_material;
+		Dictionary material = _solers_base_material_facts(active);
+		material["csg_material"] = solers_summarize_display_value(shape_material);
+		material["material_override"] = solers_summarize_display_value(material_override);
+		material["source"] = material_override.is_valid() ? "material_override" : (shape_material.is_valid() ? "csg_material" : "none");
 		facts["material"] = material;
 #endif
 	}

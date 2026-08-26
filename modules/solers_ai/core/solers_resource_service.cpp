@@ -401,9 +401,6 @@ static bool _solers_construct_variant_value(Variant::Type p_type, const Variant 
 		return _solers_construct_variant(p_type, one_arg, r_out);
 	}
 	if (p_value.get_type() != Variant::DICTIONARY) {
-		if (Variant::get_member_count(p_type) > 0) {
-			return false;
-		}
 		Array one_arg;
 		one_arg.push_back(p_value);
 		return _solers_construct_variant(p_type, one_arg, r_out);
@@ -589,6 +586,9 @@ static bool _solers_coerce_value(const PropertyInfo &p_info, const Variant &p_va
 }
 
 static bool _solers_property_matches(const Variant &p_actual, const Variant &p_expected) {
+	if (p_actual.is_null() && p_expected.is_null()) {
+		return true;
+	}
 	if ((p_actual.get_type() == Variant::FLOAT || p_actual.get_type() == Variant::INT) &&
 			(p_expected.get_type() == Variant::FLOAT || p_expected.get_type() == Variant::INT)) {
 		return Math::is_equal_approx((double)p_actual, (double)p_expected);
