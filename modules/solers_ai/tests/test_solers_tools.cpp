@@ -38,6 +38,8 @@
 #include "core/io/resource_loader.h"
 #include "core/io/resource_saver.h"
 #include "editor/editor_node.h"
+#include "editor/editor_undo_redo_manager.h"
+#include "scene/3d/camera_3d.h"
 #include "scene/3d/light_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/animation/animation_player.h"
@@ -1348,6 +1350,68 @@ TEST_CASE("[SolersToolRegistry] scene object transaction access follows its nati
 	CHECK(Dictionary(instantiate_access[0]).get("mode", String()) == "read");
 	CHECK(Dictionary(instantiate_access[0]).get("key", String()) == "project:res://props/tree.glb");
 	CHECK(Dictionary(instantiate_access[1]).get("key", String()) == "scene:Environment");
+}
+
+TEST_CASE("[SolersToolRegistry][SceneTree][Editor] node updates are atomic native actions") {
+	REQUIRE(EditorNode::get_singleton() != nullptr);
+	EditorData &editor_data = EditorNode::get_editor_data();
+	const int previous_scene = editor_data.get_edited_scene();
+	const int scene = editor_data.add_edited_scene(-1);
+	editor_data.set_edited_scene(scene);
+	Node3D *root = memnew(Node3D);
+	Camera3D *camera = memnew(Camera3D);
+	camera->set_name("ContractCamera");
+	root->add_child(camera);
+	camera->set_owner(root);
+	editor_data.set_edited_scene_root(root);
+	EditorUndoRedoManager *manager = EditorUndoRedoManager::get_singleton();
+	REQUIRE(manager != nullptr);
+	const int history_id = editor_data.get_current_edited_scene_history_id();
+	UndoRedo *history = manager->get_or_create_history(history_id).undo_redo;
+	SolersReflectionService reflection;
+
+	{
+		ScopedEditedSceneRoot edited_scene(SceneTree::get_singleton(), root);
+		const uint64_t before = history->get_version();
+		const Dictionary invalid = reflection.update_node(Dictionary({ { "node_path", "ContractCamera" }, { "properties", Dictionary({ { "position", Vector3(1, 2, 3) }, { "missing_property", 1 } }) } }));
+		CHECK_FALSE((bool)invalid.get("ok", true));
+		CHECK(camera->get_position() == Vector3());
+		CHECK(history->get_version() == before);
+
+		const Dictionary unchanged = reflection.update_node(Dictionary({ { "node_path", "ContractCamera" }, { "properties", Dictionary({ { "position", Vector3() } }) } }));
+		CHECK_FALSE((bool)unchanged.get("ok", true));
+		CHECK(Dictionary(unchanged.get("error", Dictionary())).get("code", String()) == "STATE_ALREADY_SATISFIED");
+
+		const Dictionary updated = reflection.update_node(Dictionary({ { "node_path", "ContractCamera" }, { "properties", Dictionary({ { "position", Vector3(1, 2, 3) }, { "current", true } }) } }));
+		REQUIRE((bool)updated.get("ok", false));
+		CHECK(history->get_version() == before + 1);
+		CHECK(camera->get_position() == Vector3(1, 2, 3));
+		CHECK(camera->is_current());
+		REQUIRE(manager->undo_history(history_id));
+		CHECK(camera->get_position() == Vector3());
+		CHECK_FALSE(camera->is_current());
+	}
+	editor_data.remove_scene(scene);
+	if (previous_scene >= 0) {
+		editor_data.set_edited_scene(previous_scene);
+	}
+}
+
+TEST_CASE("[SolersToolRegistry][Editor] successful editor tools must commit one native action") {
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_SCENE, true);
+	SolersToolRegistry registry;
+	registry.set_permission_manager(&permissions);
+	SolersToolCapability capability;
+	capability.permission = SolersPermissionManager::PERMISSION_EDIT_SCENE;
+	capability.mutation_domains = SolersToolMutationDomain::EDITOR;
+	registry.register_tool(memnew(SolersFunctionTool("synthetic.editor", "Synthetic editor contract.", empty_tool_schema(), SolersToolExposure::DIRECT, capability,
+			[](const SolersToolContext &, const Dictionary &) { return Dictionary({ { "ok", true }, { "data", Dictionary() } }); })));
+	const Dictionary result = registry.call_tool(SNAME("synthetic.editor"), Dictionary());
+	CHECK_FALSE((bool)result.get("ok", true));
+	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "TOOL_UNDO_CONTRACT_VIOLATION");
+	const Dictionary facts = result.get("data", Dictionary());
+	CHECK(facts.get("version_before", Variant()) == facts.get("version_after", Variant()));
 }
 
 TEST_CASE("[SolersToolRegistry][SceneTree][Editor] scene.open follows EditorNode scene state") {

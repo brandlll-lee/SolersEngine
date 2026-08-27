@@ -1047,9 +1047,11 @@ Dictionary SolersToolRegistry::_finalize_prepared_result(SolersPreparedToolCall 
 		const uint64_t version_after = undo_redo ? undo_redo->get_version() : version_before;
 		editor_changed = version_after != version_before;
 		changed = changed || editor_changed;
-		if (editor_changed && version_after != version_before + 1) {
+		if (version_after != version_before + 1) {
+			Dictionary failure = _error("TOOL_UNDO_CONTRACT_VIOLATION", vformat("Tool '%s' must commit exactly one UndoRedo action.", r_call.name), false);
+			failure["data"] = Dictionary({ { "history_id", history_id }, { "version_before", (int64_t)version_before }, { "version_after", (int64_t)version_after }, { "scene_before", record.get("scene_state_before", Dictionary()) }, { "scene_after", _solers_scene_state_receipt() } });
 			rollback();
-			return _tool_result_envelope(_error("TOOL_UNDO_CONTRACT_VIOLATION", vformat("Tool '%s' must commit exactly one UndoRedo action.", r_call.name), false), r_call.context.call_id);
+			return _tool_result_envelope(failure, r_call.context.call_id);
 		}
 		record["version_after"] = (int64_t)version_after;
 	}

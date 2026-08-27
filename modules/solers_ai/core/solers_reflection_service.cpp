@@ -57,7 +57,6 @@
 #include "modules/csg/csg_shape.h"
 #endif
 #include "scene/3d/bone_attachment_3d.h"
-#include "scene/3d/camera_3d.h"
 #include "scene/3d/cpu_particles_3d.h"
 #include "scene/3d/gpu_particles_3d.h"
 #include "scene/3d/light_3d.h"
@@ -335,11 +334,6 @@ bool SolersReflectionService::_apply_initial_properties(Node *p_node, const Dict
 			return false;
 		}
 		r_applied[property] = solers_summarize_display_value(actual);
-	}
-	if (r_applied.has("current") && bool(p_node->get("current"))) {
-		if (Camera3D *camera = Object::cast_to<Camera3D>(p_node)) {
-			camera->make_current();
-		}
 	}
 	return true;
 }
@@ -661,12 +655,20 @@ Dictionary SolersReflectionService::update_node(const Dictionary &p_args) {
 	String error;
 	Node *node = _resolve_node(node_path, error);
 	if (!node) {
-		return _error("NODE_NOT_FOUND", error);
+		Dictionary result = _error("NODE_NOT_FOUND", error);
+		Dictionary data;
+		data["requested_node_path"] = node_path;
+		if (Node *root = SceneTree::get_singleton()->get_edited_scene_root()) {
+			data["edited_root"] = solers_native_object_handle(root);
+			data["query"] = Dictionary({ { "target", "scene" }, { "node_paths", Array({ ".", node_path }) } });
+		}
+		result["data"] = data;
+		return result;
 	}
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
 	ERR_FAIL_NULL_V(undo_redo, _error("UNDO_REDO_UNAVAILABLE", "EditorUndoRedoManager is not available.", false));
 	const Dictionary properties = properties_value;
-	Dictionary applied;
+	Array changes;
 	for (const Variant *key = properties.next(nullptr); key; key = properties.next(key)) {
 		const String property = String(*key).strip_edges().replace(":", "/");
 		Variant old_value;
@@ -675,21 +677,22 @@ Dictionary SolersReflectionService::update_node(const Dictionary &p_args) {
 		if (!_prepare_property_change(node, property, properties[*key], old_value, value, indexed_path, error)) {
 			return _error("INVALID_PROPERTY_VALUE", error);
 		}
-		bool valid = false;
-		if (indexed_path.is_empty()) {
-			node->set(StringName(property), value, &valid);
-		} else {
-			node->set_indexed(indexed_path.get_subnames(), value, &valid);
+		if (old_value == value) {
+			continue;
 		}
-		const Variant actual = indexed_path.is_empty() ? node->get(StringName(property)) : node->get_indexed(indexed_path.get_subnames());
-		if (!valid || (value.get_type() == Variant::OBJECT && actual != value)) {
-			if (indexed_path.is_empty()) {
-				node->set(StringName(property), old_value);
-			} else {
-				node->set_indexed(indexed_path.get_subnames(), old_value);
-			}
-			return _error("PROPERTY_SET_FAILED", vformat("Setting property '%s' failed on %s.", property, node->get_class()));
-		}
+		changes.push_back(Dictionary({ { "property", property }, { "old_value", old_value }, { "value", value }, { "indexed_path", indexed_path } }));
+	}
+	if (changes.is_empty()) {
+		return _error("STATE_ALREADY_SATISFIED", "All requested properties already have the authoritative values.");
+	}
+
+	undo_redo->create_action(vformat("Solers: Update %s", node->get_name()), UndoRedo::MERGE_DISABLE, node);
+	for (const Variant &item : changes) {
+		const Dictionary change = item;
+		const String property = change.get("property", String());
+		const Variant value = change.get("value", Variant());
+		const Variant old_value = change.get("old_value", Variant());
+		const NodePath indexed_path = change.get("indexed_path", NodePath());
 		if (indexed_path.is_empty()) {
 			undo_redo->add_do_property(node, StringName(property), value);
 			undo_redo->add_undo_property(node, StringName(property), old_value);
@@ -697,10 +700,16 @@ Dictionary SolersReflectionService::update_node(const Dictionary &p_args) {
 			undo_redo->add_do_method(node, "set_indexed", indexed_path, value);
 			undo_redo->add_undo_method(node, "set_indexed", indexed_path, old_value);
 		}
+	}
+	undo_redo->commit_action();
+
+	Dictionary applied;
+	for (const Variant &item : changes) {
+		const Dictionary change = item;
+		const String property = change.get("property", String());
+		const NodePath indexed_path = change.get("indexed_path", NodePath());
+		const Variant actual = indexed_path.is_empty() ? node->get(StringName(property)) : node->get_indexed(indexed_path.get_subnames());
 		applied[property] = solers_summarize_display_value(actual);
-		if (property == "current" && value && Object::cast_to<Camera3D>(node)) {
-			Object::cast_to<Camera3D>(node)->make_current();
-		}
 	}
 	String safe_path;
 	_safe_node_path(node, safe_path);
