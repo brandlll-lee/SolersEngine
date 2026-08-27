@@ -1060,7 +1060,7 @@ String SolersAgentSession::_default_system_prompt() const {
 			"Operating contract:\n"
 			"- Prefer the smallest coherent native change. Inspect live state before editing; keep scene data, input, camera, movement, and animation under explicit native owners instead of growing one catch-all script.\n"
 			"- Digests in [Selected Solers context] and Current engine context are authoritative bounded observations. Use tools only for incomplete or live facts.\n"
-			"- Core tools are available. Use tool.search to discover and unlock deferred built-in, plugin, connector, or MCP capabilities. Skills provide knowledge and never activate capabilities.\n"
+			"- Core tools are available. Use tool.search to discover deferred tools and transaction capabilities; deferred matches unlock as tools, transaction matches execute through object.transaction. Skills provide knowledge and never activate capabilities.\n"
 			"- Inspect unfamiliar classes with engine.describe; ClassDB property metadata and native documentation are the authority for names, types, units, and usage.\n"
 			"- Read live state with object.query. Edit scenes/resources with object.transaction and native preconditions. Script replacement requires the latest file SHA and exact bytes; use script.compute for isolated bulk generation with declared outputs.\n"
 			"- Scene transactions are one EditorUndoRedo action and Solers persists successful live-scene changes. Resource transactions are file-checkpointed. Tool results carry native state receipts and persisted file hashes; do not issue a separate save.\n"

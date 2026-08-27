@@ -2433,17 +2433,18 @@ void SolersToolRegistry::_register_search_tools() {
 	if (tools.has(SNAME("tool.search"))) {
 		return;
 	}
-	bool has_deferred = false;
+	bool has_searchable_tool = false;
 	for (const KeyValue<StringName, SolersTool *> &E : tools) {
-		if (E.value->exposure() == SolersToolExposure::DEFERRED) {
-			has_deferred = true;
+		const SolersToolExposure exposure = E.value->exposure();
+		if (exposure == SolersToolExposure::DEFERRED || exposure == SolersToolExposure::TRANSACTION) {
+			has_searchable_tool = true;
 			break;
 		}
 	}
-	if (!has_deferred) {
+	if (!has_searchable_tool) {
 		return;
 	}
-	_add_observe_exposed("tool.search", "Search deferred built-in, plugin, Connector, or MCP capabilities and unlock exact matches for this turn.", R"({"type":"object","properties":{"query":{"type":"string","minLength":1,"description":"Exact tool id, namespace, or capability terms."},"max_results":{"type":"integer","minimum":1,"maximum":50,"description":"Maximum tools to return. Default 10."}},"required":["query"],"additionalProperties":false})", SolersToolExposure::DIRECT, [this](const SolersToolContext &, const Dictionary &a) {
+	_add_observe_exposed("tool.search", "Search deferred tools and transaction capabilities; unlock deferred matches for this turn.", R"({"type":"object","properties":{"query":{"type":"string","minLength":1,"description":"Exact tool id, namespace, or capability terms."},"max_results":{"type":"integer","minimum":1,"maximum":50,"description":"Maximum tools to return. Default 10."}},"required":["query"],"additionalProperties":false})", SolersToolExposure::DIRECT, [this](const SolersToolContext &, const Dictionary &a) {
 				const String query = String(a.get("query", String())).strip_edges();
 				const int max_results = CLAMP((int)a.get("max_results", 10), 1, 50);
 				Array matches;
@@ -2451,7 +2452,8 @@ void SolersToolRegistry::_register_search_tools() {
 				Vector<StringName> names;
 				HashSet<StringName> selected;
 				for (const KeyValue<StringName, SolersTool *> &E : tools) {
-					if (E.value->exposure() != SolersToolExposure::DEFERRED) {
+					const SolersToolExposure exposure = E.value->exposure();
+					if (exposure != SolersToolExposure::DEFERRED && exposure != SolersToolExposure::TRANSACTION) {
 						continue;
 					}
 					if (String(E.key) == query) {
@@ -2480,7 +2482,10 @@ void SolersToolRegistry::_register_search_tools() {
 				}
 				PackedStringArray unlocked;
 				for (int i = 0; i < matches.size(); i++) {
-					unlocked.push_back(Dictionary(matches[i]).get("name", String()));
+					const Dictionary tool = matches[i];
+					if (String(tool.get("exposure", String())) == "deferred") {
+						unlocked.push_back(tool.get("name", String()));
+					}
 				}
 				Dictionary data;
 				data["tools"] = matches;
@@ -2491,9 +2496,10 @@ void SolersToolRegistry::_register_search_tools() {
 
 void SolersToolRegistry::register_tool(SolersTool *p_tool) {
 	ERR_FAIL_NULL(p_tool);
-	const bool deferred = p_tool->exposure() == SolersToolExposure::DEFERRED;
+	const SolersToolExposure exposure = p_tool->exposure();
+	const bool searchable = exposure == SolersToolExposure::DEFERRED || exposure == SolersToolExposure::TRANSACTION;
 	_register(p_tool);
-	if (deferred) {
+	if (searchable) {
 		_register_search_tools();
 	}
 	_rebuild_tool_catalog();

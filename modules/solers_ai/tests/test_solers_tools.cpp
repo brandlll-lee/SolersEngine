@@ -130,7 +130,7 @@ void check_portable_tool_schema(const Dictionary &p_schema) {
 	CHECK_FALSE(p_schema.has("allOf"));
 }
 
-Dictionary search_deferred_tools(SolersToolRegistry &p_registry, const String &p_query, int p_max_results = 10) {
+Dictionary search_tools(SolersToolRegistry &p_registry, const String &p_query, int p_max_results = 10) {
 	Dictionary args;
 	args["query"] = p_query;
 	args["max_results"] = p_max_results;
@@ -1080,11 +1080,27 @@ TEST_CASE("[SolersToolRegistry] tool.search uses Godot fuzzy fallback for extern
 				result["ok"] = true;
 				return result;
 			})));
+	SolersToolCapability transaction_cap;
+	transaction_cap.permission = SolersPermissionManager::PERMISSION_EDIT_FILES;
+	transaction_cap.mutation_domains = SolersToolMutationDomain::FILES;
+	registry.register_tool(memnew(SolersFunctionTool(
+			StringName("synthetic.transaction"),
+			"Transaction fixture indexed by metadataquartz.",
+			empty_tool_schema(), SolersToolExposure::TRANSACTION, transaction_cap,
+			[](const SolersToolContext &, const Dictionary &) {
+				Dictionary result;
+				result["ok"] = true;
+				return result;
+			})));
 
-	Dictionary result = search_deferred_tools(registry, "metadataquartz", 5);
+	Dictionary result = search_tools(registry, "metadataquartz", 5);
 	REQUIRE((bool)result.get("ok", false));
 	CHECK(search_result_has_tool(result, "synthetic.opaque"));
-	result = search_deferred_tools(registry, "synthetic.needle", 1);
+	CHECK(search_result_has_tool(result, "synthetic.transaction"));
+	const Array unlocked = Dictionary(result.get("data", Dictionary())).get("unlock_tools", Array());
+	CHECK(unlocked.has("synthetic.opaque"));
+	CHECK_FALSE(unlocked.has("synthetic.transaction"));
+	result = search_tools(registry, "synthetic.needle", 1);
 	REQUIRE((bool)result.get("ok", false));
 	const Array matches = Dictionary(result.get("data", Dictionary())).get("tools", Array());
 	REQUIRE(matches.size() == 1);

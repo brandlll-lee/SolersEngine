@@ -66,8 +66,8 @@ enum class SolersToolExposure {
 	// Registered for later discovery (via tool_search) but omitted from the
 	// initial list. Keeps the long tail out of the prompt until needed.
 	DEFERRED,
-	// Discoverable through object/query capability facts and executable only
-	// inside object.transaction.
+	// Discoverable through object.query, engine.describe, and tool.search
+	// capability facts; executable only inside object.transaction.
 	TRANSACTION,
 	// Dispatchable but never shown to the model.
 	HIDDEN,
