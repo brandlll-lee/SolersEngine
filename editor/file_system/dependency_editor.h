@@ -36,21 +36,11 @@ class EditorFileDialog;
 class EditorFileSystemDirectory;
 class ItemList;
 class PopupMenu;
-class Resource;
 class Tree;
 class TreeItem;
 class VBoxContainer;
 class LineEdit;
 class MenuButton;
-
-struct EditorFileOwner {
-	String path;
-	String type;
-};
-
-Vector<EditorFileOwner> editor_file_owners(const String &p_path);
-LocalVector<StringName> editor_file_path_project_settings();
-Error editor_remove_project_file(const String &p_path, const LocalVector<StringName> &p_project_settings, Ref<Resource> &r_resource);
 
 enum class DependencyEditorSortBy {
 	TYPE,

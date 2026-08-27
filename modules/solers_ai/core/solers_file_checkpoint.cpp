@@ -36,14 +36,17 @@
 #include "core/io/json.h"
 #include "core/io/resource_loader.h"
 #include "core/object/class_db.h"
+#include "core/os/os.h"
 #include "core/os/time.h"
 #include "editor/file_system/editor_file_system.h"
+#include "editor/settings/editor_settings.h"
 
 #include "modules/solers_ai/core/solers_action_timeline.h"
 
 void SolersFileCheckpoint::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_action_timeline", "action_timeline"), &SolersFileCheckpoint::set_action_timeline);
 	ClassDB::bind_method(D_METHOD("create_checkpoint", "path", "reason"), &SolersFileCheckpoint::create_checkpoint, DEFVAL(String()));
+	ClassDB::bind_method(D_METHOD("remove_project_file", "path"), &SolersFileCheckpoint::remove_project_file);
 	ClassDB::bind_method(D_METHOD("restore_checkpoint_state", "checkpoint"), &SolersFileCheckpoint::restore_checkpoint_state);
 	ClassDB::bind_method(D_METHOD("get_path_state", "path"), &SolersFileCheckpoint::get_path_state);
 }
@@ -124,6 +127,20 @@ static void _collect_directory_state(const String &p_path, const String &p_base,
 	directory->list_dir_end();
 }
 
+static void _collect_file_owners(EditorFileSystemDirectory *p_directory, const String &p_path, Array &r_owners) {
+	if (!p_directory) {
+		return;
+	}
+	for (int i = 0; i < p_directory->get_subdir_count(); i++) {
+		_collect_file_owners(p_directory->get_subdir(i), p_path, r_owners);
+	}
+	for (int i = 0; i < p_directory->get_file_count(); i++) {
+		if (p_directory->get_file_deps(i).has(p_path)) {
+			r_owners.push_back(Dictionary({ { "path", p_directory->get_file_path(i) }, { "type", p_directory->get_file_type(i) } }));
+		}
+	}
+}
+
 Dictionary SolersFileCheckpoint::get_path_state(const String &p_path) const {
 	String path;
 	String error;
@@ -152,6 +169,8 @@ Dictionary SolersFileCheckpoint::create_checkpoint(const String &p_path, const S
 		return _error("INVALID_PATH", path_error);
 	}
 	Dictionary data = get_path_state(res_path).get("data", Dictionary());
+	EditorSettings *editor_settings = EditorSettings::get_singleton();
+	data["favorite"] = editor_settings && editor_settings->get_favorites().has(res_path);
 	Dictionary project_settings;
 	List<PropertyInfo> properties;
 	ProjectSettings::get_singleton()->get_property_list(&properties);
@@ -203,6 +222,58 @@ Dictionary SolersFileCheckpoint::create_checkpoint(const String &p_path, const S
 	}
 
 	return _ok(data);
+}
+
+Dictionary SolersFileCheckpoint::remove_project_file(const String &p_path) {
+	String path;
+	String path_error;
+	if (!_normalize_project_path(p_path, path, path_error)) {
+		return _error("INVALID_PATH", path_error);
+	}
+	if (!FileAccess::exists(path) || DirAccess::exists(path)) {
+		return _error("FILE_NOT_FOUND", vformat("Project file does not exist: %s", path));
+	}
+	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
+	if (!filesystem || !filesystem->get_filesystem() || filesystem->is_scanning()) {
+		return _error("EDITOR_FILESYSTEM_UNAVAILABLE", "EditorFileSystem is not ready.");
+	}
+	Array owners;
+	_collect_file_owners(filesystem->get_filesystem(), path, owners);
+	if (!owners.is_empty()) {
+		Dictionary result = _error("FILE_HAS_OWNERS", vformat("Project file is referenced by %d resource(s).", owners.size()));
+		result["data"] = Dictionary({ { "path", path }, { "owners", owners } });
+		return result;
+	}
+	const Error remove_error = OS::get_singleton()->move_to_trash(ProjectSettings::get_singleton()->globalize_path(path));
+	if (remove_error != OK || FileAccess::exists(path)) {
+		Dictionary result = _error("FILE_REMOVE_FAILED", vformat("Godot could not move '%s' to the system trash (error %d).", path, remove_error));
+		result["data"] = Dictionary({ { "path", path }, { "native_error", remove_error } });
+		return result;
+	}
+	if (ResourceCache::has(path)) {
+		ResourceCache::get_ref(path)->set_path("");
+	}
+	bool settings_changed = false;
+	List<PropertyInfo> properties;
+	ProjectSettings::get_singleton()->get_property_list(&properties);
+	for (const PropertyInfo &property : properties) {
+		if (property.type == Variant::STRING && property.hint == PROPERTY_HINT_FILE && ResourceUID::ensure_path(ProjectSettings::get_singleton()->get(property.name)) == path) {
+			ProjectSettings::get_singleton()->set(property.name, "");
+			settings_changed = true;
+		}
+	}
+	if (settings_changed) {
+		ProjectSettings::get_singleton()->save();
+	}
+	EditorSettings *editor_settings = EditorSettings::get_singleton();
+	if (editor_settings) {
+		Vector<String> favorites = editor_settings->get_favorites();
+		if (favorites.erase(path)) {
+			editor_settings->set_favorites(favorites);
+		}
+	}
+	filesystem->update_file(path);
+	return _ok(Dictionary({ { "path", path }, { "owners", owners }, { "native_error", remove_error }, { "authored_state_changed", true } }));
 }
 
 Dictionary SolersFileCheckpoint::restore_checkpoint_state(const Dictionary &p_checkpoint) {
@@ -277,6 +348,14 @@ Dictionary SolersFileCheckpoint::restore_checkpoint_state(const Dictionary &p_ch
 	Resource *resource = Object::cast_to<Resource>(ObjectDB::get_instance(ObjectID((uint64_t)(int64_t)p_checkpoint.get("resource_object_id", 0))));
 	if (resource && resource->get_path().is_empty()) {
 		resource->set_path(normalized_path);
+	}
+	EditorSettings *editor_settings = EditorSettings::get_singleton();
+	if ((bool)p_checkpoint.get("favorite", false) && editor_settings) {
+		Vector<String> favorites = editor_settings->get_favorites();
+		if (!favorites.has(normalized_path)) {
+			favorites.push_back(normalized_path);
+			editor_settings->set_favorites(favorites);
+		}
 	}
 
 	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();

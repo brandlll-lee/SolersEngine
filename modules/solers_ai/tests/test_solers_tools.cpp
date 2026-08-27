@@ -39,6 +39,7 @@
 #include "core/io/resource_saver.h"
 #include "editor/editor_node.h"
 #include "editor/editor_undo_redo_manager.h"
+#include "editor/file_system/editor_file_system.h"
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/light_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
@@ -965,6 +966,37 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 	INFO(JSON::stringify(reverted));
 	REQUIRE((bool)reverted.get("ok", false));
 	CHECK(FileAccess::get_sha256(path) == sha);
+
+	const String owner_path = "res://.solers_file_owner_contract.tres";
+	cleanup.add(owner_path);
+	Ref<StandardMaterial3D> target = ResourceLoader::load(path);
+	Ref<StandardMaterial3D> owner;
+	owner.instantiate();
+	owner->set_next_pass(target);
+	REQUIRE(ResourceSaver::save(owner, owner_path) == OK);
+	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
+	REQUIRE(filesystem != nullptr);
+	filesystem->update_file(path);
+	filesystem->update_file(owner_path);
+	const Dictionary owned = checkpoints.remove_project_file(path);
+	CHECK_FALSE((bool)owned.get("ok", true));
+	CHECK(Dictionary(owned.get("error", Dictionary())).get("code", String()) == "FILE_HAS_OWNERS");
+	CHECK(FileAccess::exists(path));
+
+	owner.unref();
+	REQUIRE(DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(owner_path)) == OK);
+	filesystem->update_file(owner_path);
+	const Dictionary checkpoint = checkpoints.create_checkpoint(path, "file removal contract").get("data", Dictionary());
+	const Dictionary removed = checkpoints.remove_project_file(path);
+	CHECK((bool)removed.get("ok", false));
+	if ((bool)removed.get("ok", false)) {
+		CHECK_FALSE(FileAccess::exists(path));
+		CHECK(target->get_path().is_empty());
+		CHECK((bool)checkpoints.restore_checkpoint_state(checkpoint).get("ok", false));
+		CHECK(FileAccess::get_sha256(path) == sha);
+		CHECK(target->get_path() == path);
+		CHECK(filesystem->find_file(path, nullptr) != nullptr);
+	}
 }
 
 TEST_CASE("[SolersToolRegistry] session rewind stops at the recorded irreversible boundary") {

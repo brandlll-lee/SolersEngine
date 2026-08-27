@@ -47,7 +47,6 @@
 #include "editor/editor_interface.h"
 #include "editor/editor_node.h"
 #include "editor/editor_undo_redo_manager.h"
-#include "editor/file_system/dependency_editor.h"
 #include "editor/run/editor_run_bar.h"
 #include "editor/run/game_view_plugin.h"
 #include "scene/main/node.h"
@@ -2401,22 +2400,7 @@ void SolersToolRegistry::_register_reflection_tools() {
 		_add_transaction("resource.update", "Set typed Resource properties and persist them through ResourceSaver.", R"({"type":"object","properties":{"path":{"type":"string","pattern":"^res://"},"properties":{"type":"object","minProperties":1},"type_hint":{"type":"string"}},"required":["path","properties"],"additionalProperties":false})", SolersPermissionManager::PERMISSION_EDIT_FILES, SolersToolMutationDomain::FILES, [resources](const SolersToolContext &, const Dictionary &a) { return resources->set_resource_property(a); }, _access_by_arg("write", "project:", "path"), SNAME("Resource"));
 	}
 	_add_transaction("project.file.remove", "Move one inspected project file through Godot's dependency-aware editor lifecycle and system trash.", R"({"type":"object","properties":{"path":{"type":"string","pattern":"^res://"}},"required":["path"],"additionalProperties":false})", SolersPermissionManager::PERMISSION_EDIT_FILES, SolersToolMutationDomain::FILES, [this](const SolersToolContext &, const Dictionary &a) {
-			const String path = a.get("path", String());
-			if (!FileAccess::exists(path)) {
-				return _error("FILE_NOT_FOUND", vformat("Project file does not exist: %s", path));
-			}
-			Array owners;
-			for (const EditorFileOwner &owner : editor_file_owners(path)) {
-				owners.push_back(Dictionary({ { "path", owner.path }, { "type", owner.type } }));
-			}
-			Ref<Resource> resource;
-			const Error error = editor_remove_project_file(path, editor_file_path_project_settings(), resource);
-			if (error != OK || FileAccess::exists(path)) {
-				Dictionary failure = _error("FILE_REMOVE_FAILED", vformat("Godot could not move '%s' to the system trash (error %d).", path, error));
-				failure["data"] = Dictionary({ { "path", path }, { "native_error", error } });
-				return failure;
-			}
-			return _ok(Dictionary({ { "path", path }, { "owners", owners }, { "authored_state_changed", true } })); }, _access_by_arg("write", "project:", "path"));
+			return file_checkpoint ? file_checkpoint->remove_project_file(a.get("path", String())) : _error("FILE_CHECKPOINT_UNAVAILABLE", "File checkpoint service is unavailable.", false); }, _access_by_arg("write", "project:", "path"));
 	SolersToolCapability transaction_capability;
 	transaction_capability.permission = edit_scene;
 	transaction_capability.permission_resolver = [this](const Dictionary &a) {

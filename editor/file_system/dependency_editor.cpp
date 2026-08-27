@@ -504,32 +504,31 @@ void DependencyEditorOwners::_file_option(int p_option) {
 	}
 }
 
-static void _collect_file_owners(EditorFileSystemDirectory *p_directory, const String &p_path, Vector<EditorFileOwner> &r_owners) {
-	if (!p_directory) {
+void DependencyEditorOwners::_fill_owners(EditorFileSystemDirectory *efsd) {
+	if (!efsd) {
 		return;
 	}
-	for (int i = 0; i < p_directory->get_subdir_count(); i++) {
-		_collect_file_owners(p_directory->get_subdir(i), p_path, r_owners);
+
+	for (int i = 0; i < efsd->get_subdir_count(); i++) {
+		_fill_owners(efsd->get_subdir(i));
 	}
-	for (int i = 0; i < p_directory->get_file_count(); i++) {
-		if (p_directory->get_file_deps(i).has(p_path)) {
-			r_owners.push_back({ p_directory->get_file_path(i), p_directory->get_file_type(i) });
+
+	for (int i = 0; i < efsd->get_file_count(); i++) {
+		Vector<String> deps = efsd->get_file_deps(i);
+		bool found = false;
+		for (int j = 0; j < deps.size(); j++) {
+			if (deps[j] == editing) {
+				found = true;
+				break;
+			}
 		}
-	}
-}
+		if (!found) {
+			continue;
+		}
 
-Vector<EditorFileOwner> editor_file_owners(const String &p_path) {
-	Vector<EditorFileOwner> owners;
-	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
-	if (filesystem) {
-		_collect_file_owners(filesystem->get_filesystem(), p_path, owners);
-	}
-	return owners;
-}
+		Ref<Texture2D> icon = EditorNode::get_singleton()->get_class_icon(efsd->get_file_type(i));
 
-void DependencyEditorOwners::_fill_owners(EditorFileSystemDirectory *) {
-	for (const EditorFileOwner &owner : editor_file_owners(editing)) {
-		owners->add_item(owner.path, EditorNode::get_singleton()->get_class_icon(owner.type));
+		owners->add_item(efsd->get_file_path(i), icon);
 	}
 }
 
@@ -771,45 +770,6 @@ void DependencyRemoveDialog::show(const Vector<String> &p_folders, const Vector<
 	EditorFileSystem::get_singleton()->scan_changes();
 }
 
-LocalVector<StringName> editor_file_path_project_settings() {
-	LocalVector<StringName> settings;
-	List<PropertyInfo> properties;
-	ProjectSettings::get_singleton()->get_property_list(&properties);
-	for (const PropertyInfo &property : properties) {
-		if (property.type == Variant::STRING && property.hint == PROPERTY_HINT_FILE) {
-			settings.push_back(property.name);
-		}
-	}
-	return settings;
-}
-
-Error editor_remove_project_file(const String &p_path, const LocalVector<StringName> &p_project_settings, Ref<Resource> &r_resource) {
-	const Error error = OS::get_singleton()->move_to_trash(OS::get_singleton()->get_resource_dir().path_join(p_path.trim_prefix("res://")));
-	if (error != OK) {
-		return error;
-	}
-	if (ResourceCache::has(p_path)) {
-		r_resource = ResourceCache::get_ref(p_path);
-		r_resource->set_path("");
-	}
-	bool settings_changed = false;
-	for (const StringName &setting : p_project_settings) {
-		if (ResourceUID::ensure_path(GLOBAL_GET(setting)) == p_path) {
-			ProjectSettings::get_singleton()->set(setting, "");
-			settings_changed = true;
-		}
-	}
-	if (settings_changed) {
-		ProjectSettings::get_singleton()->save();
-	}
-	EditorFileSystem::get_singleton()->update_file(p_path);
-	Vector<String> favorites = EditorSettings::get_singleton()->get_favorites();
-	if (favorites.erase(p_path)) {
-		EditorSettings::get_singleton()->set_favorites(favorites);
-	}
-	return OK;
-}
-
 void DependencyRemoveDialog::ok_pressed() {
 	HashMap<String, StringName> setting_path_map;
 	for (const StringName &setting : path_project_settings) {
@@ -820,9 +780,6 @@ void DependencyRemoveDialog::ok_pressed() {
 	bool project_settings_modified = false;
 
 	for (const KeyValue<String, String> &E : all_remove_files) {
-		if (E.value.is_empty()) {
-			continue;
-		}
 		String file = E.key;
 
 		if (ResourceCache::has(file)) {
@@ -841,14 +798,12 @@ void DependencyRemoveDialog::ok_pressed() {
 	}
 
 	for (const String &file : files_to_delete) {
-		Ref<Resource> resource;
-		Error err = editor_remove_project_file(file, path_project_settings, resource);
+		const String path = OS::get_singleton()->get_resource_dir() + file.replace_first("res://", "/");
+		print_verbose("Moving to trash: " + path);
+		Error err = OS::get_singleton()->move_to_trash(path);
 		if (err != OK) {
 			EditorNode::get_singleton()->add_io_error(TTR("Cannot remove:") + "\n" + file + "\n");
 		} else {
-			if (resource.is_valid()) {
-				emit_signal(SNAME("resource_removed"), resource);
-			}
 			emit_signal(SNAME("file_removed"), file);
 		}
 	}
@@ -856,7 +811,12 @@ void DependencyRemoveDialog::ok_pressed() {
 		ProjectSettings::get_singleton()->save();
 	}
 
-	if (!dirs_to_delete.is_empty()) {
+	if (dirs_to_delete.is_empty()) {
+		// If we only deleted files we should only need to tell the file system about the files we touched.
+		for (int i = 0; i < files_to_delete.size(); ++i) {
+			EditorFileSystem::get_singleton()->update_file(files_to_delete[i]);
+		}
+	} else {
 		for (int i = 0; i < dirs_to_delete.size(); ++i) {
 			String path = OS::get_singleton()->get_resource_dir() + dirs_to_delete[i].replace_first("res://", "/");
 			print_verbose("Moving to trash: " + path);
@@ -881,7 +841,9 @@ void DependencyRemoveDialog::ok_pressed() {
 				new_favorites.push_back(previous_favorites[i]);
 			}
 		} else {
-			new_favorites.push_back(previous_favorites[i]);
+			if (!files_to_delete.has(previous_favorites[i])) {
+				new_favorites.push_back(previous_favorites[i]);
+			}
 		}
 	}
 
@@ -947,7 +909,13 @@ DependencyRemoveDialog::DependencyRemoveDialog() {
 	mc->add_child(owners);
 	owners->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 
-	path_project_settings = editor_file_path_project_settings();
+	List<PropertyInfo> property_list;
+	ProjectSettings::get_singleton()->get_property_list(&property_list);
+	for (const PropertyInfo &pi : property_list) {
+		if (pi.type == Variant::STRING && pi.hint == PROPERTY_HINT_FILE) {
+			path_project_settings.push_back(pi.name);
+		}
+	}
 }
 
 //////////////
