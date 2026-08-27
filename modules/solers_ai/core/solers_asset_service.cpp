@@ -66,6 +66,15 @@
 static constexpr const char *SOLERS_PLUGIN_LOCK_PATH = "res://.solers/plugins.lock.json";
 static constexpr const char *SOLERS_TERRAIN3D_ID = "terrain3d";
 
+static Dictionary _solers_unlock_successor(Dictionary p_result, const PackedStringArray &p_tools) {
+	if ((bool)p_result.get("ok", false)) {
+		Dictionary data = p_result.get("data", Dictionary());
+		data["unlock_tools"] = p_tools;
+		p_result["data"] = data;
+	}
+	return p_result;
+}
+
 static Dictionary _solers_terrain3d_agent_contract() {
 	Dictionary contract;
 	contract["schema_version"] = 1;
@@ -1244,6 +1253,7 @@ Dictionary SolersAssetService::addon_search(const Dictionary &p_args, const Safe
 	data["plugins"] = plugins;
 	data["count"] = plugins.size();
 	data["total_items"] = root.get("total_items", results.size());
+	data["unlock_tools"] = PackedStringArray({ "addon.inspect" });
 	return _ok(data);
 }
 
@@ -1347,7 +1357,7 @@ Dictionary SolersAssetService::addon_inspect(const Dictionary &p_args, const Saf
 		MutexLock lock(catalog_cache_mutex);
 		addon_inspections[inspection_key] = inspection.duplicate(true);
 	}
-	return _ok(_solers_public_addon_inspection(inspection));
+	return _solers_unlock_successor(_ok(_solers_public_addon_inspection(inspection)), PackedStringArray({ "addon.ensure" }));
 }
 
 Dictionary SolersAssetService::addon_agent_contract(const Dictionary &p_args) const {
@@ -1684,7 +1694,7 @@ Dictionary SolersAssetService::catalog_search(const Dictionary &p_args, const Sa
 	if (!plugin || !(bool)plugin->get_profile().get("supports_catalog", false)) {
 		return _error("PLUGIN_NOT_FOUND", "Catalog search requires a registered catalog plugin.");
 	}
-	return plugin->catalog_search(p_args, p_cancel_requested);
+	return _solers_unlock_successor(plugin->catalog_search(p_args, p_cancel_requested), PackedStringArray({ "asset.catalog.inspect" }));
 }
 
 Dictionary SolersAssetService::catalog_inspect(const Dictionary &p_args, const SafeFlag *p_cancel_requested) {
@@ -1693,7 +1703,7 @@ Dictionary SolersAssetService::catalog_inspect(const Dictionary &p_args, const S
 	if (!plugin || !(bool)plugin->get_profile().get("supports_catalog", false)) {
 		return _error("PLUGIN_NOT_FOUND", "Catalog inspect requires a registered catalog plugin.");
 	}
-	return plugin->catalog_inspect(p_args, p_cancel_requested);
+	return _solers_unlock_successor(plugin->catalog_inspect(p_args, p_cancel_requested), PackedStringArray({ "asset.catalog.acquire" }));
 }
 
 Dictionary SolersAssetService::fetch_provider_preview(const String &p_provider, const String &p_url, const SafeFlag *p_cancel_requested) const {
@@ -1824,6 +1834,9 @@ Dictionary SolersAssetService::wait_jobs(const Dictionary &p_args, const String 
 	data["terminal"] = terminal;
 	data["background_jobs"] = Dictionary({ { "pending_ids", pending_ids }, { "terminal", terminal } });
 	data["waiting"] = !pending_ids.is_empty();
+	if (pending_ids.is_empty() && !terminal.is_empty()) {
+		data["unlock_tools"] = PackedStringArray({ "asset.capabilities", "asset.run_operation" });
+	}
 	if (!pending_ids.is_empty()) {
 		// Host authority: the session parks after this tool result and resumes
 		// via background_job_delta. This text describes that fact; it does not
@@ -1855,7 +1868,7 @@ Dictionary SolersAssetService::_queue_manifest(const Dictionary &p_manifest, con
 	}
 	task->thread.start(&SolersAssetService::_task_func, task);
 
-	return _ok(p_manifest.duplicate(true));
+	return _solers_unlock_successor(_ok(p_manifest.duplicate(true)), PackedStringArray({ "job.wait" }));
 }
 
 Dictionary SolersAssetService::_resolve_operation_source(const Dictionary &p_manifest, const Dictionary &p_operation) const {
@@ -1965,6 +1978,7 @@ Dictionary SolersAssetService::capabilities(const Dictionary &p_args) const {
 	if (!basic_animations.is_empty()) {
 		data["basic_animations"] = basic_animations;
 	}
+	data["unlock_tools"] = PackedStringArray({ "asset.run_operation" });
 	return _ok(data);
 }
 

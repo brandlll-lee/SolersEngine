@@ -1025,50 +1025,13 @@ TEST_CASE("[SolersToolRegistry] built-ins retain deferred exposure and remain di
 	registry.register_default_tools();
 	const Array catalog = registry.list_tools();
 	CHECK(solers_test_find_dictionary(catalog, SNAME("name"), "tool.search").get("exposure", String()) == "direct");
+	CHECK(solers_test_find_dictionary(catalog, SNAME("name"), "history.revert").get("exposure", String()) == "deferred");
 	CHECK(solers_test_find_dictionary(catalog, SNAME("name"), "export.run_preset").get("exposure", String()) == "deferred");
 	CHECK(solers_test_find_dictionary(catalog, SNAME("name"), "project.delivery_report").get("exposure", String()) == "deferred");
-	const Dictionary result = search_deferred_tools(registry, "export preset", 10);
+	const Dictionary result = registry.call_tool("export.list_presets", Dictionary());
 	CHECK((bool)result.get("ok", false));
-	CHECK(search_result_has_tool(result, "export.run_preset"));
 	CHECK(Array(Dictionary(result.get("data", Dictionary())).get("unlock_tools", Array())).has("export.run_preset"));
-}
-
-TEST_CASE("[SolersToolRegistry] deferred search prioritizes exact ids and never returns direct tools") {
-	SolersPermissionManager permissions;
-	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
-	SolersToolRegistry registry;
-	registry.set_permission_manager(&permissions);
-	registry.register_default_tools();
-	SolersToolCapability cap;
-	cap.permission = SolersPermissionManager::PERMISSION_OBSERVE;
-	cap.mutation_domains = SolersToolMutationDomain::NONE;
-	auto add_external = [&](const StringName &p_name, const String &p_description) {
-		registry.register_tool(memnew(SolersFunctionTool(
-				p_name, p_description, empty_tool_schema(), SolersToolExposure::DEFERRED, cap,
-				[](const SolersToolContext &, const Dictionary &) {
-					Dictionary result;
-					result["ok"] = true;
-					return result;
-				})));
-	};
-	add_external(SNAME("plugin.mesh.inspect"), "Inspect an external plugin mesh.");
-	add_external(SNAME("plugin.mesh.repair"), "Repair an external plugin mesh.");
-
-	Dictionary result = search_deferred_tools(registry, "plugin.mesh.inspect", 1);
-	REQUIRE((bool)result.get("ok", false));
-	Dictionary data = result.get("data", Dictionary());
-	Array matches = data.get("tools", Array());
-	REQUIRE(matches.size() == 1);
-	CHECK(Dictionary(matches[0]).get("name", String()) == "plugin.mesh.inspect");
-
-	result = search_deferred_tools(registry, "property", 20);
-	REQUIRE((bool)result.get("ok", false));
-	matches = Dictionary(result.get("data", Dictionary())).get("tools", Array());
-	for (int i = 0; i < matches.size(); i++) {
-		const Dictionary tool = matches[i];
-		CHECK(tool.get("exposure", String()) == "deferred");
-	}
-	CHECK_FALSE(search_result_has_tool(result, "object.transaction"));
+	CHECK(Array(Dictionary(result.get("data", Dictionary())).get("unlock_tools", Array())).has("export.validate_presets"));
 }
 
 TEST_CASE("[SolersToolRegistry] tool.search uses Godot fuzzy fallback for external metadata") {

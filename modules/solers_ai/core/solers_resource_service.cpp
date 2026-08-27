@@ -1077,6 +1077,7 @@ Dictionary SolersResourceService::list_export_presets(const Dictionary &p_args) 
 		data["platforms"] = platforms;
 		data["platform_count"] = platforms.size();
 	}
+	data["unlock_tools"] = PackedStringArray({ "export.validate_presets", "export.run_preset" });
 
 	return _ok(data);
 }

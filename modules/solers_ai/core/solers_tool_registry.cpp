@@ -1154,6 +1154,7 @@ Dictionary SolersToolRegistry::_finalize_prepared_result(SolersPreparedToolCall 
 		record["session_revision"] = (int64_t)(r_call.context.authored_revision + 1);
 		stack.push_back(record);
 		mutation["reversal_id"] = reversal_id;
+		data["unlock_tools"] = PackedStringArray({ "history.revert" });
 		r_call.journal_event["event_type"] = "checkpoint_created";
 		r_call.journal_event["checkpoint"] = record;
 		r_call.journal_event["note"] = "Protective checkpoint for history.revert; not a rollback of your edit.";
@@ -2478,9 +2479,6 @@ void SolersToolRegistry::_register_search_tools() {
 						}
 					}
 				}
-				// The result states which tools it opens up, so exposure is
-				// granted by a field any tool may carry instead of by this
-				// tool's name being recognized downstream.
 				PackedStringArray unlocked;
 				for (int i = 0; i < matches.size(); i++) {
 					unlocked.push_back(Dictionary(matches[i]).get("name", String()));
@@ -2504,7 +2502,7 @@ void SolersToolRegistry::register_tool(SolersTool *p_tool) {
 
 void SolersToolRegistry::register_default_tools() {
 	_clear_tools();
-	_add("history.revert", "Revert the latest reversible Agent mutation when its native UndoRedo version or file hashes still match.", R"({"type":"object","properties":{"reversal_id":{"type":"string","minLength":1}},"required":["reversal_id"],"additionalProperties":false})", SolersPermissionManager::PERMISSION_EDIT_SCENE, SolersToolMutationDomain::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DIRECT, [this](const SolersToolContext &ctx, const Dictionary &a) { return _revert_latest(ctx, a); }, SolersToolExecution::MAIN_THREAD, [](const Dictionary &) {
+	_add("history.revert", "Revert the latest reversible Agent mutation when its native UndoRedo version or file hashes still match.", R"({"type":"object","properties":{"reversal_id":{"type":"string","minLength":1}},"required":["reversal_id"],"additionalProperties":false})", SolersPermissionManager::PERMISSION_EDIT_SCENE, SolersToolMutationDomain::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DEFERRED, [this](const SolersToolContext &ctx, const Dictionary &a) { return _revert_latest(ctx, a); }, SolersToolExecution::MAIN_THREAD, [](const Dictionary &) {
 			Array accesses;
 			Dictionary access;
 			access["mode"] = "write";
