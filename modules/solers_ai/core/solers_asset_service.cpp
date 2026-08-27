@@ -1054,7 +1054,7 @@ void SolersAssetService::_run_task(Task *p_task) {
 
 Dictionary SolersAssetService::_asset_list_item(const Dictionary &p_manifest) {
 	Dictionary item;
-	const char *fields[] = { "id", "kind", "name", "provider", "status", "stage", "progress", "preview_file", "error", "model_file", "files", "entrypoints", "polycount", "vertex_count", "traits", "provider_task_id", "operation", "parent_asset_id", "source_provider", "source_asset_id", "source_variant", "source_version", "license", "attribution", "created_at", "updated_at" };
+	const char *fields[] = { "id", "session_id", "kind", "name", "provider", "status", "stage", "progress", "preview_file", "error", "model_file", "files", "entrypoints", "polycount", "vertex_count", "traits", "provider_task_id", "operation", "parent_asset_id", "source_provider", "source_asset_id", "source_variant", "source_version", "license", "attribution", "created_at", "updated_at" };
 	for (const char *field : fields) {
 		if (p_manifest.has(field)) {
 			item[field] = p_manifest[field];
@@ -2255,6 +2255,7 @@ Array SolersAssetService::list_assets() const {
 				current["project_files"] = project_asset->get("files", Array());
 				current["project_entrypoints"] = project_asset->get("entrypoints", Array());
 				current["sidecar_file"] = project_asset->get("sidecar_file", String());
+				current["session_id"] = project_asset->get("session_id", current.get("session_id", String()));
 			}
 			assets.push_back(current);
 		}

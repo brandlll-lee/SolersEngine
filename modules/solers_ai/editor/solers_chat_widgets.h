@@ -133,7 +133,7 @@ protected:
 	static void _bind_methods() {}
 
 public:
-	void set_usage(int64_t p_used_tokens, int64_t p_total_tokens);
+	void set_usage(int64_t p_used_tokens, int64_t p_total_tokens, int p_message_count = 0, int p_media_reference_count = 0, int p_compaction_count = 0);
 	float get_usage_ratio() const { return usage_ratio; }
 
 	SolersContextRing();

@@ -44,9 +44,8 @@
 void SolersFileCheckpoint::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_action_timeline", "action_timeline"), &SolersFileCheckpoint::set_action_timeline);
 	ClassDB::bind_method(D_METHOD("create_checkpoint", "path", "reason"), &SolersFileCheckpoint::create_checkpoint, DEFVAL(String()));
-	ClassDB::bind_method(D_METHOD("restore_checkpoint", "checkpoint_path", "target_path"), &SolersFileCheckpoint::restore_checkpoint);
 	ClassDB::bind_method(D_METHOD("restore_checkpoint_state", "checkpoint"), &SolersFileCheckpoint::restore_checkpoint_state);
-	ClassDB::bind_method(D_METHOD("get_checkpoint_root_info"), &SolersFileCheckpoint::get_checkpoint_root_info);
+	ClassDB::bind_method(D_METHOD("get_path_state", "path"), &SolersFileCheckpoint::get_path_state);
 }
 
 Dictionary SolersFileCheckpoint::_ok(const Variant &p_data) const {
@@ -106,17 +105,70 @@ void SolersFileCheckpoint::set_action_timeline(SolersActionTimeline *p_action_ti
 	action_timeline = p_action_timeline;
 }
 
+static void _collect_directory_state(const String &p_path, const String &p_base, PackedStringArray &r_entries) {
+	Ref<DirAccess> directory = DirAccess::open(p_path);
+	if (directory.is_null() || directory->list_dir_begin() != OK) {
+		return;
+	}
+	for (String name = directory->get_next(); !name.is_empty(); name = directory->get_next()) {
+		if (name == "." || name == "..") {
+			continue;
+		}
+		const String child = p_path.path_join(name);
+		if (directory->current_is_dir()) {
+			_collect_directory_state(child, p_base, r_entries);
+		} else {
+			r_entries.push_back(child.trim_prefix(p_base) + ":" + FileAccess::get_sha256(child));
+		}
+	}
+	directory->list_dir_end();
+}
+
+Dictionary SolersFileCheckpoint::get_path_state(const String &p_path) const {
+	String path;
+	String error;
+	if (!_normalize_project_path(p_path, path, error)) {
+		return _error("INVALID_PATH", error);
+	}
+	Dictionary data;
+	data["path"] = path;
+	data["directory"] = DirAccess::exists(path);
+	data["existed"] = (bool)data["directory"] || FileAccess::exists(path);
+	if ((bool)data["directory"]) {
+		PackedStringArray entries;
+		_collect_directory_state(path, path, entries);
+		entries.sort();
+		data["content_sha256"] = String("\n").join(entries).sha256_text();
+	} else if ((bool)data["existed"]) {
+		data["content_sha256"] = FileAccess::get_sha256(path);
+	}
+	return _ok(data);
+}
+
 Dictionary SolersFileCheckpoint::create_checkpoint(const String &p_path, const String &p_reason) {
 	String res_path;
 	String path_error;
 	if (!_normalize_project_path(p_path, res_path, path_error)) {
 		return _error("INVALID_PATH", path_error);
 	}
-	if (!FileAccess::exists(res_path)) {
-		Dictionary data;
-		data["path"] = res_path;
-		data["existed"] = false;
+	Dictionary data = get_path_state(res_path).get("data", Dictionary());
+	Dictionary project_settings;
+	List<PropertyInfo> properties;
+	ProjectSettings::get_singleton()->get_property_list(&properties);
+	for (const PropertyInfo &property : properties) {
+		const Variant value = ProjectSettings::get_singleton()->get(property.name);
+		if (property.type == Variant::STRING && property.hint == PROPERTY_HINT_FILE && ResourceUID::ensure_path(value) == res_path) {
+			project_settings[property.name] = value;
+		}
+	}
+	if (!project_settings.is_empty()) {
+		data["project_settings"] = project_settings;
+	}
+	if (!(bool)data.get("existed", false)) {
 		return _ok(data);
+	}
+	if (ResourceCache::has(res_path)) {
+		data["resource_object_id"] = (int64_t)ResourceCache::get_ref(res_path)->get_instance_id();
 	}
 
 	String checkpoint_root = _checkpoint_root();
@@ -129,84 +181,25 @@ Dictionary SolersFileCheckpoint::create_checkpoint(const String &p_path, const S
 		return _error("CHECKPOINT_DIR_FAILED", vformat("Failed to create checkpoint directory, error code %d.", dir_err));
 	}
 
-	Error read_err = OK;
-	Vector<uint8_t> bytes = FileAccess::get_file_as_bytes(res_path, &read_err);
-	if (read_err != OK) {
-		return _error("CHECKPOINT_READ_FAILED", vformat("Failed to read source file, error code %d.", read_err));
-	}
-
 	const String timestamp = Time::get_singleton()->get_datetime_string_from_system(false, true).replace_char(' ', '_').replace_char(':', '-');
 	const String checkpoint_file = vformat("%s_%s_%s_%s", timestamp, String::num_uint64(Time::get_singleton()->get_ticks_usec()), res_path.md5_text(), res_path.get_file());
 	const String checkpoint_path = checkpoint_root.path_join(checkpoint_file);
-
-	Error write_err = OK;
-	Ref<FileAccess> checkpoint_file_access = FileAccess::open(checkpoint_path, FileAccess::WRITE, &write_err);
-	if (checkpoint_file_access.is_null() || write_err != OK) {
-		return _error("CHECKPOINT_WRITE_FAILED", vformat("Failed to write checkpoint file, error code %d.", write_err));
+	Error copy_error = OK;
+	if ((bool)data.get("directory", false)) {
+		Ref<DirAccess> source = DirAccess::open(res_path);
+		copy_error = source.is_valid() ? source->copy_dir(source->get_current_dir(), ProjectSettings::get_singleton()->globalize_path(checkpoint_path)) : ERR_CANT_OPEN;
+	} else {
+		copy_error = DirAccess::copy_absolute(res_path, ProjectSettings::get_singleton()->globalize_path(checkpoint_path));
 	}
-	if (!bytes.is_empty() && !checkpoint_file_access->store_buffer(bytes.ptr(), bytes.size())) {
-		return _error("CHECKPOINT_WRITE_FAILED", "Failed to store checkpoint bytes.");
+	if (copy_error != OK) {
+		return _error("CHECKPOINT_WRITE_FAILED", vformat("Failed to copy checkpoint state, error code %d.", copy_error));
 	}
-	checkpoint_file_access.unref();
-
-	Dictionary data;
-	data["path"] = res_path;
 	data["checkpoint_path"] = checkpoint_path;
-	data["existed"] = true;
-	data["size_bytes"] = bytes.size();
 	data["reason"] = p_reason;
-	data["content_sha256"] = FileAccess::get_sha256(res_path);
 	data["timestamp_unix"] = Time::get_singleton()->get_unix_time_from_system();
 
 	if (action_timeline) {
 		action_timeline->record_event("file_checkpoint_created", data);
-	}
-
-	return _ok(data);
-}
-
-Dictionary SolersFileCheckpoint::restore_checkpoint(const String &p_checkpoint_path, const String &p_target_path) {
-	String target_path;
-	String path_error;
-	if (!_normalize_project_path(p_target_path, target_path, path_error)) {
-		return _error("INVALID_PATH", path_error);
-	}
-
-	String checkpoint_path = p_checkpoint_path.strip_edges().replace_char('\\', '/').simplify_path();
-	if (!checkpoint_path.begins_with(_checkpoint_root())) {
-		return _error("INVALID_CHECKPOINT_PATH", "Checkpoint path must be inside the Solers checkpoint directory.");
-	}
-	if (!FileAccess::exists(checkpoint_path)) {
-		return _error("CHECKPOINT_NOT_FOUND", "Checkpoint file does not exist.");
-	}
-
-	Error read_err = OK;
-	Vector<uint8_t> bytes = FileAccess::get_file_as_bytes(checkpoint_path, &read_err);
-	if (read_err != OK) {
-		return _error("CHECKPOINT_READ_FAILED", vformat("Failed to read checkpoint, error code %d.", read_err));
-	}
-
-	Error dir_err = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(target_path.get_base_dir()));
-	if (dir_err != OK) {
-		return _error("TARGET_DIR_FAILED", vformat("Failed to create target directory, error code %d.", dir_err));
-	}
-
-	Error write_err = OK;
-	Ref<FileAccess> file = FileAccess::open(target_path, FileAccess::WRITE, &write_err);
-	if (file.is_null() || write_err != OK) {
-		return _error("RESTORE_WRITE_FAILED", vformat("Failed to restore file, error code %d.", write_err));
-	}
-	if (!bytes.is_empty() && !file->store_buffer(bytes.ptr(), bytes.size())) {
-		return _error("RESTORE_WRITE_FAILED", "Failed to store restored bytes.");
-	}
-
-	Dictionary data;
-	data["checkpoint_path"] = checkpoint_path;
-	data["target_path"] = target_path;
-	data["size_bytes"] = bytes.size();
-
-	if (action_timeline) {
-		action_timeline->record_event("file_checkpoint_restored", data);
 	}
 
 	return _ok(data);
@@ -221,14 +214,50 @@ Dictionary SolersFileCheckpoint::restore_checkpoint_state(const Dictionary &p_ch
 	}
 
 	Dictionary result;
+	if ((bool)p_checkpoint.get("directory", false)) {
+		const String global_target = ProjectSettings::get_singleton()->globalize_path(normalized_path);
+		if (DirAccess::exists(normalized_path)) {
+			Ref<DirAccess> target = DirAccess::open(normalized_path);
+			if (target.is_null() || target->erase_contents_recursive() != OK) {
+				return _error("RESTORE_DELETE_FAILED", "Failed to clear the changed checkpoint directory.");
+			}
+		}
+		if ((bool)p_checkpoint.get("existed", false)) {
+			DirAccess::make_dir_recursive_absolute(global_target);
+			const String checkpoint_path = p_checkpoint.get("checkpoint_path", String());
+			Ref<DirAccess> source = DirAccess::open(checkpoint_path);
+			if (source.is_null() || source->copy_dir(source->get_current_dir(), global_target) != OK) {
+				return _error("RESTORE_WRITE_FAILED", "Failed to restore the checkpoint directory.");
+			}
+		} else if (DirAccess::exists(normalized_path) && DirAccess::remove_absolute(global_target) != OK) {
+			return _error("RESTORE_DELETE_FAILED", "Failed to remove the newly created directory.");
+		}
+		result = _ok(Dictionary({ { "target_path", normalized_path } }));
+		EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
+		if (filesystem && filesystem->get_filesystem() && !filesystem->is_scanning()) {
+			filesystem->scan_changes();
+		}
+		return result;
+	}
 	if ((bool)p_checkpoint.get("existed", false)) {
-		result = restore_checkpoint(p_checkpoint.get("checkpoint_path", String()), normalized_path);
+		const String checkpoint_path = p_checkpoint.get("checkpoint_path", String());
+		if (!checkpoint_path.simplify_path().begins_with(_checkpoint_root()) || !FileAccess::exists(checkpoint_path)) {
+			return _error("CHECKPOINT_NOT_FOUND", "The structured checkpoint file is unavailable.");
+		}
+		const Error error = DirAccess::copy_absolute(checkpoint_path, ProjectSettings::get_singleton()->globalize_path(normalized_path));
+		if (error != OK) {
+			return _error("RESTORE_WRITE_FAILED", vformat("Failed to restore checkpoint state, error code %d.", error));
+		}
+		result = _ok(Dictionary({ { "checkpoint_path", checkpoint_path }, { "target_path", normalized_path } }));
 	} else {
 		if (FileAccess::exists(normalized_path)) {
 			const Error error = DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(normalized_path));
 			if (error != OK) {
 				return _error("RESTORE_DELETE_FAILED", vformat("Failed to remove newly created file, error code %d.", error));
 			}
+		}
+		if (ResourceCache::has(normalized_path)) {
+			ResourceCache::get_ref(normalized_path)->set_path("");
 		}
 		Dictionary data;
 		data["target_path"] = normalized_path;
@@ -238,6 +267,17 @@ Dictionary SolersFileCheckpoint::restore_checkpoint_state(const Dictionary &p_ch
 	if (!(bool)result.get("ok", false)) {
 		return result;
 	}
+	const Dictionary project_settings = p_checkpoint.get("project_settings", Dictionary());
+	for (const Variant *setting = project_settings.next(nullptr); setting; setting = project_settings.next(setting)) {
+		ProjectSettings::get_singleton()->set(*setting, project_settings[*setting]);
+	}
+	if (!project_settings.is_empty()) {
+		ProjectSettings::get_singleton()->save();
+	}
+	Resource *resource = Object::cast_to<Resource>(ObjectDB::get_instance(ObjectID((uint64_t)(int64_t)p_checkpoint.get("resource_object_id", 0))));
+	if (resource && resource->get_path().is_empty()) {
+		resource->set_path(normalized_path);
+	}
 
 	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
 	if (filesystem && filesystem->get_filesystem() && !filesystem->is_scanning()) {
@@ -246,20 +286,19 @@ Dictionary SolersFileCheckpoint::restore_checkpoint_state(const Dictionary &p_ch
 	if (FileAccess::exists(normalized_path)) {
 		ResourceLoader::load(normalized_path, String(), ResourceFormatLoader::CACHE_MODE_REPLACE);
 	}
+	if (action_timeline) {
+		action_timeline->record_event("file_checkpoint_restored", result.get("data", Dictionary()));
+	}
 	return result;
 }
 
 void SolersFileCheckpoint::discard_checkpoint_state(const Dictionary &p_checkpoint) {
 	const String checkpoint_path = String(p_checkpoint.get("checkpoint_path", String())).simplify_path();
-	if (!checkpoint_path.is_empty() && checkpoint_path.begins_with(_checkpoint_root()) && FileAccess::exists(checkpoint_path)) {
+	if (!checkpoint_path.is_empty() && checkpoint_path.begins_with(_checkpoint_root())) {
+		if (DirAccess::exists(checkpoint_path)) {
+			Ref<DirAccess> directory = DirAccess::open(checkpoint_path);
+			directory->erase_contents_recursive();
+		}
 		DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(checkpoint_path));
 	}
-}
-
-Dictionary SolersFileCheckpoint::get_checkpoint_root_info() const {
-	Dictionary data;
-	const String root = _checkpoint_root();
-	data["checkpoint_root"] = root;
-	data["global_checkpoint_root"] = root.is_empty() ? String() : ProjectSettings::get_singleton()->globalize_path(root);
-	return _ok(data);
 }

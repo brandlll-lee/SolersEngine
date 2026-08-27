@@ -164,53 +164,6 @@ static bool _solers_doc_matches(const String &p_name, const String &p_descriptio
 	return false;
 }
 
-enum class SolersBatchOperationKind {
-	UNKNOWN,
-	CREATE_NODE,
-	INSTANTIATE_SCENE,
-	UPDATE,
-	REPARENT,
-	CONNECT_SIGNAL,
-	ATTACH_SCRIPT,
-	REMOVE_NODE,
-	BAKE_CSG,
-};
-
-static SolersBatchOperationKind _solers_batch_operation_kind(const String &p_name) {
-	if (p_name == "create_node") {
-		return SolersBatchOperationKind::CREATE_NODE;
-	}
-	if (p_name == "instantiate") {
-		return SolersBatchOperationKind::INSTANTIATE_SCENE;
-	}
-	if (p_name == "update") {
-		return SolersBatchOperationKind::UPDATE;
-	}
-	if (p_name == "reparent") {
-		return SolersBatchOperationKind::REPARENT;
-	}
-	if (p_name == "connect_signal") {
-		return SolersBatchOperationKind::CONNECT_SIGNAL;
-	}
-	if (p_name == "attach_script") {
-		return SolersBatchOperationKind::ATTACH_SCRIPT;
-	}
-	if (p_name == "remove_node") {
-		return SolersBatchOperationKind::REMOVE_NODE;
-	}
-	if (p_name == "bake_csg") {
-		return SolersBatchOperationKind::BAKE_CSG;
-	}
-	return SolersBatchOperationKind::UNKNOWN;
-}
-
-static void _solers_add_scene_access(Array &r_accesses, const String &p_mode, const String &p_path) {
-	Dictionary access;
-	access["mode"] = p_mode;
-	access["key"] = p_path == "*" ? String("*") : String("scene:") + (p_path.is_empty() ? String(".") : p_path);
-	r_accesses.push_back(access);
-}
-
 static Array _solers_vector3_array(const Vector3 &p_vector) {
 	Array values;
 	values.push_back(p_vector.x);
@@ -222,7 +175,6 @@ static Array _solers_vector3_array(const Vector3 &p_vector) {
 void SolersReflectionService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("search_classes", "args"), &SolersReflectionService::search_classes);
 	ClassDB::bind_method(D_METHOD("introspect_class", "args"), &SolersReflectionService::introspect_class);
-	ClassDB::bind_method(D_METHOD("batch", "args"), &SolersReflectionService::batch);
 	ClassDB::bind_method(D_METHOD("open_scene", "args"), &SolersReflectionService::open_scene);
 }
 
@@ -700,7 +652,7 @@ Dictionary SolersReflectionService::introspect_class(const Dictionary &p_args) {
 	return _ok(data);
 }
 
-Dictionary SolersReflectionService::_update_node(const Dictionary &p_args) {
+Dictionary SolersReflectionService::update_node(const Dictionary &p_args) {
 	const String node_path = p_args.get("node_path", ".");
 	const Variant properties_value = p_args.get("properties", Variant());
 	if (properties_value.get_type() != Variant::DICTIONARY || Dictionary(properties_value).is_empty()) {
@@ -852,7 +804,7 @@ Dictionary SolersReflectionService::inspect_nodes(const Dictionary &p_args) {
 	return _ok(data);
 }
 
-Dictionary SolersReflectionService::_create_node(const Dictionary &p_args) {
+Dictionary SolersReflectionService::create_node(const Dictionary &p_args) {
 	String parent_path = p_args.get("parent_path", String());
 	if (parent_path.is_empty()) {
 		parent_path = p_args.get("parent", ".");
@@ -905,17 +857,11 @@ Dictionary SolersReflectionService::_create_node(const Dictionary &p_args) {
 	ERR_FAIL_NULL_V(undo_redo, _error("UNDO_REDO_UNAVAILABLE", "EditorUndoRedoManager is not available.", false));
 
 	if (create_root) {
-		if (!batch_action_active) {
-			undo_redo->create_action_for_history("Solers: New Scene Root", EditorNode::get_editor_data().get_current_edited_scene_history_id());
-		}
+		undo_redo->create_action_for_history("Solers: New Scene Root", EditorNode::get_editor_data().get_current_edited_scene_history_id());
 		undo_redo->add_do_method(editor_node, "set_edited_scene", node);
 		undo_redo->add_do_reference(node);
 		undo_redo->add_undo_method(editor_node, "set_edited_scene", (Object *)nullptr);
-		if (batch_action_active) {
-			editor_node->set_edited_scene(node);
-		} else {
-			undo_redo->commit_action();
-		}
+		undo_redo->commit_action();
 		if (editor_interface->get_edited_scene_root() != node) {
 			return _error("SCENE_ROOT_CREATION_FAILED", "Godot did not accept the new edited scene root.", false);
 		}
@@ -929,19 +875,12 @@ Dictionary SolersReflectionService::_create_node(const Dictionary &p_args) {
 		return _ok(data);
 	}
 
-	if (!batch_action_active) {
-		undo_redo->create_action(vformat("Solers: Add %s", type), UndoRedo::MERGE_DISABLE, parent);
-	}
+	undo_redo->create_action(vformat("Solers: Add %s", type), UndoRedo::MERGE_DISABLE, parent);
 	undo_redo->add_do_method(parent, "add_child", node, true);
 	undo_redo->add_do_method(node, "set_owner", edited_root);
 	undo_redo->add_do_reference(node);
 	undo_redo->add_undo_method(parent, "remove_child", node);
-	if (batch_action_active) {
-		parent->add_child(node, true);
-		node->set_owner(edited_root);
-	} else {
-		undo_redo->commit_action();
-	}
+	undo_redo->commit_action();
 
 	String safe_path;
 	_safe_node_path(node, safe_path);
@@ -1034,19 +973,12 @@ Dictionary SolersReflectionService::instantiate_scene(const Dictionary &p_args) 
 		memdelete(instance);
 		return _error("UNDO_REDO_UNAVAILABLE", "EditorUndoRedoManager is not available.", false);
 	}
-	if (!batch_action_active) {
-		undo_redo->create_action(vformat("Solers: Instantiate %s", source_path.get_file()), UndoRedo::MERGE_DISABLE, parent);
-	}
+	undo_redo->create_action(vformat("Solers: Instantiate %s", source_path.get_file()), UndoRedo::MERGE_DISABLE, parent);
 	undo_redo->add_do_method(parent, "add_child", instance, true);
 	undo_redo->add_do_method(instance, "set_owner", edited_root);
 	undo_redo->add_do_reference(instance);
 	undo_redo->add_undo_method(parent, "remove_child", instance);
-	if (batch_action_active) {
-		parent->add_child(instance, true);
-		instance->set_owner(edited_root);
-	} else {
-		undo_redo->commit_action();
-	}
+	undo_redo->commit_action();
 
 	String safe_path;
 	_safe_node_path(instance, safe_path);
@@ -1062,7 +994,7 @@ Dictionary SolersReflectionService::instantiate_scene(const Dictionary &p_args) 
 	return _ok(data);
 }
 
-Dictionary SolersReflectionService::_reparent_node(const Dictionary &p_args) {
+Dictionary SolersReflectionService::reparent_node(const Dictionary &p_args) {
 	const String node_path = p_args.get("node_path", String());
 	String new_parent_path = p_args.get("new_parent_path", String());
 	if (new_parent_path.is_empty()) {
@@ -1099,38 +1031,18 @@ Dictionary SolersReflectionService::_reparent_node(const Dictionary &p_args) {
 	const int old_index = node->get_index(false);
 	const int new_index = position < 0 ? -1 : CLAMP(position, 0, new_parent->get_child_count(false));
 	Node *old_owner = node->get_owner();
-	if (!batch_action_active) {
-		undo_redo->create_action("Solers: Reparent Node", UndoRedo::MERGE_DISABLE, new_parent);
-	}
+	undo_redo->create_action("Solers: Reparent Node", UndoRedo::MERGE_DISABLE, new_parent);
 	undo_redo->add_do_method(old_parent, "remove_child", node);
 	undo_redo->add_do_method(new_parent, "add_child", node, true);
 	if (new_index >= 0) {
 		undo_redo->add_do_method(new_parent, "move_child", node, new_index);
 	}
 	undo_redo->add_do_method(node, "set_owner", edited_root);
-	if (batch_action_active) {
-		// The batch action reverses operation groups on commit. Register each
-		// group's undo methods backwards so their local order stays intact.
-		undo_redo->add_undo_method(node, "set_owner", old_owner);
-		undo_redo->add_undo_method(old_parent, "move_child", node, old_index);
-		undo_redo->add_undo_method(old_parent, "add_child", node, true);
-		undo_redo->add_undo_method(new_parent, "remove_child", node);
-	} else {
-		undo_redo->add_undo_method(new_parent, "remove_child", node);
-		undo_redo->add_undo_method(old_parent, "add_child", node, true);
-		undo_redo->add_undo_method(old_parent, "move_child", node, old_index);
-		undo_redo->add_undo_method(node, "set_owner", old_owner);
-	}
-	if (batch_action_active) {
-		old_parent->remove_child(node);
-		new_parent->add_child(node, true);
-		if (new_index >= 0) {
-			new_parent->move_child(node, new_index);
-		}
-		node->set_owner(edited_root);
-	} else {
-		undo_redo->commit_action();
-	}
+	undo_redo->add_undo_method(new_parent, "remove_child", node);
+	undo_redo->add_undo_method(old_parent, "add_child", node, true);
+	undo_redo->add_undo_method(old_parent, "move_child", node, old_index);
+	undo_redo->add_undo_method(node, "set_owner", old_owner);
+	undo_redo->commit_action();
 
 	String node_safe_path;
 	String parent_safe_path;
@@ -1144,7 +1056,7 @@ Dictionary SolersReflectionService::_reparent_node(const Dictionary &p_args) {
 	return _ok(data);
 }
 
-Dictionary SolersReflectionService::_connect_signal(const Dictionary &p_args) {
+Dictionary SolersReflectionService::connect_signal(const Dictionary &p_args) {
 	const String source_path = p_args.get("source_path", ".");
 	const String signal_name = p_args.get("signal", String());
 	const String target_path = p_args.get("target_path", ".");
@@ -1175,19 +1087,10 @@ Dictionary SolersReflectionService::_connect_signal(const Dictionary &p_args) {
 	EditorUndoRedoManager *undo_redo = editor_interface->get_editor_undo_redo();
 	ERR_FAIL_NULL_V(undo_redo, _error("UNDO_REDO_UNAVAILABLE", "EditorUndoRedoManager is not available.", false));
 
-	if (batch_action_active) {
-		const Error connect_error = source->connect(signal_sn, callable, flags);
-		if (connect_error != OK) {
-			return _error("SIGNAL_CONNECT_FAILED", vformat("Connecting signal '%s' failed with error %d.", signal_name, (int)connect_error));
-		}
-	} else {
-		undo_redo->create_action(vformat("Solers: Connect %s", signal_name), UndoRedo::MERGE_DISABLE, source);
-	}
+	undo_redo->create_action(vformat("Solers: Connect %s", signal_name), UndoRedo::MERGE_DISABLE, source);
 	undo_redo->add_do_method(source, "connect", signal_sn, callable, flags);
 	undo_redo->add_undo_method(source, "disconnect", signal_sn, callable);
-	if (!batch_action_active) {
-		undo_redo->commit_action();
-	}
+	undo_redo->commit_action();
 
 	String source_safe_path;
 	String target_safe_path;
@@ -1202,7 +1105,7 @@ Dictionary SolersReflectionService::_connect_signal(const Dictionary &p_args) {
 	return _ok(data);
 }
 
-Dictionary SolersReflectionService::_attach_script(const Dictionary &p_args) {
+Dictionary SolersReflectionService::attach_script(const Dictionary &p_args) {
 	const String node_path = p_args.get("node_path", ".");
 	const String script_path = p_args.get("script_path", String());
 	if (script_path.is_empty()) {
@@ -1238,16 +1141,10 @@ Dictionary SolersReflectionService::_attach_script(const Dictionary &p_args) {
 	ERR_FAIL_NULL_V(undo_redo, _error("UNDO_REDO_UNAVAILABLE", "EditorUndoRedoManager is not available.", false));
 
 	Ref<Script> previous_script = node->get_script();
-	if (!batch_action_active) {
-		undo_redo->create_action("Solers: Attach Script", UndoRedo::MERGE_DISABLE, node);
-	}
+	undo_redo->create_action("Solers: Attach Script", UndoRedo::MERGE_DISABLE, node);
 	undo_redo->add_do_method(node, "set_script", script);
 	undo_redo->add_undo_method(node, "set_script", previous_script);
-	if (batch_action_active) {
-		node->set_script(script);
-	} else {
-		undo_redo->commit_action();
-	}
+	undo_redo->commit_action();
 
 	String safe_path;
 	_safe_node_path(node, safe_path);
@@ -1258,7 +1155,7 @@ Dictionary SolersReflectionService::_attach_script(const Dictionary &p_args) {
 	return _ok(data);
 }
 
-Dictionary SolersReflectionService::_remove_node(const Dictionary &p_args) {
+Dictionary SolersReflectionService::remove_node(const Dictionary &p_args) {
 	const String node_path = p_args.get("node_path", String());
 	if (node_path.is_empty() || node_path == ".") {
 		return _error("INVALID_ARGUMENT", "Refusing to remove the edited scene root.");
@@ -1281,24 +1178,12 @@ Dictionary SolersReflectionService::_remove_node(const Dictionary &p_args) {
 
 	const int original_index = node->get_index(false);
 	const Dictionary removed_object = solers_native_object_handle(node);
-	if (!batch_action_active) {
-		undo_redo->create_action("Solers: Remove Node", UndoRedo::MERGE_DISABLE, parent);
-	}
+	undo_redo->create_action("Solers: Remove Node", UndoRedo::MERGE_DISABLE, parent);
 	undo_redo->add_do_method(parent, "remove_child", node);
-	if (batch_action_active) {
-		undo_redo->add_undo_method(parent, "move_child", node, original_index);
-		undo_redo->add_undo_method(parent, "add_child", node, true);
-		undo_redo->add_undo_reference(node);
-	} else {
-		undo_redo->add_undo_method(parent, "add_child", node, true);
-		undo_redo->add_undo_method(parent, "move_child", node, original_index);
-		undo_redo->add_undo_reference(node);
-	}
-	if (batch_action_active) {
-		parent->remove_child(node);
-	} else {
-		undo_redo->commit_action();
-	}
+	undo_redo->add_undo_method(parent, "add_child", node, true);
+	undo_redo->add_undo_method(parent, "move_child", node, original_index);
+	undo_redo->add_undo_reference(node);
+	undo_redo->commit_action();
 
 	String parent_safe_path;
 	_safe_node_path(parent, parent_safe_path);
@@ -1354,176 +1239,6 @@ Dictionary SolersReflectionService::_list_signal_connections(const Dictionary &p
 	data["signal"] = signal_name;
 	data["connections"] = connection_items;
 	data["count"] = connection_items.size();
-	return _ok(data);
-}
-
-static bool _solers_batch_operation_mutates(SolersBatchOperationKind p_kind) {
-	switch (p_kind) {
-		case SolersBatchOperationKind::CREATE_NODE:
-		case SolersBatchOperationKind::INSTANTIATE_SCENE:
-		case SolersBatchOperationKind::UPDATE:
-		case SolersBatchOperationKind::REPARENT:
-		case SolersBatchOperationKind::CONNECT_SIGNAL:
-		case SolersBatchOperationKind::ATTACH_SCRIPT:
-		case SolersBatchOperationKind::REMOVE_NODE:
-		case SolersBatchOperationKind::BAKE_CSG:
-			return true;
-		default:
-			return false;
-	}
-}
-
-Dictionary SolersReflectionService::batch(const Dictionary &p_args) {
-	const Array operations = p_args.get("operations", Array());
-	if (operations.is_empty()) {
-		return _error("INVALID_ARGUMENT", "operations is required and must be a non-empty array.");
-	}
-	EditorNode *editor_node = EditorNode::get_singleton();
-	const bool has_scene_slot = editor_node && EditorNode::get_editor_data().get_edited_scene_count() > 0;
-	bool has_mutation = false;
-	for (int i = 0; i < operations.size(); i++) {
-		if (operations[i].get_type() == Variant::DICTIONARY) {
-			has_mutation = has_mutation || _solers_batch_operation_mutates(_solers_batch_operation_kind(Dictionary(operations[i]).get("op", String())));
-		}
-	}
-	EditorUndoRedoManager *undo_redo = has_mutation ? EditorUndoRedoManager::get_singleton() : nullptr;
-	const int history_id = has_scene_slot ? EditorNode::get_editor_data().get_current_edited_scene_history_id() : EditorUndoRedoManager::INVALID_HISTORY;
-	if (has_mutation && (!undo_redo || history_id == EditorUndoRedoManager::INVALID_HISTORY)) {
-		return _error("UNDO_REDO_UNAVAILABLE", "The current edited scene has no UndoRedo history.", false);
-	}
-	if (has_mutation) {
-		undo_redo->create_action_for_history("Solers: Batch", history_id, UndoRedo::MERGE_DISABLE, true);
-		undo_redo->force_fixed_history();
-		batch_action_active = true;
-	}
-
-	Array results;
-	int ok_count = 0;
-	int error_count = 0;
-	for (int i = 0; i < operations.size(); i++) {
-		if (operations[i].get_type() != Variant::DICTIONARY) {
-			Dictionary entry;
-			entry["index"] = i;
-			entry["op"] = String();
-			entry["result"] = _error("INVALID_OP", "Each operation must be an object with an 'op' field.");
-			results.push_back(entry);
-			error_count++;
-			break;
-		}
-		const Dictionary op = operations[i];
-		const String kind = op.get("op", String());
-		const SolersBatchOperationKind operation_kind = _solers_batch_operation_kind(kind);
-		Dictionary result;
-		switch (operation_kind) {
-			case SolersBatchOperationKind::CREATE_NODE:
-				result = _create_node(op);
-				break;
-			case SolersBatchOperationKind::INSTANTIATE_SCENE:
-				result = instantiate_scene(op);
-				break;
-			case SolersBatchOperationKind::UPDATE:
-				result = _update_node(op);
-				break;
-			case SolersBatchOperationKind::REPARENT:
-				result = _reparent_node(op);
-				break;
-			case SolersBatchOperationKind::CONNECT_SIGNAL:
-				result = _connect_signal(op);
-				break;
-			case SolersBatchOperationKind::ATTACH_SCRIPT:
-				result = _attach_script(op);
-				break;
-			case SolersBatchOperationKind::REMOVE_NODE:
-				result = _remove_node(op);
-				break;
-			case SolersBatchOperationKind::BAKE_CSG:
-				result = _bake_csg(op);
-				break;
-			default:
-				result = _error("UNKNOWN_OP", vformat("Unknown scene edit op '%s'.", kind));
-				break;
-		}
-		Dictionary entry;
-		entry["index"] = i;
-		entry["op"] = kind;
-		entry["result"] = result;
-		results.push_back(entry);
-		if ((bool)result.get("ok", false)) {
-			ok_count++;
-		} else {
-			error_count++;
-			// Stop at the first failure so the model can correct before the
-			// later ops compound on a bad state.
-			break;
-		}
-	}
-
-	bool rolled_back = false;
-	if (has_mutation) {
-		batch_action_active = false;
-		undo_redo->commit_action(false);
-		if (error_count > 0) {
-			rolled_back = undo_redo->undo_history(history_id);
-			EditorUndoRedoManager::History &history = undo_redo->get_or_create_history(history_id);
-			history.redo_stack.clear();
-			history.undo_redo->discard_redo();
-		}
-	}
-
-	Dictionary data;
-	data["count"] = results.size();
-	data["ok_count"] = ok_count;
-	data["error_count"] = error_count;
-	data["completed"] = error_count == 0;
-	data["rolled_back"] = rolled_back;
-	data["authored_state_changed"] = has_mutation && error_count == 0;
-	if (error_count == 0) {
-		Array path_receipts;
-		for (int i = 0; i < results.size(); i++) {
-			const Dictionary entry = results[i];
-			Dictionary receipt;
-			receipt["index"] = entry.get("index", i);
-			receipt["op"] = entry.get("op", String());
-			const Dictionary result_data = Dictionary(entry.get("result", Dictionary())).get("data", Dictionary());
-			const String path = result_data.get("node_path", result_data.get("path", String()));
-			if (!path.is_empty()) {
-				String resolve_error;
-				Node *node = _resolve_node(path, resolve_error);
-				String safe_path;
-				if (node && _safe_node_path(node, safe_path)) {
-					receipt["node_path"] = safe_path;
-					receipt["object_id"] = solers_object_id_to_string(node->get_instance_id());
-					receipt["class_name"] = node->get_class();
-				} else {
-					receipt["node_path"] = path;
-				}
-			}
-			if (result_data.has("native_facts")) {
-				receipt["native_facts"] = result_data["native_facts"];
-			}
-			if (result_data.has("properties")) {
-				receipt["properties"] = result_data["properties"];
-			}
-			path_receipts.push_back(receipt);
-		}
-		data["results"] = path_receipts;
-	} else {
-		data["results"] = results;
-	}
-	if (has_mutation && error_count == 0) {
-		Node *root = has_scene_slot ? editor_node->get_edited_scene() : nullptr;
-		data["target_scene_path"] = root ? root->get_scene_file_path() : String();
-		const Array nested = _nested_instance_scenes(results);
-		if (!nested.is_empty()) {
-			data["nested_instance_scenes"] = nested;
-			data["nested_instance_warning"] = "These operations changed nodes owned by instanced sub-scenes. Godot records that as an instance override inside target_scene_path, and the listed sub-scene files stay untouched. Open the sub-scene and edit it directly if the change has to live in that file.";
-		}
-	}
-	if (error_count > 0) {
-		Dictionary result = _error("SCENE_EDIT_FAILED", "The scene transaction stopped at the first failed operation and rolled back.");
-		result["data"] = data;
-		return result;
-	}
 	return _ok(data);
 }
 
@@ -1763,8 +1478,43 @@ uint64_t SolersReflectionService::get_lightmap_input_digest() const {
 	return entries.hash();
 }
 
+Dictionary SolersReflectionService::bake_lightmap(const Dictionary &p_args) {
+	String resolve_error;
+	LightmapGI *lightmap = Object::cast_to<LightmapGI>(_resolve_node(p_args.get("node_path", String()), resolve_error));
+	EditorNode *editor = EditorNode::get_singleton();
+	Node *root = editor ? editor->get_edited_scene() : nullptr;
+	if (!lightmap || !root) {
+		return _error("LIGHTMAP_CONTEXT_UNAVAILABLE", lightmap ? "No edited scene root exists." : resolve_error);
+	}
+	const String path = p_args.get("path", String());
+	if (!DirAccess::exists(path.get_base_dir())) {
+		return _error("LIGHTMAP_OUTPUT_DIRECTORY_REQUIRED", "The LightmapGI output directory must exist before its file checkpoint is prepared.");
+	}
+	const Ref<LightmapGIData> previous = lightmap->get_light_data();
+	lightmap->set_light_data(Ref<LightmapGIData>());
+	const LightmapGI::BakeError error = lightmap->bake(root == lightmap ? lightmap : lightmap->get_parent(), path);
+	if (error != LightmapGI::BAKE_ERROR_OK) {
+		lightmap->set_light_data(previous);
+		Dictionary failure = _error("LIGHTMAP_BAKE_FAILED", vformat("LightmapGI::bake returned BakeError %d.", error));
+		failure["data"] = Dictionary({ { "bake_error", error }, { "path", path } });
+		return failure;
+	}
+	const Ref<LightmapGIData> baked = lightmap->get_light_data();
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	const int history_id = EditorNode::get_editor_data().get_current_edited_scene_history_id();
+	if (baked.is_null() || !FileAccess::exists(path) || !undo_redo || history_id == EditorUndoRedoManager::INVALID_HISTORY) {
+		lightmap->set_light_data(previous);
+		return _error("LIGHTMAP_BAKE_UNVERIFIED", "Godot did not expose persisted LightmapGIData and an editable UndoRedo history.", false);
+	}
+	undo_redo->create_action_for_history("Solers: Bake LightmapGI", history_id, UndoRedo::MERGE_DISABLE, true);
+	undo_redo->add_do_method(lightmap, "set_light_data", baked);
+	undo_redo->add_undo_method(lightmap, "set_light_data", previous);
+	undo_redo->commit_action(false);
+	return _ok(Dictionary({ { "node_path", String(lightmap->get_path()) }, { "path", path }, { "class_name", baked->get_class() }, { "sha256", FileAccess::get_sha256(path) }, { "bake_error", error }, { "authored_state_changed", true } }));
+}
+
 #ifdef MODULE_CSG_ENABLED
-Dictionary SolersReflectionService::_bake_csg(const Dictionary &p_args) {
+Dictionary SolersReflectionService::bake_csg(const Dictionary &p_args) {
 	const String node_path = p_args.get("node_path", String());
 	const String artifact = p_args.get("artifact", String());
 	String resolve_error;
@@ -1777,7 +1527,7 @@ Dictionary SolersReflectionService::_bake_csg(const Dictionary &p_args) {
 	}
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
 	EditorInterface *editor_interface = EditorInterface::get_singleton();
-	if (!batch_action_active || !undo_redo || !editor_interface || !editor_interface->get_edited_scene_root()) {
+	if (!undo_redo || !editor_interface || !editor_interface->get_edited_scene_root()) {
 		return _error("EDITOR_CONTEXT_UNAVAILABLE", "CSG baking requires an edited scene and EditorUndoRedoManager.", false);
 	}
 
@@ -1817,6 +1567,7 @@ Dictionary SolersReflectionService::_bake_csg(const Dictionary &p_args) {
 	output->set_name(String(source->get_name()) + (artifact == "mesh" ? "BakedMesh" : "BakedCollision"));
 	output->set_transform(source->get_transform());
 	output->set_meta(SNAME("_solers_baked_from"), node_path);
+	undo_redo->create_action("Solers: Bake CSG", UndoRedo::MERGE_DISABLE, source);
 	undo_redo->add_do_method(source, "add_sibling", output, true);
 	undo_redo->add_do_method(output, "set_owner", owner);
 #ifndef PHYSICS_3D_DISABLED
@@ -1831,16 +1582,7 @@ Dictionary SolersReflectionService::_bake_csg(const Dictionary &p_args) {
 		undo_redo->add_do_method(source, "set_visible", false);
 		undo_redo->add_undo_method(source, "set_visible", source->is_visible());
 	}
-	source->add_sibling(output, true);
-	output->set_owner(owner);
-#ifndef PHYSICS_3D_DISABLED
-	if (artifact == "collision") {
-		output->get_child(0)->set_owner(owner);
-	}
-#endif
-	if (hide_source) {
-		source->set_visible(false);
-	}
+	undo_redo->commit_action();
 	String output_path;
 	_safe_node_path(output, output_path);
 	Dictionary data;
@@ -1851,7 +1593,7 @@ Dictionary SolersReflectionService::_bake_csg(const Dictionary &p_args) {
 	return _ok(data);
 }
 #else
-Dictionary SolersReflectionService::_bake_csg(const Dictionary &) {
+Dictionary SolersReflectionService::bake_csg(const Dictionary &) {
 	return _error("CSG_MODULE_UNAVAILABLE", "This build does not include the CSG module.", false);
 }
 #endif
@@ -2175,54 +1917,6 @@ void SolersReflectionService::cancel_uv2_unwrap(const String &p_operation_id) {
 	}
 }
 
-Array SolersReflectionService::resolve_batch_resource_access(const Dictionary &p_args) const {
-	Array accesses;
-	const Variant operations_value = p_args.get("operations", Variant());
-	if (operations_value.get_type() != Variant::ARRAY) {
-		_solers_add_scene_access(accesses, "write", "*");
-		return accesses;
-	}
-	const Array operations = operations_value;
-	for (int i = 0; i < operations.size(); i++) {
-		if (operations[i].get_type() != Variant::DICTIONARY) {
-			_solers_add_scene_access(accesses, "write", "*");
-			continue;
-		}
-		const Dictionary op = operations[i];
-		const SolersBatchOperationKind kind = _solers_batch_operation_kind(op.get("op", String()));
-		switch (kind) {
-			case SolersBatchOperationKind::CREATE_NODE:
-				_solers_add_scene_access(accesses, "write", op.get("parent_path", op.get("parent", ".")));
-				break;
-			case SolersBatchOperationKind::INSTANTIATE_SCENE: {
-				Dictionary resource;
-				resource["mode"] = "read";
-				resource["key"] = "project:" + String(op.get("source_path", String())).replace_char('\\', '/').simplify_path();
-				accesses.push_back(resource);
-				_solers_add_scene_access(accesses, "write", op.get("parent_path", "."));
-			} break;
-			case SolersBatchOperationKind::UPDATE:
-			case SolersBatchOperationKind::ATTACH_SCRIPT:
-			case SolersBatchOperationKind::REMOVE_NODE:
-			case SolersBatchOperationKind::BAKE_CSG:
-				_solers_add_scene_access(accesses, "write", op.get("node_path", "."));
-				break;
-			case SolersBatchOperationKind::REPARENT:
-				_solers_add_scene_access(accesses, "write", op.get("node_path", "."));
-				_solers_add_scene_access(accesses, "write", op.get("new_parent_path", op.get("new_parent", ".")));
-				break;
-			case SolersBatchOperationKind::CONNECT_SIGNAL:
-				_solers_add_scene_access(accesses, "write", op.get("source_path", "."));
-				_solers_add_scene_access(accesses, "write", op.get("target_path", "."));
-				break;
-			default:
-				_solers_add_scene_access(accesses, "write", "*");
-				break;
-		}
-	}
-	return accesses;
-}
-
 // Compact world-space digest of every 3D node a successful batch touched, so
 // the model sees the resulting global transforms and bounds without a
 // follow-up snapshot round-trip (local-vs-global confusion was the top source
@@ -2448,29 +2142,6 @@ String SolersReflectionService::_instance_scene_path(Node *p_node) const {
 		}
 	}
 	return String();
-}
-
-Array SolersReflectionService::_nested_instance_scenes(const Array &p_results) const {
-	Array scenes;
-	HashSet<String> seen;
-	for (int i = 0; i < p_results.size(); i++) {
-		const Dictionary result = Dictionary(p_results[i]).get("result", Dictionary());
-		if (!(bool)result.get("ok", false)) {
-			continue;
-		}
-		const Dictionary result_data = result.get("data", Dictionary());
-		const String path = result_data.has("path") ? String(result_data.get("path", String())) : String(result_data.get("node_path", String()));
-		if (path.is_empty()) {
-			continue;
-		}
-		String resolve_error;
-		const String scene_path = _instance_scene_path(_resolve_node(path, resolve_error));
-		if (!scene_path.is_empty() && !seen.has(scene_path)) {
-			seen.insert(scene_path);
-			scenes.push_back(scene_path);
-		}
-	}
-	return scenes;
 }
 
 SolersReflectionService::SolersReflectionService() {}

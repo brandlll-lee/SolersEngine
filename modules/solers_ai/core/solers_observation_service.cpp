@@ -1254,7 +1254,8 @@ Dictionary SolersObservationService::inspect_project_delivery(const Dictionary &
 		}
 	}
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
-	Node *edited_root = EditorInterface::get_singleton() ? EditorInterface::get_singleton()->get_edited_scene_root() : nullptr;
+	EditorNode *editor = EditorNode::get_singleton();
+	Node *edited_root = editor ? editor->get_edited_scene() : nullptr;
 	if (edited_root && undo_redo) {
 		const int history_id = EditorNode::get_editor_data().get_current_edited_scene_history_id();
 		if (history_id != EditorUndoRedoManager::INVALID_HISTORY && undo_redo->is_history_unsaved(history_id)) {
@@ -2448,11 +2449,12 @@ Dictionary SolersObservationService::observe_runtime(const Dictionary &p_args, i
 		}
 		return _runtime_observation_result(result);
 	}
-	const uint64_t since_cursor = p_args.has("since_cursor") ? (int64_t)p_args["since_cursor"] : (target == "performance" ? runtime_cursor : 0);
+	const uint64_t since_cursor = p_args.has("since_cursor") ? (int64_t)p_args["since_cursor"] : (target == "performance" && performance_sample_cursor > 0 ? performance_sample_cursor - 1 : 0);
 	const bool include_events = (bool)p_args.get("include_events", false);
 	const int max_events = CLAMP((int)p_args.get("max_events", include_events ? 32 : 0), 0, 256);
 	Array events;
 	Dictionary error_digest;
+	Dictionary performance_sample;
 	uint64_t consumed_cursor = since_cursor;
 	bool truncated = false;
 	int64_t epoch_error_count = 0;
@@ -2475,6 +2477,9 @@ Dictionary SolersObservationService::observe_runtime(const Dictionary &p_args, i
 		consumed_cursor = event_cursor;
 
 		const StringName event_type = StringName(event.get("type", String()));
+		if (target == "performance" && event_type == SNAME("performance")) {
+			performance_sample = event;
+		}
 		if (event_type == SNAME("error") && !(bool)event.get("warning", false)) {
 			epoch_error_count++;
 			const String message = String(event.get("error", String())) + "\n" + String(event.get("details", String()));
@@ -2501,6 +2506,9 @@ Dictionary SolersObservationService::observe_runtime(const Dictionary &p_args, i
 	result["epoch_error_count"] = epoch_error_count;
 	result["events"] = events;
 	result["truncated"] = truncated;
+	if (!performance_sample.is_empty()) {
+		result["sample"] = performance_sample;
+	}
 	if (target == "performance" && performance_sample_cursor <= since_cursor) {
 		EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
 		ScriptEditorDebugger *debugger = debugger_node ? debugger_node->get_current_debugger() : nullptr;

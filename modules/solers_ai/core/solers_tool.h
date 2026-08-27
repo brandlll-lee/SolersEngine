@@ -66,6 +66,9 @@ enum class SolersToolExposure {
 	// Registered for later discovery (via tool_search) but omitted from the
 	// initial list. Keeps the long tail out of the prompt until needed.
 	DEFERRED,
+	// Discoverable through object/query capability facts and executable only
+	// inside object.transaction.
+	TRANSACTION,
 	// Dispatchable but never shown to the model.
 	HIDDEN,
 };
@@ -77,16 +80,24 @@ enum class SolersToolExecution {
 
 // How one successful tool mutation can be reversed. This is authoritative:
 // the executor never infers reversibility from a tool name or permission.
-enum class SolersToolMutationPolicy {
-	READ_ONLY,
-	EDITOR_UNDO,
-	FILE_CHECKPOINT,
-	IRREVERSIBLE,
+enum class SolersToolMutationDomain : uint32_t {
+	NONE = 0,
+	EDITOR = 1 << 0,
+	FILES = 1 << 1,
+	IRREVERSIBLE = 1 << 2,
 };
+
+inline SolersToolMutationDomain operator|(SolersToolMutationDomain p_left, SolersToolMutationDomain p_right) {
+	return SolersToolMutationDomain(uint32_t(p_left) | uint32_t(p_right));
+}
+
+inline bool solers_has_mutation_domain(SolersToolMutationDomain p_domains, SolersToolMutationDomain p_domain) {
+	return (uint32_t(p_domains) & uint32_t(p_domain)) != 0;
+}
 
 // Closed UI presentation kind for chat tool rows. Declared at registration —
 // the dock maps kind → glyph/verb and never matches tool name strings.
-// DEFAULT means "derive from permission / mutation_policy".
+// DEFAULT means "derive from permission / mutation domains".
 enum class SolersToolUiKind {
 	DEFAULT,
 	OBSERVE,
@@ -119,10 +130,12 @@ struct SolersToolCapability {
 	// boundaries (for example, approved third-party code installation) in the
 	// same authoritative tool definition as its schema and handler.
 	std::function<SolersPermissionManager::Permission(const Dictionary &)> permission_resolver;
-	SolersToolMutationPolicy mutation_policy = SolersToolMutationPolicy::READ_ONLY;
+	SolersToolMutationDomain mutation_domains = SolersToolMutationDomain::NONE;
 	// Resolve the reversal policy for a domain tool whose validated operations
 	// use different native persistence mechanisms.
-	std::function<SolersToolMutationPolicy(const Dictionary &)> mutation_policy_resolver;
+	std::function<SolersToolMutationDomain(const Dictionary &)> mutation_domain_resolver;
+	std::function<Dictionary(const Dictionary &)> argument_validator;
+	StringName target_class;
 	// Godot/editor APIs stay on the main thread. Handlers opt into a worker
 	// only when they are explicitly thread-safe.
 	SolersToolExecution execution = SolersToolExecution::MAIN_THREAD;

@@ -18,7 +18,7 @@ Use for 3D layout, imported models, PBR materials, lights, Environment/GI, shado
 | GI (pick **one** final) | SDFGI (dynamic/large) **or** `LightmapGI` (static) **or** `VoxelGI` — not two finals |
 | Materials | One PBR map family (albedo/normal/roughness); `StandardMaterial3D` / `ORMMaterial3D` |
 | CSG | Whitebox through ClassDB; bake mesh or collision artifacts inside the same `object.transaction` |
-| UV2 / lightmaps | `mesh.unwrap_uv2`; run the native editor bake only after topology is stable |
+| UV2 / lightmaps | Discover the applicable native capability with `engine.describe`; transact only after topology is stable |
 | Exposure | `CameraAttributesPhysical` / `Practical` on `Camera3D` when using physical units |
 
 ## Laws
@@ -37,4 +37,4 @@ Use for 3D layout, imported models, PBR materials, lights, Environment/GI, shado
 1. Static appearance: `render.capture target=camera`; use its Environment, CameraAttributes, lights, effective shader uniforms, and RenderState fingerprint as the authority.
 2. If causality is unclear, capture once with a native `Viewport.debug_draw` value obtained from `engine.describe`; do not infer renderer state from pixel statistics.
 3. Fix the measured source, re-capture once, and compare RenderState plus image hash. Use runtime observation only for gameplay lifecycle, and relations only for geometry.
-4. After UV2 work or a user-run native lightmap bake, capture again.
+4. After the native UV2 or lightmap transaction, capture again.

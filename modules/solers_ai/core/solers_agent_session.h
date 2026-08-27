@@ -91,7 +91,7 @@ class SolersAgentSession : public Object {
 	Dictionary streamed_tool_calls; // call id -> surfaced tool call state for this model step
 	String last_stop_reason;
 	Dictionary last_usage;
-	Dictionary window_usage;
+	Dictionary last_request_usage;
 	Dictionary current_plan;
 	String last_outcome;
 	Dictionary active_provider; // { provider, model, base_url, api_key, features }
@@ -212,6 +212,7 @@ class SolersAgentSession : public Object {
 	Dictionary _build_request(const Array &p_messages, const String &p_request_system_prompt, const Array &p_tools) const;
 	Dictionary _provider_dispatch_error() const;
 	Error _begin_provider_request(const Dictionary &p_request, const Dictionary &p_profile);
+	void _record_request_usage(const Dictionary &p_usage);
 	Error _dispatch_model_request();
 	Error _dispatch_compaction_request();
 	Error _begin_compaction(bool p_from_overflow);

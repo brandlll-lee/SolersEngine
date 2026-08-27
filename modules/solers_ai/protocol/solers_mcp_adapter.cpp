@@ -96,7 +96,7 @@ Array SolersMCPAdapter::_tool_definitions_for_mcp() const {
 	for (int i = 0; i < definitions.size(); i++) {
 		Dictionary definition = definitions[i];
 		const String exposure = definition.get("exposure", "direct");
-		if (exposure == "deferred" || exposure == "hidden") {
+		if (exposure == "deferred" || exposure == "transaction" || exposure == "hidden") {
 			continue;
 		}
 		Dictionary tool;
@@ -110,8 +110,9 @@ Array SolersMCPAdapter::_tool_definitions_for_mcp() const {
 		Dictionary annotations;
 		annotations["title"] = definition.get("name", String());
 		annotations["modelName"] = definition.get("model_name", String());
-		annotations["readOnlyHint"] = String(definition.get("mutation_policy", "read_only")) == "read_only";
-		annotations["destructiveHint"] = String(definition.get("mutation_policy", "read_only")) == "irreversible";
+		const PackedStringArray mutation_domains = definition.get("mutation_domains", PackedStringArray());
+		annotations["readOnlyHint"] = mutation_domains.is_empty();
+		annotations["destructiveHint"] = mutation_domains.has("irreversible");
 		annotations["openWorldHint"] = false;
 		tool["annotations"] = annotations;
 		tools.push_back(tool);

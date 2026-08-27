@@ -146,7 +146,7 @@ TEST_CASE("[SolersContextManager] completed tool evidence is outside tool-call s
 	history.push_back(make_user_message("Inspect the scene.", 1));
 	Array consumed_calls = make_tool_calls("consumed", "object.transaction");
 	Dictionary consumed_call = consumed_calls[0];
-	const String consumed_arguments = JSON::stringify(Dictionary({ { "operations", Array({ Dictionary({ { "op", "update" }, { "properties", Dictionary({ { "large", String("argument ").repeat(2000) } }) } }) }) } }));
+	const String consumed_arguments = JSON::stringify(Dictionary({ { "capability", "scene.node.update" }, { "arguments", Dictionary({ { "properties", Dictionary({ { "large", String("argument ").repeat(2000) } }) } }) } }));
 	consumed_call["arguments"] = consumed_arguments;
 	consumed_calls[0] = consumed_call;
 	history.push_back(SolersLLMMessage::assistant("Applying the observed state.", consumed_calls));
@@ -256,18 +256,22 @@ TEST_CASE("[SolersSession][SceneTree][Editor] journal rows preserve terminal sem
 	write("context_compaction", 11, 1, compacting);
 	compacting["phase"] = "cancelled";
 	write("context_compaction", 12, 1, compacting);
-	write("turn_outcome", 13, 1, Dictionary({ { "outcome", "aborted" }, { "usage", Dictionary({ { "input_tokens", 300 }, { "output_tokens", 100 }, { "reasoning_tokens", 50 }, { "cache_read_tokens", 25 }, { "cache_write_tokens", 25 }, { "context_window", 1000 }, { "future_provider_field", 7 } }) } }));
+	write("plan_updated", 13, 1, Dictionary({ { "plan", Array({ Dictionary({ { "step", "Inspect" }, { "status", "in_progress" } }) }) } }));
+	write("turn_outcome", 14, 1, Dictionary({ { "outcome", "aborted" }, { "usage", Dictionary({ { "input_tokens", 300 }, { "output_tokens", 100 }, { "reasoning_tokens", 50 }, { "cache_read_tokens", 25 }, { "cache_write_tokens", 25 }, { "context_window", 1000 }, { "message_count", 6 }, { "media_reference_count", 2 }, { "future_provider_field", 7 } }) } }));
 	for (int i = 0; i < 30; i++) {
 		Dictionary message = make_user_message("history " + itos(i));
 		message["author"] = "human";
-		write("message", 14 + i, 2 + i, message);
+		write("message", 15 + i, 2 + i, message);
 	}
 	solers_transcript_flush(session_id);
 	SolersAgentSession restored;
 	restored.set_session(project, session_id);
-	const Dictionary window_usage = restored.get_status().get("window_usage", Dictionary());
-	CHECK((int64_t)window_usage.get("used_tokens", 0) == 500);
-	CHECK((int64_t)window_usage.get("context_window", 0) == 1000);
+	const Dictionary last_request_usage = restored.get_status().get("last_request_usage", Dictionary());
+	CHECK((int64_t)last_request_usage.get("used_tokens", 0) == 500);
+	CHECK((int64_t)last_request_usage.get("context_window", 0) == 1000);
+	CHECK((int)last_request_usage.get("message_count", 0) == 6);
+	CHECK((int)last_request_usage.get("media_reference_count", 0) == 2);
+	CHECK(restored.get_plan().is_empty());
 	const Array timeline = restored.get_timeline_entries();
 	REQUIRE(timeline.size() == 33);
 	CHECK(Dictionary(timeline[1]).get("phase", String()) == "cancelled");
@@ -278,7 +282,7 @@ TEST_CASE("[SolersSession][SceneTree][Editor] journal rows preserve terminal sem
 	dock->set_agent_session(&restored);
 	dock->load_chat_history(timeline);
 	SolersPermissionManager permissions;
-	const Dictionary denied_request = permissions.request_user_approval("object.transaction", Dictionary({ { "scope", "scene" } }), SolersPermissionManager::PERMISSION_EDIT_SCENE);
+	const Dictionary denied_request = permissions.request_user_approval("object.transaction", Dictionary({ { "capability", "scene.node.update" }, { "arguments", Dictionary() } }), SolersPermissionManager::PERMISSION_EDIT_SCENE);
 	dock->set_services(nullptr, nullptr, nullptr, &permissions, nullptr);
 	MessageQueue::get_singleton()->flush();
 	Node *approval_mode = dock->find_child("ApprovalModeOption", true, false);
@@ -290,10 +294,12 @@ TEST_CASE("[SolersSession][SceneTree][Editor] journal rows preserve terminal sem
 	REQUIRE(context_ring != nullptr);
 	CHECK(composer_toolbar->get_child(composer_toolbar->get_child_count() - 2) == context_ring);
 	CHECK(Math::is_equal_approx(context_ring->get_usage_ratio(), 0.5f));
-	CHECK(context_ring->get_tooltip_text().contains("50"));
-	context_ring->set_usage(212000, 256000);
+	CHECK(context_ring->get_tooltip_text().contains("latest model request"));
+	context_ring->set_usage(212000, 256000, 7, 2, 1);
 	CHECK(context_ring->get_tooltip_text().contains("212K"));
 	CHECK(context_ring->get_tooltip_text().contains("256K"));
+	CHECK(context_ring->get_tooltip_text().contains("7 projected messages, 2 media references"));
+	CHECK(context_ring->get_tooltip_text().contains("1 context compactions"));
 	CHECK(context_ring->get_usage_ratio() > 0.82f);
 	CHECK(context_ring->get_custom_minimum_size().x == 28 * EDSCALE);
 	context_ring->set_usage(1500, 1000);
@@ -348,7 +354,7 @@ TEST_CASE("[SolersSession][SceneTree][Editor] journal rows preserve terminal sem
 	dock->queue_free();
 	MessageQueue::get_singleton()->flush();
 	restored.reset_conversation();
-	CHECK(Dictionary(restored.get_status().get("window_usage", Dictionary())).is_empty());
+	CHECK(Dictionary(restored.get_status().get("last_request_usage", Dictionary())).is_empty());
 	const String empty_id = restored.get_status().get("session_id", String());
 	CHECK_FALSE(FileAccess::exists(solers_session_dir().path_join("sessions").path_join(empty_id.sha256_text() + ".jsonl")));
 	restored.shutdown();

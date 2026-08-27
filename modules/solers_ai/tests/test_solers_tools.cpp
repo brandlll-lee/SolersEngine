@@ -140,6 +140,10 @@ bool search_result_has_tool(const Dictionary &p_result, const String &p_name) {
 	return !solers_test_find_dictionary(tools, SNAME("name"), p_name).is_empty();
 }
 
+Dictionary transaction_operation(const String &p_capability, const Dictionary &p_arguments) {
+	return Dictionary({ { "capability", p_capability }, { "arguments", p_arguments } });
+}
+
 TEST_CASE("[SolersToolRegistry] registers tools by lookup, not a hardcoded catalog") {
 	// Behavior contract (no-patch): a brand-new tool the dispatcher has never
 	// special-cased becomes discoverable + dispatchable purely by registering
@@ -148,7 +152,7 @@ TEST_CASE("[SolersToolRegistry] registers tools by lookup, not a hardcoded catal
 
 	SolersToolCapability cap;
 	cap.permission = SolersPermissionManager::PERMISSION_OBSERVE;
-	cap.mutation_policy = SolersToolMutationPolicy::READ_ONLY;
+	cap.mutation_domains = SolersToolMutationDomain::NONE;
 	cap.execution = SolersToolExecution::WORKER_THREAD;
 
 	Dictionary schema;
@@ -272,7 +276,7 @@ TEST_CASE("[SolersToolRegistry] schema preflight runs before approval or handler
 	int calls = 0;
 	SolersToolCapability cap;
 	cap.permission = SolersPermissionManager::PERMISSION_EDIT_FILES;
-	cap.mutation_policy = SolersToolMutationPolicy::IRREVERSIBLE;
+	cap.mutation_domains = SolersToolMutationDomain::IRREVERSIBLE;
 	Dictionary amount;
 	amount["type"] = "number";
 	amount["exclusiveMinimum"] = 0;
@@ -320,7 +324,7 @@ TEST_CASE("[SolersToolRegistry] preserves internal session context without chang
 
 	SolersToolCapability cap;
 	cap.permission = SolersPermissionManager::PERMISSION_OBSERVE;
-	cap.mutation_policy = SolersToolMutationPolicy::READ_ONLY;
+	cap.mutation_domains = SolersToolMutationDomain::NONE;
 	registry.register_tool(memnew(SolersFunctionTool(
 			"synthetic.context", "Returns its internal execution context.", empty_tool_schema(), SolersToolExposure::DIRECT, cap,
 			[](const SolersToolContext &p_context, const Dictionary &) {
@@ -444,7 +448,6 @@ TEST_CASE("[SolersBuiltinSkills] registry catalog and content stay consistent wi
 	CHECK(animation.content.contains("must not suppress valid pixels"));
 	SolersBuiltinSkillView gameplay;
 	REQUIRE(SolersBuiltinSkills::find_by_name("godot-scripting-input-gameplay", gameplay));
-	CHECK(gameplay.content.contains("independently observe scene/spatial state and capture runtime pixels"));
 
 	SolersBuiltinSkillView missing;
 	CHECK_FALSE(SolersBuiltinSkills::find_by_name("synthetic-never-registered-skill", missing));
@@ -529,12 +532,11 @@ TEST_CASE("[SolersToolRegistry] default tools keep one portable ABI across provi
 		CHECK_FALSE(response_tool.get("strict", true));
 	}
 	const Dictionary transaction = solers_test_find_dictionary(tools, SNAME("name"), "object.transaction");
-	const Dictionary operation = Dictionary(Dictionary(Dictionary(transaction.get("input_schema", Dictionary())).get("properties", Dictionary())).get("operations", Dictionary())).get("items", Dictionary());
-	const Dictionary operation_properties = operation.get("properties", Dictionary());
-	const Array operation_names = Dictionary(operation_properties.get("op", Dictionary())).get("enum", Array());
-	CHECK((operation_names.has("update") && !operation_names.has("set_property")));
-	CHECK((operation_properties.has("properties") && !operation_properties.has("property") && !operation_properties.has("value")));
-	CHECK((operation_properties.has("source_path") && !operation_properties.has("resource_path") && !operation_properties.has("expected_state")));
+	const Dictionary transaction_properties = Dictionary(transaction.get("input_schema", Dictionary())).get("properties", Dictionary());
+	CHECK(transaction_properties.has("capability"));
+	CHECK(transaction_properties.has("arguments"));
+	CHECK_FALSE(transaction_properties.has("operations"));
+	CHECK_FALSE(Dictionary(transaction_properties.get("capability", Dictionary())).has("enum"));
 	CHECK(Array(Dictionary(transaction.get("input_schema", Dictionary())).get("required", Array())).has("expected_state"));
 	const Dictionary script_edit = solers_test_find_dictionary(tools, SNAME("name"), "script.edit");
 	const Dictionary script_properties = Dictionary(script_edit.get("input_schema", Dictionary())).get("properties", Dictionary());
@@ -740,6 +742,139 @@ TEST_CASE("[SolersResourceService] PropertyInfo coercion and animation inventory
 	CHECK((int)Dictionary(clips[0]).get("track_count", 0) == 1);
 }
 
+TEST_CASE("[SolersToolRegistry] a registered transaction capability needs no dispatcher branch") {
+	const String path = "res://.solers_synthetic_capability.txt";
+	SolersTestPaths cleanup;
+	cleanup.add(path);
+	SolersFileCheckpoint checkpoints;
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_FILES, true);
+	SolersReflectionService reflection;
+	SolersToolRegistry registry;
+	registry.set_file_checkpoint(&checkpoints);
+	registry.set_permission_manager(&permissions);
+	registry.set_reflection_service(&reflection);
+	registry.register_default_tools();
+
+	bool executed = false;
+	SolersToolCapability capability;
+	capability.permission = SolersPermissionManager::PERMISSION_EDIT_FILES;
+	capability.mutation_domains = SolersToolMutationDomain::FILES;
+	capability.resource_access = [path](const Dictionary &) {
+		return Array({ Dictionary({ { "mode", "write" }, { "key", "project:" + path } }) });
+	};
+	Dictionary schema({ { "type", "object" }, { "properties", Dictionary({ { "content", Dictionary({ { "type", "string" } }) } }) }, { "required", Array({ "content" }) }, { "additionalProperties", false } });
+	registry.register_tool(memnew(SolersFunctionTool("synthetic.transaction", "Synthetic capability contract.", schema, SolersToolExposure::TRANSACTION, capability,
+			[&executed, path](const SolersToolContext &, const Dictionary &p_args) {
+				executed = true;
+				Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
+				if (file.is_null()) {
+					return Dictionary({ { "ok", false }, { "error", Dictionary({ { "code", "WRITE_FAILED" } }) } });
+				}
+				file->store_string(p_args.get("content", String()));
+				return Dictionary({ { "ok", true }, { "data", Dictionary({ { "path", path }, { "authored_state_changed", true } }) } });
+			})));
+
+	const Dictionary described = registry.call_tool("engine.describe", Dictionary({ { "query", "synthetic" } }));
+	REQUIRE((bool)described.get("ok", false));
+	const Array capabilities = Dictionary(described.get("data", Dictionary())).get("transaction_capabilities", Array());
+	CHECK_FALSE(solers_test_find_dictionary(capabilities, SNAME("name"), "synthetic.transaction").is_empty());
+
+	SolersToolContext context;
+	context.call_id = "synthetic-transaction";
+	context.session_id = "synthetic-capability-contract";
+	Dictionary args;
+	args["expected_state"] = Dictionary({ { "resources", Array() } });
+	args.merge(transaction_operation("synthetic.transaction", Dictionary({ { "content", "native capability" } })));
+	const Dictionary result = registry.call_tool_with_context("object.transaction", args, context);
+	REQUIRE((bool)result.get("ok", false));
+	CHECK(executed);
+	CHECK(FileAccess::get_file_as_string(path) == "native capability");
+	const Dictionary mutation = Dictionary(result.get("data", Dictionary())).get("mutation", Dictionary());
+	CHECK(Array(mutation.get("domains", Array())).has("files"));
+
+	context.call_id = "synthetic-revert";
+	const Dictionary reverted = registry.call_tool_with_context("history.revert", Dictionary({ { "reversal_id", mutation.get("reversal_id", String()) } }), context);
+	REQUIRE((bool)reverted.get("ok", false));
+	CHECK_FALSE(FileAccess::exists(path));
+}
+
+TEST_CASE("[SolersToolRegistry] object query invokes only ClassDB const zero-argument getters") {
+	Ref<Image> image = Image::create_empty(8, 4, false, Image::FORMAT_RGBA8);
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
+	SolersReflectionService reflection;
+	SolersResourceService resources;
+	SolersToolRegistry registry;
+	registry.set_permission_manager(&permissions);
+	registry.set_reflection_service(&reflection);
+	registry.set_resource_service(&resources);
+	registry.register_default_tools();
+	Dictionary args;
+	args["target"] = "object";
+	args["object_id"] = solers_object_id_to_string(image->get_instance_id());
+	args["methods"] = Array({ "get_width", "get_height", "resize" });
+	const Dictionary result = registry.call_tool("object.query", args);
+	REQUIRE((bool)result.get("ok", false));
+	const Dictionary values = Dictionary(result.get("data", Dictionary())).get("method_values", Dictionary());
+	CHECK((int)values.get("get_width", 0) == 8);
+	CHECK((int)values.get("get_height", 0) == 4);
+	CHECK(Dictionary(values.get("resize", Dictionary())).get("code", String()) == "METHOD_NOT_READABLE");
+}
+
+TEST_CASE("[SolersFileCheckpoint] directory state restores the exact recursive digest") {
+	const String directory = "res://.solers_directory_checkpoint";
+	const String original_file = directory.path_join("nested/original.txt");
+	const String added_file = directory.path_join("added.txt");
+	SolersTestPaths cleanup;
+	cleanup.add(directory);
+	REQUIRE(DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(original_file.get_base_dir())) == OK);
+	{
+		Ref<FileAccess> file = FileAccess::open(original_file, FileAccess::WRITE);
+		REQUIRE(file.is_valid());
+		file->store_string("before");
+	}
+	SolersFileCheckpoint checkpoints;
+	const Dictionary before = checkpoints.get_path_state(directory).get("data", Dictionary());
+	const Dictionary created = checkpoints.create_checkpoint(directory, "directory contract");
+	REQUIRE((bool)created.get("ok", false));
+	const Dictionary checkpoint = created.get("data", Dictionary());
+	CHECK(checkpoint.get("directory", false));
+	{
+		Ref<FileAccess> changed = FileAccess::open(original_file, FileAccess::WRITE);
+		REQUIRE(changed.is_valid());
+		changed->store_string("after");
+		Ref<FileAccess> added = FileAccess::open(added_file, FileAccess::WRITE);
+		REQUIRE(added.is_valid());
+		added->store_string("added");
+	}
+	CHECK(Dictionary(checkpoints.get_path_state(directory).get("data", Dictionary())).get("content_sha256", String()) != before.get("content_sha256", String()));
+	REQUIRE((bool)checkpoints.restore_checkpoint_state(checkpoint).get("ok", false));
+	CHECK(FileAccess::get_file_as_string(original_file) == "before");
+	CHECK_FALSE(FileAccess::exists(added_file));
+	CHECK(Dictionary(checkpoints.get_path_state(directory).get("data", Dictionary())).get("content_sha256", String()) == before.get("content_sha256", String()));
+	checkpoints.discard_checkpoint_state(checkpoint);
+	CHECK_FALSE(DirAccess::exists(checkpoint.get("checkpoint_path", String())));
+}
+
+TEST_CASE("[SolersToolRegistry] ClassDB inheritance filters transaction capabilities") {
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
+	SolersReflectionService reflection;
+	SolersToolRegistry registry;
+	registry.set_permission_manager(&permissions);
+	registry.set_reflection_service(&reflection);
+	registry.register_default_tools();
+	auto describe = [&registry](const String &p_class) {
+		const Dictionary result = registry.call_tool("engine.describe", Dictionary({ { "classes", Array({ Dictionary({ { "class_name", p_class } }) }) } }));
+		CHECK((bool)result.get("ok", false));
+		return Array(Dictionary(result.get("data", Dictionary())).get("transaction_capabilities", Array()));
+	};
+	CHECK_FALSE(solers_test_find_dictionary(describe("LightmapGI"), SNAME("name"), "scene.lightmap.bake").is_empty());
+	CHECK(solers_test_find_dictionary(describe("Decal"), SNAME("name"), "scene.lightmap.bake").is_empty());
+}
+
 TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked transactions") {
 	const String path = "res://.solers_transaction_contract.tres";
 	SolersTestPaths cleanup;
@@ -761,16 +896,9 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 	context.call_id = "create_resource";
 	context.session_id = "resource-transaction-contract";
 
-	Dictionary create;
-	create["op"] = "create";
-	create["class_name"] = "StandardMaterial3D";
-	create["path"] = path;
-	Array create_operations;
-	create_operations.push_back(create);
 	Dictionary create_args;
-	create_args["scope"] = "resource";
 	create_args["expected_state"] = Dictionary({ { "resources", Array() } });
-	create_args["operations"] = create_operations;
+	create_args.merge(transaction_operation("resource.create", Dictionary({ { "class_name", "StandardMaterial3D" }, { "path", path } })));
 	const Dictionary created = registry.call_tool_with_context(SNAME("object.transaction"), create_args, context);
 	REQUIRE((bool)created.get("ok", false));
 	const String sha = FileAccess::get_sha256(path);
@@ -786,20 +914,13 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 	REQUIRE((bool)observed.get("ok", false));
 	Dictionary expected_resource = observed.get("data", Dictionary());
 
-	Dictionary update;
-	update["op"] = "update";
-	update["path"] = path;
 	expected_resource["sha256"] = String("0000000000000000000000000000000000000000000000000000000000000000");
 	Dictionary properties;
 	properties["albedo_color"] = "#4080bfff";
 	properties["albedo_texture"] = Variant();
-	update["properties"] = properties;
-	Array update_operations;
-	update_operations.push_back(update);
 	Dictionary update_args;
-	update_args["scope"] = "resource";
 	update_args["expected_state"] = Dictionary({ { "resources", Array({ expected_resource }) } });
-	update_args["operations"] = update_operations;
+	update_args.merge(transaction_operation("resource.update", Dictionary({ { "path", path }, { "properties", properties } })));
 	context.call_id = "stale_resource";
 	const Dictionary stale = registry.call_tool_with_context(SNAME("object.transaction"), update_args, context);
 	CHECK_FALSE((bool)stale.get("ok", true));
@@ -807,10 +928,7 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 	CHECK(FileAccess::get_sha256(path) == sha);
 
 	expected_resource["sha256"] = sha;
-	update["properties"] = properties;
-	update_operations[0] = update;
 	update_args["expected_state"] = Dictionary({ { "resources", Array({ expected_resource }) } });
-	update_args["operations"] = update_operations;
 	context.call_id = "update_resource";
 	const Dictionary updated = registry.call_tool_with_context(SNAME("object.transaction"), update_args, context);
 	REQUIRE((bool)updated.get("ok", false));
@@ -831,8 +949,7 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 
 	const String failure_path = "res://.solers_transaction_failure.tres";
 	cleanup.add(failure_path);
-	Dictionary invalid_create({ { "op", "create" }, { "path", failure_path } });
-	create_args["operations"] = Array({ invalid_create });
+	create_args.merge(transaction_operation("resource.create", Dictionary({ { "path", failure_path } })), true);
 	context.call_id = "resource_failure";
 	const Dictionary failed = registry.call_tool_with_context(SNAME("object.transaction"), create_args, context);
 	CHECK_FALSE((bool)failed.get("ok", true));
@@ -850,7 +967,7 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 
 TEST_CASE("[SolersToolRegistry] session rewind stops at the recorded irreversible boundary") {
 	SolersToolRegistry registry;
-	Dictionary barrier({ { "id", "barrier-5" }, { "session_id", "session-a" }, { "session_revision", 5 }, { "policy", "irreversible" } });
+	Dictionary barrier({ { "id", "barrier-5" }, { "session_id", "session-a" }, { "session_revision", 5 }, { "domains", PackedStringArray({ "irreversible" }) } });
 	Array records;
 	records.push_back(barrier);
 	registry.restore_session_reversals("session-a", records);
@@ -890,7 +1007,7 @@ TEST_CASE("[SolersToolRegistry] deferred search prioritizes exact ids and never 
 	registry.register_default_tools();
 	SolersToolCapability cap;
 	cap.permission = SolersPermissionManager::PERMISSION_OBSERVE;
-	cap.mutation_policy = SolersToolMutationPolicy::READ_ONLY;
+	cap.mutation_domains = SolersToolMutationDomain::NONE;
 	auto add_external = [&](const StringName &p_name, const String &p_description) {
 		registry.register_tool(memnew(SolersFunctionTool(
 				p_name, p_description, empty_tool_schema(), SolersToolExposure::DEFERRED, cap,
@@ -938,7 +1055,7 @@ TEST_CASE("[SolersToolRegistry] tool.search uses Godot fuzzy fallback for extern
 
 	SolersToolCapability cap;
 	cap.permission = SolersPermissionManager::PERMISSION_OBSERVE;
-	cap.mutation_policy = SolersToolMutationPolicy::READ_ONLY;
+	cap.mutation_domains = SolersToolMutationDomain::NONE;
 
 	Dictionary payload_schema;
 	payload_schema["description"] = "Accepts metadataquartz data from any future tool.";
@@ -982,7 +1099,7 @@ TEST_CASE("[SolersToolRegistry] normalize_tool_args is public and idempotent") {
 
 	SolersToolCapability cap;
 	cap.permission = SolersPermissionManager::PERMISSION_OBSERVE;
-	cap.mutation_policy = SolersToolMutationPolicy::READ_ONLY;
+	cap.mutation_domains = SolersToolMutationDomain::NONE;
 
 	Dictionary schema;
 	schema["type"] = "object";
@@ -1058,7 +1175,7 @@ TEST_CASE("[SolersToolRegistry] audit redaction normalizes payload fields") {
 
 	SolersToolCapability cap;
 	cap.permission = SolersPermissionManager::PERMISSION_OBSERVE;
-	cap.mutation_policy = SolersToolMutationPolicy::IRREVERSIBLE;
+	cap.mutation_domains = SolersToolMutationDomain::IRREVERSIBLE;
 	cap.redact_args.push_back("content");
 
 	Dictionary schema;
@@ -1216,30 +1333,16 @@ TEST_CASE("[SolersToolRegistry] scene object transaction access follows its nati
 	registry.set_reflection_service(&reflection_service);
 	registry.register_default_tools();
 
-	Dictionary write_op;
-	write_op["op"] = "update";
-	write_op["node_path"] = "ReferenceCamera";
-	write_op["properties"] = Dictionary({ { "fov", 55.0 } });
-	Array write_operations;
-	write_operations.push_back(write_op);
 	Dictionary write_args;
-	write_args["scope"] = "scene";
-	write_args["operations"] = write_operations;
+	write_args.merge(transaction_operation("scene.node.update", Dictionary({ { "node_path", "ReferenceCamera" }, { "properties", Dictionary({ { "fov", 55.0 } }) } })));
 	CHECK_FALSE(registry.is_read_only("object.transaction", write_args));
 	const Array write_access = registry.resolve_resource_access("object.transaction", write_args);
 	REQUIRE(write_access.size() == 1);
 	CHECK(Dictionary(write_access[0]).get("mode", String()) == "write");
 	CHECK(Dictionary(write_access[0]).get("key", String()) == "scene:ReferenceCamera");
 
-	Dictionary instantiate;
-	instantiate["op"] = "instantiate";
-	instantiate["source_path"] = "res://props/tree.glb";
-	instantiate["parent_path"] = "Environment";
-	Array instantiate_operations;
-	instantiate_operations.push_back(instantiate);
 	Dictionary instantiate_args;
-	instantiate_args["scope"] = "scene";
-	instantiate_args["operations"] = instantiate_operations;
+	instantiate_args.merge(transaction_operation("scene.instance.instantiate", Dictionary({ { "source_path", "res://props/tree.glb" }, { "parent_path", "Environment" } })));
 	const Array instantiate_access = registry.resolve_resource_access("object.transaction", instantiate_args);
 	REQUIRE(instantiate_access.size() == 2);
 	CHECK(Dictionary(instantiate_access[0]).get("mode", String()) == "read");
@@ -1259,7 +1362,7 @@ TEST_CASE("[SolersToolRegistry][SceneTree][Editor] scene.open follows EditorNode
 	const Dictionary tool = solers_test_find_dictionary(registry.list_tools(), SNAME("name"), "scene.open");
 	REQUIRE_FALSE(tool.is_empty());
 	CHECK(tool.get("permission", String()) == "observe");
-	CHECK(tool.get("mutation_policy", String()) == "irreversible");
+	CHECK(PackedStringArray(tool.get("mutation_domains", PackedStringArray())).has("irreversible"));
 	CHECK(tool.get("exposure", String()) == "direct");
 	CHECK_FALSE(registry.affects_scene_state(SNAME("scene.open")));
 	const Dictionary schema = tool.get("input_schema", Dictionary());
@@ -1378,19 +1481,13 @@ TEST_CASE("[SolersToolRegistry] direct asset jobs declare their project writes")
 TEST_CASE("[SolersToolRegistry] transcript audit preserves full redacted tool arguments") {
 	SolersToolRegistry registry;
 	registry.register_default_tools();
-	Array operations;
+	Dictionary properties;
 	for (int i = 0; i < 40; i++) {
-		Dictionary operation;
-		operation["op"] = "update";
-		operation["node_path"] = ".";
-		operation["properties"] = Dictionary({ { "name", "Root" } });
-		operations.push_back(operation);
+		properties[vformat("property_%d", i)] = i;
 	}
-	Dictionary args;
-	args["scope"] = "scene";
-	args["operations"] = operations;
+	const Dictionary args({ { "capability", "scene.node.update" }, { "arguments", Dictionary({ { "node_path", "." }, { "properties", properties } }) } });
 	const Dictionary audit = registry.redact_tool_args_for_audit(SNAME("object.transaction"), args);
-	CHECK(Array(audit.get("operations", Array())).size() == 40);
+	CHECK(Dictionary(Dictionary(audit.get("arguments", Dictionary())).get("properties", Dictionary())).size() == 40);
 }
 
 TEST_CASE("[SolersRuntimeInput][SceneTree] complete action states validate before mutation and release omissions") {

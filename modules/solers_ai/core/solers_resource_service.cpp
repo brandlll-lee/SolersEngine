@@ -838,53 +838,6 @@ Dictionary SolersResourceService::inspect_resource(const Dictionary &p_args) con
 	return _ok(data);
 }
 
-Dictionary SolersResourceService::edit_resource(const Dictionary &p_args) const {
-	const String action = String(p_args.get("action", String())).strip_edges();
-	String path;
-	String path_error;
-	if (!_normalize_project_path(p_args.get("path", String()), path, path_error)) {
-		return _error("INVALID_PATH", path_error);
-	}
-
-	Dictionary result;
-	if (action == "create") {
-		if (FileAccess::exists(path) || ResourceLoader::exists(path)) {
-			return _error("RESOURCE_EXISTS", "A resource create operation never overwrites an existing resource.");
-		}
-		Dictionary create_args = p_args.duplicate(true);
-		create_args["path"] = path;
-		create_args.erase("action");
-		result = create_resource(create_args);
-	} else if (action == "update") {
-		if (!FileAccess::exists(path)) {
-			return _error("RESOURCE_NOT_FOUND", vformat("Resource does not exist: %s", path));
-		}
-		Dictionary update_args;
-		update_args["path"] = path;
-		update_args["properties"] = p_args.get("properties", Dictionary());
-		update_args["type_hint"] = p_args.get("type_hint", String());
-		result = set_resource_property(update_args);
-	} else {
-		return _error("INVALID_ARGUMENT", "A resource transaction operation must be create or update.");
-	}
-	if (!(bool)result.get("ok", false)) {
-		return result;
-	}
-
-	Error reload_error = OK;
-	const Ref<Resource> reloaded = ResourceLoader::load(path, p_args.get("type_hint", String()), ResourceFormatLoader::CACHE_MODE_REPLACE, &reload_error);
-	if (reloaded.is_null() || reload_error != OK) {
-		return _error("RESOURCE_RELOAD_FAILED", vformat("Saved resource could not be reloaded (error %d).", reload_error));
-	}
-	Dictionary data = result.get("data", Dictionary());
-	data["action"] = action;
-	data["path"] = path;
-	data["class_name"] = reloaded->get_class();
-	data["sha256"] = FileAccess::get_sha256(path);
-	data["reload_verified"] = true;
-	return _ok(data);
-}
-
 Dictionary SolersResourceService::create_resource(const Dictionary &p_args) const {
 	const String class_name = String(p_args.get("class_name", String())).strip_edges();
 	const String path_arg = p_args.get("path", String());
@@ -1039,6 +992,22 @@ Dictionary SolersResourceService::native_get(const Dictionary &p_args) const {
 	String error;
 	if (!_resolve_native_object(p_args.get("object_id", Variant()), object, error)) {
 		return _error("INVALID_OBJECT", error);
+	}
+	const StringName method = StringName(String(p_args.get("method", String())).strip_edges());
+	if (!method.is_empty()) {
+		MethodInfo info;
+		if (!ClassDB::get_method_info(object->get_class_name(), method, &info)) {
+			return _error("UNKNOWN_METHOD", vformat("Method is not exposed by ClassDB: %s.%s", object->get_class(), method));
+		}
+		if (!(info.flags & METHOD_FLAG_CONST) || !info.arguments.is_empty()) {
+			return _error("METHOD_NOT_READABLE", vformat("Method %s.%s is not const and zero-argument.", object->get_class(), method));
+		}
+		Callable::CallError call_error;
+		const Variant value = object->callp(method, nullptr, 0, call_error);
+		if (call_error.error != Callable::CallError::CALL_OK) {
+			return _error("METHOD_CALL_FAILED", vformat("Godot rejected %s.%s with CallError %d.", object->get_class(), method, call_error.error));
+		}
+		return _ok(Dictionary({ { "object", solers_native_object_handle(object) }, { "method", method }, { "type", Variant::get_type_name(value.get_type()) }, { "value", solers_summarize_display_value(value) } }));
 	}
 	const String property = String(p_args.get("property", String())).strip_edges();
 	if (property.is_empty()) {

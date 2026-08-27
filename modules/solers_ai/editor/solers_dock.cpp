@@ -453,8 +453,8 @@ void SolersDock::_refresh_status() {
 	_refresh_model_chip();
 	if (context_ring) {
 		const Dictionary status = agent_session ? agent_session->get_status() : Dictionary();
-		const Dictionary usage = status.get("window_usage", Dictionary());
-		context_ring->set_usage(usage.get("used_tokens", 0), usage.get("context_window", 0));
+		const Dictionary usage = status.get("last_request_usage", Dictionary());
+		context_ring->set_usage(usage.get("used_tokens", 0), usage.get("context_window", 0), usage.get("message_count", 0), usage.get("media_reference_count", 0), status.get("compaction_count", 0));
 	}
 }
 
@@ -3052,8 +3052,6 @@ void SolersDock::_on_agent_turn_completed(const Dictionary &) {
 		if (follow_tail) {
 			callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
 		}
-		const Dictionary plan = agent_session->get_plan();
-		_on_agent_plan_updated(plan.get("explanation", String()), plan.get("plan", Array()));
 	}
 	_refresh_status();
 	_update_send_enabled();

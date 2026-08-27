@@ -365,14 +365,16 @@ String SolersContextRing::_format_tokens(int64_t p_tokens) {
 	return String::num_int64(tokens);
 }
 
-void SolersContextRing::set_usage(int64_t p_used_tokens, int64_t p_total_tokens) {
+void SolersContextRing::set_usage(int64_t p_used_tokens, int64_t p_total_tokens, int p_message_count, int p_media_reference_count, int p_compaction_count) {
 	used_tokens = MAX((int64_t)0, p_used_tokens);
 	total_tokens = MAX((int64_t)0, p_total_tokens);
 	usage_ratio = total_tokens > 0 ? CLAMP(float(used_tokens) / float(total_tokens), 0.0f, 1.0f) : -1.0f;
+	String details = "\n" + vformat(TTR("%d projected messages, %d media references"), p_message_count, p_media_reference_count);
+	details += "\n" + vformat(TTR("%d context compactions"), p_compaction_count);
 	if (usage_ratio >= 0.0f) {
-		set_tooltip_text(vformat(TTR("%d%% context used"), int(Math::round(usage_ratio * 100.0f))) + "\n" + vformat(TTR("%s / %s tokens"), _format_tokens(used_tokens), _format_tokens(total_tokens)));
+		set_tooltip_text(vformat(TTR("%d%% of the latest model request"), int(Math::round(usage_ratio * 100.0f))) + "\n" + vformat(TTR("%s / %s tokens"), _format_tokens(used_tokens), _format_tokens(total_tokens)) + details);
 	} else {
-		set_tooltip_text(vformat(TTR("%s tokens"), _format_tokens(used_tokens)) + "\n" + TTR("Context window unknown"));
+		set_tooltip_text(vformat(TTR("%s tokens in the latest model request"), _format_tokens(used_tokens)) + "\n" + TTR("Context window unknown") + details);
 	}
 	queue_redraw();
 }

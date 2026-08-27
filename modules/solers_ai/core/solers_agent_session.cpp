@@ -257,7 +257,7 @@ void SolersAgentSession::_register_session_tools() {
 
 	SolersToolCapability capability;
 	capability.permission = SolersPermissionManager::PERMISSION_OBSERVE;
-	capability.mutation_policy = SolersToolMutationPolicy::READ_ONLY;
+	capability.mutation_domains = SolersToolMutationDomain::NONE;
 	capability.host.timeline_visible = false;
 	tool_registry->register_tool(memnew(SolersFunctionTool(
 			"update_plan",
@@ -416,8 +416,9 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 	HashMap<String, Dictionary> restored_open_tools;
 	Array restored_background_assets;
 	Dictionary restored_plan;
-	Dictionary restored_window_usage;
+	Dictionary restored_last_request_usage;
 	String restored_outcome;
+	int restored_compaction_count = 0;
 	int restored_turn_id = 0;
 	uint64_t restored_authored_revision = 0;
 	Array restored_reversals;
@@ -495,8 +496,9 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 		HashMap<String, Dictionary> *restored_open_tools = nullptr;
 		Array *restored_background_assets = nullptr;
 		Dictionary *restored_plan = nullptr;
-		Dictionary *restored_window_usage = nullptr;
+		Dictionary *restored_last_request_usage = nullptr;
 		String *restored_outcome = nullptr;
+		int *restored_compaction_count = nullptr;
 		const HashSet<int64_t> *active_event_ids = nullptr;
 		int64_t replay_sequence = 0;
 		Array *restored_reversals = nullptr;
@@ -508,8 +510,9 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 	restore_state.restored_open_tools = &restored_open_tools;
 	restore_state.restored_background_assets = &restored_background_assets;
 	restore_state.restored_plan = &restored_plan;
-	restore_state.restored_window_usage = &restored_window_usage;
+	restore_state.restored_last_request_usage = &restored_last_request_usage;
 	restore_state.restored_outcome = &restored_outcome;
+	restore_state.restored_compaction_count = &restored_compaction_count;
 	restore_state.active_event_ids = &active_event_ids;
 	restore_state.restored_reversals = &restored_reversals;
 	solers_transcript_foreach_session(p_session_id, &restore_state, [](void *p_userdata, const String &p_record) -> bool {
@@ -535,9 +538,12 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 		}
 
 		const String event_type = event.get("event_type", String());
+		if ((event_type == "context.apply_compaction" || event_type == "context_compaction") && String(event.get("phase", event_type == "context.apply_compaction" ? "completed" : String())) == "completed") {
+			(*scan.restored_compaction_count)++;
+		}
 		const Dictionary usage = event.get("usage", Dictionary());
 		if (!usage.is_empty()) {
-			*scan.restored_window_usage = usage.duplicate(true);
+			*scan.restored_last_request_usage = usage.duplicate(true);
 		}
 		_solers_project_timeline_event(event, *scan.restored_timeline, *scan.restored_open_tools);
 		if (event_type == "checkpoint_created") {
@@ -590,6 +596,7 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 		}
 		if (event_type == "turn_outcome") {
 			*scan.restored_outcome = event.get("outcome", String());
+			scan.restored_plan->clear();
 			*scan.restored = SolersContextManager::project_completed_turns(*scan.restored);
 			return true;
 		}
@@ -660,8 +667,9 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 	state["messages"] = restored;
 	state["timeline_entries"] = restored_timeline;
 	state["plan"] = restored_plan;
-	state["window_usage"] = restored_window_usage;
+	state["last_request_usage"] = restored_last_request_usage;
 	state["outcome"] = restored_outcome;
+	state["compaction_count"] = restored_compaction_count;
 	state["turn_id"] = restored_turn_id;
 	state["background_assets"] = restored_background_assets;
 	state["session_revision"] = (int64_t)restored_authored_revision;
@@ -1138,7 +1146,7 @@ Array SolersAgentSession::_collect_tools() {
 		const Dictionary def = defs[i];
 		const String exposure = def.get("exposure", "direct");
 		const StringName canonical_name = StringName(def.get("name", String()));
-		if (exposure == "hidden" || (exposure == "deferred" && !task_deferred_tools.has(canonical_name))) {
+		if (exposure == "hidden" || exposure == "transaction" || (exposure == "deferred" && !task_deferred_tools.has(canonical_name))) {
 			continue;
 		}
 		Dictionary tool;
@@ -1357,6 +1365,21 @@ Error SolersAgentSession::_begin_compaction(bool p_from_overflow) {
 	return _dispatch_compaction_request();
 }
 
+void SolersAgentSession::_record_request_usage(const Dictionary &p_usage) {
+	last_usage = p_usage;
+	last_usage["context_window"] = context_window;
+	last_usage["provider"] = active_provider.get("provider", String());
+	last_usage["model"] = active_provider.get("model", String());
+	const Array request_messages = retry_request.get("messages", Array());
+	int media_reference_count = 0;
+	for (const Variant &message_variant : request_messages) {
+		media_reference_count += Array(Dictionary(message_variant).get("attachments", Array())).size();
+	}
+	last_usage["message_count"] = request_messages.size();
+	last_usage["media_reference_count"] = media_reference_count;
+	last_request_usage = last_usage.duplicate(true);
+}
+
 Error SolersAgentSession::_dispatch_compaction_request() {
 	const Dictionary availability_error = _provider_dispatch_error();
 	if (!availability_error.is_empty()) {
@@ -1459,7 +1482,7 @@ void SolersAgentSession::_poll_compaction() {
 		} else if (kind == SolersLLMEventKind::REASONING_DELTA) {
 			current_reasoning += String(event.get("text", String()));
 		} else if (kind == SolersLLMEventKind::USAGE) {
-			last_usage = event;
+			_record_request_usage(event);
 			turn_fresh_input_tokens += MAX(0, (int)event.get("input_tokens", 0));
 			turn_cache_read_tokens += MAX(0, (int)event.get("cache_read_tokens", 0));
 			turn_cache_write_tokens += MAX(0, (int)event.get("cache_write_tokens", 0));
@@ -1707,9 +1730,10 @@ Dictionary SolersAgentSession::rewind_to_event(int64_t p_event_id) {
 	}
 	const Dictionary applied = session_tools_registry->apply_session_rewind(transaction);
 	if (!(bool)applied.get("ok", false)) {
+		const Dictionary compensated = session_tools_registry->abort_session_rewind(transaction);
 		Dictionary aborted;
 		aborted["transaction_id"] = transaction.get("transaction_id", String());
-		aborted["reason"] = Dictionary(applied.get("error", Dictionary())).get("message", String());
+		aborted["reason"] = (bool)compensated.get("ok", false) ? String(Dictionary(applied.get("error", Dictionary())).get("message", String())) : String("rewind compensation failed");
 		_write_transcript_event_durable("rewind_aborted", aborted, journal_event_id);
 		return applied;
 	}
@@ -1727,8 +1751,12 @@ Dictionary SolersAgentSession::rewind_to_event(int64_t p_event_id) {
 	timeline_entries = state.get("timeline_entries", Array());
 	open_timeline_tools.clear();
 	current_plan = state.get("plan", Dictionary());
-	window_usage = state.get("window_usage", Dictionary());
+	last_request_usage = state.get("last_request_usage", Dictionary());
 	last_outcome = state.get("outcome", String());
+	if (context_manager) {
+		context_manager->reset();
+		context_manager->set_compaction_count(state.get("compaction_count", 0));
+	}
 	turn_id = state.get("turn_id", turn_id);
 	authored_revision = (int64_t)state.get("session_revision", authored_revision);
 	session_tools_registry->restore_session_reversals(session_id, state.get("reversals", Array()));
@@ -1803,7 +1831,6 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 		emit_signal(SNAME("turn_failed"), e.get("error", Dictionary()));
 		return e;
 	}
-
 	if (system_prompt.is_empty()) {
 		system_prompt = _default_system_prompt();
 	}
@@ -1960,11 +1987,7 @@ void SolersAgentSession::poll() {
 			Dictionary call = _surface_tool_call(_tool_call_from_event(e));
 			pending_tool_calls.push_back(call);
 		} else if (kind == SolersLLMEventKind::USAGE) {
-			last_usage = e;
-			last_usage["context_window"] = context_window;
-			last_usage["provider"] = active_provider.get("provider", String());
-			last_usage["model"] = active_provider.get("model", String());
-			window_usage = last_usage.duplicate(true);
+			_record_request_usage(e);
 			turn_output_tokens += MAX(0, (int)e.get("output_tokens", 0));
 			turn_reasoning_tokens += MAX(0, (int)e.get("reasoning_tokens", 0));
 			if (context_manager) {
@@ -2252,6 +2275,8 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	}
 	_write_transcript_event("turn_outcome", transcript);
 	solers_transcript_flush(session_id);
+	current_plan.clear();
+	emit_signal(SNAME("plan_updated"), String(), Array());
 	godot_log_turn_active = false;
 	last_outcome = outcome;
 	running = false;
@@ -3029,7 +3054,7 @@ void SolersAgentSession::reset_conversation() {
 	last_outcome = String();
 	last_stop_reason = String();
 	last_usage.clear();
-	window_usage.clear();
+	last_request_usage.clear();
 	task_deferred_tools.clear();
 	pending_background_assets.clear();
 	delivered_background_assets.clear();
@@ -3074,7 +3099,7 @@ void SolersAgentSession::set_session(const String &p_project_path, const String 
 	timeline_entries = state.get("timeline_entries", Array());
 	open_timeline_tools.clear();
 	current_plan = state.get("plan", Dictionary());
-	window_usage = state.get("window_usage", Dictionary());
+	last_request_usage = state.get("last_request_usage", Dictionary());
 	last_outcome = state.get("outcome", String());
 	turn_id = state.get("turn_id", 0);
 	authored_revision = (int64_t)state.get("session_revision", 0);
@@ -3104,6 +3129,7 @@ void SolersAgentSession::set_session(const String &p_project_path, const String 
 	}
 	if (context_manager) {
 		context_manager->reset();
+		context_manager->set_compaction_count(state.get("compaction_count", 0));
 	}
 	if (!project_path.is_empty()) {
 		_ensure_godot_log_audit(false);
@@ -3213,11 +3239,11 @@ Dictionary SolersAgentSession::get_status() const {
 	status["context_window"] = context_window;
 	status["max_output_tokens"] = max_output_tokens;
 	status["model_limits_known"] = context_window > 0;
-	Dictionary usage = window_usage.duplicate(true);
+	Dictionary usage = last_request_usage.duplicate(true);
 	if (!usage.is_empty()) {
 		usage["used_tokens"] = MAX(0, (int64_t)usage.get("input_tokens", 0)) + MAX(0, (int64_t)usage.get("output_tokens", 0)) + MAX(0, (int64_t)usage.get("reasoning_tokens", 0)) + MAX(0, (int64_t)usage.get("cache_read_tokens", 0)) + MAX(0, (int64_t)usage.get("cache_write_tokens", 0));
 	}
-	status["window_usage"] = usage;
+	status["last_request_usage"] = usage;
 	status["project_path"] = project_path;
 	status["session_id"] = session_id;
 	status["compacting"] = phase == PHASE_COMPACTING;

@@ -74,4 +74,5 @@ public:
 
 	int get_last_estimated_tokens() const { return last_estimated_tokens; }
 	int get_compaction_count() const { return compaction_count; }
+	void set_compaction_count(int p_count) { compaction_count = MAX(0, p_count); }
 };

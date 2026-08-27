@@ -47,7 +47,6 @@ class SolersReflectionService : public Object {
 	GDCLASS(SolersReflectionService, Object);
 
 	SolersActionTimeline *action_timeline = nullptr;
-	bool batch_action_active = false;
 
 	struct UV2UnwrapTask {
 		String operation_id;
@@ -86,15 +85,7 @@ class SolersReflectionService : public Object {
 	// which is the authority on which of these exist for it.
 	Dictionary _subsystem_facts(Node *p_node) const;
 	String _instance_scene_path(Node *p_node) const;
-	Array _nested_instance_scenes(const Array &p_results) const;
 
-	Dictionary _create_node(const Dictionary &p_args);
-	Dictionary _update_node(const Dictionary &p_args);
-	Dictionary _reparent_node(const Dictionary &p_args);
-	Dictionary _connect_signal(const Dictionary &p_args);
-	Dictionary _attach_script(const Dictionary &p_args);
-	Dictionary _remove_node(const Dictionary &p_args);
-	Dictionary _bake_csg(const Dictionary &p_args);
 	Dictionary _list_signal_connections(const Dictionary &p_args);
 	static void _uv2_unwrap_thread(void *p_userdata);
 	Dictionary _advance_uv2_unwrap(UV2UnwrapTask *p_task);
@@ -114,7 +105,15 @@ public:
 	Dictionary introspect_class(const Dictionary &p_args);
 
 	Dictionary inspect_nodes(const Dictionary &p_args);
+	Dictionary create_node(const Dictionary &p_args);
 	Dictionary instantiate_scene(const Dictionary &p_args);
+	Dictionary update_node(const Dictionary &p_args);
+	Dictionary reparent_node(const Dictionary &p_args);
+	Dictionary connect_signal(const Dictionary &p_args);
+	Dictionary attach_script(const Dictionary &p_args);
+	Dictionary remove_node(const Dictionary &p_args);
+	Dictionary bake_csg(const Dictionary &p_args);
+	Dictionary bake_lightmap(const Dictionary &p_args);
 	Dictionary measure_spatial_relations(const Dictionary &p_args) const;
 	Dictionary open_scene(const Dictionary &p_args);
 	Dictionary unwrap_uv2(const Dictionary &p_args, const String &p_operation_id = String());
@@ -122,9 +121,6 @@ public:
 	bool is_uv2_unwrap_ready(const Dictionary &p_args) const;
 	void cancel_uv2_unwrap(const String &p_operation_id);
 	uint64_t get_lightmap_input_digest() const;
-
-	Dictionary batch(const Dictionary &p_args);
-	Array resolve_batch_resource_access(const Dictionary &p_args) const;
 
 	SolersReflectionService();
 	~SolersReflectionService();
