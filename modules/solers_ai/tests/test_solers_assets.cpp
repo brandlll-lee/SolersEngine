@@ -257,7 +257,6 @@ TEST_CASE("[Editor][SolersAddon] bundled Terrain3D archive is pinned and self-de
 	const Dictionary result = assets.addon_inspect(args);
 	REQUIRE((bool)result.get("ok", false));
 	const Dictionary data = result.get("data", Dictionary());
-	CHECK(Array(data.get("unlock_tools", Array())).has("addon.ensure"));
 	CHECK(data.get("version", String()) == SOLERS_TERRAIN3D_VERSION);
 	CHECK(data.get("sha256", String()) == SOLERS_TERRAIN3D_SHA256);
 	CHECK(data.get("license", String()) == "MIT");
@@ -898,7 +897,6 @@ TEST_CASE("[SolersAssetService] non-terminal asset.status rejects progress polli
 	const Dictionary waiting_data = waiting.get("data", Dictionary());
 	CHECK((bool)waiting_data.get("waiting", false));
 	CHECK((bool)waiting_data.get("host_parked", false));
-	CHECK_FALSE(waiting_data.has("unlock_tools"));
 	CHECK(Array(waiting_data.get("pending_ids", Array())).size() == 1);
 
 	running_manifest["status"] = "imported";
@@ -914,8 +912,6 @@ TEST_CASE("[SolersAssetService] non-terminal asset.status rejects progress polli
 	CHECK_FALSE((bool)terminal_data.get("waiting", true));
 	CHECK(Array(terminal_data.get("terminal", Array())).size() == 1);
 	CHECK_FALSE(terminal_data.has("host_parked"));
-	CHECK(Array(terminal_data.get("unlock_tools", Array())).has("asset.capabilities"));
-	CHECK(Array(terminal_data.get("unlock_tools", Array())).has("asset.run_operation"));
 }
 
 TEST_CASE("[SolersAssetService] Poly Haven acquisition binds the inspected catalog state") {

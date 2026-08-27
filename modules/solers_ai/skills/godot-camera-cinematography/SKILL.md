@@ -6,7 +6,7 @@ description: Generic Godot 4 camera building blocks - Camera3D authority, Spring
 # Camera Cinematography (Generic)
 
 ## When to use
-Use for gameplay cameras, film-like moves into dialogue/shop/cut-ins, over-the-shoulder (OTS) framing, scripted fly-throughs, FOV/DOF changes, and returning to player control. Use whenever the Agent must **drive or blend cameras with Godot nodes**, not only compose a still for `render.capture`.
+Use for gameplay cameras, film-like moves into dialog/shop/cut-ins, over-the-shoulder (OTS) framing, scripted fly-throughs, FOV/DOF changes, and returning to player control. Use whenever the Agent must **drive or blend cameras with Godot nodes**, not only compose a still for `render.capture`.
 
 For photoreal exposure/DOF look recipes, also read `godot-3d-rendering`. This skill owns **who moves the camera and how**.
 
@@ -36,7 +36,7 @@ Instance property values: `object.query target=scene|resource`. Use `engine.desc
 ## Agent tool sequence
 1. `skill.read` this skill (and `godot-scripting-input-gameplay` if input ownership is unclear).
 2. `object.query target=scene` for the live camera (`current`, `fov`, `global_transform`, parent rig).
-3. `object.transaction scope=scene` with the inspected state receipt to create Marker shots, Area triggers, cinematic `Camera3D`, connections, and hierarchy layout.
+3. `editor.apply` with the inspected state receipt to create Marker shots, Area triggers, cinematic `Camera3D`, connections, and hierarchy layout.
 4. `script.edit` for the transition controller.
 5. `runtime.control` → play → trigger → `render.capture target=runtime` (and `target=camera` with `node_path` when needed) → `runtime.observe`. Spatial placement still requires `object.query target=relations`, not a capture.
 
@@ -98,21 +98,21 @@ When the move must avoid geometry or follow a beat board:
 3. Tween `progress_ratio` 0→1; do **not** also run SpringArm on that same camera.
 
 ## Building block E — AnimationPlayer
-Use when timing is authored on a timeline (cuts, holds, multi-beat dialogue). Animate the cinematic camera's `position`/`rotation`/`fov` tracks. Still align + `make_current` before playing if blending out of gameplay.
+Use when timing is authored on a timeline (cuts, holds, multi-beat dialog). Animate the cinematic camera's `position`/`rotation`/`fov` tracks. Still align + `make_current` before playing if blending out of gameplay.
 
 ## Building block F — feel (FOV / attributes)
 - Practical DOF: `CameraAttributesPractical` near/far blur for close-ups after the move settles (or Tween blur amount).
 - Physical: attach `CameraAttributesPhysical`; drive `frustum_focal_length` / focus distance instead of fighting `Camera3D.fov` (Physical owns projection when active).
-- Parallel Tween FOV with transform for “push-in” emphasis; keep changes modest for dialogue (often 5–15°).
+- Parallel Tween FOV with transform for “push-in” emphasis; keep changes modest for dialog (often 5–15°).
 
 ## Building block G — multi-shot without a priority stack
-Expose `play(shot_id: StringName)` that looks up a Dictionary/`Shot` Resource. The **caller** chooses which shot runs (signal, dialogue line, quest state). That is generic and open for extension.
+Expose `play(shot_id: StringName)` that looks up a Dictionary/`Shot` Resource. The **caller** chooses which shot runs (signal, dialog line, quest state). That is generic and open for extension.
 Do **not** bake Unreal-style priority stacks, blend corridors, or approach-angle auto-framing into Solers or a mandatory Autoload — those are optional game-specific policies on top of `play(shot_id)`.
 
 ## Optional addon
 If the project already wants a virtual-camera plugin: `addon.search` → `addon.inspect` → `addon.ensure` using the returned `entry_classes` / Contract. Prefer native nodes first; addons are optional, not the Solers camera center.
 
-## Shop / dialogue example (composition only)
+## Shop / dialog example (composition only)
 1. TPS rig = Building block A.
 2. `Area3D` on shop entrance → `body_entered` → `play(&"ots_keeper")` with Marker path.
 3. Building block C moves to OTS looking at the keeper.

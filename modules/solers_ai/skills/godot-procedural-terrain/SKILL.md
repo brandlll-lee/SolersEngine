@@ -34,7 +34,7 @@ Use for heightmaps, procedural ground meshes, vegetation instancing, terrain col
 | Wrong | Correct |
 |-------|---------|
 | Hardcoding a vendor terrain class in generic plans | Contract from `addon.inspect` |
-| Inventing `terrain.sculpt` tools | `object.transaction` / addon ClassDB / native mesh |
+| Inventing `terrain.sculpt` tools | `editor.apply` / addon ClassDB / native mesh |
 | Height scale mismatch (cm vs m) | Measure extents; fix noise amplitude |
 | Navmesh before holes/collision final | Bake after walkable surface settles |
 | No far-camera perf check | Capture near + far; watch draw cost |

@@ -57,20 +57,22 @@ inline bool solers_object_id_from_variant(const Variant &p_value, ObjectID &r_id
 	return r_id.is_valid();
 }
 
-// Where a tool is exposed to the model. Faithful to codex `ToolExposure`:
-// visibility is an authoritative property the tool declares, never inferred
-// from its name.
 enum class SolersToolExposure {
-	// Included in the initial model-visible tool list.
-	DIRECT,
-	// Registered for later discovery (via tool_search) but omitted from the
-	// initial list. Keeps the long tail out of the prompt until needed.
-	DEFERRED,
-	// Discoverable through object.query, engine.describe, and tool.search
-	// capability facts; executable only inside object.transaction.
-	TRANSACTION,
-	// Dispatchable but never shown to the model.
+	MODEL,
+	OPERATION,
 	HIDDEN,
+};
+
+enum class SolersOperationDomain {
+	NONE,
+	EDITOR,
+	RUNTIME,
+	PIPELINE,
+};
+
+enum class SolersOperationMode {
+	QUERY,
+	APPLY,
 };
 
 enum class SolersToolExecution {
@@ -135,10 +137,14 @@ struct SolersToolCapability {
 	// use different native persistence mechanisms.
 	std::function<SolersToolMutationDomain(const Dictionary &)> mutation_domain_resolver;
 	std::function<Dictionary(const Dictionary &)> argument_validator;
+	SolersOperationDomain operation_domain = SolersOperationDomain::NONE;
+	SolersOperationMode operation_mode = SolersOperationMode::QUERY;
 	StringName target_class;
+	StringName target_kind;
 	// Godot/editor APIs stay on the main thread. Handlers opt into a worker
 	// only when they are explicitly thread-safe.
 	SolersToolExecution execution = SolersToolExecution::MAIN_THREAD;
+	std::function<SolersToolExecution(const Dictionary &)> execution_resolver;
 	// Optional parameter-aware resolver. Each item is { mode: "read"|"write",
 	// key: String }. Tools without one are conservatively treated as touching
 	// the global resource; the scheduler never guesses side effects from names.
@@ -173,7 +179,7 @@ public:
 	virtual String description() const = 0;
 	// JSON-schema object describing the arguments. Lives next to the handler.
 	virtual Dictionary parameters_schema() const = 0;
-	virtual SolersToolExposure exposure() const { return SolersToolExposure::DIRECT; }
+	virtual SolersToolExposure exposure() const { return SolersToolExposure::MODEL; }
 	virtual const SolersToolCapability &capability() const = 0;
 	// Execute the call. Returns the canonical { ok, data } / { ok, error }
 	// envelope used everywhere in the module.
@@ -211,7 +217,7 @@ private:
 	StringName tool_name;
 	String tool_description;
 	Dictionary schema;
-	SolersToolExposure tool_exposure = SolersToolExposure::DIRECT;
+	SolersToolExposure tool_exposure = SolersToolExposure::MODEL;
 	SolersToolCapability tool_capability;
 	Handler handler;
 	PollHandler poll_handler;

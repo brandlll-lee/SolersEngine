@@ -926,7 +926,7 @@ Dictionary SolersReflectionService::instantiate_scene(const Dictionary &p_args) 
 	}
 	const Variant properties_value = p_args.get("properties", Dictionary());
 	if (properties_value.get_type() != Variant::DICTIONARY) {
-		return _error("INVALID_ARGUMENT", "object.transaction scene instantiate properties must be an object.");
+		return _error("INVALID_ARGUMENT", "scene.instance.instantiate properties must be an object.");
 	}
 
 	EditorInterface *editor_interface = EditorInterface::get_singleton();

@@ -100,10 +100,8 @@ class SolersAgentSession : public Object {
 	Array tool_queue; // provider-ordered tool calls for this step (MAIN_THREAD tools run serially)
 	Array failed_resource_accesses;
 	HashMap<String, Dictionary> readonly_cache;
-	HashSet<StringName> task_deferred_tools;
 	Array cached_request_tools;
 	int cached_request_tool_tokens = 0;
-	uint32_t cached_request_deferred_count = 0;
 	uint64_t cached_tool_catalog_revision = 0;
 	Array turn_attachments;
 	Array turn_mentions;
@@ -153,7 +151,6 @@ class SolersAgentSession : public Object {
 	int turn_tool_calls = 0;
 	int turn_duplicate_observations = 0;
 	int turn_successful_mutations = 0;
-	String completion_blocker_fingerprint;
 	int request_transient_tokens = 0;
 	uint64_t retry_resume_msec = 0;
 	int text_delta_count = 0;
@@ -225,7 +222,7 @@ class SolersAgentSession : public Object {
 	Dictionary _surface_tool_call(const Dictionary &p_call);
 	Array _attachments_for_ids(const Array &p_ids) const;
 	void _on_model_turn_complete();
-	bool _accept_completion_or_continue(const String &p_message);
+	Dictionary _completion_error() const;
 	void _finish_turn(const String &p_outcome, const String &p_message, const Dictionary &p_error = Dictionary());
 	void _poll_tool_queue();
 	void _poll_awaiting_approval();

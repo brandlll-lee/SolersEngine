@@ -1757,8 +1757,8 @@ void SolersDock::_submit_steering(const String &p_prompt, const Array &p_attachm
 		callable_mp(this, &SolersDock::_scroll_chat_to_bottom).call_deferred();
 		return;
 	}
-	// The turn ended between typing and sending: start an ordinary turn.
-	_submit_chat_prompt(p_prompt, p_attachments);
+	const Dictionary error = result.get("error", Dictionary());
+	_append_error_row(String::utf8("\u26a0 ") + String(error.get("message", "Could not steer the active turn.")));
 }
 
 void SolersDock::_on_chat_input_gui_input(const Ref<InputEvent> &p_event) {

@@ -281,10 +281,10 @@ Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
 		return _error("INVALID_PATH", path_error);
 	}
 	if (_solers_is_project_settings_path(res_path)) {
-		return _error("EDITOR_OWNED_FILE", "Modify project.godot through project.edit settings so the live ProjectSettings state stays synchronized.");
+		return _error("EDITOR_OWNED_FILE", "Modify project.godot through editor.apply project.settings so live ProjectSettings stays synchronized.");
 	}
 	if (_solers_is_native_serialized_resource_path(res_path)) {
-		return _error("NATIVE_RESOURCE_WRITE_BLOCKED", "Godot serialized resources must be edited through object.transaction, not raw file writes.");
+		return _error("NATIVE_RESOURCE_WRITE_BLOCKED", "Godot serialized resources must be edited through editor.apply, not raw file writes.");
 	}
 
 	const bool existed_before = FileAccess::exists(res_path);
@@ -392,13 +392,13 @@ Dictionary SolersScriptService::patch_file(const Dictionary &p_args) {
 		return _error("INVALID_PATH", path_error);
 	}
 	if (_solers_is_project_settings_path(res_path)) {
-		return _error("EDITOR_OWNED_FILE", "Modify project.godot through project.edit settings so the live ProjectSettings state stays synchronized.");
+		return _error("EDITOR_OWNED_FILE", "Modify project.godot through editor.apply project.settings so live ProjectSettings stays synchronized.");
 	}
 	if (!FileAccess::exists(res_path)) {
 		return _error("FILE_NOT_FOUND", vformat("File does not exist: %s.%s", res_path, solers_file_suggestions(res_path)));
 	}
 	if (_solers_is_native_serialized_resource_path(res_path)) {
-		return _error("NATIVE_RESOURCE_PATCH_BLOCKED", "Godot serialized resources must be edited through object.transaction, not text replacement.");
+		return _error("NATIVE_RESOURCE_PATCH_BLOCKED", "Godot serialized resources must be edited through editor.apply, not text replacement.");
 	}
 
 	Error read_err = OK;
@@ -457,7 +457,7 @@ Dictionary SolersScriptService::edit_project(const Dictionary &p_args) {
 		const Dictionary wire_values = p_args.get("values", Dictionary());
 		const PackedStringArray erase = p_args.get("erase", PackedStringArray());
 		if (wire_values.is_empty() && erase.is_empty()) {
-			return _error("INVALID_ARGUMENT", "project.edit settings requires values or erase.");
+			return _error("INVALID_ARGUMENT", "project.settings requires values or erase.");
 		}
 		ProjectSettings *settings = ProjectSettings::get_singleton();
 		EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
@@ -540,11 +540,11 @@ Dictionary SolersScriptService::edit_project(const Dictionary &p_args) {
 		return _ok(data);
 	}
 	if (operation != "write_file") {
-		return _error("INVALID_ARGUMENT", "project.edit operation must be settings, write_file, or create_directory.");
+		return _error("INVALID_ARGUMENT", "Unsupported project path operation.");
 	}
 	const String path = p_args.get("path", String());
 	if (_solers_is_project_settings_path(path)) {
-		return _error("EDITOR_OWNED_FILE", "Modify project.godot through project.edit settings.");
+		return _error("EDITOR_OWNED_FILE", "Modify project.godot through editor.apply project.settings.");
 	}
 	// Ownership boundaries come from the engine's own registries — script
 	// languages, resource loaders, and the import pipeline — never from an
@@ -554,7 +554,7 @@ Dictionary SolersScriptService::edit_project(const Dictionary &p_args) {
 		return _error("PROJECT_FILE_TYPE_BLOCKED", "Script sources are edited through script.edit so parser diagnostics stay attached to the write.");
 	}
 	if (_solers_is_native_serialized_resource_path(path)) {
-		return _error("PROJECT_FILE_TYPE_BLOCKED", "Godot serialized scenes and resources are edited through object.transaction, not raw file writes.");
+		return _error("PROJECT_FILE_TYPE_BLOCKED", "Godot serialized scenes and resources are edited through editor.apply, not raw file writes.");
 	}
 	ResourceFormatImporter *format_importer = ResourceFormatImporter::get_singleton();
 	if (format_importer && format_importer->get_importer_by_file(path).is_valid()) {
@@ -667,7 +667,7 @@ Dictionary SolersScriptService::compute_script(const String &p_call_id, const Di
 			return _error("INVALID_OUTPUT_SOURCE", "Compute output sources must be relative paths inside the isolated project.");
 		}
 		if (!_normalize_project_path(requested.get("to", String()), to, path_error) || _solers_is_project_settings_path(to)) {
-			return _error("INVALID_OUTPUT_TARGET", path_error.is_empty() ? "Use project.edit for project.godot." : path_error);
+			return _error("INVALID_OUTPUT_TARGET", path_error.is_empty() ? "Use editor.apply project.settings for project.godot." : path_error);
 		}
 		Dictionary output;
 		output["from"] = from;

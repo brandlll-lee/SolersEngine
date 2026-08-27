@@ -100,7 +100,7 @@ TEST_CASE("[SolersContextManager] compaction replaces the active prefix and pres
 	old_summary["origin"] = "compaction_summary";
 	history.push_back(old_summary);
 	history.push_back(make_user_message(String("obsolete ").repeat(8000), 1));
-	history.push_back(SolersLLMMessage::tool_result("call_old", "object.transaction", R"({"ok":true,"data":{"mutation":{"receipt":{"scene_after":{"root_object_id":42,"version":7}}}}})"));
+	history.push_back(SolersLLMMessage::tool_result("call_old", "editor.apply", R"({"ok":true,"data":{"mutation":{"receipt":{"scene_after":{"root_object_id":42,"version":7}}}}})"));
 	history.push_back(make_user_message("Continue the current build exactly.", 2));
 	history.push_back(SolersLLMMessage::assistant("Capturing.", make_tool_calls("call_live", "render.capture")));
 	history.push_back(SolersLLMMessage::tool_result("call_live", "render.capture", String("exact payload ").repeat(1000)));
@@ -144,13 +144,13 @@ TEST_CASE("[SolersContextManager] completed-turn projection preserves the exact 
 TEST_CASE("[SolersContextManager] completed tool evidence is outside tool-call syntax") {
 	Array history;
 	history.push_back(make_user_message("Inspect the scene.", 1));
-	Array consumed_calls = make_tool_calls("consumed", "object.transaction");
+	Array consumed_calls = make_tool_calls("consumed", "editor.apply");
 	Dictionary consumed_call = consumed_calls[0];
 	const String consumed_arguments = JSON::stringify(Dictionary({ { "capability", "scene.node.update" }, { "arguments", Dictionary({ { "properties", Dictionary({ { "large", String("argument ").repeat(2000) } }) } }) } }));
 	consumed_call["arguments"] = consumed_arguments;
 	consumed_calls[0] = consumed_call;
 	history.push_back(SolersLLMMessage::assistant("Applying the observed state.", consumed_calls));
-	history.push_back(SolersLLMMessage::tool_result("consumed", "object.transaction", R"({"ok":true,"data":{"mutation":{"receipt":{"scene_after":{"version":9}}}}})"));
+	history.push_back(SolersLLMMessage::tool_result("consumed", "editor.apply", R"({"ok":true,"data":{"mutation":{"receipt":{"scene_after":{"version":9}}}}})"));
 	history.push_back(SolersLLMMessage::assistant("The scene receipt is now version 9.", Array()));
 	Array live_calls = make_tool_calls("live", "render.capture");
 	Dictionary live_call = live_calls[0];
@@ -282,7 +282,7 @@ TEST_CASE("[SolersSession][SceneTree][Editor] journal rows preserve terminal sem
 	dock->set_agent_session(&restored);
 	dock->load_chat_history(timeline);
 	SolersPermissionManager permissions;
-	const Dictionary denied_request = permissions.request_user_approval("object.transaction", Dictionary({ { "capability", "scene.node.update" }, { "arguments", Dictionary() } }), SolersPermissionManager::PERMISSION_EDIT_SCENE);
+	const Dictionary denied_request = permissions.request_user_approval("editor.apply", Dictionary({ { "operation", "scene.node.update" }, { "arguments", Dictionary() } }), SolersPermissionManager::PERMISSION_EDIT_SCENE);
 	dock->set_services(nullptr, nullptr, nullptr, &permissions, nullptr);
 	MessageQueue::get_singleton()->flush();
 	Node *approval_mode = dock->find_child("ApprovalModeOption", true, false);
@@ -330,7 +330,7 @@ TEST_CASE("[SolersSession][SceneTree][Editor] journal rows preserve terminal sem
 	Label *permission_details = Object::cast_to<Label>(dock->find_child("PermissionDetails", true, false));
 	REQUIRE(bool(permission_prompt && allow_once && allow_always && deny && permission_tool && permission_details));
 	CHECK(permission_prompt->is_visible_in_tree());
-	CHECK(permission_tool->get_text() == "object.transaction");
+	CHECK(permission_tool->get_text() == "editor.apply");
 	CHECK(permission_details->get_text().contains("scene"));
 	CHECK(dock->find_child("QuestionPanel", true, false) == nullptr);
 	deny->emit_signal(SceneStringName(pressed));
@@ -443,7 +443,7 @@ TEST_CASE("[SolersSession][SceneTree][Editor] diagnostics never rewrite a handle
 	registry.set_permission_manager(&permissions);
 	SolersToolCapability capability;
 	capability.permission = SolersPermissionManager::PERMISSION_OBSERVE;
-	registry.register_tool(memnew(SolersFunctionTool("synthetic.native_success", "Return the handler result after a native diagnostic.", Dictionary({ { "type", "object" }, { "properties", Dictionary() } }), SolersToolExposure::DIRECT, capability,
+	registry.register_tool(memnew(SolersFunctionTool("synthetic.native_success", "Return the handler result after a native diagnostic.", Dictionary({ { "type", "object" }, { "properties", Dictionary() } }), SolersToolExposure::MODEL, capability,
 			[](const SolersToolContext &, const Dictionary &) {
 				ERR_PRINT("synthetic native diagnostic");
 				Dictionary result;

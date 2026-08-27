@@ -263,7 +263,7 @@ void SolersAgentSession::_register_session_tools() {
 			"update_plan",
 			"Optionally replace the concise UI progress plan. This does not control tool access or task completion.",
 			_update_plan_schema(),
-			SolersToolExposure::DIRECT,
+			SolersToolExposure::MODEL,
 			capability,
 			[this](const SolersToolContext &, const Dictionary &p_args) { return _handle_update_plan(p_args); })));
 	session_tools_registry = tool_registry;
@@ -1058,17 +1058,13 @@ String SolersAgentSession::_default_system_prompt() const {
 	String prompt =
 			"You are Solers, an AI agent living natively inside the Solers game engine editor (a Godot 4 fork).\n\n"
 			"Operating contract:\n"
-			"- Prefer the smallest coherent native change. Inspect live state before editing; keep scene data, input, camera, movement, and animation under explicit native owners instead of growing one catch-all script.\n"
-			"- Digests in [Selected Solers context] and Current engine context are authoritative bounded observations. Use tools only for incomplete or live facts.\n"
-			"- Core tools are available. Use tool.search to discover deferred tools and transaction capabilities; deferred matches unlock as tools, transaction matches execute through object.transaction. Skills provide knowledge and never activate capabilities.\n"
-			"- Inspect unfamiliar classes with engine.describe; ClassDB property metadata and native documentation are the authority for names, types, units, and usage.\n"
-			"- Read live state with object.query. Edit scenes/resources with object.transaction and native preconditions. Script replacement requires the latest file SHA and exact bytes; use script.compute for isolated bulk generation with declared outputs.\n"
-			"- Scene transactions are one EditorUndoRedo action and Solers persists successful live-scene changes. Resource transactions are file-checkpointed. Tool results carry native state receipts and persisted file hashes; do not issue a separate save.\n"
-			"- The edited scene and running game are distinct native states. For runnable gameplay, set InputMap actions, independently inspect runtime scene/spatial facts and capture pixels in the same runtime_epoch, then release all actions. Neither evidence channel gates the other.\n"
-			"- Background tools return stable job ids immediately. Continue independent work; when nothing else is runnable, call job.wait once with the required ids and stop issuing tools. Solers parks this turn and resumes it with a background job delta when any requested job reaches a project-import terminal state; do not poll asset.status for progress.\n"
-			"- Tool errors and Godot diagnostics carry native causes; resolve the named error or warning before completion. Repeating an identical failed call wastes a step.\n"
-			"- Keep progress narration to changed decisions or new evidence. Do not repeat what you will inspect before routine tool calls; the tool timeline already shows execution.\n"
-			"- Use update_plan only as a concise optional progress display. Text without tool calls ends the task, so keep progress notes attached to tool-calling turns and finish with a clear final summary.";
+			"- Godot live editor and runtime state are authoritative. Query the matching authority before applying a change.\n"
+			"- editor, runtime, and pipeline each expose query/apply tools. Query operation=catalog when you need the operations currently available in that authority.\n"
+			"- Apply only operations returned by the matching query, with its current receipt or expected state. Tool results carry persisted state; do not invent a separate save step.\n"
+			"- Prefer the smallest coherent native change. Use ClassDB metadata and native documentation for unfamiliar engine types.\n"
+			"- Tool errors and Godot diagnostics are authoritative. Change the cause before retrying; never repeat an identical failed call.\n"
+			"- Background operations return stable job ids. Continue independent work, then use the advertised wait operation once when nothing else is runnable.\n"
+			"- Text without tool calls ends the turn. Use update_plan only for concise progress and finish with a clear summary.";
 	if (tool_registry) {
 		const String skill_catalog = tool_registry->get_skill_catalog_prompt();
 		if (!skill_catalog.is_empty()) {
@@ -1138,15 +1134,13 @@ Array SolersAgentSession::_collect_tools() {
 		return out;
 	}
 	const uint64_t catalog_revision = tool_registry->get_tool_catalog_revision();
-	if (cached_tool_catalog_revision == catalog_revision && cached_request_deferred_count == task_deferred_tools.size()) {
+	if (cached_tool_catalog_revision == catalog_revision) {
 		return cached_request_tools;
 	}
 	const Array defs = tool_registry->list_tools();
 	for (int i = 0; i < defs.size(); i++) {
 		const Dictionary def = defs[i];
-		const String exposure = def.get("exposure", "direct");
-		const StringName canonical_name = StringName(def.get("name", String()));
-		if (exposure == "hidden" || exposure == "transaction" || (exposure == "deferred" && !task_deferred_tools.has(canonical_name))) {
+		if (def.get("exposure", String()) != "model") {
 			continue;
 		}
 		Dictionary tool;
@@ -1158,7 +1152,6 @@ Array SolersAgentSession::_collect_tools() {
 	}
 	cached_request_tools = out;
 	cached_request_tool_tokens = SolersContextManager::estimate_tokens(JSON::stringify(out, "", false, true));
-	cached_request_deferred_count = task_deferred_tools.size();
 	cached_tool_catalog_revision = catalog_revision;
 	return cached_request_tools;
 }
@@ -1882,7 +1875,6 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 	turn_tool_calls = 0;
 	turn_duplicate_observations = 0;
 	turn_successful_mutations = 0;
-	completion_blocker_fingerprint = String();
 	_ensure_godot_log_audit(true);
 
 	Dictionary turn_started;
@@ -2083,9 +2075,6 @@ void SolersAgentSession::_on_model_turn_complete() {
 	}
 	if (pending_tool_calls.is_empty()) {
 		const String final_text = current_text;
-		if (!_accept_completion_or_continue(final_text)) {
-			return;
-		}
 		if (!current_text.is_empty()) {
 			emit_signal(SNAME("assistant_message"), current_text);
 		}
@@ -2093,7 +2082,12 @@ void SolersAgentSession::_on_model_turn_complete() {
 		current_reasoning = String();
 		pending_tool_calls.clear();
 		streamed_tool_calls.clear();
-		_finish_turn("completed", final_text);
+		const Dictionary completion_error = _completion_error();
+		if (completion_error.is_empty()) {
+			_finish_turn("completed", final_text);
+		} else {
+			_finish_turn("failed", final_text, completion_error);
+		}
 		return;
 	}
 	if (!current_text.is_empty()) {
@@ -2174,9 +2168,9 @@ void SolersAgentSession::_on_model_turn_complete() {
 	SOLERS_TRACE("session.tools", vformat("entering tool queue (%d call(s))", tool_queue.size()));
 }
 
-bool SolersAgentSession::_accept_completion_or_continue(const String &p_message) {
+Dictionary SolersAgentSession::_completion_error() const {
 	if (turn_successful_mutations == 0 || !tool_registry) {
-		return true;
+		return Dictionary();
 	}
 	Dictionary facts = tool_registry->build_delivery_report(Dictionary({ { "_session_id", session_id } }));
 	Array blockers = facts.get("blockers", Array());
@@ -2187,28 +2181,10 @@ bool SolersAgentSession::_accept_completion_or_continue(const String &p_message)
 		}
 	}
 	if (blockers.is_empty()) {
-		return true;
+		return Dictionary();
 	}
 	facts["blockers"] = blockers;
-	const String fingerprint = JSON::stringify(blockers, "", false, true).sha256_text();
-	if (fingerprint == completion_blocker_fingerprint) {
-		_finish_turn("failed", p_message, Dictionary({ { "code", "DELIVERY_BLOCKED" }, { "message", "Godot delivery facts remained blocked after the model was asked to correct them." }, { "facts", facts } }));
-		return false;
-	}
-	completion_blocker_fingerprint = fingerprint;
-	Dictionary message;
-	message["role"] = SolersContextManager::MODEL_CONTEXT_ROLE;
-	message["content"] = "Godot rejected task completion. Resolve the authoritative blockers, verify again, then report the outcome:\n" + JSON::stringify(facts, "", false, true);
-	message["origin"] = "completion_facts";
-	message["ephemeral"] = true;
-	messages.push_back(message);
-	_write_transcript_event("model_context", message);
-	current_text = String();
-	current_reasoning = String();
-	pending_tool_calls.clear();
-	streamed_tool_calls.clear();
-	_dispatch_model_request();
-	return false;
+	return Dictionary({ { "code", "DELIVERY_BLOCKED" }, { "message", "Godot delivery facts block completion." }, { "facts", facts } });
 }
 
 void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_message, const Dictionary &p_error) {
@@ -2291,7 +2267,6 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	if (tool_registry) {
 		tool_registry->clear_task_state(session_id);
 	}
-	task_deferred_tools.clear();
 	tool_queue_index = 0;
 	tool_delivery_index = 0;
 	tool_started_announced = false;
@@ -2640,7 +2615,7 @@ void SolersAgentSession::_schedule_tool_execution(int p_queue_index, const Strin
 	deferred_args = p_args.duplicate(true);
 	deferred_initial_args = deferred_args;
 	deferred_resource_accesses = tool_registry ? tool_registry->resolve_resource_access(StringName(p_canonical_name), p_args) : Array();
-	const Dictionary definition = tool_registry ? tool_registry->get_tool_definition(StringName(p_canonical_name)) : Dictionary();
+	const Dictionary definition = tool_registry ? tool_registry->get_tool_definition(StringName(p_canonical_name), p_args) : Dictionary();
 	if (!definition.is_empty()) {
 		Array attachments;
 		for (const String &argument : PackedStringArray(definition.get("attachment_args", PackedStringArray()))) {
@@ -2674,7 +2649,7 @@ void SolersAgentSession::_execute_deferred_tool(uint64_t p_token) {
 		deferred_done = true;
 		return;
 	}
-	const Dictionary definition = tool_registry->get_tool_definition(StringName(deferred_canonical_name));
+	const Dictionary definition = tool_registry->get_tool_definition(StringName(deferred_canonical_name), deferred_args);
 	if (!definition.is_empty()) {
 		for (const String &input : PackedStringArray(definition.get("required_model_inputs", PackedStringArray()))) {
 			if (_active_model_input_support(input) == 0) {
@@ -2849,7 +2824,7 @@ void SolersAgentSession::_poll_tool_executing() {
 	// frames and the user-driven editor camera change without a revision
 	// bump), and in-flight pending envelopes (their capture_id is consumed by
 	// the poll loop).
-	const Dictionary definition = tool_registry ? tool_registry->get_tool_definition(StringName(canonical_name)) : Dictionary();
+	const Dictionary definition = tool_registry ? tool_registry->get_tool_definition(StringName(canonical_name), args) : Dictionary();
 	const bool cacheable = (bool)definition.get("cacheable", true) && !result.has("attachments") && !Dictionary(result.get("data", Dictionary())).has("poll_args");
 	if (tool_succeeded && cacheable && tool_registry && tool_registry->is_read_only(StringName(canonical_name), args)) {
 		readonly_cache[_readonly_cache_key(StringName(canonical_name), args)] = result.duplicate(true);
@@ -2884,12 +2859,6 @@ Dictionary SolersAgentSession::_tool_denied_result(const String &p_code, const S
 void SolersAgentSession::_deliver_tool_result(const String &p_id, const String &p_model_name, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result) {
 	Dictionary result = p_result.duplicate(true);
 	result["call_id"] = p_id;
-	// A result widens the tool surface by declaring what it unlocks, so this
-	// path never has to recognize which tool produced it.
-	const PackedStringArray unlocked = Dictionary(result.get("data", Dictionary())).get("unlock_tools", PackedStringArray());
-	for (int i = 0; i < unlocked.size(); i++) {
-		task_deferred_tools.insert(StringName(unlocked[i]));
-	}
 	const Dictionary diagnostics = _take_godot_diagnostics();
 	if (!diagnostics.is_empty()) {
 		result["diagnostics"] = diagnostics;
@@ -2897,7 +2866,7 @@ void SolersAgentSession::_deliver_tool_result(const String &p_id, const String &
 	const String content = SolersContextManager::clamp_to_tokens(JSON::stringify(result, "", false, true), SolersContextManager::TOOL_RESULT_MAX_TOKENS);
 	_write_transcript_tool(p_id, p_canonical_name, p_args, result, content);
 	const uint64_t duration_msec = tool_completed_msec >= tool_started_msec ? tool_completed_msec - tool_started_msec : 0;
-	const Dictionary definition = tool_registry ? tool_registry->get_tool_definition(StringName(p_canonical_name)) : Dictionary();
+	const Dictionary definition = tool_registry ? tool_registry->get_tool_definition(StringName(p_canonical_name), p_args) : Dictionary();
 	if ((bool)definition.get("timeline_visible", true)) {
 		emit_signal(SNAME("tool_call_finished"), p_id, p_canonical_name, result, (int64_t)duration_msec);
 	}
@@ -3055,7 +3024,6 @@ void SolersAgentSession::reset_conversation() {
 	last_stop_reason = String();
 	last_usage.clear();
 	last_request_usage.clear();
-	task_deferred_tools.clear();
 	pending_background_assets.clear();
 	delivered_background_assets.clear();
 	waiting_background_asset_ids.clear();
@@ -3086,7 +3054,6 @@ void SolersAgentSession::set_session(const String &p_project_path, const String 
 	const String previous_session_id = session_id;
 	project_path = p_project_path;
 	_reset_session_derived_state();
-	task_deferred_tools.clear();
 	if (!p_session_id.is_empty()) {
 		session_id = p_session_id;
 	}
