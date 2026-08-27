@@ -2178,7 +2178,7 @@ bool SolersAgentSession::_accept_completion_or_continue(const String &p_message)
 	if (turn_successful_mutations == 0 || !tool_registry) {
 		return true;
 	}
-	Dictionary facts = tool_registry->build_delivery_report();
+	Dictionary facts = tool_registry->build_delivery_report(Dictionary({ { "_session_id", session_id } }));
 	Array blockers = facts.get("blockers", Array());
 	if (turn_runtime_owned && tool_registry->observation_service) {
 		const Dictionary runtime = tool_registry->observation_service->observe_runtime(Dictionary({ { "target", "stack" } }), SolersContextManager::TOOL_RESULT_MAX_TOKENS);

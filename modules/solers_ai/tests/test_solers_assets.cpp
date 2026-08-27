@@ -33,6 +33,8 @@
 #include "core/io/file_access.h"
 #include "core/io/image.h"
 #include "core/io/json.h"
+#include "core/io/resource.h"
+#include "core/io/resource_saver.h"
 #include "core/io/tcp_server.h"
 #include "core/os/os.h"
 #include "core/templates/pair.h"
@@ -43,6 +45,8 @@
 
 #include "modules/solers_ai/core/solers_asset_service.h"
 #include "modules/solers_ai/core/solers_mention.h"
+#include "modules/solers_ai/core/solers_observation_service.h"
+#include "modules/solers_ai/core/solers_resource_service.h"
 #include "modules/solers_ai/core/solers_tool_registry.h"
 #include "modules/solers_ai/generated/terrain3d_lock.gen.h"
 #include "modules/solers_ai/plugins/solers_plugin.h"
@@ -781,9 +785,14 @@ TEST_CASE("[SolersAssetService] asset listing uses the bounded in-memory project
 	const String asset_id = ".solers_asset_projection_contract";
 	const String asset_dir = SolersAssetService::asset_root().path_join(asset_id);
 	const String manifest_path = asset_dir.path_join("manifest.json");
+	const String artifact_path = "res://.solers_asset_projection_contract.tres";
 	SolersTestPaths cleanup;
 	cleanup.add(asset_dir);
+	cleanup.add(artifact_path);
 	REQUIRE(DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(asset_dir)) == OK);
+	Ref<Resource> artifact;
+	artifact.instantiate();
+	REQUIRE(ResourceSaver::save(artifact, artifact_path) == OK);
 	Dictionary provider_options;
 	provider_options["opaque_contract"] = String("A").repeat(128 * 1024);
 	Dictionary manifest;
@@ -791,6 +800,7 @@ TEST_CASE("[SolersAssetService] asset listing uses the bounded in-memory project
 	manifest["kind"] = "3d";
 	manifest["name"] = "Projection Contract";
 	manifest["status"] = "failed";
+	manifest["session_id"] = "projection-session";
 	manifest["provider_options"] = provider_options;
 	String error;
 	REQUIRE(SolersPlugin::write_json_atomic(manifest_path, manifest, error));
@@ -800,8 +810,8 @@ TEST_CASE("[SolersAssetService] asset listing uses the bounded in-memory project
 	sidecar["job_id"] = asset_id;
 	sidecar["plugin"] = "synthetic";
 	sidecar["status"] = "imported";
-	sidecar["files"] = Array({ "res://current_asset.glb" });
-	sidecar["entrypoints"] = Array({ "res://current_asset.glb" });
+	sidecar["files"] = Array({ artifact_path });
+	sidecar["entrypoints"] = Array({ artifact_path });
 	REQUIRE(SolersPlugin::write_json_atomic(sidecar_path, sidecar, error));
 
 	SolersAssetService assets;
@@ -817,16 +827,28 @@ TEST_CASE("[SolersAssetService] asset listing uses the bounded in-memory project
 	CHECK(sidecar_data.get("id", String()) == asset_id);
 	CHECK(sidecar_data.get("provider", String()) == "synthetic");
 	CHECK(sidecar_data.get("sidecar_file", String()) == sidecar_path);
-	CHECK(Array(sidecar_data.get("entrypoints", Array())) == Array({ "res://current_asset.glb" }));
-	if (EditorFileSystem *filesystem = EditorFileSystem::get_singleton()) {
-		filesystem->update_file(sidecar_path);
-		if (filesystem->find_file(sidecar_path, nullptr)) {
-			const Dictionary project_listed = solers_test_find_dictionary(assets.list_assets(), SNAME("id"), asset_id);
-			CHECK(project_listed.get("in_current_project", false));
-			CHECK(Array(project_listed.get("project_entrypoints", Array())) == Array({ "res://current_asset.glb" }));
-			CHECK(project_listed.get("sidecar_file", String()) == sidecar_path);
-		}
-	}
+	CHECK(Array(sidecar_data.get("entrypoints", Array())) == Array({ artifact_path }));
+	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
+	REQUIRE(filesystem != nullptr);
+	filesystem->update_file(artifact_path);
+	filesystem->update_file(sidecar_path);
+	REQUIRE(filesystem->find_file(sidecar_path, nullptr) != nullptr);
+	const Dictionary project_listed = solers_test_find_dictionary(assets.list_assets(), SNAME("id"), asset_id);
+	CHECK(project_listed.get("in_current_project", false));
+	CHECK(Array(project_listed.get("project_entrypoints", Array())) == Array({ artifact_path }));
+	CHECK(project_listed.get("sidecar_file", String()) == sidecar_path);
+
+	SolersObservationService observation;
+	observation.poll();
+	SolersResourceService resources;
+	SolersToolRegistry registry;
+	registry.set_asset_service(&assets);
+	registry.set_observation_service(&observation);
+	registry.set_resource_service(&resources);
+	const Dictionary report = registry.build_delivery_report(Dictionary({ { "_session_id", "projection-session" } }));
+	CHECK_FALSE(solers_test_find_dictionary(report.get("blockers", Array()), SNAME("code"), "UNCONSUMED_AGENT_ARTIFACTS").is_empty());
+	const Dictionary other_report = registry.build_delivery_report(Dictionary({ { "_session_id", "another-session" } }));
+	CHECK(Array(other_report.get("unconsumed_agent_artifacts", Array())).is_empty());
 
 	manifest["status"] = "ready";
 	REQUIRE(SolersPlugin::write_json_atomic(manifest_path, manifest, error));

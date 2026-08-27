@@ -1484,6 +1484,10 @@ Dictionary SolersToolRegistry::build_delivery_report(const Dictionary &p_args, i
 			}
 		}
 		report["unconsumed_agent_artifacts"] = artifacts;
+		if (!artifacts.is_empty()) {
+			blockers.push_back(Dictionary({ { "code", "UNCONSUMED_AGENT_ARTIFACTS" }, { "count", artifacts.size() }, { "artifacts", artifacts } }));
+			report["blockers"] = blockers;
+		}
 	}
 	return report;
 }
