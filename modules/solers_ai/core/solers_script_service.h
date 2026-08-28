@@ -31,8 +31,6 @@
 #pragma once
 
 #include "core/object/object.h"
-#include "core/os/os.h"
-#include "core/templates/hash_map.h"
 #include "core/variant/dictionary.h"
 
 class SolersActionTimeline;
@@ -42,14 +40,6 @@ class SolersScriptService : public Object {
 
 	SolersActionTimeline *action_timeline = nullptr;
 	Error project_settings_save_error = OK;
-
-	struct PendingCompute {
-		ProcessID process_id = 0;
-		String directory;
-		Array outputs;
-	};
-	HashMap<String, PendingCompute> pending_computes;
-	void _cleanup_compute(PendingCompute &r_compute);
 
 	bool _normalize_project_path(const String &p_path, String &r_res_path, String &r_error, bool p_allow_project_data = false) const;
 	Dictionary _ok(const Variant &p_data) const;
@@ -68,10 +58,4 @@ public:
 	Dictionary edit_project(const Dictionary &p_args);
 	Dictionary edit_script(const Dictionary &p_args);
 	Dictionary validate_script(const Dictionary &p_args) const;
-	Dictionary compute_script(const String &p_call_id, const Dictionary &p_args);
-	bool compute_script_ready(const String &p_call_id) const;
-	Dictionary compute_script_finalize(const String &p_call_id);
-	void compute_script_complete(const String &p_call_id);
-
-	~SolersScriptService();
 };

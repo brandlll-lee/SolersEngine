@@ -41,7 +41,9 @@
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/file_system/editor_file_system.h"
 #include "scene/3d/camera_3d.h"
+#include "scene/3d/decal.h"
 #include "scene/3d/light_3d.h"
+#include "scene/3d/lightmap_gi.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/animation/animation_player.h"
 #include "scene/main/scene_tree.h"
@@ -49,6 +51,7 @@
 #include "scene/resources/3d/primitive_meshes.h"
 #include "scene/resources/animation.h"
 #include "scene/resources/animation_library.h"
+#include "scene/resources/image_texture.h"
 #include "scene/resources/material.h"
 #include "scene/resources/packed_scene.h"
 #include "tests/test_macros.h"
@@ -797,7 +800,7 @@ TEST_CASE("[SolersToolRegistry] a registered operation needs no dispatcher branc
 				return Dictionary({ { "ok", true }, { "data", Dictionary({ { "path", path }, { "authored_state_changed", true } }) } });
 			})));
 
-	const Dictionary described = registry.call_tool("engine.describe", Dictionary({ { "query", "synthetic" } }));
+	const Dictionary described = registry.call_tool("editor.query", Dictionary({ { "operation", "catalog" }, { "arguments", Dictionary() } }));
 	REQUIRE((bool)described.get("ok", false));
 	const Array capabilities = Dictionary(described.get("data", Dictionary())).get("operations", Array());
 	CHECK_FALSE(solers_test_find_dictionary(capabilities, SNAME("name"), "synthetic.operation").is_empty());
@@ -844,6 +847,34 @@ TEST_CASE("[SolersToolRegistry] object query invokes only ClassDB const zero-arg
 	CHECK(Dictionary(values.get("resize", Dictionary())).get("code", String()) == "METHOD_NOT_READABLE");
 }
 
+TEST_CASE("[SolersToolRegistry] resource query uses the same native read contract") {
+	const String path = "res://.solers_resource_method_contract.tres";
+	SolersTestPaths cleanup;
+	cleanup.add(path);
+	Ref<Image> image = Image::create_empty(8, 4, false, Image::FORMAT_RGBA8);
+	Ref<ImageTexture> texture = ImageTexture::create_from_image(image);
+	REQUIRE(ResourceSaver::save(texture, path) == OK);
+
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
+	SolersReflectionService reflection;
+	SolersResourceService resources;
+	SolersToolRegistry registry;
+	registry.set_permission_manager(&permissions);
+	registry.set_reflection_service(&reflection);
+	registry.set_resource_service(&resources);
+	registry.register_default_tools();
+	const Dictionary result = registry.call_tool("object.query", Dictionary({ { "target", "resource" }, { "path", path }, { "methods", Array({ "get_width", "get_height" }) } }));
+	REQUIRE((bool)result.get("ok", false));
+	const Dictionary data = result.get("data", Dictionary());
+	const Dictionary values = data.get("method_values", Dictionary());
+	CHECK((int)values.get("get_width", 0) == 8);
+	CHECK((int)values.get("get_height", 0) == 4);
+	const Array operations = data.get("operations", Array());
+	CHECK_FALSE(solers_test_find_dictionary(operations, SNAME("name"), "resource.update").is_empty());
+	CHECK(solers_test_find_dictionary(operations, SNAME("name"), "scene.node.create").is_empty());
+}
+
 TEST_CASE("[SolersFileCheckpoint] directory state restores the exact recursive digest") {
 	const String directory = "res://.solers_directory_checkpoint";
 	const String original_file = directory.path_join("nested/original.txt");
@@ -883,17 +914,23 @@ TEST_CASE("[SolersToolRegistry] ClassDB inheritance filters operations") {
 	SolersPermissionManager permissions;
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
 	SolersReflectionService reflection;
+	SolersResourceService resources;
 	SolersToolRegistry registry;
 	registry.set_permission_manager(&permissions);
 	registry.set_reflection_service(&reflection);
+	registry.set_resource_service(&resources);
 	registry.register_default_tools();
-	auto describe = [&registry](const String &p_class) {
-		const Dictionary result = registry.call_tool("engine.describe", Dictionary({ { "classes", Array({ Dictionary({ { "class_name", p_class } }) }) } }));
+	auto describe = [&registry](Object *p_object) {
+		const Dictionary result = registry.call_tool("object.query", Dictionary({ { "target", "object" }, { "object_id", solers_object_id_to_string(p_object->get_instance_id()) } }));
 		CHECK((bool)result.get("ok", false));
 		return Array(Dictionary(result.get("data", Dictionary())).get("operations", Array()));
 	};
-	CHECK_FALSE(solers_test_find_dictionary(describe("LightmapGI"), SNAME("name"), "scene.lightmap.bake").is_empty());
-	CHECK(solers_test_find_dictionary(describe("Decal"), SNAME("name"), "scene.lightmap.bake").is_empty());
+	LightmapGI *lightmap = memnew(LightmapGI);
+	Decal *decal = memnew(Decal);
+	CHECK_FALSE(solers_test_find_dictionary(describe(lightmap), SNAME("name"), "scene.lightmap.bake").is_empty());
+	CHECK(solers_test_find_dictionary(describe(decal), SNAME("name"), "scene.lightmap.bake").is_empty());
+	memdelete(lightmap);
+	memdelete(decal);
 }
 
 TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked operations") {
@@ -1082,7 +1119,12 @@ TEST_CASE("[SolersToolRegistry] registered operations appear through authority c
 	const Dictionary catalog = registry.call_tool("editor.query", Dictionary({ { "operation", "catalog" }, { "arguments", Dictionary() } }));
 	REQUIRE((bool)catalog.get("ok", false));
 	const Array queries = Dictionary(catalog.get("data", Dictionary())).get("queries", Array());
-	CHECK_FALSE(solers_test_find_dictionary(queries, SNAME("name"), "synthetic.future").is_empty());
+	const Dictionary summary = solers_test_find_dictionary(queries, SNAME("name"), "synthetic.future");
+	CHECK_FALSE(summary.is_empty());
+	CHECK_FALSE(summary.has("input_schema"));
+	const Dictionary contract = registry.call_tool("editor.query", Dictionary({ { "operation", "catalog" }, { "arguments", Dictionary({ { "operation", "synthetic.future" } }) } }));
+	REQUIRE((bool)contract.get("ok", false));
+	CHECK(Dictionary(Dictionary(contract.get("data", Dictionary())).get("operation", Dictionary())).has("input_schema"));
 	const Dictionary result = registry.call_tool("editor.query", authority_operation("synthetic.future", Dictionary()));
 	REQUIRE((bool)result.get("ok", false));
 	CHECK((int)Dictionary(result.get("data", Dictionary())).get("value", 0) == 42);

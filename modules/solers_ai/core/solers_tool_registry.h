@@ -135,6 +135,8 @@ class SolersToolRegistry : public Object {
 	Dictionary _inspect_engine(const Dictionary &p_args);
 	SolersTool *_operation(SolersOperationDomain p_domain, SolersOperationMode p_mode, const StringName &p_name) const;
 	Array _operation_definitions(SolersOperationDomain p_domain, SolersOperationMode p_mode, const StringName &p_class = StringName(), const StringName &p_kind = StringName()) const;
+	Array _operation_names(SolersOperationDomain p_domain, SolersOperationMode p_mode, const StringName &p_class = StringName(), const StringName &p_kind = StringName()) const;
+	Array _operation_summaries(SolersOperationDomain p_domain, SolersOperationMode p_mode) const;
 	Dictionary _validate_operation(SolersOperationDomain p_domain, SolersOperationMode p_mode, const Dictionary &p_args) const;
 	SolersToolMutationDomain _operation_domains(SolersOperationDomain p_domain, SolersOperationMode p_mode, const Dictionary &p_args) const;
 	Array _operation_resource_access(SolersOperationDomain p_domain, SolersOperationMode p_mode, const Dictionary &p_args) const;

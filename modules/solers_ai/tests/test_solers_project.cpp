@@ -38,6 +38,7 @@
 #include "core/io/json.h"
 #include "core/io/resource_loader.h"
 #include "core/object/message_queue.h"
+#include "core/os/os.h"
 #include "editor/editor_node.h"
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/file_system/editor_file_system.h"
@@ -229,37 +230,6 @@ TEST_CASE("[SolersScriptService] native serialized resources require native reso
 	}
 }
 
-TEST_CASE("[SolersScriptService] isolated compute commits only verified declared resources") {
-	const String path = "res://.solers_compute_contract.tres";
-	SolersTestPaths cleanup;
-	cleanup.add(path);
-
-	Dictionary output;
-	output["from"] = "generated.tres";
-	output["to"] = path;
-	output["resource_type"] = "Resource";
-	Array outputs;
-	outputs.push_back(output);
-	Dictionary args;
-	args["source"] = "extends SceneTree\nfunc _init():\n\tvar value := Resource.new()\n\tvalue.resource_name = \"isolated\"\n\tif ResourceSaver.save(value, \"res://generated.tres\") != OK:\n\t\tquit(2)\n\t\treturn\n\tquit()\n";
-	args["outputs"] = outputs;
-
-	SolersScriptService service;
-	REQUIRE(service.compute_script("compute-contract", args).get("ok", false));
-	const uint64_t deadline = OS::get_singleton()->get_ticks_msec() + 10000;
-	while (!service.compute_script_ready("compute-contract") && OS::get_singleton()->get_ticks_msec() < deadline) {
-		OS::get_singleton()->delay_usec(10000);
-	}
-	REQUIRE(service.compute_script_ready("compute-contract"));
-	const Dictionary result = service.compute_script_finalize("compute-contract");
-	REQUIRE(result.get("ok", false));
-	const Array committed = Dictionary(result.get("data", Dictionary())).get("outputs", Array());
-	REQUIRE(committed.size() == 1);
-	CHECK_FALSE(String(Dictionary(committed[0]).get("sha256", String())).is_empty());
-	const Ref<Resource> loaded = ResourceLoader::load(path, "Resource", ResourceFormatLoader::CACHE_MODE_IGNORE_DEEP);
-	REQUIRE(loaded.is_valid());
-	CHECK(loaded->get_name() == "isolated");
-}
 
 TEST_CASE("[SolersResourceService] property coercion accepts named and nested Godot components") {
 	Node3D *node = memnew(Node3D);

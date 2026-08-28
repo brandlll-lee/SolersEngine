@@ -810,32 +810,59 @@ Dictionary SolersResourceService::inspect_resource(const Dictionary &p_args) con
 	}
 	Dictionary data = info_result.get("data", Dictionary());
 	const Array requested = p_args.get("properties", Array());
-	if (!requested.is_empty()) {
+	const Array methods = p_args.get("methods", Array());
+	if (!requested.is_empty() || !methods.is_empty()) {
 		Error load_error = OK;
 		const Ref<Resource> resource = ResourceLoader::load(data.get("path", String()), p_args.get("type_hint", String()), ResourceFormatLoader::CACHE_MODE_REUSE, &load_error);
 		if (resource.is_null() || load_error != OK) {
 			return _error("RESOURCE_LOAD_FAILED", vformat("Failed to load resource '%s' (error %d).", String(data.get("path", String())), (int)load_error));
 		}
-		Dictionary values;
-		Dictionary errors;
-		for (const Variant &value : requested) {
-			const StringName property = StringName(String(value));
-			PropertyInfo property_info;
-			if (!_solers_find_property(resource.ptr(), property, property_info)) {
-				errors[String(value)] = _error("UNKNOWN_PROPERTY", vformat("Property '%s' is not exposed by %s.%s", String(value), resource->get_class(), solers_property_suggestions(resource.ptr(), String(value)))).get("error", Dictionary());
-				continue;
+		if (!requested.is_empty()) {
+			Dictionary values;
+			Dictionary errors;
+			for (const Variant &value : requested) {
+				const StringName property = StringName(String(value));
+				PropertyInfo property_info;
+				if (!_solers_find_property(resource.ptr(), property, property_info)) {
+					errors[String(value)] = _error("UNKNOWN_PROPERTY", vformat("Property '%s' is not exposed by %s.%s", String(value), resource->get_class(), solers_property_suggestions(resource.ptr(), String(value)))).get("error", Dictionary());
+					continue;
+				}
+				Dictionary item;
+				item["type"] = Variant::get_type_name(property_info.type);
+				item["value"] = solers_summarize_display_value(resource->get(property));
+				values[String(value)] = item;
 			}
-			Dictionary item;
-			item["type"] = Variant::get_type_name(property_info.type);
-			item["value"] = solers_summarize_display_value(resource->get(property));
-			values[String(value)] = item;
+			data["properties"] = values;
+			if (!errors.is_empty()) {
+				data["property_errors"] = errors;
+			}
 		}
-		data["properties"] = values;
-		if (!errors.is_empty()) {
-			data["property_errors"] = errors;
+		Dictionary method_values;
+		for (const Variant &method : methods) {
+			const Dictionary value = _read_method(resource.ptr(), StringName(method));
+			method_values[method] = (bool)value.get("ok", false) ? Dictionary(value.get("data", Dictionary())).get("value", Variant()) : value.get("error", Dictionary());
+		}
+		if (!method_values.is_empty()) {
+			data["method_values"] = method_values;
 		}
 	}
 	return _ok(data);
+}
+
+Dictionary SolersResourceService::_read_method(Object *p_object, const StringName &p_method) const {
+	MethodInfo info;
+	if (!ClassDB::get_method_info(p_object->get_class_name(), p_method, &info)) {
+		return _error("UNKNOWN_METHOD", vformat("Method is not exposed by ClassDB: %s.%s", p_object->get_class(), p_method));
+	}
+	if (!(info.flags & METHOD_FLAG_CONST) || !info.arguments.is_empty()) {
+		return _error("METHOD_NOT_READABLE", vformat("Method %s.%s is not const and zero-argument.", p_object->get_class(), p_method));
+	}
+	Callable::CallError call_error;
+	const Variant value = p_object->callp(p_method, nullptr, 0, call_error);
+	if (call_error.error != Callable::CallError::CALL_OK) {
+		return _error("METHOD_CALL_FAILED", vformat("Godot rejected %s.%s with CallError %d.", p_object->get_class(), p_method, call_error.error));
+	}
+	return _ok(Dictionary({ { "method", p_method }, { "type", Variant::get_type_name(value.get_type()) }, { "value", solers_summarize_display_value(value) } }));
 }
 
 Dictionary SolersResourceService::create_resource(const Dictionary &p_args) const {
@@ -995,19 +1022,13 @@ Dictionary SolersResourceService::native_get(const Dictionary &p_args) const {
 	}
 	const StringName method = StringName(String(p_args.get("method", String())).strip_edges());
 	if (!method.is_empty()) {
-		MethodInfo info;
-		if (!ClassDB::get_method_info(object->get_class_name(), method, &info)) {
-			return _error("UNKNOWN_METHOD", vformat("Method is not exposed by ClassDB: %s.%s", object->get_class(), method));
+		Dictionary result = _read_method(object, method);
+		if ((bool)result.get("ok", false)) {
+			Dictionary data = result.get("data", Dictionary());
+			data["object"] = solers_native_object_handle(object);
+			result["data"] = data;
 		}
-		if (!(info.flags & METHOD_FLAG_CONST) || !info.arguments.is_empty()) {
-			return _error("METHOD_NOT_READABLE", vformat("Method %s.%s is not const and zero-argument.", object->get_class(), method));
-		}
-		Callable::CallError call_error;
-		const Variant value = object->callp(method, nullptr, 0, call_error);
-		if (call_error.error != Callable::CallError::CALL_OK) {
-			return _error("METHOD_CALL_FAILED", vformat("Godot rejected %s.%s with CallError %d.", object->get_class(), method, call_error.error));
-		}
-		return _ok(Dictionary({ { "object", solers_native_object_handle(object) }, { "method", method }, { "type", Variant::get_type_name(value.get_type()) }, { "value", solers_summarize_display_value(value) } }));
+		return result;
 	}
 	const String property = String(p_args.get("property", String())).strip_edges();
 	if (property.is_empty()) {

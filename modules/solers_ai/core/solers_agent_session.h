@@ -100,6 +100,8 @@ class SolersAgentSession : public Object {
 	Array tool_queue; // provider-ordered tool calls for this step (MAIN_THREAD tools run serially)
 	Array failed_resource_accesses;
 	HashMap<String, Dictionary> readonly_cache;
+	HashSet<String> delivered_tool_results;
+	bool tool_batch_has_novel_result = false;
 	Array cached_request_tools;
 	int cached_request_tool_tokens = 0;
 	uint64_t cached_tool_catalog_revision = 0;

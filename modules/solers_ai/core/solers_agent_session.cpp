@@ -1059,7 +1059,7 @@ String SolersAgentSession::_default_system_prompt() const {
 			"You are Solers, an AI agent living natively inside the Solers game engine editor (a Godot 4 fork).\n\n"
 			"Operating contract:\n"
 			"- Godot live editor and runtime state are authoritative. Query the matching authority before applying a change.\n"
-			"- editor, runtime, and pipeline each expose query/apply tools. Query operation=catalog when you need the operations currently available in that authority.\n"
+			"- editor, runtime, and pipeline each expose query/apply tools. Live queries return applicable operations; catalog returns a compact authority index and accepts one exact operation for its full contract.\n"
 			"- Apply only operations returned by the matching query, with its current receipt or expected state. Tool results carry persisted state; do not invent a separate save step.\n"
 			"- Prefer the smallest coherent native change. Use ClassDB metadata and native documentation for unfamiliar engine types.\n"
 			"- Tool errors and Godot diagnostics are authoritative. Change the cause before retrying; never repeat an identical failed call.\n"
@@ -1875,6 +1875,7 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 	turn_tool_calls = 0;
 	turn_duplicate_observations = 0;
 	turn_successful_mutations = 0;
+	delivered_tool_results.clear();
 	_ensure_godot_log_audit(true);
 
 	Dictionary turn_started;
@@ -2157,6 +2158,7 @@ void SolersAgentSession::_on_model_turn_complete() {
 	}
 	tool_queue_index = 0;
 	tool_delivery_index = 0;
+	tool_batch_has_novel_result = false;
 	completed_tool_results.clear();
 	failed_resource_accesses.clear();
 	tool_started_announced = false;
@@ -2352,6 +2354,11 @@ void SolersAgentSession::_poll_tool_queue() {
 			emit_signal(SNAME("turn_waiting"), parked);
 			return;
 		}
+		if (!tool_batch_has_novel_result) {
+			const Dictionary error = _error("NO_NEW_INFORMATION", "The completed tool batch produced no new authoritative state.").get("error", Dictionary());
+			_finish_turn("failed", error.get("message", String()), error);
+			return;
+		}
 		const Error err = _dispatch_model_request();
 		if (err != OK) {
 			current_reasoning = String();
@@ -2534,6 +2541,15 @@ void SolersAgentSession::_queue_tool_result(int p_queue_index, const String &p_i
 	terminal["started_msec"] = (int64_t)(p_started_msec > 0 ? p_started_msec : completed_msec);
 	terminal["completed_msec"] = (int64_t)completed_msec;
 	completed_tool_results[p_queue_index] = terminal;
+	if (!(bool)Dictionary(p_result.get("data", Dictionary())).get("unchanged", false)) {
+		Dictionary normalized = p_result.duplicate(true);
+		normalized.erase("call_id");
+		const String result_id = JSON::stringify(Dictionary({ { "tool", p_canonical_name }, { "revision", (int64_t)authored_revision }, { "result", normalized } }), "", false, true).sha256_text();
+		if (!delivered_tool_results.has(result_id)) {
+			delivered_tool_results.insert(result_id);
+			tool_batch_has_novel_result = true;
+		}
+	}
 }
 
 bool SolersAgentSession::_flush_tool_results() {
