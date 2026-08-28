@@ -99,9 +99,6 @@ class SolersAgentSession : public Object {
 	Phase phase = PHASE_STREAMING;
 	Array tool_queue; // provider-ordered tool calls for this step (MAIN_THREAD tools run serially)
 	Array failed_resource_accesses;
-	HashMap<String, Dictionary> readonly_cache;
-	HashSet<String> delivered_tool_results;
-	bool tool_batch_has_novel_result = false;
 	Array cached_request_tools;
 	int cached_request_tool_tokens = 0;
 	uint64_t cached_tool_catalog_revision = 0;
@@ -150,8 +147,6 @@ class SolersAgentSession : public Object {
 	int64_t turn_output_tokens = 0;
 	int64_t turn_reasoning_tokens = 0;
 	int64_t turn_wire_body_bytes = 0;
-	int turn_tool_calls = 0;
-	int turn_duplicate_observations = 0;
 	int turn_successful_mutations = 0;
 	int request_transient_tokens = 0;
 	uint64_t retry_resume_msec = 0;
@@ -204,7 +199,6 @@ class SolersAgentSession : public Object {
 	static void _godot_error_callback(void *p_self, const char *p_function, const char *p_file, int p_line, const char *p_error, const char *p_message, bool p_editor_notify, ErrorHandlerType p_type);
 	void _on_godot_error(const String &p_message, ErrorHandlerType p_type, int64_t p_source_thread, const String &p_function, const String &p_file, int p_line);
 	Dictionary _take_godot_diagnostics();
-	String _readonly_cache_key(const StringName &p_name, const Dictionary &p_args) const;
 	Array _collect_tools();
 	bool _refresh_active_model_limits();
 	int _active_model_input_support(const String &p_modality) const;

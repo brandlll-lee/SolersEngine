@@ -198,6 +198,48 @@ TEST_CASE("[SolersToolRegistry] registers tools by lookup, not a hardcoded catal
 	CHECK((bool)data.get("has_unknown_empty", false));
 }
 
+TEST_CASE("[SolersToolRegistry] authority catalog self-describes a registered query") {
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
+	SolersToolRegistry registry;
+	registry.set_permission_manager(&permissions);
+	registry.register_default_tools();
+
+	int executions = 0;
+	SolersToolCapability capability;
+	capability.permission = SolersPermissionManager::PERMISSION_OBSERVE;
+	capability.operation_domain = SolersOperationDomain::EDITOR;
+	capability.operation_mode = SolersOperationMode::QUERY;
+	const Dictionary schema({ { "type", "object" }, { "properties", Dictionary({ { "sample", Dictionary({ { "type", "string" } }) } }) }, { "required", Array({ "sample" }) }, { "additionalProperties", false } });
+	registry.register_tool(memnew(SolersFunctionTool("synthetic.authority_probe", "Observe one synthetic authority fact.", schema, SolersToolExposure::OPERATION, capability,
+			[&executions](const SolersToolContext &, const Dictionary &) {
+				executions++;
+				return Dictionary({ { "ok", true }, { "data", Dictionary({ { "fact", "stable" } }) } });
+			})));
+
+	const Dictionary catalog = registry.call_tool(SNAME("editor.query"), authority_operation("catalog", Dictionary()));
+	REQUIRE((bool)catalog.get("ok", false));
+	const Dictionary catalog_data = catalog.get("data", Dictionary());
+	const Dictionary summary = solers_test_find_dictionary(catalog_data.get("queries", Array()), SNAME("name"), "synthetic.authority_probe");
+	REQUIRE_FALSE(summary.is_empty());
+	CHECK(Dictionary(summary.get("input_schema", Dictionary())).recursive_equal(schema, 0));
+	for (const Variant &item : Array(catalog_data.get("operations", Array()))) {
+		CHECK_FALSE(Dictionary(item).has("input_schema"));
+	}
+
+	const Dictionary rejected = registry.call_tool(SNAME("editor.query"), authority_operation("synthetic.authority_probe", Dictionary()));
+	REQUIRE_FALSE((bool)rejected.get("ok", true));
+	CHECK(Dictionary(rejected.get("error", Dictionary())).get("code", String()) == "TOOL_ARGUMENT_INVALID");
+	const Dictionary contract = Dictionary(rejected.get("data", Dictionary())).get("operation", Dictionary());
+	CHECK(contract.get("name", String()) == "synthetic.authority_probe");
+	CHECK(Dictionary(contract.get("input_schema", Dictionary())).recursive_equal(schema, 0));
+	CHECK(executions == 0);
+
+	const Dictionary observed = registry.call_tool(SNAME("editor.query"), authority_operation("synthetic.authority_probe", Dictionary({ { "sample", "value" } })));
+	REQUIRE((bool)observed.get("ok", false));
+	CHECK(executions == 1);
+}
+
 TEST_CASE("[SolersToolRegistry] asset operations expose the provider-qualified registry contract") {
 	SolersAssetService assets;
 	SolersToolRegistry registry;
@@ -591,7 +633,6 @@ TEST_CASE("[SolersToolRegistry] ClassDB member queries match whitespace-separate
 	const Dictionary capture_tool = solers_test_find_dictionary(registry.list_tools(), SNAME("name"), "render.capture");
 	CHECK(String(capture_tool.get("description", String())).contains("Spatial facts are observed independently"));
 	CHECK(Dictionary(Dictionary(capture_tool.get("input_schema", Dictionary())).get("properties", Dictionary())).has("focus_paths"));
-	CHECK_FALSE((bool)capture_tool.get("cacheable", true));
 	CHECK(PackedStringArray(capture_tool.get("required_model_inputs", PackedStringArray())).has("image"));
 
 	Dictionary class_request;
@@ -1121,7 +1162,7 @@ TEST_CASE("[SolersToolRegistry] registered operations appear through authority c
 	const Array queries = Dictionary(catalog.get("data", Dictionary())).get("queries", Array());
 	const Dictionary summary = solers_test_find_dictionary(queries, SNAME("name"), "synthetic.future");
 	CHECK_FALSE(summary.is_empty());
-	CHECK_FALSE(summary.has("input_schema"));
+	CHECK(Dictionary(summary.get("input_schema", Dictionary())).recursive_equal(empty_tool_schema(), 0));
 	const Dictionary contract = registry.call_tool("editor.query", Dictionary({ { "operation", "catalog" }, { "arguments", Dictionary({ { "operation", "synthetic.future" } }) } }));
 	REQUIRE((bool)contract.get("ok", false));
 	CHECK(Dictionary(Dictionary(contract.get("data", Dictionary())).get("operation", Dictionary())).has("input_schema"));

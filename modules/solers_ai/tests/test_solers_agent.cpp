@@ -33,8 +33,10 @@
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/json.h"
+#include "core/io/tcp_server.h"
 #include "core/object/message_queue.h"
 #include "core/os/os.h"
+#include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
@@ -48,7 +50,9 @@
 #include "modules/solers_ai/core/solers_agent_session.h"
 #include "modules/solers_ai/core/solers_context_manager.h"
 #include "modules/solers_ai/core/solers_permission_manager.h"
+#include "modules/solers_ai/core/solers_provider_registry.h"
 #include "modules/solers_ai/core/solers_resource_service.h"
+#include "modules/solers_ai/core/solers_settings_service.h"
 #include "modules/solers_ai/core/solers_tool_registry.h"
 #include "modules/solers_ai/core/solers_trace.h"
 #include "modules/solers_ai/editor/solers_chat_cells.h"
@@ -78,6 +82,43 @@ Array make_tool_calls(const String &p_id, const String &p_name) {
 	call["name"] = p_name;
 	call["arguments"] = "{}";
 	return Array({ call });
+}
+
+class ScopedAgentSettings {
+	EditorSettings *settings;
+	Dictionary snapshot;
+
+public:
+	ScopedAgentSettings(EditorSettings *p_settings, const Array &p_paths) :
+			settings(p_settings) {
+		for (const Variant &path_value : p_paths) {
+			const String path = path_value;
+			snapshot[path] = settings->has_setting(path) ? settings->get_setting(path) : Variant();
+			settings->erase(path);
+		}
+	}
+
+	~ScopedAgentSettings() {
+		for (const Variant &path_value : snapshot.keys()) {
+			const String path = path_value;
+			settings->erase(path);
+			if (snapshot[path].get_type() != Variant::NIL) {
+				settings->set_manually(path, snapshot[path]);
+			}
+		}
+		EditorSettings::save();
+	}
+};
+
+String make_event_stream_response(const String &p_body) {
+	return vformat("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", p_body.utf8().length(), p_body);
+}
+
+String make_chat_tool_response(const String &p_call_id, const String &p_tool_name) {
+	return make_event_stream_response(vformat("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"%s\",\"type\":\"function\",\"function\":{\"name\":\"%s\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n"
+											  "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"
+											  "data: [DONE]\n\n",
+			p_call_id, p_tool_name));
 }
 
 TEST_CASE("[SolersTrace] transcript parser skips incomplete audit records silently") {
@@ -458,6 +499,69 @@ TEST_CASE("[SolersSession][SceneTree][Editor] diagnostics never rewrite a handle
 	REQUIRE((bool)result.get("ok", false));
 	CHECK((bool)Dictionary(result.get("data", Dictionary())).get("native_postcondition", false));
 	CHECK((int)session.get_status().get("godot_log_errors", -1) == 1);
+	session.shutdown();
+}
+
+TEST_CASE("[SolersAgentSession][Editor] repeated read observations remain executable model input") {
+	Ref<TCPServer> server;
+	server.instantiate();
+	REQUIRE(server->listen(0, IPAddress("127.0.0.1")) == OK);
+	EditorSettings *editor_settings = EditorSettings::get_singleton();
+	REQUIRE(editor_settings != nullptr);
+	SolersProviderRegistry providers;
+	SolersSettingsService settings;
+	settings.set_provider_registry(&providers);
+	const String prefix = "solers/ai/";
+	const String provider_prefix = prefix + "providers/custom_openai_compatible/";
+	ScopedAgentSettings restore(editor_settings, Array({ prefix + "provider", prefix + "local_models_only", provider_prefix + "configured", provider_prefix + "model", provider_prefix + "reasoning_effort", provider_prefix + "base_url", provider_prefix + "context_window", provider_prefix + "max_tokens", provider_prefix + "api_key" }));
+	Dictionary config({ { "provider", "custom_openai_compatible" }, { "model", "synthetic-model" }, { "base_url", vformat("http://127.0.0.1:%d/v1", server->get_local_port()) }, { "api_key", "synthetic-key" } });
+	REQUIRE((bool)settings.set_provider_config(config).get("ok", false));
+
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
+	SolersToolRegistry registry;
+	registry.set_permission_manager(&permissions);
+	registry.register_default_tools();
+	int executions = 0;
+	SolersToolCapability capability;
+	capability.permission = SolersPermissionManager::PERMISSION_OBSERVE;
+	registry.register_tool(memnew(SolersFunctionTool("synthetic.stable_observation", "Return one stable synthetic observation.", Dictionary({ { "type", "object" }, { "properties", Dictionary() }, { "additionalProperties", false } }), SolersToolExposure::MODEL, capability,
+			[&executions](const SolersToolContext &, const Dictionary &) {
+				executions++;
+				return Dictionary({ { "ok", true }, { "data", Dictionary({ { "fact", "stable" } }) } });
+			})));
+
+	const String session_id = "repeated-observation-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
+	SolersAgentSession session;
+	session.set_models_dev(nullptr);
+	session.set_tool_registry(&registry);
+	session.set_settings_service(&settings);
+	session.set_session("test://" + session_id, session_id);
+	REQUIRE((bool)session.start_turn(Dictionary({ { "prompt", "Observe the same authority twice, then finish." } })).get("ok", false));
+
+	Array responses({ make_chat_tool_response("call_first", registry.get_model_tool_name("synthetic.stable_observation")), make_chat_tool_response("call_second", registry.get_model_tool_name("synthetic.stable_observation")), make_event_stream_response("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"Complete.\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n") });
+	Vector<Ref<StreamPeerTCP>> connections;
+	int served = 0;
+	const uint64_t deadline = OS::get_singleton()->get_ticks_msec() + 5000;
+	while (session.is_running() && OS::get_singleton()->get_ticks_msec() < deadline) {
+		session.poll();
+		if (served < responses.size() && server->is_connection_available()) {
+			Ref<StreamPeerTCP> connection = server->take_connection();
+			const CharString response = String(responses[served++]).utf8();
+			connection->put_data((const uint8_t *)response.get_data(), response.length());
+			connections.push_back(connection);
+		}
+		OS::get_singleton()->delay_usec(1000);
+	}
+	session.abort();
+	server->stop();
+	const Dictionary status = session.get_status();
+	CHECK(served == 3);
+	CHECK(executions == 2);
+	CHECK((int)status.get("model_requests", 0) == 3);
+	CHECK(status.get("last_outcome", String()) == "completed");
+	CHECK_MESSAGE(JSON::stringify(session.get_messages()).count("fact") == 2, JSON::stringify(session.get_messages()));
+	session.reset_conversation();
 	session.shutdown();
 }
 

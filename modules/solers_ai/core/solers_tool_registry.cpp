@@ -1316,6 +1316,9 @@ Array SolersToolRegistry::_operation_summaries(SolersOperationDomain p_domain, S
 		Dictionary summary;
 		summary["name"] = name;
 		summary["description"] = tool->description();
+		if (p_mode == SolersOperationMode::QUERY) {
+			summary["input_schema"] = tool->parameters_schema().duplicate(true);
+		}
 		if (!capability.target_class.is_empty()) {
 			summary["target_class"] = capability.target_class;
 		}
@@ -1368,16 +1371,23 @@ Dictionary SolersToolRegistry::_validate_operation(SolersOperationDomain p_domai
 	if (!tool) {
 		return _error("OPERATION_UNAVAILABLE", vformat("Operation is not available through this authority: %s", operation_name));
 	}
+	auto with_contract = [this, tool](const Dictionary &p_error) {
+		Dictionary invalid = p_error.duplicate(true);
+		Dictionary data = invalid.get("data", Dictionary());
+		data["operation"] = _tool_to_dictionary(tool);
+		invalid["data"] = data;
+		return invalid;
+	};
 	const Dictionary arguments = p_args.get("arguments", Dictionary());
 	String error;
 	if (!_validate_tool_schema_value(arguments, tool->parameters_schema(), "arguments", error)) {
-		return _error("TOOL_ARGUMENT_INVALID", error);
+		return with_contract(_error("TOOL_ARGUMENT_INVALID", error));
 	}
 	const SolersToolCapability &capability = tool->capability();
 	if (capability.argument_validator) {
 		const Dictionary invalid = capability.argument_validator(arguments);
 		if (!invalid.is_empty()) {
-			return invalid;
+			return with_contract(invalid);
 		}
 	}
 
@@ -1840,7 +1850,6 @@ void SolersToolRegistry::_register_observation_tools() {
 	_add_observe_exposed("runtime.observe", "Observe one canonical runtime snapshot through Godot's native debugger. Scene returns typed property receipts; spatial returns post-draw subtree AABBs, camera projection, and physics ray facts.", R"({"type":"object","properties":{"target":{"type":"string","enum":["scene","spatial","stack","performance"]},"node_paths":{"type":"array","items":{"type":"string","pattern":"^/"},"maxItems":64,"uniqueItems":true},"focus_paths":{"type":"array","items":{"type":"string","pattern":"^/"},"minItems":1,"maxItems":32,"uniqueItems":true},"path_prefix":{"type":"string","pattern":"^/"},"name_contains":{"type":"string"},"class_name":{"type":"string"},"cursor":{"type":"integer","minimum":0},"properties":{"type":"array","items":{"type":"string","minLength":1},"maxItems":64,"uniqueItems":true},"max_results":{"type":"integer","minimum":1}},"required":["target"],"additionalProperties":false})", SolersToolExposure::OPERATION, [this, obs](const SolersToolContext &ctx, const Dictionary &a) { return _ok(obs->observe_runtime(a, ctx.result_token_budget)); }, {}, [this, obs](const SolersToolContext &ctx, const Dictionary &a) { return _ok(obs->observe_runtime(a, ctx.result_token_budget)); }, [obs](const SolersToolContext &, const Dictionary &a) { return obs->is_runtime_observation_ready(a); }, SolersToolUiKind::OBSERVE, SolersToolExecution::MAIN_THREAD, {}, SolersOperationDomain::RUNTIME, SolersOperationMode::QUERY);
 	_add_observe_exposed("project.delivery_report", "Inspect current project delivery facts through ProjectSettings, ResourceLoader, EditorFileSystem, InputMap, UndoRedo, and EditorExport. Unreferenced and duplicate files are advisories, never automatic deletion decisions.", R"({"type":"object","properties":{"roots":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","pattern":"^res://"},"description":"Additional authoritative roots for dynamically loaded content."},"debug_export":{"type":"boolean"}},"additionalProperties":false})", SolersToolExposure::OPERATION, [this](const SolersToolContext &ctx, const Dictionary &a) { Dictionary args = a; args["_session_id"] = ctx.session_id; return _ok(build_delivery_report(args, ctx.result_token_budget)); }, {}, {}, {}, SolersToolUiKind::OBSERVE, SolersToolExecution::MAIN_THREAD, {}, SolersOperationDomain::EDITOR, SolersOperationMode::QUERY);
 	SolersToolHostPolicy capture_host;
-	capture_host.cacheable = false;
 	capture_host.required_model_inputs.push_back("image");
 	_add_observe_exposed("render.capture", "Capture content-addressed visual evidence from an explicit native state. Edited-scene receipts bind pixels to the World3D fingerprint; runtime receipts bind pixels to the runtime epoch. Spatial facts are observed independently. debug_draw uses Godot's Viewport enum; inspect it with engine.describe.", R"({"type":"object","properties":{"target":{"type":"string","enum":["editor","camera","top_down","orthographic","runtime"]},"source_state":{"type":"object","properties":{"history_id":{"type":"integer"},"version":{"type":"integer","minimum":0},"root_object_id":{"type":"string","pattern":"^-?[0-9]+$"}},"required":["history_id","version"],"additionalProperties":true},"node_path":{"type":"string"},"axis":{"type":"string","enum":["x","y","z"]},"direction":{"type":"string","enum":["positive","negative"]},"focus_paths":{"type":"array","items":{"type":"string"}},"section_position":{"type":"number"},"debug_draw":{"type":"integer","minimum":0}},"required":["target"],"additionalProperties":false})", SolersToolExposure::MODEL, [obs](const SolersToolContext &, const Dictionary &a) { return obs->capture_viewport(a); }, {}, [obs](const SolersToolContext &, const Dictionary &a) { return obs->poll_viewport_capture(a); }, [obs](const SolersToolContext &, const Dictionary &a) { return obs->is_viewport_capture_ready(a); }, SolersToolUiKind::CAPTURE, SolersToolExecution::MAIN_THREAD, capture_host);
 
@@ -2558,7 +2567,6 @@ Dictionary SolersToolRegistry::_tool_to_dictionary(const SolersTool *p_tool) con
 	tool["exposure"] = _exposure_name(p_tool->exposure());
 	tool["ui_kind"] = _ui_kind_name(cap.ui_kind);
 	tool["timeline_visible"] = cap.host.timeline_visible;
-	tool["cacheable"] = cap.host.cacheable;
 	tool["attachment_args"] = cap.host.attachment_args;
 	tool["required_model_inputs"] = cap.host.required_model_inputs;
 	tool["input_schema"] = p_tool->parameters_schema().duplicate(true);
@@ -2606,7 +2614,7 @@ Dictionary SolersToolRegistry::get_tool_definition(const StringName &p_name, con
 		return definition;
 	}
 	const Dictionary operation_definition = get_tool_definition(operation->name());
-	for (const StringName &key : { SNAME("timeline_visible"), SNAME("cacheable"), SNAME("attachment_args"), SNAME("required_model_inputs"), SNAME("ui_kind") }) {
+	for (const StringName &key : { SNAME("timeline_visible"), SNAME("attachment_args"), SNAME("required_model_inputs"), SNAME("ui_kind") }) {
 		definition[key] = operation_definition.get(key, Variant());
 	}
 	return definition;

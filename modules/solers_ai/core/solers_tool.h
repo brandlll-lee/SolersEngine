@@ -118,7 +118,6 @@ enum class SolersToolUiKind {
 
 struct SolersToolHostPolicy {
 	bool timeline_visible = true;
-	bool cacheable = true;
 	PackedStringArray attachment_args;
 	PackedStringArray required_model_inputs;
 };

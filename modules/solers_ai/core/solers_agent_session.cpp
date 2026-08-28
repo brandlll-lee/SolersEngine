@@ -949,27 +949,6 @@ Dictionary SolersAgentSession::_take_godot_diagnostics() {
 	return diagnostics;
 }
 
-String SolersAgentSession::_readonly_cache_key(const StringName &p_name, const Dictionary &p_args) const {
-	Dictionary evidence;
-	evidence["tool"] = p_name;
-	evidence["args"] = tool_registry ? tool_registry->normalize_tool_args(p_name, p_args) : p_args;
-	evidence["scene_revision"] = (int64_t)authored_revision;
-	if (tool_registry) {
-		const Array accesses = tool_registry->resolve_resource_access(p_name, p_args);
-		for (int i = 0; i < accesses.size(); i++) {
-			const String key = Dictionary(accesses[i]).get("key", String());
-			if (key.begins_with("project:")) {
-				const String path = key.trim_prefix("project:");
-				evidence[path] = FileAccess::exists(path) ? FileAccess::get_sha256(path) : String("missing");
-			}
-		}
-		if (tool_registry->observation_service) {
-			evidence["runtime_epoch"] = tool_registry->observation_service->get_runtime_status().get("runtime_epoch", 0);
-		}
-	}
-	return JSON::stringify(evidence, "", false, true).sha256_text();
-}
-
 // Enriched mentions are the audit authority (same array the model sees).
 // strip_prompt_block is display-only — never treat stripped transcript text as the fact source.
 static Array _solers_enrich_mentions(const Array &p_mentions, SolersObservationService *p_observation) {
@@ -1857,7 +1836,6 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 	current_provider_metadata.clear();
 	pending_tool_calls.clear();
 	streamed_tool_calls.clear();
-	readonly_cache.clear();
 	failed_resource_accesses.clear();
 	last_usage.clear();
 	overflow_compaction_attempts = 0;
@@ -1872,10 +1850,7 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 	turn_output_tokens = 0;
 	turn_reasoning_tokens = 0;
 	turn_wire_body_bytes = 0;
-	turn_tool_calls = 0;
-	turn_duplicate_observations = 0;
 	turn_successful_mutations = 0;
-	delivered_tool_results.clear();
 	_ensure_godot_log_audit(true);
 
 	Dictionary turn_started;
@@ -2158,7 +2133,6 @@ void SolersAgentSession::_on_model_turn_complete() {
 	}
 	tool_queue_index = 0;
 	tool_delivery_index = 0;
-	tool_batch_has_novel_result = false;
 	completed_tool_results.clear();
 	failed_resource_accesses.clear();
 	tool_started_announced = false;
@@ -2232,7 +2206,6 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	usage["reasoning_tokens"] = turn_reasoning_tokens;
 	usage["wire_body_bytes"] = turn_wire_body_bytes;
 	usage["effective_mutations"] = turn_successful_mutations;
-	usage["duplicate_observation_rate"] = turn_tool_calls > 0 ? double(turn_duplicate_observations) / turn_tool_calls : 0.0;
 	data["turn_usage"] = usage;
 
 	Dictionary transcript;
@@ -2265,7 +2238,6 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	_clear_pending_tools();
 	completed_tool_results.clear();
 	failed_resource_accesses.clear();
-	readonly_cache.clear();
 	if (tool_registry) {
 		tool_registry->clear_task_state(session_id);
 	}
@@ -2354,11 +2326,6 @@ void SolersAgentSession::_poll_tool_queue() {
 			emit_signal(SNAME("turn_waiting"), parked);
 			return;
 		}
-		if (!tool_batch_has_novel_result) {
-			const Dictionary error = _error("NO_NEW_INFORMATION", "The completed tool batch produced no new authoritative state.").get("error", Dictionary());
-			_finish_turn("failed", error.get("message", String()), error);
-			return;
-		}
 		const Error err = _dispatch_model_request();
 		if (err != OK) {
 			current_reasoning = String();
@@ -2414,7 +2381,6 @@ void SolersAgentSession::_poll_tool_queue() {
 		return;
 	}
 	tool_started_msec = OS::get_singleton()->get_ticks_msec();
-	turn_tool_calls++;
 	Dictionary audit;
 	audit["call_id"] = id;
 	audit["tool"] = canonical_name;
@@ -2427,24 +2393,6 @@ void SolersAgentSession::_poll_tool_queue() {
 		tool_queue_index++;
 		tool_started_announced = false;
 		return;
-	}
-	if (tool_registry && tool_registry->is_read_only(StringName(canonical_name), parsed_args)) {
-		const String cache_key = _readonly_cache_key(StringName(canonical_name), parsed_args);
-		const Dictionary *cached = readonly_cache.getptr(cache_key);
-		if (cached) {
-			turn_duplicate_observations++;
-			Dictionary result;
-			result["ok"] = cached->get("ok", false);
-			Dictionary data;
-			data["unchanged"] = true;
-			data["session_revision"] = (int64_t)authored_revision;
-			data["previous_result_sha256"] = JSON::stringify(*cached, "", false, true).sha256_text();
-			result["data"] = data;
-			_queue_tool_result(queue_index, id, name, canonical_name, parsed_args, result, tool_started_msec);
-			tool_queue_index++;
-			tool_started_announced = false;
-			return;
-		}
 	}
 	_schedule_tool_execution(queue_index, id, name, canonical_name, parsed_args, false);
 	tool_queue_index++;
@@ -2541,15 +2489,6 @@ void SolersAgentSession::_queue_tool_result(int p_queue_index, const String &p_i
 	terminal["started_msec"] = (int64_t)(p_started_msec > 0 ? p_started_msec : completed_msec);
 	terminal["completed_msec"] = (int64_t)completed_msec;
 	completed_tool_results[p_queue_index] = terminal;
-	if (!(bool)Dictionary(p_result.get("data", Dictionary())).get("unchanged", false)) {
-		Dictionary normalized = p_result.duplicate(true);
-		normalized.erase("call_id");
-		const String result_id = JSON::stringify(Dictionary({ { "tool", p_canonical_name }, { "revision", (int64_t)authored_revision }, { "result", normalized } }), "", false, true).sha256_text();
-		if (!delivered_tool_results.has(result_id)) {
-			delivered_tool_results.insert(result_id);
-			tool_batch_has_novel_result = true;
-		}
-	}
 }
 
 bool SolersAgentSession::_flush_tool_results() {
@@ -2822,9 +2761,6 @@ void SolersAgentSession::_poll_tool_executing() {
 	const bool tool_succeeded = (bool)result.get("ok", false);
 	Dictionary data = result.get("data", Dictionary());
 	if (tool_succeeded) {
-		if (tool_registry && !tool_registry->is_read_only(StringName(canonical_name), args)) {
-			readonly_cache.clear();
-		}
 		if ((bool)data.get("authored_state_changed", false)) {
 			authored_revision++;
 			turn_successful_mutations++;
@@ -2837,17 +2773,6 @@ void SolersAgentSession::_poll_tool_executing() {
 		deferred_prepared_call = nullptr;
 	}
 	deferred_polling = false;
-	// The read cache exists to dedupe repeated identical reads at one state
-	// authored revision. Two result shapes are excluded because they are not pure
-	// functions of that revision: visual evidence (attachments; live runtime
-	// frames and the user-driven editor camera change without a revision
-	// bump), and in-flight pending envelopes (their capture_id is consumed by
-	// the poll loop).
-	const Dictionary definition = tool_registry ? tool_registry->get_tool_definition(StringName(canonical_name), args) : Dictionary();
-	const bool cacheable = (bool)definition.get("cacheable", true) && !result.has("attachments") && !Dictionary(result.get("data", Dictionary())).has("poll_args");
-	if (tool_succeeded && cacheable && tool_registry && tool_registry->is_read_only(StringName(canonical_name), args)) {
-		readonly_cache[_readonly_cache_key(StringName(canonical_name), args)] = result.duplicate(true);
-	}
 
 	const int queue_index = deferred_queue_index;
 	const uint64_t started_msec = tool_started_msec;
