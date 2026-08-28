@@ -306,6 +306,33 @@ TEST_CASE("[SolersToolRegistry] schema preflight runs before approval or handler
 	CHECK(permissions.get_pending_request_count() == 1);
 }
 
+TEST_CASE("[SolersToolRegistry] JSON integers retain JSON Schema integer semantics") {
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
+	SolersToolRegistry registry;
+	registry.set_permission_manager(&permissions);
+	registry.register_default_tools();
+
+	Dictionary schema({ { "type", "object" }, { "properties", Dictionary({ { "count", Dictionary({ { "type", "integer" } }) } }) }, { "required", Array({ "count" }) }, { "additionalProperties", false } });
+	SolersToolCapability capability;
+	capability.operation_domain = SolersOperationDomain::EDITOR;
+	capability.operation_mode = SolersOperationMode::QUERY;
+	registry.register_tool(memnew(SolersFunctionTool("synthetic.integer", "Synthetic integer contract.", schema, SolersToolExposure::OPERATION, capability,
+			[](const SolersToolContext &, const Dictionary &p_args) {
+				return Dictionary({ { "ok", true }, { "data", Dictionary({ { "count", p_args.get("count", 0) } }) } });
+			})));
+
+	const Variant whole_number = JSON::parse_string(R"({"operation":"synthetic.integer","arguments":{"count":20}})");
+	REQUIRE(whole_number.get_type() == Variant::DICTIONARY);
+	CHECK(Dictionary(Dictionary(whole_number).get("arguments", Dictionary())).get("count", Variant()).get_type() == Variant::FLOAT);
+	CHECK(registry.call_tool("editor.query", Dictionary(whole_number)).get("ok", false));
+
+	const Variant fraction = JSON::parse_string(R"({"operation":"synthetic.integer","arguments":{"count":20.5}})");
+	const Dictionary rejected = registry.call_tool("editor.query", Dictionary(fraction));
+	CHECK_FALSE((bool)rejected.get("ok", true));
+	CHECK(Dictionary(rejected.get("error", Dictionary())).get("code", String()) == "TOOL_ARGUMENT_INVALID");
+}
+
 TEST_CASE("[SolersToolRegistry] preserves internal session context without changing the bound API") {
 	SolersToolRegistry registry;
 	SolersPermissionManager permissions;
@@ -1059,6 +1086,27 @@ TEST_CASE("[SolersToolRegistry] registered operations appear through authority c
 	const Dictionary result = registry.call_tool("editor.query", authority_operation("synthetic.future", Dictionary()));
 	REQUIRE((bool)result.get("ok", false));
 	CHECK((int)Dictionary(result.get("data", Dictionary())).get("value", 0) == 42);
+}
+
+TEST_CASE("[SolersToolRegistry] authority execution readiness follows registered operation metadata") {
+	SolersToolRegistry registry;
+	registry.register_default_tools();
+	bool ready = false;
+	SolersToolCapability capability;
+	capability.operation_domain = SolersOperationDomain::EDITOR;
+	capability.operation_mode = SolersOperationMode::APPLY;
+	capability.execution_ready = [&ready](const Dictionary &) { return ready; };
+	registry.register_tool(memnew(SolersFunctionTool(
+			"synthetic.readiness",
+			"Synthetic readiness contract.",
+			empty_tool_schema(), SolersToolExposure::OPERATION, capability,
+			[](const SolersToolContext &, const Dictionary &) {
+				return Dictionary({ { "ok", true }, { "data", Dictionary() } });
+			})));
+	const Dictionary call = authority_operation("synthetic.readiness", Dictionary());
+	CHECK_FALSE(registry.is_execution_ready("editor.apply", call));
+	ready = true;
+	CHECK(registry.is_execution_ready("editor.apply", call));
 }
 
 TEST_CASE("[SolersToolRegistry] normalize_tool_args is public and idempotent") {

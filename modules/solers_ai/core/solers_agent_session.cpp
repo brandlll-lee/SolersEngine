@@ -2733,6 +2733,9 @@ bool SolersAgentSession::_collect_tool_thread_result(bool p_wait) {
 
 void SolersAgentSession::_poll_tool_executing() {
 	if (tool_exec_requested) {
+		if (!deferred_prepared_call && tool_registry && !tool_registry->is_execution_ready(StringName(deferred_canonical_name), deferred_args)) {
+			return;
+		}
 		if (deferred_polling && deferred_prepared_call) {
 			const bool ready = tool_registry->_is_prepared_tool_ready(*deferred_prepared_call, deferred_args);
 			if (!ready) {

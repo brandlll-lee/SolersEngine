@@ -46,6 +46,7 @@
 #include "editor/editor_interface.h"
 #include "editor/editor_node.h"
 #include "editor/editor_undo_redo_manager.h"
+#include "editor/file_system/editor_file_system.h"
 #include "editor/run/editor_run_bar.h"
 #include "editor/run/game_view_plugin.h"
 #include "scene/main/node.h"
@@ -269,7 +270,14 @@ static bool _tool_schema_type_matches(const Variant &p_value, const String &p_ty
 		return p_value.get_type() == Variant::STRING || p_value.get_type() == Variant::STRING_NAME;
 	}
 	if (p_type == "integer") {
-		return p_value.get_type() == Variant::INT;
+		if (p_value.get_type() == Variant::INT) {
+			return true;
+		}
+		if (p_value.get_type() == Variant::FLOAT) {
+			const double value = p_value;
+			return Math::is_finite(value) && value == Math::floor(value);
+		}
+		return false;
 	}
 	if (p_type == "number") {
 		return p_value.get_type() == Variant::INT || p_value.get_type() == Variant::FLOAT;
@@ -816,7 +824,8 @@ void SolersToolRegistry::_add(const char *p_name, const char *p_description, con
 		std::function<SolersToolMutationDomain(const Dictionary &)> p_mutation_domain_resolver,
 		SolersToolUiKind p_ui_kind, const SolersToolHostPolicy &p_host, const StringName &p_target_class,
 		SolersOperationDomain p_operation_domain, SolersOperationMode p_operation_mode,
-		std::function<SolersToolExecution(const Dictionary &)> p_execution_resolver, const StringName &p_target_kind) {
+		std::function<SolersToolExecution(const Dictionary &)> p_execution_resolver, const StringName &p_target_kind,
+		std::function<bool(const Dictionary &)> p_execution_ready) {
 	SolersToolCapability cap;
 	cap.permission = p_permission;
 	cap.permission_resolver = std::move(p_permission_resolver);
@@ -824,6 +833,7 @@ void SolersToolRegistry::_add(const char *p_name, const char *p_description, con
 	cap.mutation_domain_resolver = std::move(p_mutation_domain_resolver);
 	cap.execution = p_execution;
 	cap.execution_resolver = std::move(p_execution_resolver);
+	cap.execution_ready = std::move(p_execution_ready);
 	cap.resource_access = std::move(p_resource_access);
 	cap.redact_args = p_redact;
 	cap.ui_kind = p_ui_kind;
@@ -1770,7 +1780,7 @@ void SolersToolRegistry::_register_observation_tools() {
 	}
 	SolersObservationService *obs = observation_service;
 
-	_add_observe_exposed("project.search", "Search project paths or text files on the worker. An empty path query lists project paths; text and symbol require a query. Results use a stable cursor.", R"({"type":"object","properties":{"type":{"type":"string","enum":["path","text","symbol"]},"query":{"type":"string","description":"Case-insensitive path/text query; may be empty only for type=path."},"cursor":{"type":"integer","minimum":0},"max_results":{"type":"integer","minimum":1,"description":"Optional page size; the result budget remains authoritative."}},"required":["type","query"],"additionalProperties":false})", SolersToolExposure::OPERATION, [this, obs](const SolersToolContext &ctx, const Dictionary &a) {
+	_add_observe_exposed("project.search", "Discover project paths or search text files on the worker. For the state and mutation receipt of a known res:// path, use object.query target=path instead. An empty path query lists project paths; text and symbol require a query. Results use a stable cursor.", R"({"type":"object","properties":{"type":{"type":"string","enum":["path","text","symbol"]},"query":{"type":"string","description":"Case-insensitive path/text query; may be empty only for type=path."},"cursor":{"type":"integer","minimum":0},"max_results":{"type":"integer","minimum":1,"description":"Optional page size; the result budget remains authoritative."}},"required":["type","query"],"additionalProperties":false})", SolersToolExposure::OPERATION, [this, obs](const SolersToolContext &ctx, const Dictionary &a) {
 				const String type = a.get("type", String());
 				if (type != "path" && String(a.get("query", String())).is_empty()) {
 					return _error("INVALID_ARGUMENT", "query is required for text and symbol search.");
@@ -1824,7 +1834,7 @@ void SolersToolRegistry::_register_script_tools() {
 			Dictionary args = a.duplicate(true);
 			args["operation"] = "settings";
 			return svc->edit_project(args); }, SolersToolExecution::MAIN_THREAD, [](const Dictionary &) { return Array({ Dictionary({ { "mode", "write" }, { "key", "project:res://project.godot" } }) }); }, {}, {}, {}, {}, {}, SolersToolUiKind::DEFAULT, {}, StringName(), SolersOperationDomain::EDITOR, SolersOperationMode::APPLY);
-	_add("project.path", "Write an ordinary project data file, create a directory, or remove an inspected file or directory through Godot's native editor lifecycle.", R"({"type":"object","properties":{"action":{"type":"string","enum":["write","create_directory","remove"]},"path":{"type":"string","pattern":"^res://"},"content":{"type":"string"}},"required":["action","path"],"additionalProperties":false})", SolersPermissionManager::PERMISSION_EDIT_FILES, SolersToolMutationDomain::FILES, project_redact, SolersToolExposure::OPERATION, [this, svc](const SolersToolContext &, const Dictionary &a) {
+	_add("project.path", "Write an ordinary project data file, create a directory, or remove a file or directory through Godot's native editor lifecycle. Inspect the exact path with object.query target=path and pass its returned expected_state to editor.apply.", R"({"type":"object","properties":{"action":{"type":"string","enum":["write","create_directory","remove"]},"path":{"type":"string","pattern":"^res://"},"content":{"type":"string"}},"required":["action","path"],"additionalProperties":false})", SolersPermissionManager::PERMISSION_EDIT_FILES, SolersToolMutationDomain::FILES, project_redact, SolersToolExposure::OPERATION, [this, svc](const SolersToolContext &, const Dictionary &a) {
 			const String action = a.get("action", String());
 			if (action == "remove") {
 				return file_checkpoint ? file_checkpoint->remove_project_path(a.get("path", String())) : _error("FILE_CHECKPOINT_UNAVAILABLE", "File checkpoint service is unavailable.", false);
@@ -1838,7 +1848,12 @@ void SolersToolRegistry::_register_script_tools() {
 				access["mode"] = "write";
 				access["key"] = "project:" + String(a.get("path", String()));
 				accesses.push_back(access);
-				return accesses; }, {}, {}, {}, {}, {}, SolersToolUiKind::DEFAULT, {}, StringName(), SolersOperationDomain::EDITOR, SolersOperationMode::APPLY, {}, SNAME("path"));
+				return accesses; }, {}, {}, {}, {}, {}, SolersToolUiKind::DEFAULT, {}, StringName(), SolersOperationDomain::EDITOR, SolersOperationMode::APPLY, {}, SNAME("path"), [](const Dictionary &a) {
+				if (String(a.get("action", String())) != "remove") {
+					return true;
+				}
+				EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
+				return !filesystem || !filesystem->is_scanning(); });
 
 	Vector<String> script_redact;
 	script_redact.push_back("content");
@@ -2256,7 +2271,7 @@ void SolersToolRegistry::_register_reflection_tools() {
 	}
 	SolersReflectionService *ref = reflection_service;
 	const SolersPermissionManager::Permission edit_scene = SolersPermissionManager::PERMISSION_EDIT_SCENE;
-	_add_observe_exposed("object.query", "Query the live edited scene, a project path, a Resource, an ObjectID, or native spatial facts between node pairs.", R"({"type":"object","properties":{"target":{"type":"string","enum":["scene","path","resource","object","relations"]},"include_selection":{"type":"boolean"},"node_paths":{"type":"array","items":{"type":"string"},"uniqueItems":true,"minItems":1,"maxItems":64},"path_prefix":{"type":"string"},"name_contains":{"type":"string"},"class_name":{"type":"string"},"script_path":{"type":"string","pattern":"^res://"},"cursor":{"type":"integer","minimum":0},"max_results":{"type":"integer","minimum":1},"include_connections":{"type":"boolean"},"path":{"type":"string","pattern":"^res://"},"type_hint":{"type":"string"},"include_dependencies":{"type":"boolean"},"max_dependencies":{"type":"integer","minimum":0,"maximum":2048},"properties":{"type":"array","items":{"type":"string"},"uniqueItems":true,"maxItems":128},"methods":{"type":"array","items":{"type":"string"},"uniqueItems":true,"maxItems":32},"object_id":{"type":"string","pattern":"^-?[0-9]+$"},"relations":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a","b"],"additionalProperties":false}}},"required":["target"],"additionalProperties":false})", SolersToolExposure::OPERATION, [this, ref](const SolersToolContext &ctx, const Dictionary &a) {
+	_add_observe_exposed("object.query", "Query the live edited scene, an exact project path, a Resource, an ObjectID, or native spatial facts between node pairs. target=path returns the current expected_state and applicable path operations.", R"({"type":"object","properties":{"target":{"type":"string","enum":["scene","path","resource","object","relations"]},"include_selection":{"type":"boolean"},"node_paths":{"type":"array","items":{"type":"string"},"uniqueItems":true,"minItems":1,"maxItems":64},"path_prefix":{"type":"string"},"name_contains":{"type":"string"},"class_name":{"type":"string"},"script_path":{"type":"string","pattern":"^res://"},"cursor":{"type":"integer","minimum":0},"max_results":{"type":"integer","minimum":1},"include_connections":{"type":"boolean"},"path":{"type":"string","pattern":"^res://"},"type_hint":{"type":"string"},"include_dependencies":{"type":"boolean"},"max_dependencies":{"type":"integer","minimum":0,"maximum":2048},"properties":{"type":"array","items":{"type":"string"},"uniqueItems":true,"maxItems":128},"methods":{"type":"array","items":{"type":"string"},"uniqueItems":true,"maxItems":32},"object_id":{"type":"string","pattern":"^-?[0-9]+$"},"relations":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a","b"],"additionalProperties":false}}},"required":["target"],"additionalProperties":false})", SolersToolExposure::OPERATION, [this, ref](const SolersToolContext &ctx, const Dictionary &a) {
 				const String target = a.get("target", String());
 				if (target == "relations") {
 					Dictionary args = a.duplicate(true);
@@ -2444,8 +2459,15 @@ void SolersToolRegistry::_register_authority_tools() {
 		capability.resource_access = [this, p_domain, p_mode](const Dictionary &a) { return _operation_resource_access(p_domain, p_mode, a); };
 		capability.argument_validator = [this, p_domain, p_mode](const Dictionary &a) { return _validate_operation(p_domain, p_mode, a); };
 		capability.execution_resolver = [this, p_domain, p_mode](const Dictionary &a) { return _operation_execution(p_domain, p_mode, a); };
+		capability.execution_ready = [this, p_domain, p_mode](const Dictionary &a) {
+			SolersTool *operation = _operation(p_domain, p_mode, StringName(a.get("operation", String())));
+			if (!operation || !operation->capability().execution_ready) {
+				return true;
+			}
+			return operation->capability().execution_ready(a.get("arguments", Dictionary()));
+		};
 		capability.ui_kind = p_ui_kind;
-		const Dictionary schema = p_mode == SolersOperationMode::APPLY ? _schema(R"({"type":"object","properties":{"operation":{"type":"string","minLength":1},"expected_state":{"type":"object"},"arguments":{"type":"object"}},"required":["operation","expected_state","arguments"],"additionalProperties":false})") : _schema(R"({"type":"object","properties":{"operation":{"type":"string","minLength":1,"description":"Use catalog to inspect the current operation contracts."},"arguments":{"type":"object"}},"required":["operation","arguments"],"additionalProperties":false})");
+		const Dictionary schema = p_mode == SolersOperationMode::APPLY ? _schema(R"({"type":"object","properties":{"operation":{"type":"string","minLength":1},"expected_state":{"type":"object","description":"Pass the exact expected_state returned by the query that exposed this operation."},"arguments":{"type":"object"}},"required":["operation","expected_state","arguments"],"additionalProperties":false})") : _schema(R"({"type":"object","properties":{"operation":{"type":"string","minLength":1,"description":"Use catalog to inspect the current operation contracts."},"arguments":{"type":"object"}},"required":["operation","arguments"],"additionalProperties":false})");
 		_register(memnew(SolersFunctionTool(StringName(String::utf8(p_name)), String::utf8(p_description), schema, SolersToolExposure::MODEL, capability, [this, p_domain, p_mode](const SolersToolContext &ctx, const Dictionary &a) { return _execute_operation(p_domain, p_mode, ctx, a); }, [this, p_domain, p_mode](const SolersToolContext &ctx, const Dictionary &a) { return _poll_operation(p_domain, p_mode, ctx, a); }, [this, p_domain, p_mode](const SolersToolContext &ctx, const Dictionary &a) { return _is_operation_ready(p_domain, p_mode, ctx, a); }, [this, p_domain, p_mode](const SolersToolContext &ctx, const Dictionary &a, const Dictionary &result) { _complete_operation(p_domain, p_mode, ctx, a, result); })));
 	};
 	add_authority("editor.query", "Query authoritative project, ClassDB, resource, scene, and delivery state. Use operation=catalog to inspect contracts.", SolersOperationDomain::EDITOR, SolersOperationMode::QUERY, SolersToolUiKind::SEARCH);
@@ -2561,6 +2583,14 @@ Dictionary SolersToolRegistry::get_tool_definition(const StringName &p_name, con
 		definition[key] = operation_definition.get(key, Variant());
 	}
 	return definition;
+}
+
+bool SolersToolRegistry::is_execution_ready(const StringName &p_name, const Dictionary &p_args) const {
+	SolersTool *const *tool = tools.getptr(p_name);
+	if (!tool || !*tool || !(*tool)->capability().execution_ready) {
+		return true;
+	}
+	return (*tool)->capability().execution_ready(p_args);
 }
 
 String SolersToolRegistry::get_skill_catalog_prompt() const {

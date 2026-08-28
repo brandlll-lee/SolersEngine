@@ -145,6 +145,7 @@ struct SolersToolCapability {
 	// only when they are explicitly thread-safe.
 	SolersToolExecution execution = SolersToolExecution::MAIN_THREAD;
 	std::function<SolersToolExecution(const Dictionary &)> execution_resolver;
+	std::function<bool(const Dictionary &)> execution_ready;
 	// Optional parameter-aware resolver. Each item is { mode: "read"|"write",
 	// key: String }. Tools without one are conservatively treated as touching
 	// the global resource; the scheduler never guesses side effects from names.

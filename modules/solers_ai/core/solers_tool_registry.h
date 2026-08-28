@@ -100,7 +100,8 @@ class SolersToolRegistry : public Object {
 			SolersOperationDomain p_operation_domain = SolersOperationDomain::NONE,
 			SolersOperationMode p_operation_mode = SolersOperationMode::QUERY,
 			std::function<SolersToolExecution(const Dictionary &)> p_execution_resolver = {},
-			const StringName &p_target_kind = StringName());
+			const StringName &p_target_kind = StringName(),
+			std::function<bool(const Dictionary &)> p_execution_ready = {});
 	void _add_observe_exposed(const char *p_name, const char *p_description, const char *p_schema_json,
 			SolersToolExposure p_exposure, SolersFunctionTool::Handler p_handler,
 			std::function<Array(const Dictionary &)> p_resource_access = {},
@@ -181,6 +182,7 @@ public:
 	Array list_tools() const;
 	Dictionary get_tool_definition(const StringName &p_name) const;
 	Dictionary get_tool_definition(const StringName &p_name, const Dictionary &p_args) const;
+	bool is_execution_ready(const StringName &p_name, const Dictionary &p_args) const;
 	Dictionary build_delivery_report(const Dictionary &p_args = Dictionary(), int p_token_budget = INT32_MAX) const;
 	uint64_t get_tool_catalog_revision() const { return tool_catalog_revision; }
 	String get_skill_catalog_prompt() const;

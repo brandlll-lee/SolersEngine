@@ -1084,7 +1084,6 @@ void SolersDock::_on_model_chip_pressed() {
 	if (provider_data.get("available", false) && !active_model.is_empty() && !efforts.is_empty()) {
 		model_menu_effort_row = solers_make_model_menu_parent_row(Ref<Texture2D>(), TTR("Effort"), solers_reasoning_effort_label(active_effort));
 		model_menu_effort_row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_open_model_submenu).bind(SOLERS_SUBMENU_EFFORT));
-		model_menu_effort_row->connect(SceneStringName(mouse_entered), callable_mp(this, &SolersDock::_open_model_submenu).bind(SOLERS_SUBMENU_EFFORT));
 		model_menu_box->add_child(model_menu_effort_row);
 	}
 
@@ -1169,7 +1168,6 @@ void SolersDock::_open_model_submenu(int p_kind) {
 			Button *row = solers_make_model_popup_row(provider_label, provider, active_provider == provider);
 			if (available) {
 				row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_open_provider_models).bind(config, row));
-				row->connect(SceneStringName(mouse_entered), callable_mp(this, &SolersDock::_open_provider_models).bind(config, row));
 			} else {
 				row->set_disabled(true);
 				row->add_theme_color_override("font_disabled_color", SOLERS_TEXT_DIM);
