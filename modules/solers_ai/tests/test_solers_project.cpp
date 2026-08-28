@@ -230,7 +230,6 @@ TEST_CASE("[SolersScriptService] native serialized resources require native reso
 	}
 }
 
-
 TEST_CASE("[SolersResourceService] property coercion accepts named and nested Godot components") {
 	Node3D *node = memnew(Node3D);
 	Dictionary position;
