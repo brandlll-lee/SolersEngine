@@ -128,36 +128,53 @@ static bool _mutation_record_has_domain(const Dictionary &p_record, const String
 	return PackedStringArray(p_record.get("domains", PackedStringArray())).has(p_domain);
 }
 
+struct SolersToolUiPresentation {
+	const char *kind;
+	const char *running;
+	const char *completed;
+	const char *failed;
+};
+
+static constexpr SolersToolUiPresentation SOLERS_TOOL_UI_PRESENTATIONS[] = {
+	{ "default", "Running", "Completed", "Failed" },
+	{ "observe", "Observing", "Observed", "Failed to observe" },
+	{ "read", "Reading", "Read", "Failed to read" },
+	{ "search", "Searching", "Searched", "Failed to search" },
+	{ "write", "Writing", "Wrote", "Failed to write" },
+	{ "scene", "Updating", "Updated", "Failed to update" },
+	{ "shell", "Running", "Completed", "Failed to run" },
+	{ "run", "Running", "Completed", "Failed to run" },
+	{ "network", "Fetching", "Fetched", "Failed to fetch" },
+	{ "asset", "Processing", "Processed", "Failed to process" },
+	{ "capture", "Capturing", "Captured", "Failed to capture" },
+	{ "think", "Thinking", "Thought", "Failed to think" },
+	{ "shield", "Authorizing", "Authorized", "Failed to authorize" },
+};
+
+static const SolersToolUiPresentation &_ui_presentation(SolersToolUiKind p_kind) {
+	const int index = (int)p_kind;
+	const int count = sizeof(SOLERS_TOOL_UI_PRESENTATIONS) / sizeof(SOLERS_TOOL_UI_PRESENTATIONS[0]);
+	return SOLERS_TOOL_UI_PRESENTATIONS[index >= 0 && index < count ? index : 0];
+}
+
 static const char *_ui_kind_name(SolersToolUiKind p_kind) {
-	switch (p_kind) {
-		case SolersToolUiKind::DEFAULT:
-			return "default";
-		case SolersToolUiKind::OBSERVE:
-			return "observe";
-		case SolersToolUiKind::READ:
-			return "read";
-		case SolersToolUiKind::SEARCH:
-			return "search";
-		case SolersToolUiKind::WRITE:
-			return "write";
-		case SolersToolUiKind::SCENE:
-			return "scene";
-		case SolersToolUiKind::SHELL:
-			return "shell";
-		case SolersToolUiKind::RUN:
-			return "run";
-		case SolersToolUiKind::NETWORK:
-			return "network";
-		case SolersToolUiKind::ASSET:
-			return "asset";
-		case SolersToolUiKind::CAPTURE:
-			return "capture";
-		case SolersToolUiKind::THINK:
-			return "think";
-		case SolersToolUiKind::SHIELD:
-			return "shield";
+	return _ui_presentation(p_kind).kind;
+}
+
+static SolersToolUiKind _resolved_ui_kind(const SolersToolCapability &p_capability) {
+	if (p_capability.ui_kind != SolersToolUiKind::DEFAULT) {
+		return p_capability.ui_kind;
 	}
-	return "default";
+	if (p_capability.operation_mode == SolersOperationMode::QUERY) {
+		return p_capability.permission == SolersPermissionManager::PERMISSION_NETWORK ? SolersToolUiKind::NETWORK : SolersToolUiKind::OBSERVE;
+	}
+	if (solers_has_mutation_domain(p_capability.mutation_domains, SolersToolMutationDomain::FILES)) {
+		return SolersToolUiKind::WRITE;
+	}
+	if (solers_has_mutation_domain(p_capability.mutation_domains, SolersToolMutationDomain::EDITOR)) {
+		return SolersToolUiKind::SCENE;
+	}
+	return p_capability.permission == SolersPermissionManager::PERMISSION_SHELL ? SolersToolUiKind::SHELL : SolersToolUiKind::RUN;
 }
 
 static UndoRedo *_current_scene_undo_redo(int &r_history_id) {
@@ -451,7 +468,12 @@ static bool _validate_tool_schema_value(const Variant &p_value, const Dictionary
 		while ((key = value.next(key))) {
 			if (!properties.has(*key)) {
 				if (!additional) {
-					r_error = vformat("%s.%s is not supported.", p_path, *key);
+					PackedStringArray supported;
+					for (const Variant &property : properties.keys()) {
+						supported.push_back(String(property));
+					}
+					supported.sort();
+					r_error = vformat("%s.%s is not supported. Supported fields: %s.", p_path, *key, supported.is_empty() ? String("none") : String(", ").join(supported));
 					return false;
 				}
 				continue;
@@ -759,6 +781,37 @@ static Dictionary _normalize_tool_args(const Dictionary &p_args, const Dictionar
 	return normalized;
 }
 
+static Variant _ui_subject_at_pointer(const Dictionary &p_args, const String &p_pointer) {
+	if (!p_pointer.begins_with("/")) {
+		return Variant();
+	}
+	Variant value = p_args;
+	const PackedStringArray segments = p_pointer.split("/", true);
+	for (int i = 1; i < segments.size(); i++) {
+		const String segment = segments[i].replace("~1", "/").replace("~0", "~");
+		if (value.get_type() == Variant::DICTIONARY) {
+			value = Dictionary(value).get(segment, Variant());
+		} else if (value.get_type() == Variant::ARRAY && segment.is_valid_int()) {
+			const Array values = value;
+			const int index = segment.to_int();
+			value = index >= 0 && index < values.size() ? values[index] : Variant();
+		} else {
+			return Variant();
+		}
+	}
+	return value;
+}
+
+static String _ui_subject_text(const Variant &p_value) {
+	if (p_value.get_type() == Variant::STRING || p_value.get_type() == Variant::STRING_NAME) {
+		return String(p_value).strip_edges();
+	}
+	if (p_value.get_type() == Variant::INT || p_value.get_type() == Variant::FLOAT || p_value.get_type() == Variant::BOOL) {
+		return p_value.stringify();
+	}
+	return String();
+}
+
 void SolersToolRegistry::_clear_tools() {
 	for (KeyValue<StringName, SolersTool *> &E : tools) {
 		memdelete(E.value);
@@ -825,7 +878,7 @@ void SolersToolRegistry::_add(const char *p_name, const char *p_description, con
 		SolersToolUiKind p_ui_kind, const SolersToolHostPolicy &p_host, const StringName &p_target_class,
 		SolersOperationDomain p_operation_domain, SolersOperationMode p_operation_mode,
 		std::function<SolersToolExecution(const Dictionary &)> p_execution_resolver, const StringName &p_target_kind,
-		std::function<bool(const Dictionary &)> p_execution_ready) {
+		std::function<bool(const Dictionary &)> p_execution_ready, const PackedStringArray &p_ui_subject_paths) {
 	SolersToolCapability cap;
 	cap.permission = p_permission;
 	cap.permission_resolver = std::move(p_permission_resolver);
@@ -837,6 +890,7 @@ void SolersToolRegistry::_add(const char *p_name, const char *p_description, con
 	cap.resource_access = std::move(p_resource_access);
 	cap.redact_args = p_redact;
 	cap.ui_kind = p_ui_kind;
+	cap.ui_subject_paths = p_ui_subject_paths;
 	cap.host = p_host;
 	cap.target_class = p_target_class;
 	cap.operation_domain = p_operation_domain;
@@ -851,16 +905,16 @@ void SolersToolRegistry::_add_observe_exposed(const char *p_name, const char *p_
 		SolersToolExposure p_exposure, SolersFunctionTool::Handler p_handler,
 		std::function<Array(const Dictionary &)> p_resource_access, SolersFunctionTool::PollHandler p_poll_handler, SolersFunctionTool::ReadyHandler p_ready_handler,
 		SolersToolUiKind p_ui_kind, SolersToolExecution p_execution, const SolersToolHostPolicy &p_host,
-		SolersOperationDomain p_operation_domain, SolersOperationMode p_operation_mode) {
+		SolersOperationDomain p_operation_domain, SolersOperationMode p_operation_mode, const PackedStringArray &p_ui_subject_paths) {
 	_add(p_name, p_description, p_schema_json, SolersPermissionManager::PERMISSION_OBSERVE, SolersToolMutationDomain::NONE,
 			Vector<String>(), p_exposure, std::move(p_handler),
-			p_execution, std::move(p_resource_access), std::move(p_poll_handler), std::move(p_ready_handler), {}, {}, {}, p_ui_kind, p_host, StringName(), p_operation_domain, p_operation_mode);
+			p_execution, std::move(p_resource_access), std::move(p_poll_handler), std::move(p_ready_handler), {}, {}, {}, p_ui_kind, p_host, StringName(), p_operation_domain, p_operation_mode, {}, StringName(), {}, p_ui_subject_paths);
 }
 
 void SolersToolRegistry::_add_observe(const char *p_name, const char *p_description, const char *p_schema_json,
 		SolersFunctionTool::Handler p_handler, std::function<Array(const Dictionary &)> p_resource_access, SolersFunctionTool::PollHandler p_poll_handler, SolersFunctionTool::ReadyHandler p_ready_handler,
-		SolersToolUiKind p_ui_kind) {
-	_add_observe_exposed(p_name, p_description, p_schema_json, SolersToolExposure::MODEL, std::move(p_handler), std::move(p_resource_access), std::move(p_poll_handler), std::move(p_ready_handler), p_ui_kind);
+		SolersToolUiKind p_ui_kind, const PackedStringArray &p_ui_subject_paths) {
+	_add_observe_exposed(p_name, p_description, p_schema_json, SolersToolExposure::MODEL, std::move(p_handler), std::move(p_resource_access), std::move(p_poll_handler), std::move(p_ready_handler), p_ui_kind, SolersToolExecution::MAIN_THREAD, {}, SolersOperationDomain::NONE, SolersOperationMode::QUERY, p_ui_subject_paths);
 }
 
 void SolersToolRegistry::_add_operation(SolersOperationDomain p_domain, SolersOperationMode p_mode,
@@ -870,8 +924,9 @@ void SolersToolRegistry::_add_operation(SolersOperationDomain p_domain, SolersOp
 		const StringName &p_target_class,
 		SolersFunctionTool::PollHandler p_poll_handler, SolersFunctionTool::ReadyHandler p_ready_handler, SolersFunctionTool::CompletionHandler p_completion_handler,
 		const StringName &p_target_kind) {
+	const SolersToolUiKind ui_kind = p_mode == SolersOperationMode::QUERY ? SolersToolUiKind::OBSERVE : (p_domain == SolersOperationDomain::EDITOR ? SolersToolUiKind::SCENE : SolersToolUiKind::RUN);
 	_add(p_name, p_description, p_schema_json, p_permission, p_mutation_domains, {}, SolersToolExposure::DEFERRED,
-			std::move(p_handler), SolersToolExecution::MAIN_THREAD, std::move(p_resource_access), std::move(p_poll_handler), std::move(p_ready_handler), std::move(p_completion_handler), {}, {}, SolersToolUiKind::DEFAULT, {}, p_target_class, p_domain, p_mode, {}, p_target_kind);
+			std::move(p_handler), SolersToolExecution::MAIN_THREAD, std::move(p_resource_access), std::move(p_poll_handler), std::move(p_ready_handler), std::move(p_completion_handler), {}, {}, ui_kind, {}, p_target_class, p_domain, p_mode, {}, p_target_kind);
 }
 
 void SolersToolRegistry::set_observation_service(SolersObservationService *p_observation_service) {
@@ -1253,7 +1308,11 @@ Dictionary SolersToolRegistry::_inspect_engine(const Dictionary &p_args) {
 	Array errors;
 	for (int i = 0; i < classes.size(); i++) {
 		const Variant value = classes[i];
-		const Dictionary inspected = reflection_service->introspect_class(Dictionary(value));
+		Dictionary request = value;
+		if (!request.has("max_members") && p_args.has("max_members")) {
+			request["max_members"] = p_args["max_members"];
+		}
+		const Dictionary inspected = reflection_service->introspect_class(request);
 		if (!(bool)inspected.get("ok", false)) {
 			Dictionary error;
 			error["request_index"] = i;
@@ -1716,7 +1775,7 @@ void SolersToolRegistry::_register_observation_tools() {
 				if (type != "path" && String(a.get("query", String())).is_empty()) {
 					return _error("INVALID_ARGUMENT", "query is required for text and symbol search.");
 				}
-				return _ok(obs->search_project(a, ctx.result_token_budget)); }, {}, {}, {}, SolersToolUiKind::SEARCH, SolersToolExecution::WORKER_THREAD, {}, SolersOperationDomain::EDITOR, SolersOperationMode::QUERY);
+				return _ok(obs->search_project(a, ctx.result_token_budget)); }, {}, {}, {}, SolersToolUiKind::SEARCH, SolersToolExecution::WORKER_THREAD, {}, SolersOperationDomain::EDITOR, SolersOperationMode::QUERY, PackedStringArray({ "/query", "/type" }));
 	_add_observe_exposed("project.read_file", "Read a bounded line range from a project text file. Continue from next_line; PackedScene defaults to a native digest unless raw=true is required for source editing.", R"({"type":"object","properties":{"path":{"type":"string","description":"res:// path of the file to read."},"line_start":{"type":"integer","minimum":1},"line_count":{"type":"integer","minimum":1},"raw":{"type":"boolean","description":"Only for PackedScene source editing. Default false."}},"required":["path"],"additionalProperties":false})", SolersToolExposure::MODEL, [this, obs](const SolersToolContext &ctx, const Dictionary &a) {
 				const Dictionary file = obs->read_project_file(a.get("path", String()), (int)a.get("line_start", 1), (int)a.get("line_count", 200), (bool)a.get("raw", false), ctx.result_token_budget);
 				if (!(bool)file.get("ok", false)) {
@@ -1736,11 +1795,11 @@ void SolersToolRegistry::_register_observation_tools() {
 					return result;
 				}
 				return _ok(file); }, _access_by_arg("read", "project:", "path"), {}, {}, SolersToolUiKind::READ, SolersToolExecution::MAIN_THREAD, {}, SolersOperationDomain::EDITOR, SolersOperationMode::QUERY);
-	_add_observe_exposed("runtime.observe", "Observe one canonical runtime snapshot through Godot's native debugger. Scene returns typed property receipts; spatial returns post-draw subtree AABBs, camera projection, and physics ray facts.", R"({"type":"object","properties":{"target":{"type":"string","enum":["scene","spatial","stack","performance"]},"node_paths":{"type":"array","items":{"type":"string","pattern":"^/"},"maxItems":64,"uniqueItems":true},"focus_paths":{"type":"array","items":{"type":"string","pattern":"^/"},"minItems":1,"maxItems":32,"uniqueItems":true},"path_prefix":{"type":"string","pattern":"^/"},"name_contains":{"type":"string"},"class_name":{"type":"string"},"cursor":{"type":"integer","minimum":0},"properties":{"type":"array","items":{"type":"string","minLength":1},"maxItems":64,"uniqueItems":true},"max_results":{"type":"integer","minimum":1}},"required":["target"],"additionalProperties":false})", SolersToolExposure::DEFERRED, [this, obs](const SolersToolContext &ctx, const Dictionary &a) { return _ok(obs->observe_runtime(a, ctx.result_token_budget)); }, {}, [this, obs](const SolersToolContext &ctx, const Dictionary &a) { return _ok(obs->observe_runtime(a, ctx.result_token_budget)); }, [obs](const SolersToolContext &, const Dictionary &a) { return obs->is_runtime_observation_ready(a); }, SolersToolUiKind::OBSERVE, SolersToolExecution::MAIN_THREAD, {}, SolersOperationDomain::RUNTIME, SolersOperationMode::QUERY);
+	_add_observe_exposed("runtime.observe", "Observe one canonical runtime snapshot through Godot's native debugger. Scene returns typed property receipts; spatial returns post-draw subtree AABBs, camera projection, and physics ray facts.", R"({"type":"object","properties":{"target":{"type":"string","enum":["scene","spatial","stack","performance"]},"node_paths":{"type":"array","items":{"type":"string","pattern":"^/"},"maxItems":64,"uniqueItems":true},"focus_paths":{"type":"array","items":{"type":"string","pattern":"^/"},"minItems":1,"maxItems":32,"uniqueItems":true},"path_prefix":{"type":"string","pattern":"^/"},"name_contains":{"type":"string"},"class_name":{"type":"string"},"cursor":{"type":"integer","minimum":0},"properties":{"type":"array","items":{"type":"string","minLength":1},"maxItems":64,"uniqueItems":true},"max_results":{"type":"integer","minimum":1}},"required":["target"],"additionalProperties":false})", SolersToolExposure::DEFERRED, [this, obs](const SolersToolContext &ctx, const Dictionary &a) { return _ok(obs->observe_runtime(a, ctx.result_token_budget)); }, {}, [this, obs](const SolersToolContext &ctx, const Dictionary &a) { return _ok(obs->observe_runtime(a, ctx.result_token_budget)); }, [obs](const SolersToolContext &, const Dictionary &a) { return obs->is_runtime_observation_ready(a); }, SolersToolUiKind::OBSERVE, SolersToolExecution::MAIN_THREAD, {}, SolersOperationDomain::RUNTIME, SolersOperationMode::QUERY, PackedStringArray({ "/focus_paths/0", "/node_paths/0", "/target" }));
 	_add_observe_exposed("project.delivery_report", "Inspect current project delivery facts through ProjectSettings, ResourceLoader, EditorFileSystem, InputMap, UndoRedo, and EditorExport. Unreferenced and duplicate files are advisories, never automatic deletion decisions.", R"({"type":"object","properties":{"roots":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","pattern":"^res://"},"description":"Additional authoritative roots for dynamically loaded content."},"debug_export":{"type":"boolean"}},"additionalProperties":false})", SolersToolExposure::DEFERRED, [this](const SolersToolContext &ctx, const Dictionary &a) { Dictionary args = a; args["_session_id"] = ctx.session_id; return _ok(build_delivery_report(args, ctx.result_token_budget)); }, {}, {}, {}, SolersToolUiKind::OBSERVE, SolersToolExecution::MAIN_THREAD, {}, SolersOperationDomain::EDITOR, SolersOperationMode::QUERY);
 	SolersToolHostPolicy capture_host;
 	capture_host.required_model_inputs.push_back("image");
-	_add_observe_exposed("render.capture", "Capture content-addressed visual evidence from an explicit native state. Edited-scene receipts bind pixels to the World3D fingerprint; runtime receipts bind pixels to the runtime epoch. Spatial facts are observed independently. debug_draw uses Godot's Viewport enum; inspect it with engine.describe.", R"({"type":"object","properties":{"target":{"type":"string","enum":["editor","camera","top_down","orthographic","runtime"]},"source_state":{"type":"object","properties":{"history_id":{"type":"integer"},"version":{"type":"integer","minimum":0},"root_object_id":{"type":"string","pattern":"^-?[0-9]+$"}},"required":["history_id","version"],"additionalProperties":true},"node_path":{"type":"string"},"axis":{"type":"string","enum":["x","y","z"]},"direction":{"type":"string","enum":["positive","negative"]},"focus_paths":{"type":"array","items":{"type":"string"}},"section_position":{"type":"number"},"debug_draw":{"type":"integer","minimum":0}},"required":["target"],"additionalProperties":false})", SolersToolExposure::MODEL, [obs](const SolersToolContext &, const Dictionary &a) { return obs->capture_viewport(a); }, {}, [obs](const SolersToolContext &, const Dictionary &a) { return obs->poll_viewport_capture(a); }, [obs](const SolersToolContext &, const Dictionary &a) { return obs->is_viewport_capture_ready(a); }, SolersToolUiKind::CAPTURE, SolersToolExecution::MAIN_THREAD, capture_host);
+	_add_observe_exposed("render.capture", "Capture content-addressed visual evidence from an explicit native state. Edited-scene receipts bind pixels to the World3D fingerprint; runtime receipts bind pixels to the runtime epoch. focus_paths return geometric framing facts, not a semantic visibility verdict. debug_draw uses Godot's Viewport enum; inspect it with engine.describe.", R"({"type":"object","properties":{"target":{"type":"string","enum":["editor","camera","focus","top_down","orthographic","runtime"]},"source_state":{"type":"object","properties":{"history_id":{"type":"integer"},"version":{"type":"integer","minimum":0},"root_object_id":{"type":"string","pattern":"^-?[0-9]+$"}},"required":["history_id","version"],"additionalProperties":true},"camera_path":{"type":"string"},"axis":{"type":"string","enum":["x","y","z"]},"direction":{"type":"string","enum":["positive","negative"]},"focus_paths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":32,"uniqueItems":true},"include_render_state":{"type":"boolean","description":"Include the full World3D state; hashes remain available by default."},"section_position":{"type":"number"},"debug_draw":{"type":"integer","minimum":0}},"required":["target"],"additionalProperties":false})", SolersToolExposure::MODEL, [obs](const SolersToolContext &, const Dictionary &a) { return obs->capture_viewport(a); }, {}, [obs](const SolersToolContext &, const Dictionary &a) { return obs->poll_viewport_capture(a); }, [obs](const SolersToolContext &, const Dictionary &a) { return obs->is_viewport_capture_ready(a); }, SolersToolUiKind::CAPTURE, SolersToolExecution::MAIN_THREAD, capture_host, SolersOperationDomain::EDITOR, SolersOperationMode::QUERY, PackedStringArray({ "/focus_paths/0", "/camera_path", "/target" }));
 
 	if (resource_service) {
 		SolersResourceService *svc = resource_service;
@@ -2184,7 +2243,7 @@ void SolersToolRegistry::_register_skill_tools() {
 				for (const String &tool : skill.tools) {
 					tools.push_back(tool);
 				}
-				return _with_added_tools(_ok(data), tools); }, {}, {}, {}, SolersToolUiKind::READ, SolersToolExecution::MAIN_THREAD, {}, SolersOperationDomain::EDITOR, SolersOperationMode::QUERY);
+				return _with_added_tools(_ok(data), tools); }, {}, {}, {}, SolersToolUiKind::READ, SolersToolExecution::MAIN_THREAD, {}, SolersOperationDomain::EDITOR, SolersOperationMode::QUERY, PackedStringArray({ "/name" }));
 }
 
 void SolersToolRegistry::_register_reflection_tools() {
@@ -2355,7 +2414,7 @@ void SolersToolRegistry::_register_reflection_tools() {
 					access["key"] = "project:" + String(a.get("path", String()));
 				}
 				accesses.push_back(access);
-				return accesses; }, {}, {}, SolersToolUiKind::SCENE, SolersToolExecution::MAIN_THREAD, {}, SolersOperationDomain::EDITOR, SolersOperationMode::QUERY);
+				return accesses; }, {}, {}, SolersToolUiKind::SCENE, SolersToolExecution::MAIN_THREAD, {}, SolersOperationDomain::EDITOR, SolersOperationMode::QUERY, PackedStringArray({ "/node_paths/0", "/path", "/object_id", "/name_contains", "/class_name", "/target" }));
 	_add_operation(SolersOperationDomain::EDITOR, SolersOperationMode::APPLY, "scene.node.create", "Create an instantiable Godot Node through the current scene UndoRedo action.", R"({"type":"object","properties":{"class_name":{"type":"string","minLength":1},"name":{"type":"string"},"parent_path":{"type":"string"},"properties":{"type":"object"}},"required":["class_name"],"additionalProperties":false})", edit_scene, SolersToolMutationDomain::EDITOR, [ref](const SolersToolContext &, const Dictionary &a) { return ref->create_node(a); }, _access_by_arg("write", "scene:", "parent_path"), SNAME("Node"));
 	_add_operation(SolersOperationDomain::EDITOR, SolersOperationMode::APPLY, "scene.instance.instantiate", "Instantiate a PackedScene through the current scene UndoRedo action.", R"({"type":"object","properties":{"source_path":{"type":"string","pattern":"^res://"},"parent_path":{"type":"string"},"name":{"type":"string"},"properties":{"type":"object"}},"required":["source_path"],"additionalProperties":false})", edit_scene, SolersToolMutationDomain::EDITOR, [ref](const SolersToolContext &, const Dictionary &a) { return ref->instantiate_scene(a); }, [](const Dictionary &a) {
 			Array accesses = _access_by_arg("read", "project:", "source_path")(a);
@@ -2392,7 +2451,7 @@ void SolersToolRegistry::_register_reflection_tools() {
 				if (!(bool)result.get("ok", false)) {
 					ref->cancel_uv2_unwrap(ctx.call_id);
 				} });
-	_add_observe_exposed("engine.describe", "Search ClassDB or inspect exact classes. member_query returns matching typed members and documentation.", R"({"type":"object","properties":{"query":{"type":"string","minLength":1,"description":"Fuzzy class search."},"inherits":{"type":"string"},"max_results":{"type":"integer","minimum":1,"maximum":200},"classes":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","properties":{"class_name":{"type":"string","minLength":1},"include_inherited":{"type":"boolean"},"member_query":{"type":"string","description":"Filter typed members/docs; omit for names only."},"cursor":{"type":"integer","minimum":0,"description":"Cursor returned by the previous page. Default 0."},"max_members":{"type":"integer","minimum":1,"maximum":256,"description":"Optional page size shared by methods, properties, signals, and constants."}},"required":["class_name"],"additionalProperties":false},"description":"Exact classes to introspect. Lean without member_query; expand with member_query."}},"additionalProperties":false})", SolersToolExposure::MODEL, [this](const SolersToolContext &, const Dictionary &a) { return _inspect_engine(a); }, {}, {}, {}, SolersToolUiKind::SEARCH, SolersToolExecution::MAIN_THREAD, {}, SolersOperationDomain::EDITOR, SolersOperationMode::QUERY);
+	_add_observe_exposed("engine.describe", "Search ClassDB or inspect exact classes. member_query returns matching typed members and documentation.", R"({"type":"object","properties":{"query":{"type":"string","minLength":1,"description":"Fuzzy class search."},"inherits":{"type":"string"},"max_results":{"type":"integer","minimum":1,"maximum":200},"max_members":{"type":"integer","minimum":1,"maximum":256,"description":"Default page size for every exact class request."},"classes":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","properties":{"class_name":{"type":"string","minLength":1},"include_inherited":{"type":"boolean"},"member_query":{"type":"string","description":"Filter typed members/docs; omit for names only."},"cursor":{"type":"integer","minimum":0,"description":"Cursor returned by the previous page. Default 0."},"max_members":{"type":"integer","minimum":1,"maximum":256,"description":"Optional page size shared by methods, properties, signals, and constants."}},"required":["class_name"],"additionalProperties":false},"description":"Exact classes to introspect. Lean without member_query; expand with member_query."}},"additionalProperties":false})", SolersToolExposure::MODEL, [this](const SolersToolContext &, const Dictionary &a) { return _inspect_engine(a); }, {}, {}, {}, SolersToolUiKind::SEARCH, SolersToolExecution::MAIN_THREAD, {}, SolersOperationDomain::EDITOR, SolersOperationMode::QUERY, PackedStringArray({ "/query", "/classes/0/class_name" }));
 }
 
 void SolersToolRegistry::register_tool(SolersTool *p_tool) {
@@ -2445,7 +2504,11 @@ Dictionary SolersToolRegistry::_tool_to_dictionary(const SolersTool *p_tool) con
 	tool["execution"] = cap.execution == SolersToolExecution::WORKER_THREAD ? "worker" : "main_thread";
 	tool["execution_dynamic"] = (bool)cap.execution_resolver;
 	tool["exposure"] = _exposure_name(p_tool->exposure());
-	tool["ui_kind"] = _ui_kind_name(cap.ui_kind);
+	const SolersToolUiKind ui_kind = _resolved_ui_kind(cap);
+	const SolersToolUiPresentation &presentation = _ui_presentation(ui_kind);
+	tool["ui_kind"] = _ui_kind_name(ui_kind);
+	tool["ui"] = Dictionary({ { "running", presentation.running }, { "completed", presentation.completed }, { "failed", presentation.failed } });
+	tool["ui_subject_paths"] = cap.ui_subject_paths;
 	tool["timeline_visible"] = cap.host.timeline_visible;
 	tool["attachment_args"] = cap.host.attachment_args;
 	tool["required_model_inputs"] = cap.host.required_model_inputs;
@@ -2613,6 +2676,28 @@ Dictionary SolersToolRegistry::summarize_tool_args_for_audit(const StringName &p
 	return _trace_args(normalized, &capability);
 }
 
+String SolersToolRegistry::summarize_tool_args_for_ui(const StringName &p_name, const Dictionary &p_args) const {
+	SolersTool *const *tool_ptr = tools.getptr(p_name);
+	if (!tool_ptr || !*tool_ptr) {
+		return String();
+	}
+	const Dictionary args = normalize_tool_args(p_name, p_args);
+	for (const String &path : (*tool_ptr)->capability().ui_subject_paths) {
+		const String subject = _ui_subject_text(_ui_subject_at_pointer(args, path));
+		if (!subject.is_empty()) {
+			return subject;
+		}
+	}
+	for (const Variant &value : resolve_resource_access(p_name, args)) {
+		const String key = Dictionary(value).get("key", String());
+		const int separator = key.find(":");
+		if (key != "*" && separator >= 0 && separator + 1 < key.length()) {
+			return key.substr(separator + 1);
+		}
+	}
+	return String();
+}
+
 String SolersToolRegistry::summarize_tool_result_for_audit(const Dictionary &p_result) const {
 	return _trace_result(p_result);
 }
@@ -2688,6 +2773,7 @@ Dictionary SolersToolRegistry::_preflight_tool_call(const StringName &p_name, co
 	String argument_error;
 	if (!_validate_tool_schema_value(schema_args, input_schema, "parameters", argument_error)) {
 		Dictionary invalid = _error("TOOL_ARGUMENT_INVALID", argument_error, true);
+		invalid["data"] = Dictionary({ { "arguments", redact_tool_args_for_audit(p_name, args) } });
 		SOLERS_TRACE("registry.preflight_rejected", vformat("%s %s", String(p_name), argument_error));
 		if (action_timeline) {
 			Dictionary rejected;

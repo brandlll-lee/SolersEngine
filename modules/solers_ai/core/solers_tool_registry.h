@@ -101,7 +101,8 @@ class SolersToolRegistry : public Object {
 			SolersOperationMode p_operation_mode = SolersOperationMode::QUERY,
 			std::function<SolersToolExecution(const Dictionary &)> p_execution_resolver = {},
 			const StringName &p_target_kind = StringName(),
-			std::function<bool(const Dictionary &)> p_execution_ready = {});
+			std::function<bool(const Dictionary &)> p_execution_ready = {},
+			const PackedStringArray &p_ui_subject_paths = {});
 	void _add_observe_exposed(const char *p_name, const char *p_description, const char *p_schema_json,
 			SolersToolExposure p_exposure, SolersFunctionTool::Handler p_handler,
 			std::function<Array(const Dictionary &)> p_resource_access = {},
@@ -111,12 +112,14 @@ class SolersToolRegistry : public Object {
 			SolersToolExecution p_execution = SolersToolExecution::MAIN_THREAD,
 			const SolersToolHostPolicy &p_host = {},
 			SolersOperationDomain p_operation_domain = SolersOperationDomain::NONE,
-			SolersOperationMode p_operation_mode = SolersOperationMode::QUERY);
+			SolersOperationMode p_operation_mode = SolersOperationMode::QUERY,
+			const PackedStringArray &p_ui_subject_paths = {});
 	void _add_observe(const char *p_name, const char *p_description, const char *p_schema_json,
 			SolersFunctionTool::Handler p_handler, std::function<Array(const Dictionary &)> p_resource_access = {},
 			SolersFunctionTool::PollHandler p_poll_handler = {},
 			SolersFunctionTool::ReadyHandler p_ready_handler = {},
-			SolersToolUiKind p_ui_kind = SolersToolUiKind::OBSERVE);
+			SolersToolUiKind p_ui_kind = SolersToolUiKind::OBSERVE,
+			const PackedStringArray &p_ui_subject_paths = {});
 	void _add_operation(SolersOperationDomain p_domain, SolersOperationMode p_mode,
 			const char *p_name, const char *p_description, const char *p_schema_json,
 			SolersPermissionManager::Permission p_permission, SolersToolMutationDomain p_mutation_domains,
@@ -188,6 +191,7 @@ public:
 	Dictionary normalize_tool_args(const StringName &p_name, const Dictionary &p_args) const;
 	Dictionary redact_tool_args_for_audit(const StringName &p_name, const Dictionary &p_args) const;
 	Dictionary summarize_tool_args_for_audit(const StringName &p_name, const Dictionary &p_args) const;
+	String summarize_tool_args_for_ui(const StringName &p_name, const Dictionary &p_args) const;
 	String summarize_tool_result_for_audit(const Dictionary &p_result) const;
 	Dictionary call_tool(const StringName &p_name, const Dictionary &p_args);
 	Dictionary call_tool_with_context(const StringName &p_name, const Dictionary &p_args, const SolersToolContext &p_context);

@@ -151,6 +151,8 @@ struct SolersToolCapability {
 	// (replaces the old per-tool-name `if` redaction in the dispatcher).
 	Vector<String> redact_args;
 	SolersToolUiKind ui_kind = SolersToolUiKind::DEFAULT;
+	// RFC 6901 paths into this tool's arguments, ordered by UI preference.
+	PackedStringArray ui_subject_paths;
 	SolersToolHostPolicy host;
 };
 
