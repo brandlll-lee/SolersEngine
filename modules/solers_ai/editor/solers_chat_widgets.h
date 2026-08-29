@@ -258,9 +258,6 @@ inline Color solers_composer_border() {
 void solers_configure_prompt_surface(SolersSurface *p_surface);
 void solers_configure_prompt_text_edit(TextEdit *p_edit);
 
-// ui_kind maps directly to the technical icon.
-StringName solers_tool_icon_for_ui_kind(const String &p_ui_kind);
-
 // Bare search field (mention / model / provider pickers) — Cursor-flat, no chrome.
 void solers_style_bare_search_line_edit(LineEdit *p_edit);
 

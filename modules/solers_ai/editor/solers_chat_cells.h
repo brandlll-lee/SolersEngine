@@ -45,8 +45,6 @@ class TextEdit;
 class TextParagraph;
 class VBoxContainer;
 
-String solers_summarize_tool_args(const String &p_arguments_json);
-
 // Right-aligned, content-sized user bubble with bounded readable wrapping.
 class SolersUserBubble : public Control {
 	GDCLASS(SolersUserBubble, Control);
@@ -198,8 +196,8 @@ public:
 // chat timeline cells. Keep a pure formatter for tests / audit text.
 String solers_format_plan_text(const String &p_explanation, const Array &p_plan);
 
-// One tool invocation, updated in place across its lifecycle. Running rows
-// use shimmer text; settled rows keep only the tool icon, label and duration.
+// One tool invocation, updated in place across its lifecycle. Its tool
+// definition supplies the verb and subject; the cell only renders that data.
 class SolersToolCell : public Control {
 	GDCLASS(SolersToolCell, Control);
 
@@ -212,19 +210,22 @@ public:
 
 private:
 	String tool_name;
-	StringName tool_icon;
-	String tool_verb;
-	String args_summary;
-	String error_text;
+	String arguments_json;
+	String result_json;
+	String subject;
+	Dictionary presentation;
 	Status status = STATUS_RUNNING;
 	int duration_msec = -1;
+	bool expanded = false;
+	bool hovering = false;
 
-	Ref<TextParagraph> error_paragraph;
+	Ref<TextParagraph> detail_paragraph;
 	float shaped_for_width = -1.0f;
 	float cell_height = 0.0f;
 
 	Callable content_changed;
 
+	String _detail_text() const;
 	void _shape(float p_cell_width);
 
 protected:
@@ -233,14 +234,15 @@ protected:
 
 public:
 	virtual Size2 get_minimum_size() const override;
+	virtual void gui_input(const Ref<InputEvent> &p_event) override;
 
-	void start(const String &p_tool_name, const String &p_arguments_json, const String &p_ui_kind);
-	void update(const String &p_tool_name, const String &p_arguments_json, const String &p_ui_kind);
-	void finish(bool p_ok, const String &p_error_message, int p_duration_msec);
-	StringName get_tool_icon() const { return tool_icon; }
-	String get_tool_verb() const { return tool_verb; }
+	void start(const String &p_tool_name, const String &p_arguments_json, const Dictionary &p_presentation, const String &p_subject);
+	void update(const String &p_tool_name, const String &p_arguments_json, const Dictionary &p_presentation, const String &p_subject);
+	void finish(const Dictionary &p_result, int p_duration_msec);
 	String get_status_text() const;
+	String get_detail_text() const { return _detail_text(); }
 	Status get_status() const { return status; }
+	bool is_expanded() const { return expanded; }
 
 	void set_content_changed_callback(const Callable &p_cb) { content_changed = p_cb; }
 

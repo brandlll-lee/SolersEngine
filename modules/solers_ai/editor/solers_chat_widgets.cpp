@@ -1008,46 +1008,6 @@ void SolersPlanCapsule::_notification(int p_what) {
 	}
 }
 
-/* ------------------------------------------------------------------ */
-/* Tool ui_kind -> Tabler icon                                        */
-/* ------------------------------------------------------------------ */
-
-namespace {
-struct SolersToolUiChromeRow {
-	const char *kind;
-	const char *icon;
-};
-
-static const SolersToolUiChromeRow SOLERS_TOOL_UI_CHROME[] = {
-	{ "observe", "tool_observe" },
-	{ "read", "tool_read" },
-	{ "search", "tool_search" },
-	{ "write", "tool_file" },
-	{ "scene", "tool_scene" },
-	{ "shell", "tool_shell" },
-	{ "run", "tool_run" },
-	{ "network", "tool_network" },
-	{ "asset", "tool_asset" },
-	{ "capture", "tool_capture" },
-	{ "think", "sparkle" },
-	{ "shield", "shield" },
-};
-
-static const SolersToolUiChromeRow *_solers_tool_ui_row_for_kind(const String &p_kind) {
-	for (const SolersToolUiChromeRow &row : SOLERS_TOOL_UI_CHROME) {
-		if (p_kind == row.kind) {
-			return &row;
-		}
-	}
-	return nullptr;
-}
-} // namespace
-
-StringName solers_tool_icon_for_ui_kind(const String &p_ui_kind) {
-	const SolersToolUiChromeRow *row = _solers_tool_ui_row_for_kind(p_ui_kind.strip_edges());
-	return row ? StringName(row->icon) : SNAME("sparkle");
-}
-
 void solers_style_bare_search_line_edit(LineEdit *p_edit) {
 	ERR_FAIL_NULL(p_edit);
 	Ref<StyleBoxEmpty> empty;

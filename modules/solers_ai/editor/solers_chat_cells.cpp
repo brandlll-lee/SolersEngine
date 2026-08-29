@@ -85,65 +85,13 @@ static Ref<Font> solers_cell_mono_font(const Control *p_control) {
 	return p_control->get_theme_font(SceneStringName(font), SNAME("SolersMono"));
 }
 
-static String _clip_tool_fact(const String &p_value, int p_max = 48) {
-	if (p_value.length() <= p_max) {
-		return p_value;
+static String _pretty_tool_json(const String &p_json) {
+	const String raw = p_json.strip_edges();
+	if (raw.is_empty()) {
+		return "{}";
 	}
-	return p_value.left(MAX(1, p_max - 3)) + "...";
-}
-
-static String _summarize_streaming_tool_args(const String &p_raw) {
-	const int key_pos = p_raw.find("\"");
-	if (key_pos >= 0) {
-		// Prefer the first JSON string value in a partial object (usually path/query).
-		const int colon_pos = p_raw.find(":", key_pos + 1);
-		const int quote_pos = colon_pos >= 0 ? p_raw.find("\"", colon_pos + 1) : -1;
-		const int end_pos = quote_pos >= 0 ? p_raw.find("\"", quote_pos + 1) : -1;
-		if (end_pos > quote_pos) {
-			return _clip_tool_fact(p_raw.substr(quote_pos + 1, end_pos - quote_pos - 1));
-		}
-	}
-	return String::utf8("…");
-}
-
-// Primary inline tool-row fact: first non-empty string arg (data-driven).
-String solers_summarize_tool_args(const String &p_arguments_json) {
-	const String raw = p_arguments_json.strip_edges();
-	if (raw.is_empty() || raw == "{}") {
-		return String();
-	}
-	if (!raw.ends_with("}")) {
-		return _summarize_streaming_tool_args(raw);
-	}
-	Ref<JSON> json;
-	json.instantiate();
-	if (json->parse(raw) != OK) {
-		return _summarize_streaming_tool_args(raw);
-	}
-	const Variant parsed = json->get_data();
-	if (parsed.get_type() != Variant::DICTIONARY) {
-		return _clip_tool_fact(raw);
-	}
-	const Dictionary args = parsed;
-	for (const KeyValue<Variant, Variant> &kv : args) {
-		if (kv.value.get_type() == Variant::STRING) {
-			const String value = String(kv.value).strip_edges();
-			if (!value.is_empty()) {
-				return _clip_tool_fact(value);
-			}
-		}
-	}
-	for (const KeyValue<Variant, Variant> &kv : args) {
-		switch (kv.value.get_type()) {
-			case Variant::INT:
-			case Variant::FLOAT:
-			case Variant::BOOL:
-				return _clip_tool_fact(kv.value.stringify());
-			default:
-				break;
-		}
-	}
-	return String();
+	const Variant parsed = JSON::parse_string(raw);
+	return parsed.get_type() == Variant::NIL && raw != "null" ? raw : JSON::stringify(parsed, "  ", false, true);
 }
 
 /* ------------------------------------------------------------------ */
@@ -838,44 +786,47 @@ String solers_format_plan_text(const String &p_explanation, const Array &p_plan)
 /* ------------------------------------------------------------------ */
 
 SolersToolCell::SolersToolCell() {
-	set_mouse_filter(MOUSE_FILTER_IGNORE);
+	set_mouse_filter(MOUSE_FILTER_STOP);
 	set_h_size_flags(SIZE_EXPAND_FILL);
-	error_paragraph.instantiate();
-	error_paragraph->set_break_flags(TextServer::BREAK_MANDATORY | TextServer::BREAK_WORD_BOUND | TextServer::BREAK_ADAPTIVE);
+	set_default_cursor_shape(CURSOR_POINTING_HAND);
+	detail_paragraph.instantiate();
+	detail_paragraph->set_break_flags(TextServer::BREAK_MANDATORY | TextServer::BREAK_WORD_BOUND | TextServer::BREAK_ADAPTIVE);
 }
 
-void SolersToolCell::start(const String &p_tool_name, const String &p_arguments_json, const String &p_ui_kind) {
+void SolersToolCell::start(const String &p_tool_name, const String &p_arguments_json, const Dictionary &p_presentation, const String &p_subject) {
 	tool_name = p_tool_name.is_empty() ? String("tool") : p_tool_name;
-	tool_icon = solers_tool_icon_for_ui_kind(p_ui_kind);
-	tool_verb = tool_name.begins_with("tool.") ? tool_name : "tool." + tool_name;
-	args_summary = solers_summarize_tool_args(p_arguments_json);
-	set_tooltip_text(tool_name);
+	arguments_json = p_arguments_json;
+	presentation = p_presentation;
+	subject = p_subject.strip_edges();
 	status = STATUS_RUNNING;
+	result_json.clear();
+	duration_msec = -1;
+	set_tooltip_text(subject.is_empty() ? tool_name : tool_name + "\n" + subject);
 	shaped_for_width = -1.0f;
 	_shape(get_size().x);
 	set_process_internal(true);
 	queue_redraw();
 }
 
-void SolersToolCell::update(const String &p_tool_name, const String &p_arguments_json, const String &p_ui_kind) {
+void SolersToolCell::update(const String &p_tool_name, const String &p_arguments_json, const Dictionary &p_presentation, const String &p_subject) {
 	const String next_name = p_tool_name.is_empty() ? tool_name : p_tool_name;
-	const String next_summary = solers_summarize_tool_args(p_arguments_json);
-	const StringName next_icon = solers_tool_icon_for_ui_kind(p_ui_kind);
-	const String next_verb = next_name.begins_with("tool.") ? next_name : "tool." + next_name;
-	if (tool_name == next_name && args_summary == next_summary && tool_icon == next_icon && tool_verb == next_verb) {
+	const String next_subject = p_subject.strip_edges();
+	if (tool_name == next_name && arguments_json == p_arguments_json && presentation == p_presentation && subject == next_subject) {
 		return;
 	}
-	tool_name = next_name.is_empty() ? String("tool") : next_name;
-	tool_icon = next_icon;
-	tool_verb = next_verb;
-	args_summary = next_summary;
-	set_tooltip_text(tool_name);
+	tool_name = next_name;
+	arguments_json = p_arguments_json;
+	presentation = p_presentation;
+	subject = next_subject;
+	set_tooltip_text(subject.is_empty() ? tool_name : tool_name + "\n" + subject);
+	shaped_for_width = -1.0f;
+	_shape(get_size().x);
 	queue_redraw();
 }
 
-void SolersToolCell::finish(bool p_ok, const String &p_error_message, int p_duration_msec) {
-	status = p_ok ? STATUS_OK : STATUS_ERROR;
-	error_text = p_ok ? String() : p_error_message.strip_edges();
+void SolersToolCell::finish(const Dictionary &p_result, int p_duration_msec) {
+	status = (bool)p_result.get("ok", false) ? STATUS_OK : STATUS_ERROR;
+	result_json = JSON::stringify(p_result, "  ", false, true);
 	duration_msec = p_duration_msec;
 	set_process_internal(false);
 	shaped_for_width = -1.0f;
@@ -884,9 +835,32 @@ void SolersToolCell::finish(bool p_ok, const String &p_error_message, int p_dura
 }
 
 String SolersToolCell::get_status_text() const {
-	String text = status == STATUS_RUNNING ? "Running " : "Ran ";
-	text += tool_verb;
-	return args_summary.is_empty() ? text : text + " " + args_summary;
+	const char *state_key = status == STATUS_RUNNING ? "running" : status == STATUS_OK ? "completed" : "failed";
+	String verb = presentation.get(state_key, String());
+	if (verb.is_empty()) {
+		verb = status == STATUS_RUNNING ? "Running" : status == STATUS_OK ? "Completed" : "Failed";
+	}
+	const String object = subject.is_empty() ? tool_name : subject;
+	return object.is_empty() ? verb : verb + " " + object;
+}
+
+String SolersToolCell::_detail_text() const {
+	String details = "Tool\n" + tool_name + "\n\nArguments\n" + _pretty_tool_json(arguments_json);
+	if (!result_json.is_empty()) {
+		details += "\n\nResult\n" + result_json;
+	}
+	return details;
+}
+
+void SolersToolCell::gui_input(const Ref<InputEvent> &p_event) {
+	Ref<InputEventMouseButton> mouse_button = p_event;
+	if (mouse_button.is_valid() && mouse_button->get_button_index() == MouseButton::LEFT && mouse_button->is_pressed()) {
+		expanded = !expanded;
+		shaped_for_width = -1.0f;
+		_shape(get_size().x);
+		queue_redraw();
+		accept_event();
+	}
 }
 
 void SolersToolCell::_shape(float p_cell_width) {
@@ -897,15 +871,15 @@ void SolersToolCell::_shape(float p_cell_width) {
 	}
 	shaped_for_width = cell_width;
 
-	float height = 28.0f * ed; // Header row.
-	error_paragraph->clear();
-	if (!error_text.is_empty()) {
-		const Ref<Font> font = solers_cell_font(this);
-		if (font.is_valid()) {
-			error_paragraph->set_line_spacing(2.0f * ed);
-			error_paragraph->set_width(cell_width - 30.0f * ed);
-			error_paragraph->add_string(error_text, font, int(11 * ed));
-			height += error_paragraph->get_size().y + 6.0f * ed;
+	float height = 20.0f * ed;
+	detail_paragraph->clear();
+	if (expanded) {
+		const Ref<Font> mono = solers_cell_mono_font(this);
+		if (mono.is_valid()) {
+			detail_paragraph->set_line_spacing(2.0f * ed);
+			detail_paragraph->set_width(cell_width - 14.0f * ed);
+			detail_paragraph->add_string(_detail_text(), mono, int(11 * ed));
+			height += detail_paragraph->get_size().y + 4.0f * ed;
 		}
 	}
 
@@ -925,6 +899,14 @@ Size2 SolersToolCell::get_minimum_size() const {
 
 void SolersToolCell::_notification(int p_what) {
 	switch (p_what) {
+		case NOTIFICATION_MOUSE_ENTER: {
+			hovering = true;
+			queue_redraw();
+		} break;
+		case NOTIFICATION_MOUSE_EXIT: {
+			hovering = false;
+			queue_redraw();
+		} break;
 		case NOTIFICATION_RESIZED: {
 			shaped_for_width = -1.0f;
 			_shape(get_size().x);
@@ -940,47 +922,41 @@ void SolersToolCell::_notification(int p_what) {
 		case NOTIFICATION_DRAW: {
 			_shape(get_size().x);
 			const float ed = EDSCALE;
-
 			const Ref<Font> font = solers_cell_font(this);
 			const Ref<Font> mono = solers_cell_mono_font(this);
 			if (font.is_null()) {
 				break;
 			}
 
-			const float header_h = 28.0f * ed;
-			const float type_cx = 7.0f * ed;
-			const float icon_cy = header_h * 0.5f;
-			Ref<Texture2D> type_icon = SolersIcons::get(tool_icon, int(Math::round(13.0f * ed)));
-			if (type_icon.is_valid()) {
-				const Color icon_color = status == STATUS_ERROR ? SOLERS_CELL_ERROR : SOLERS_CELL_TEXT_DIM;
-				draw_texture(type_icon, Point2(type_cx - type_icon->get_width() * 0.5f, icon_cy - type_icon->get_height() * 0.5f).floor(), icon_color);
-			}
-
-			const int verb_size = int(12 * ed);
+			const float header_h = 20.0f * ed;
+			const int header_size = int(12 * ed);
 			const int fact_size = int(11 * ed);
-			const float x = 20.0f * ed;
-			const float verb_baseline = (header_h - font->get_height(verb_size)) * 0.5f + font->get_ascent(verb_size);
-			const Color verb_color = status == STATUS_ERROR ? SOLERS_CELL_ERROR : Color(0.90f, 0.91f, 0.94f);
-			String trail;
+			const float baseline = (header_h - font->get_height(header_size)) * 0.5f + font->get_ascent(header_size);
+			String duration;
 			if (status != STATUS_RUNNING && duration_msec >= 0) {
-				trail = duration_msec >= 1000 ? vformat("%s s", String::num(double(duration_msec) / 1000.0, 1)) : vformat("%d ms", duration_msec);
+				duration = duration_msec >= 1000 ? vformat("%s s", String::num(double(duration_msec) / 1000.0, 1)) : vformat("%d ms", duration_msec);
 			}
-			float trail_w = 0.0f;
-			if (!trail.is_empty() && mono.is_valid()) {
-				trail_w = mono->get_string_size(trail, HORIZONTAL_ALIGNMENT_LEFT, -1, fact_size).x;
-				const float trail_baseline = (header_h - mono->get_height(fact_size)) * 0.5f + mono->get_ascent(fact_size);
-				draw_string(mono, Point2(get_size().x - trail_w - 10.0f * ed, trail_baseline).floor(), trail, HORIZONTAL_ALIGNMENT_LEFT, -1, fact_size, SOLERS_CELL_TEXT_FAINT);
-				trail_w += 14.0f * ed;
-			}
-			const String label = get_status_text();
-			if (status == STATUS_RUNNING) {
-				draw_string(font, Point2(x, verb_baseline).floor(), label, HORIZONTAL_ALIGNMENT_LEFT, get_size().x - x - trail_w, verb_size, SOLERS_CELL_TEXT_FAINT.lerp(Color(0.95f, 0.96f, 0.98f), 0.35f + 0.25f * Math::sin(float(OS::get_singleton()->get_ticks_msec()) * Math::TAU / (SOLERS_SHIMMER_PERIOD * 1000.0f))));
-			} else {
-				draw_string(font, Point2(x, verb_baseline).floor(), label, HORIZONTAL_ALIGNMENT_LEFT, get_size().x - x - trail_w, verb_size, verb_color);
+			float duration_width = 0.0f;
+			if (!duration.is_empty() && mono.is_valid()) {
+				duration_width = mono->get_string_size(duration, HORIZONTAL_ALIGNMENT_LEFT, -1, fact_size).x;
+				const float duration_baseline = (header_h - mono->get_height(fact_size)) * 0.5f + mono->get_ascent(fact_size);
+				draw_string(mono, Point2(get_size().x - duration_width, duration_baseline).floor(), duration, HORIZONTAL_ALIGNMENT_LEFT, -1, fact_size, SOLERS_CELL_TEXT_FAINT);
+				duration_width += 8.0f * ed;
 			}
 
-			if (status == STATUS_ERROR && error_paragraph->get_line_count() > 0) {
-				error_paragraph->draw(get_canvas_item(), Point2(20.0f * ed, header_h + 2.0f * ed), Color(SOLERS_CELL_ERROR, 0.92f));
+			const String label = get_status_text();
+			const float available = MAX(0.0f, get_size().x - duration_width - 14.0f * ed);
+			const Color settled_color = status == STATUS_ERROR ? SOLERS_CELL_ERROR : hovering ? SOLERS_CELL_TEXT_DIM.lerp(Color(1, 1, 1), 0.25f) : SOLERS_CELL_TEXT_DIM;
+			const Color label_color = status == STATUS_RUNNING ? SOLERS_CELL_TEXT_FAINT.lerp(Color(0.95f, 0.96f, 0.98f), 0.35f + 0.25f * Math::sin(float(OS::get_singleton()->get_ticks_msec()) * Math::TAU / (SOLERS_SHIMMER_PERIOD * 1000.0f))) : settled_color;
+			draw_string(font, Point2(0, baseline).floor(), label, HORIZONTAL_ALIGNMENT_LEFT, available, header_size, label_color);
+			const float label_width = MIN(font->get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, header_size).x, available);
+			Ref<Texture2D> chevron = SolersIcons::get(expanded ? SNAME("chevron_down") : SNAME("chevron_right"), int(Math::round(9.0f * ed)));
+			if (chevron.is_valid()) {
+				draw_texture(chevron, Point2(label_width + 5.0f * ed, (header_h - chevron->get_height()) * 0.5f).floor(), settled_color);
+			}
+
+			if (expanded && detail_paragraph->get_line_count() > 0) {
+				detail_paragraph->draw(get_canvas_item(), Point2(14.0f * ed, header_h + 2.0f * ed), SOLERS_CELL_TEXT_DIM);
 			}
 		} break;
 	}

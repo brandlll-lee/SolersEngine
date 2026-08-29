@@ -396,9 +396,18 @@ public:
 	}
 };
 
-static String solers_tool_ui_kind_for_name(const SolersToolRegistry *p_registry, const String &p_name) {
-	const Dictionary tool = p_registry && !p_name.is_empty() ? p_registry->get_tool_definition(StringName(p_name)) : Dictionary();
-	return tool.get("ui_kind", String());
+static Dictionary solers_tool_ui_for_call(const SolersToolRegistry *p_registry, const String &p_name, const String &p_arguments) {
+	Dictionary state;
+	if (!p_registry || p_name.is_empty()) {
+		return state;
+	}
+	const Dictionary tool = p_registry->get_tool_definition(StringName(p_name));
+	state["presentation"] = tool.get("ui", Dictionary());
+	const Variant parsed = JSON::parse_string(p_arguments);
+	if (parsed.get_type() == Variant::DICTIONARY) {
+		state["subject"] = p_registry->summarize_tool_args_for_ui(StringName(p_name), parsed);
+	}
+	return state;
 }
 
 Control *SolersDock::_create_empty_state() const {
@@ -2344,7 +2353,8 @@ void SolersDock::_sync_approval_panel() {
 	const Dictionary request = pending[0];
 	permission_prompt_inset->set_visible(true);
 	permission_tool_label->set_text(request.get("tool", String()));
-	permission_detail_label->set_text(String(request.get("permission", String())).replace("_", " ").capitalize() + "\n" + solers_summarize_tool_args(JSON::stringify(request.get("args", Dictionary()))));
+	const String tool_subject = tool_registry ? tool_registry->summarize_tool_args_for_ui(StringName(request.get("tool", String())), request.get("args", Dictionary())) : String();
+	permission_detail_label->set_text(String(request.get("permission", String())).replace("_", " ") + (tool_subject.is_empty() ? String() : "\n" + tool_subject));
 	_update_send_enabled();
 }
 
@@ -2961,7 +2971,8 @@ void SolersDock::_on_agent_tool_started(const String &p_id, const String &p_name
 	if (!p_id.is_empty()) {
 		SolersToolCell **found = tool_cells_by_id.getptr(p_id);
 		if (found && *found) {
-			(*found)->update(p_name, p_arguments, solers_tool_ui_kind_for_name(tool_registry, p_name));
+			const Dictionary ui = solers_tool_ui_for_call(tool_registry, p_name, p_arguments);
+			(*found)->update(p_name, p_arguments, ui.get("presentation", Dictionary()), ui.get("subject", String()));
 			last_started_tool_cell = *found;
 			_on_cell_content_changed();
 			return;
@@ -2977,7 +2988,8 @@ void SolersDock::_on_agent_tool_started(const String &p_id, const String &p_name
 	SolersToolCell *cell = memnew(SolersToolCell);
 	cell->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
 	mount->add_child(cell);
-	cell->start(p_name, p_arguments, solers_tool_ui_kind_for_name(tool_registry, p_name));
+	const Dictionary ui = solers_tool_ui_for_call(tool_registry, p_name, p_arguments);
+	cell->start(p_name, p_arguments, ui.get("presentation", Dictionary()), ui.get("subject", String()));
 	if (!p_id.is_empty()) {
 		tool_cells_by_id.insert(p_id, cell);
 	}
@@ -2989,7 +3001,8 @@ void SolersDock::_on_agent_tool_updated(const String &p_id, const String &p_name
 	if (!p_id.is_empty()) {
 		SolersToolCell **found = tool_cells_by_id.getptr(p_id);
 		if (found && *found) {
-			(*found)->update(p_name, p_arguments, solers_tool_ui_kind_for_name(tool_registry, p_name));
+			const Dictionary ui = solers_tool_ui_for_call(tool_registry, p_name, p_arguments);
+			(*found)->update(p_name, p_arguments, ui.get("presentation", Dictionary()), ui.get("subject", String()));
 			_on_cell_content_changed();
 			return;
 		}
@@ -3020,15 +3033,8 @@ void SolersDock::_on_agent_tool_finished(const String &p_id, const String &p_nam
 		cell = last_started_tool_cell;
 	}
 
-	const bool ok = p_result.get("ok", false);
-	String error_message;
-	if (!ok) {
-		const Dictionary error = p_result.get("error", Dictionary());
-		error_message = error.get("message", String());
-	}
-
 	if (cell) {
-		cell->finish(ok, error_message, p_duration_msec);
+		cell->finish(p_result, p_duration_msec);
 	}
 	_remove_status_cell();
 	if (agent_session) {
