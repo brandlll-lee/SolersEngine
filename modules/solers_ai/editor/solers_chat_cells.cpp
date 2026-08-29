@@ -835,10 +835,12 @@ void SolersToolCell::finish(const Dictionary &p_result, int p_duration_msec) {
 }
 
 String SolersToolCell::get_status_text() const {
-	const char *state_key = status == STATUS_RUNNING ? "running" : status == STATUS_OK ? "completed" : "failed";
+	const char *state_key = status == STATUS_RUNNING ? "running" : status == STATUS_OK ? "completed"
+																					   : "failed";
 	String verb = presentation.get(state_key, String());
 	if (verb.is_empty()) {
-		verb = status == STATUS_RUNNING ? "Running" : status == STATUS_OK ? "Completed" : "Failed";
+		verb = status == STATUS_RUNNING ? "Running" : status == STATUS_OK ? "Completed"
+																		  : "Failed";
 	}
 	const String object = subject.is_empty() ? tool_name : subject;
 	return object.is_empty() ? verb : verb + " " + object;
@@ -946,7 +948,8 @@ void SolersToolCell::_notification(int p_what) {
 
 			const String label = get_status_text();
 			const float available = MAX(0.0f, get_size().x - duration_width - 14.0f * ed);
-			const Color settled_color = status == STATUS_ERROR ? SOLERS_CELL_ERROR : hovering ? SOLERS_CELL_TEXT_DIM.lerp(Color(1, 1, 1), 0.25f) : SOLERS_CELL_TEXT_DIM;
+			const Color settled_color = status == STATUS_ERROR ? SOLERS_CELL_ERROR : hovering ? SOLERS_CELL_TEXT_DIM.lerp(Color(1, 1, 1), 0.25f)
+																							  : SOLERS_CELL_TEXT_DIM;
 			const Color label_color = status == STATUS_RUNNING ? SOLERS_CELL_TEXT_FAINT.lerp(Color(0.95f, 0.96f, 0.98f), 0.35f + 0.25f * Math::sin(float(OS::get_singleton()->get_ticks_msec()) * Math::TAU / (SOLERS_SHIMMER_PERIOD * 1000.0f))) : settled_color;
 			draw_string(font, Point2(0, baseline).floor(), label, HORIZONTAL_ALIGNMENT_LEFT, available, header_size, label_color);
 			const float label_width = MIN(font->get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, header_size).x, available);
