@@ -47,6 +47,7 @@
 #include "servers/physics_3d/physics_server_3d.h"
 #include "servers/rendering/rendering_server.h"
 
+#include "modules/solers_ai/core/solers_geometry_facts.h"
 #include "modules/solers_ai/core/solers_tool.h"
 
 static HashSet<StringName> solers_owned_input_actions;
@@ -88,9 +89,9 @@ static void _solers_merge_aabb(AABB &r_total, bool &r_has_total, const AABB &p_a
 }
 
 static void _solers_collect_runtime_bounds(Node *p_node, SolersRuntimeBounds &r_bounds) {
-	if (GeometryInstance3D *geometry = Object::cast_to<GeometryInstance3D>(p_node)) {
-		if (geometry->is_visible_in_tree()) {
-			_solers_merge_aabb(r_bounds.visual, r_bounds.has_visual, geometry->get_global_transform().xform(geometry->get_aabb()));
+	if (VisualInstance3D *visual = Object::cast_to<VisualInstance3D>(p_node)) {
+		if (visual->is_visible_in_tree()) {
+			_solers_merge_aabb(r_bounds.visual, r_bounds.has_visual, visual->get_global_transform().xform(visual->get_aabb()));
 			r_bounds.visual_count++;
 		}
 	}
@@ -109,42 +110,6 @@ static void _solers_collect_runtime_bounds(Node *p_node, SolersRuntimeBounds &r_
 	}
 }
 
-static Dictionary _solers_screen_projection(Camera3D *p_camera, const AABB &p_aabb) {
-	Dictionary result;
-	if (!p_camera || !p_camera->get_viewport()) {
-		result["available"] = false;
-		return result;
-	}
-	Rect2 projected;
-	bool has_point = false;
-	for (int i = 0; i < 8; i++) {
-		const Vector3 point = p_aabb.position + Vector3((i & 1) ? p_aabb.size.x : 0.0, (i & 2) ? p_aabb.size.y : 0.0, (i & 4) ? p_aabb.size.z : 0.0);
-		if (p_camera->is_position_behind(point)) {
-			continue;
-		}
-		const Vector2 screen = p_camera->unproject_position(point);
-		if (has_point) {
-			projected = projected.expand(screen);
-		} else {
-			projected = Rect2(screen, Vector2());
-			has_point = true;
-		}
-	}
-	const Vector2 viewport_size = p_camera->get_viewport()->get_visible_rect().size;
-	const Rect2 visible = projected.intersection(Rect2(Vector2(), viewport_size));
-	result["available"] = has_point;
-	if (has_point) {
-		Array rect;
-		rect.push_back(projected.position.x);
-		rect.push_back(projected.position.y);
-		rect.push_back(projected.size.x);
-		rect.push_back(projected.size.y);
-		result["rect"] = rect;
-		result["visible_fraction"] = viewport_size.x > 0.0 && viewport_size.y > 0.0 ? visible.get_area() / (viewport_size.x * viewport_size.y) : 0.0;
-	}
-	return result;
-}
-
 static Dictionary _solers_runtime_spatial_facts(Node *p_focus, Camera3D *p_camera) {
 	Dictionary facts;
 	facts["node_path"] = String(p_focus->get_path());
@@ -155,7 +120,7 @@ static Dictionary _solers_runtime_spatial_facts(Node *p_focus, Camera3D *p_camer
 	facts["collision_count"] = bounds.collision_count;
 	if (bounds.has_visual) {
 		facts["visual_aabb"] = _solers_aabb_wire(bounds.visual);
-		facts["screen_projection"] = _solers_screen_projection(p_camera, bounds.visual);
+		facts["screen_projection"] = solers_project_aabb(p_camera, bounds.visual);
 	}
 	if (bounds.has_collision) {
 		facts["collision_aabb"] = _solers_aabb_wire(bounds.collision);

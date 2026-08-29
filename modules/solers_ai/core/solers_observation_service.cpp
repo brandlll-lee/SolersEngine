@@ -30,6 +30,7 @@
 
 #include "solers_observation_service.h"
 
+#include "solers_geometry_facts.h"
 #include "solers_tool.h"
 #include "solers_trace.h"
 
@@ -136,17 +137,32 @@ static void _solers_collect_ray_hit(Node *p_node, Node *p_root, const Vector3 &p
 	}
 }
 
-static void _solers_accumulate_world_aabb(Node *p_node, AABB &r_bounds, bool &r_found) {
-	if (GeometryInstance3D *geometry = Object::cast_to<GeometryInstance3D>(p_node)) {
-		const AABB bounds = geometry->get_global_transform().xform(geometry->get_aabb());
-		if (geometry->is_visible_in_tree() && bounds.has_volume()) {
-			r_bounds = r_found ? r_bounds.merge(bounds) : bounds;
-			r_found = true;
+static String _solers_scene_path_hint(Node *p_root);
+
+static bool _solers_focus_bounds(Node *p_root, const Array &p_paths, AABB &r_bounds, String &r_code, String &r_error) {
+	bool found = false;
+	for (int i = 0; i < p_paths.size(); i++) {
+		const String path = String(p_paths[i]).strip_edges();
+		Node *focus = p_root->get_node_or_null(NodePath(path));
+		if (!focus) {
+			r_code = "FOCUS_NODE_NOT_FOUND";
+			r_error = vformat("No edited-scene node at focus_paths[%d]: %s. %s", i, path, _solers_scene_path_hint(p_root));
+			return false;
 		}
+		solers_accumulate_world_aabb(focus, r_bounds, found);
 	}
-	for (int i = 0; i < p_node->get_child_count(); i++) {
-		_solers_accumulate_world_aabb(p_node->get_child(i), r_bounds, r_found);
+	if (!found) {
+		r_code = "FOCUS_BOUNDS_UNAVAILABLE";
+		r_error = "The requested focus nodes expose no finite visible VisualInstance3D bounds.";
 	}
+	return found;
+}
+
+static Dictionary _solers_framing_facts(Camera3D *p_camera, const AABB &p_bounds, const Array &p_paths) {
+	Dictionary framing = solers_project_aabb(p_camera, p_bounds);
+	framing["focus_paths"] = p_paths;
+	framing["world_aabb"] = solers_aabb_data(p_bounds);
+	return framing;
 }
 
 static Camera3D *_solers_find_first_camera(Node *p_node) {
@@ -484,7 +500,9 @@ Dictionary SolersObservationService::_attach_render_receipt(Dictionary p_result,
 	if (target != "runtime") {
 		receipt["source_state"] = p_pending.get("source_state", Dictionary());
 		receipt["render_state_sha256"] = p_pending.get("render_state_sha256", String());
-		data["render_state"] = p_pending.get("render_state", Dictionary());
+		if ((bool)p_pending.get("include_render_state", false)) {
+			data["render_state"] = p_pending.get("render_state", Dictionary());
+		}
 	}
 
 	const Dictionary source_state = p_pending.get("source_state", Dictionary());
@@ -677,7 +695,9 @@ Dictionary SolersObservationService::_finish_frame_gated_capture(const String &p
 		Dictionary data;
 		data["requested_render_state_sha256"] = p_data.get("render_state_sha256", String());
 		data["readback_render_state_sha256"] = readback_sha256;
-		data["readback_render_state"] = readback_state;
+		if ((bool)p_data.get("include_render_state", false)) {
+			data["readback_render_state"] = readback_state;
+		}
 		failure["data"] = data;
 		return failure;
 	}
@@ -699,6 +719,11 @@ Dictionary SolersObservationService::_finish_frame_gated_capture(const String &p
 			data["render_frames_required"] = p_data.get("render_frames_required", 1);
 			data["render_frames_waited"] = frames_waited;
 			data["render_post_draws_waited"] = post_draws_waited;
+			for (const char *key : { "focus_paths", "framing" }) {
+				if (p_data.has(key)) {
+					data[key] = p_data[key];
+				}
+			}
 			result["data"] = data;
 		}
 		return _attach_render_receipt(result, p_data);
@@ -723,7 +748,7 @@ Dictionary SolersObservationService::_finish_frame_gated_capture(const String &p
 		data["render_frames_required"] = p_data.get("render_frames_required", 1);
 		data["render_frames_waited"] = frames_waited;
 		data["render_post_draws_waited"] = post_draws_waited;
-		for (const char *key : { "camera_path", "camera_forward_hit_node", "camera_forward_hit_distance", "orientation", "axis", "direction", "section_position", "focus_paths", "view_spec_hash" }) {
+		for (const char *key : { "camera_path", "camera_forward_hit_node", "camera_forward_hit_distance", "orientation", "axis", "direction", "section_position", "focus_paths", "framing", "view_spec_hash" }) {
 			if (p_data.has(key)) {
 				data[key] = p_data[key];
 			}
@@ -819,7 +844,22 @@ Dictionary SolersObservationService::_begin_scene_view_capture(const String &p_t
 		return _capture_error("NO_EDITED_SCENE", "No scene is being edited.", true);
 	}
 
+	const Array focus_paths = p_args.get("focus_paths", Array());
+	AABB focus_bounds;
+	bool has_focus_bounds = false;
+	if (!focus_paths.is_empty()) {
+		String focus_code;
+		String focus_error;
+		has_focus_bounds = _solers_focus_bounds(edited_root, focus_paths, focus_bounds, focus_code, focus_error);
+		if (!has_focus_bounds) {
+			return _capture_error(focus_code, focus_error, true);
+		}
+	} else if (p_target == "focus") {
+		return _capture_error("FOCUS_PATHS_REQUIRED", "target=focus requires at least one focus_paths entry.", true);
+	}
+
 	Dictionary extra;
+	extra["include_render_state"] = (bool)p_args.get("include_render_state", false);
 	Vector3 orthographic_target;
 	Ref<Environment> camera_environment;
 	SubViewport *viewport = memnew(SubViewport);
@@ -841,20 +881,20 @@ Dictionary SolersObservationService::_begin_scene_view_capture(const String &p_t
 
 	if (p_target == "camera") {
 		Camera3D *scene_camera = nullptr;
-		const String node_path = String(p_args.get("node_path", String())).strip_edges();
-		if (!node_path.is_empty()) {
-			scene_camera = Object::cast_to<Camera3D>(edited_root->get_node_or_null(NodePath(node_path)));
+		const String camera_path = String(p_args.get("camera_path", String())).strip_edges();
+		if (!camera_path.is_empty()) {
+			scene_camera = Object::cast_to<Camera3D>(edited_root->get_node_or_null(NodePath(camera_path)));
 			if (!scene_camera) {
 				memdelete(viewport);
 				PackedStringArray camera_paths;
 				_solers_collect_camera_paths(edited_root, edited_root, camera_paths);
-				return _capture_error("CAMERA_NOT_FOUND", vformat("No Camera3D at node_path: %s. %s Camera3D nodes present: %s.", node_path, _solers_scene_path_hint(edited_root), camera_paths.is_empty() ? String("none") : String(", ").join(camera_paths)), true);
+				return _capture_error("CAMERA_NOT_FOUND", vformat("No Camera3D at camera_path: %s. %s Camera3D nodes present: %s.", camera_path, _solers_scene_path_hint(edited_root), camera_paths.is_empty() ? String("none") : String(", ").join(camera_paths)), true);
 			}
 		} else {
 			scene_camera = _solers_find_first_camera(edited_root);
 			if (!scene_camera) {
 				memdelete(viewport);
-				return _capture_error("NO_CAMERA_IN_SCENE", "The edited scene has no Camera3D. Add one or pass node_path.", true);
+				return _capture_error("NO_CAMERA_IN_SCENE", "The edited scene has no Camera3D. Add one or pass camera_path.", true);
 			}
 		}
 		int width = GLOBAL_GET("display/window/size/viewport_width");
@@ -891,22 +931,38 @@ Dictionary SolersObservationService::_begin_scene_view_capture(const String &p_t
 			extra["camera_forward_hit_node"] = hit_path;
 			extra["camera_forward_hit_distance"] = hit_distance;
 		}
+		extra["focus_paths"] = focus_paths;
+	} else if (p_target == "focus") {
+		Camera3D *editor_camera = editor_viewport->get_camera_3d();
+		if (!editor_camera) {
+			memdelete(viewport);
+			return _capture_error("EDITOR_CAMERA_UNAVAILABLE", "The active 3D editor camera is unavailable.", true);
+		}
+		Size2i capture_size = world_viewport->get_visible_rect().size;
+		if (capture_size.x <= 0 || capture_size.y <= 0) {
+			capture_size = Size2i(1152, 648);
+		}
+		const int longest = MAX(capture_size.x, capture_size.y);
+		if (longest > SOLERS_CAPTURE_MAX_DIMENSION) {
+			capture_size = capture_size * SOLERS_CAPTURE_MAX_DIMENSION / longest;
+		}
+		viewport->set_size(capture_size);
+		camera->set_perspective(editor_camera->get_fov(), editor_camera->get_near(), editor_camera->get_far());
+		camera->set_keep_aspect_mode(editor_camera->get_keep_aspect_mode());
+		camera->set_cull_mask(editor_camera->get_cull_mask());
+		camera->set_environment(editor_camera->get_environment());
+		camera->set_attributes(editor_camera->get_attributes());
+		camera_environment = editor_camera->get_environment();
+		camera->set_transform(solers_frame_aabb(editor_camera->get_global_transform(), focus_bounds, editor_camera->get_fov(), (real_t)capture_size.x / (real_t)capture_size.y, editor_camera->get_keep_aspect_mode(), editor_camera->get_near()));
+		camera->set_far(MAX(editor_camera->get_far(), camera->get_position().distance_to(focus_bounds.get_center()) + focus_bounds.size.length() * 0.5));
+		extra["focus_paths"] = focus_paths;
+		extra["orientation"] = "Perspective focus view using the active editor camera orientation.";
+		extra["view_spec_hash"] = String::num_uint64(p_args.hash());
 	} else { // top_down / orthographic
-		AABB bounds;
-		bool found = false;
-		const Array focus_paths = p_args.get("focus_paths", Array());
-		if (focus_paths.is_empty()) {
-			_solers_accumulate_world_aabb(edited_root, bounds, found);
-		} else {
-			for (int i = 0; i < focus_paths.size(); i++) {
-				const String focus_path = String(focus_paths[i]).strip_edges();
-				Node *focus = edited_root->get_node_or_null(NodePath(focus_path));
-				if (!focus) {
-					memdelete(viewport);
-					return _capture_error("FOCUS_NODE_NOT_FOUND", vformat("No edited-scene node at focus_paths[%d]: %s. %s", i, focus_path, _solers_scene_path_hint(edited_root)), true);
-				}
-				_solers_accumulate_world_aabb(focus, bounds, found);
-			}
+		AABB bounds = focus_bounds;
+		bool found = has_focus_bounds;
+		if (!found) {
+			solers_accumulate_world_aabb(edited_root, bounds, found);
 		}
 		if (!found) {
 			// Nodes rendering through RenderingServer directly (for example
@@ -962,6 +1018,18 @@ Dictionary SolersObservationService::_begin_scene_view_capture(const String &p_t
 		const Vector3 up = String(extra.get("axis", String())) == "y" ? Vector3(0, 0, -1) : Vector3(0, 1, 0);
 		camera->look_at_from_position(camera->get_global_position(), orthographic_target, up);
 	}
+	if (has_focus_bounds) {
+		const Dictionary framing = _solers_framing_facts(camera, focus_bounds, focus_paths);
+		if (!(bool)framing.get("in_frame", false)) {
+			viewport->queue_free();
+			return _capture_error("FOCUS_OUT_OF_FRAME", "The requested focus bounds do not intersect the capture frame.", true);
+		}
+		if (p_target == "focus" && !(bool)framing.get("fully_in_frame", false)) {
+			viewport->queue_free();
+			return _capture_error("FOCUS_FRAMING_FAILED", "The perspective focus camera did not contain the complete requested bounds.", true);
+		}
+		extra["framing"] = framing;
+	}
 	extra["viewport_id"] = (int64_t)(uint64_t)viewport->get_instance_id();
 	extra["camera_id"] = (int64_t)(uint64_t)camera->get_instance_id();
 	extra["owns_viewport"] = true;
@@ -982,7 +1050,7 @@ Dictionary SolersObservationService::capture_viewport(const Dictionary &p_args) 
 	if (target != "runtime" && !_solers_capture_source_is_current(p_args.get("source_state", Dictionary()))) {
 		return _capture_error("CAPTURE_SOURCE_CONFLICT", "The edited scene changed before capture started.", true);
 	}
-	if (p_args.has("debug_draw") && target != "camera" && target != "top_down" && target != "orthographic") {
+	if (p_args.has("debug_draw") && target != "camera" && target != "focus" && target != "top_down" && target != "orthographic") {
 		return _capture_error("DEBUG_DRAW_TARGET_UNSUPPORTED", "debug_draw is available on transient camera and orthographic captures.", true);
 	}
 	if (target == "editor") {
@@ -996,12 +1064,29 @@ Dictionary SolersObservationService::capture_viewport(const Dictionary &p_args) 
 			return _capture_error("EDITOR_VIEWPORT_UNAVAILABLE", "The active 3D editor viewport is unavailable.", true);
 		}
 		Dictionary extra;
+		extra["include_render_state"] = (bool)p_args.get("include_render_state", false);
 		if (p_args.has("source_state")) {
 			extra["source_state"] = p_args["source_state"];
 		}
+		const Array focus_paths = p_args.get("focus_paths", Array());
+		if (!focus_paths.is_empty()) {
+			Node *edited_root = EditorInterface::get_singleton()->get_edited_scene_root();
+			AABB focus_bounds;
+			String focus_code;
+			String focus_error;
+			if (!edited_root || !_solers_focus_bounds(edited_root, focus_paths, focus_bounds, focus_code, focus_error)) {
+				return _capture_error(focus_code.is_empty() ? String("NO_EDITED_SCENE") : focus_code, focus_error.is_empty() ? String("No scene is being edited.") : focus_error, true);
+			}
+			const Dictionary framing = _solers_framing_facts(editor_viewport->get_camera_3d(), focus_bounds, focus_paths);
+			if (!(bool)framing.get("in_frame", false)) {
+				return _capture_error("FOCUS_OUT_OF_FRAME", "The requested focus bounds do not intersect the active editor viewport.", true);
+			}
+			extra["focus_paths"] = focus_paths;
+			extra["framing"] = framing;
+		}
 		return _register_pending_capture("editor", extra);
 	}
-	if (target == "camera" || target == "top_down" || target == "orthographic") {
+	if (target == "camera" || target == "focus" || target == "top_down" || target == "orthographic") {
 		return _begin_scene_view_capture(target, p_args);
 	}
 	if (target == "runtime") {
