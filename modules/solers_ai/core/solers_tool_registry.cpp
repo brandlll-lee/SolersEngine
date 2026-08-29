@@ -2300,7 +2300,7 @@ void SolersToolRegistry::_register_reflection_tools() {
 	}
 	SolersReflectionService *ref = reflection_service;
 	const SolersPermissionManager::Permission edit_scene = SolersPermissionManager::PERMISSION_EDIT_SCENE;
-	_add_observe_exposed("object.query", "Query the live edited scene, an exact project path, a Resource, an ObjectID, or native spatial facts between node pairs. target=path returns the current expected_state and applicable path operations.", R"({"type":"object","properties":{"target":{"type":"string","enum":["scene","path","resource","object","relations"]},"include_selection":{"type":"boolean"},"node_paths":{"type":"array","items":{"type":"string"},"uniqueItems":true,"minItems":1,"maxItems":64},"path_prefix":{"type":"string"},"name_contains":{"type":"string"},"class_name":{"type":"string"},"script_path":{"type":"string","pattern":"^res://"},"cursor":{"type":"integer","minimum":0},"max_results":{"type":"integer","minimum":1},"include_connections":{"type":"boolean"},"path":{"type":"string","pattern":"^res://"},"type_hint":{"type":"string"},"include_dependencies":{"type":"boolean"},"max_dependencies":{"type":"integer","minimum":0,"maximum":2048},"properties":{"type":"array","items":{"type":"string"},"uniqueItems":true,"maxItems":128},"methods":{"type":"array","items":{"type":"string"},"uniqueItems":true,"maxItems":32},"object_id":{"type":"string","pattern":"^-?[0-9]+$"},"relations":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a","b"],"additionalProperties":false}}},"required":["target"],"additionalProperties":false})", SolersToolExposure::OPERATION, [this, ref](const SolersToolContext &ctx, const Dictionary &a) {
+	_add_observe_exposed("object.query", "Query the live edited scene, an exact project path, a Resource, an ObjectID, or native spatial facts between node pairs. Persistent scene, path, and Resource targets return the current expected_state and applicable operations.", R"({"type":"object","properties":{"target":{"type":"string","enum":["scene","path","resource","object","relations"]},"include_selection":{"type":"boolean"},"node_paths":{"type":"array","items":{"type":"string"},"uniqueItems":true,"minItems":1,"maxItems":64},"path_prefix":{"type":"string"},"name_contains":{"type":"string"},"class_name":{"type":"string"},"script_path":{"type":"string","pattern":"^res://"},"cursor":{"type":"integer","minimum":0},"max_results":{"type":"integer","minimum":1},"include_connections":{"type":"boolean"},"path":{"type":"string","pattern":"^res://"},"type_hint":{"type":"string"},"include_dependencies":{"type":"boolean"},"max_dependencies":{"type":"integer","minimum":0,"maximum":2048},"properties":{"type":"array","items":{"type":"string"},"uniqueItems":true,"maxItems":128},"method_calls":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string","minLength":1},"arguments":{"type":"array","maxItems":32}},"required":["name"],"additionalProperties":false},"maxItems":32},"object_id":{"type":"string","pattern":"^-?[0-9]+$"},"relations":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a","b"],"additionalProperties":false}}},"required":["target"],"additionalProperties":false})", SolersToolExposure::OPERATION, [this, ref](const SolersToolContext &ctx, const Dictionary &a) {
 				const String target = a.get("target", String());
 				if (target == "relations") {
 					Dictionary args = a.duplicate(true);
@@ -2325,6 +2325,11 @@ void SolersToolRegistry::_register_reflection_tools() {
 					Dictionary result = resource_service->inspect_resource(args);
 					if ((bool)result.get("ok", false)) {
 						Dictionary data = result.get("data", Dictionary());
+						if (file_checkpoint) {
+							const Dictionary state = _solers_resource_state_receipt(file_checkpoint, data.get("path", String()));
+							data["state"] = state;
+							data["expected_state"] = Dictionary({ { "resources", Array({ state.duplicate(true) }) } });
+						}
 						data["operations"] = _operation_definitions(SolersOperationDomain::EDITOR, SolersOperationMode::APPLY, StringName(data.get("resource_type", String())));
 						result["data"] = data;
 					}
@@ -2359,14 +2364,25 @@ void SolersToolRegistry::_register_reflection_tools() {
 							data["property_errors"] = errors;
 						}
 					}
-					Dictionary method_values;
-					for (const Variant &method : Array(a.get("methods", Array()))) {
+					Array method_results;
+					for (const Variant &call_value : Array(a.get("method_calls", Array()))) {
+						const Dictionary call = call_value;
+						const StringName method = StringName(String(call.get("name", String())));
+						const Array arguments = call.get("arguments", Array());
 						args["method"] = method;
-						const Dictionary value = resource_service->native_get(args);
-						method_values[method] = (bool)value.get("ok", false) ? Dictionary(value.get("data", Dictionary())).get("value", Variant()) : value.get("error", Dictionary());
+						args["arguments"] = arguments;
+						const Dictionary result = resource_service->native_get(args);
+						Dictionary item = result.get("data", Dictionary());
+						item.erase("object");
+						if (!(bool)result.get("ok", false)) {
+							item["method"] = method;
+							item["arguments"] = arguments;
+							item["error"] = result.get("error", Dictionary());
+						}
+						method_results.push_back(item);
 					}
-					if (!method_values.is_empty()) {
-						data["method_values"] = method_values;
+					if (!method_results.is_empty()) {
+						data["method_results"] = method_results;
 					}
 					const Dictionary object = data.get("object", Dictionary());
 					data["operations"] = _operation_definitions(SolersOperationDomain::EDITOR, SolersOperationMode::APPLY, StringName(object.get("class_name", String())));
@@ -2423,7 +2439,9 @@ void SolersToolRegistry::_register_reflection_tools() {
 					result["data"] = data;
 					return result;
 				}
-				data["state"] = _solers_scene_state_receipt();
+				const Dictionary state = _solers_scene_state_receipt();
+				data["state"] = state;
+				data["expected_state"] = state.duplicate(true);
 				return _ok(data); }, [](const Dictionary &a) {
 				Array accesses;
 				Dictionary access;

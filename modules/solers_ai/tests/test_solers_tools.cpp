@@ -865,8 +865,11 @@ TEST_CASE("[SolersToolRegistry] a registered operation needs no dispatcher branc
 	CHECK_FALSE(FileAccess::exists(path));
 }
 
-TEST_CASE("[SolersToolRegistry] object query invokes only ClassDB const zero-argument getters") {
-	Ref<Image> image = Image::create_empty(8, 4, false, Image::FORMAT_RGBA8);
+TEST_CASE("[SolersToolRegistry] object query invokes typed ClassDB const methods") {
+	Ref<Animation> animation;
+	animation.instantiate();
+	const int track = animation->add_track(Animation::TYPE_VALUE);
+	animation->track_set_path(track, NodePath("Sprite:modulate"));
 	SolersPermissionManager permissions;
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
 	SolersReflectionService reflection;
@@ -878,14 +881,41 @@ TEST_CASE("[SolersToolRegistry] object query invokes only ClassDB const zero-arg
 	registry.register_default_tools();
 	Dictionary args;
 	args["target"] = "object";
-	args["object_id"] = solers_object_id_to_string(image->get_instance_id());
-	args["methods"] = Array({ "get_width", "get_height", "resize" });
+	args["object_id"] = solers_object_id_to_string(animation->get_instance_id());
+	args["method_calls"] = Array({
+			Dictionary({ { "name", "track_get_path" }, { "arguments", Array({ track }) } }),
+			Dictionary({ { "name", "track_get_type" }, { "arguments", Array({ track }) } }),
+			Dictionary({ { "name", "track_set_path" }, { "arguments", Array({ track, "Other:value" }) } }),
+			Dictionary({ { "name", "track_get_path" } }),
+	});
 	const Dictionary result = registry.call_tool("object.query", args);
 	REQUIRE((bool)result.get("ok", false));
-	const Dictionary values = Dictionary(result.get("data", Dictionary())).get("method_values", Dictionary());
-	CHECK((int)values.get("get_width", 0) == 8);
-	CHECK((int)values.get("get_height", 0) == 4);
-	CHECK(Dictionary(values.get("resize", Dictionary())).get("code", String()) == "METHOD_NOT_READABLE");
+	const Dictionary data = result.get("data", Dictionary());
+	const Array method_results = data.get("method_results", Array());
+	REQUIRE(method_results.size() == 4);
+	CHECK(String(Dictionary(method_results[0]).get("method", String())) == "track_get_path");
+	CHECK(Array(Dictionary(method_results[0]).get("arguments", Array())).size() == 1);
+	CHECK(Dictionary(method_results[0]).get("value", String()) == "Sprite:modulate");
+	CHECK((int)Dictionary(method_results[1]).get("value", -1) == Animation::TYPE_VALUE);
+	CHECK(Dictionary(Dictionary(method_results[2]).get("error", Dictionary())).get("code", String()) == "METHOD_NOT_READABLE");
+	CHECK(Dictionary(Dictionary(method_results[3]).get("error", Dictionary())).get("code", String()) == "METHOD_ARGUMENT_COUNT");
+	CHECK_FALSE(data.has("expected_state"));
+
+	SUBCASE("engine describe exposes ClassDB method call contracts") {
+		const Dictionary described = registry.call_tool("engine.describe", Dictionary({ { "classes", Array({ Dictionary({ { "class_name", "Animation" }, { "include_inherited", false }, { "member_query", "track_get_path add_track" }, { "max_members", 8 } }) }) } }));
+		REQUIRE((bool)described.get("ok", false));
+		const Array classes = Dictionary(described.get("data", Dictionary())).get("classes", Array());
+		REQUIRE(classes.size() == 1);
+		const Array methods = Dictionary(classes[0]).get("methods", Array());
+		const Dictionary path_method = solers_test_find_dictionary(methods, SNAME("name"), "track_get_path");
+		CHECK(path_method.get("is_const", false));
+		CHECK_FALSE(path_method.get("is_vararg", true));
+		CHECK((int)path_method.get("required_argument_count", 0) == 1);
+		const Dictionary add_track = solers_test_find_dictionary(methods, SNAME("name"), "add_track");
+		const Array add_arguments = add_track.get("arguments", Array());
+		REQUIRE(add_arguments.size() == 2);
+		CHECK((int)Dictionary(add_arguments[1]).get("default_value", 0) == -1);
+	}
 }
 
 TEST_CASE("[SolersToolRegistry] resource query uses the same native read contract") {
@@ -896,21 +926,30 @@ TEST_CASE("[SolersToolRegistry] resource query uses the same native read contrac
 	Ref<ImageTexture> texture = ImageTexture::create_from_image(image);
 	REQUIRE(ResourceSaver::save(texture, path) == OK);
 
+	SolersFileCheckpoint checkpoints;
 	SolersPermissionManager permissions;
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
 	SolersReflectionService reflection;
 	SolersResourceService resources;
 	SolersToolRegistry registry;
+	registry.set_file_checkpoint(&checkpoints);
 	registry.set_permission_manager(&permissions);
 	registry.set_reflection_service(&reflection);
 	registry.set_resource_service(&resources);
 	registry.register_default_tools();
-	const Dictionary result = registry.call_tool("object.query", Dictionary({ { "target", "resource" }, { "path", path }, { "methods", Array({ "get_width", "get_height" }) } }));
+	const Array method_calls = Array({ Dictionary({ { "name", "get_width" } }), Dictionary({ { "name", "get_height" } }) });
+	const Dictionary result = registry.call_tool("object.query", Dictionary({ { "target", "resource" }, { "path", path }, { "method_calls", method_calls } }));
 	REQUIRE((bool)result.get("ok", false));
 	const Dictionary data = result.get("data", Dictionary());
-	const Dictionary values = data.get("method_values", Dictionary());
-	CHECK((int)values.get("get_width", 0) == 8);
-	CHECK((int)values.get("get_height", 0) == 4);
+	const Array method_results = data.get("method_results", Array());
+	REQUIRE(method_results.size() == 2);
+	CHECK((int)Dictionary(method_results[0]).get("value", 0) == 8);
+	CHECK((int)Dictionary(method_results[1]).get("value", 0) == 4);
+	const Dictionary state = data.get("state", Dictionary());
+	const Array expected_resources = Dictionary(data.get("expected_state", Dictionary())).get("resources", Array());
+	REQUIRE(expected_resources.size() == 1);
+	CHECK(Dictionary(expected_resources[0]).get("path", String()) == path);
+	CHECK(Dictionary(expected_resources[0]).get("sha256", String()) == state.get("sha256", String()));
 	const Array operations = data.get("operations", Array());
 	CHECK_FALSE(solers_test_find_dictionary(operations, SNAME("name"), "resource.update").is_empty());
 	CHECK(solers_test_find_dictionary(operations, SNAME("name"), "scene.node.create").is_empty());

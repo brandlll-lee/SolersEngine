@@ -492,18 +492,26 @@ Dictionary SolersReflectionService::introspect_class(const Dictionary &p_args) {
 		if (!take_member()) {
 			continue;
 		}
+		const int required_argument_count = method.arguments.size() - method.default_arguments.size();
 		Dictionary md;
 		md["name"] = method.name;
 		md["return_type"] = Variant::get_type_name(method.return_val.type);
 		md["return_class_name"] = String(method.return_val.class_name);
 		md["return_hint_string"] = method.return_val.hint_string;
+		md["is_const"] = (bool)(method.flags & METHOD_FLAG_CONST);
+		md["is_vararg"] = (bool)(method.flags & METHOD_FLAG_VARARG);
+		md["required_argument_count"] = required_argument_count;
 		Array args_out;
-		for (const PropertyInfo &arg : method.arguments) {
+		for (int i = 0; i < method.arguments.size(); i++) {
+			const PropertyInfo &arg = method.arguments[i];
 			Dictionary ad;
 			ad["name"] = arg.name;
 			ad["type"] = Variant::get_type_name(arg.type);
 			ad["class_name"] = String(arg.class_name);
 			ad["hint_string"] = arg.hint_string;
+			if (i >= required_argument_count) {
+				ad["default_value"] = solers_summarize_display_value(method.default_arguments[i - required_argument_count]);
+			}
 			args_out.push_back(ad);
 		}
 		md["arguments"] = args_out;

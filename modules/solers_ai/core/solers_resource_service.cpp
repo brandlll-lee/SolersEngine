@@ -810,8 +810,8 @@ Dictionary SolersResourceService::inspect_resource(const Dictionary &p_args) con
 	}
 	Dictionary data = info_result.get("data", Dictionary());
 	const Array requested = p_args.get("properties", Array());
-	const Array methods = p_args.get("methods", Array());
-	if (!requested.is_empty() || !methods.is_empty()) {
+	const Array method_calls = p_args.get("method_calls", Array());
+	if (!requested.is_empty() || !method_calls.is_empty()) {
 		Error load_error = OK;
 		const Ref<Resource> resource = ResourceLoader::load(data.get("path", String()), p_args.get("type_hint", String()), ResourceFormatLoader::CACHE_MODE_REUSE, &load_error);
 		if (resource.is_null() || load_error != OK) {
@@ -837,32 +837,64 @@ Dictionary SolersResourceService::inspect_resource(const Dictionary &p_args) con
 				data["property_errors"] = errors;
 			}
 		}
-		Dictionary method_values;
-		for (const Variant &method : methods) {
-			const Dictionary value = _read_method(resource.ptr(), StringName(method));
-			method_values[method] = (bool)value.get("ok", false) ? Dictionary(value.get("data", Dictionary())).get("value", Variant()) : value.get("error", Dictionary());
+		Array method_results;
+		for (const Variant &call_value : method_calls) {
+			const Dictionary call = call_value;
+			const StringName method = StringName(String(call.get("name", String())));
+			const Array arguments = call.get("arguments", Array());
+			const Dictionary result = _read_method(resource.ptr(), method, arguments);
+			Dictionary item = result.get("data", Dictionary());
+			if (!(bool)result.get("ok", false)) {
+				item["method"] = method;
+				item["arguments"] = arguments;
+				item["error"] = result.get("error", Dictionary());
+			}
+			method_results.push_back(item);
 		}
-		if (!method_values.is_empty()) {
-			data["method_values"] = method_values;
+		if (!method_results.is_empty()) {
+			data["method_results"] = method_results;
 		}
 	}
 	return _ok(data);
 }
 
-Dictionary SolersResourceService::_read_method(Object *p_object, const StringName &p_method) const {
+Dictionary SolersResourceService::_read_method(Object *p_object, const StringName &p_method, const Array &p_arguments) const {
 	MethodInfo info;
 	if (!ClassDB::get_method_info(p_object->get_class_name(), p_method, &info)) {
 		return _error("UNKNOWN_METHOD", vformat("Method is not exposed by ClassDB: %s.%s", p_object->get_class(), p_method));
 	}
-	if (!(info.flags & METHOD_FLAG_CONST) || !info.arguments.is_empty()) {
-		return _error("METHOD_NOT_READABLE", vformat("Method %s.%s is not const and zero-argument.", p_object->get_class(), p_method));
+	if (!(info.flags & METHOD_FLAG_CONST) || (info.flags & METHOD_FLAG_VARARG)) {
+		return _error("METHOD_NOT_READABLE", vformat("Method %s.%s must be const and non-vararg.", p_object->get_class(), p_method));
 	}
+	const int argument_count = info.arguments.size();
+	const int required_argument_count = argument_count - info.default_arguments.size();
+	if (p_arguments.size() < required_argument_count || p_arguments.size() > argument_count) {
+		return _error("METHOD_ARGUMENT_COUNT", vformat("Method %s.%s requires %d to %d arguments; received %d.", p_object->get_class(), p_method, required_argument_count, argument_count, p_arguments.size()));
+	}
+
+	Vector<Variant> arguments;
+	arguments.resize(argument_count);
+	for (int i = 0; i < p_arguments.size(); i++) {
+		String error;
+		if (!solers_coerce_variant_value(info.arguments[i], p_arguments[i], arguments.write[i], error)) {
+			return _error("METHOD_ARGUMENT_INVALID", vformat("Argument %d for %s.%s is invalid: %s", i, p_object->get_class(), p_method, error));
+		}
+	}
+	for (int i = p_arguments.size(); i < argument_count; i++) {
+		arguments.write[i] = info.default_arguments[i - required_argument_count];
+	}
+	Vector<const Variant *> argument_ptrs;
+	argument_ptrs.resize(argument_count);
+	for (int i = 0; i < argument_count; i++) {
+		argument_ptrs.write[i] = &arguments[i];
+	}
+
 	Callable::CallError call_error;
-	const Variant value = p_object->callp(p_method, nullptr, 0, call_error);
+	const Variant value = p_object->callp(p_method, (const Variant **)argument_ptrs.ptr(), argument_ptrs.size(), call_error);
 	if (call_error.error != Callable::CallError::CALL_OK) {
 		return _error("METHOD_CALL_FAILED", vformat("Godot rejected %s.%s with CallError %d.", p_object->get_class(), p_method, call_error.error));
 	}
-	return _ok(Dictionary({ { "method", p_method }, { "type", Variant::get_type_name(value.get_type()) }, { "value", solers_summarize_display_value(value) } }));
+	return _ok(Dictionary({ { "method", p_method }, { "arguments", p_arguments }, { "type", Variant::get_type_name(value.get_type()) }, { "value", solers_summarize_display_value(value) } }));
 }
 
 Dictionary SolersResourceService::create_resource(const Dictionary &p_args) const {
@@ -1022,7 +1054,7 @@ Dictionary SolersResourceService::native_get(const Dictionary &p_args) const {
 	}
 	const StringName method = StringName(String(p_args.get("method", String())).strip_edges());
 	if (!method.is_empty()) {
-		Dictionary result = _read_method(object, method);
+		Dictionary result = _read_method(object, method, p_args.get("arguments", Array()));
 		if ((bool)result.get("ok", false)) {
 			Dictionary data = result.get("data", Dictionary());
 			data["object"] = solers_native_object_handle(object);
