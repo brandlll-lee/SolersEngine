@@ -484,7 +484,7 @@ TEST_CASE("[SolersStudio][SceneTree] selectors keep native state with the shared
 	SolersIcons::clear_cache();
 }
 
-TEST_CASE("[SolersUI][SceneTree][Editor] editor locale and technical tool chrome have separate authorities") {
+TEST_CASE("[SolersUI][SceneTree][Editor] editor locale and technical tool presentation have separate authorities") {
 	const String setting = "interface/editor/localization/editor_language";
 	ScopedEditorLanguage restore;
 	EditorSettings::get_singleton()->set_setting(setting, "zh_Hans");
@@ -498,30 +498,37 @@ TEST_CASE("[SolersUI][SceneTree][Editor] editor locale and technical tool chrome
 	CHECK(TranslationServer::get_singleton()->get_editor_domain()->translate("Text prompt", StringName()) != "Text prompt");
 	CHECK(TranslationServer::get_singleton()->get_editor_domain()->translate("Highest detail and fidelity", StringName()) != "Highest detail and fidelity");
 	CHECK(TranslationServer::get_singleton()->get_editor_domain()->translate("Smart low-poly topology", StringName()) != "Smart low-poly topology");
-	CHECK(solers_tool_icon_for_ui_kind("search") == SNAME("tool_search"));
-	CHECK(solers_tool_icon_for_ui_kind("scene") == SNAME("tool_scene"));
 
 	SolersToolCell *search = memnew(SolersToolCell);
 	SolersToolCell *unknown = memnew(SolersToolCell);
 	SceneTree::get_singleton()->get_root()->add_child(search);
 	SceneTree::get_singleton()->get_root()->add_child(unknown);
-	search->start("project.search", R"({"type":"path"})", "search");
-	unknown->start("future.tool", "{}", "synthetic");
-	CHECK(search->get_status_text() == "Running tool.project.search path");
-	CHECK(unknown->get_status_text() == "Running tool.future.tool");
-	search->update("runtime.control", R"({"action":"set_property"})", "run");
-	search->finish(true, String(), 4);
-	CHECK(search->get_status_text() == "Ran tool.runtime.control set_property");
-	CHECK(search->get_tool_icon() == SNAME("tool_run"));
-	CHECK(unknown->get_tool_icon() == SNAME("sparkle"));
-#ifdef MODULE_SVG_ENABLED
-	Ref<Texture2D> tool_icon = SolersIcons::get(search->get_tool_icon(), 16);
-	CHECK(tool_icon.is_valid());
-	if (tool_icon.is_valid()) {
-		CHECK(tool_icon->get_rid() == SolersIcons::get(SNAME("tool_run"), 16)->get_rid());
-	}
-	tool_icon.unref();
-#endif
+	search->set_size(Size2(480, 20) * EDSCALE);
+	const Dictionary search_presentation({ { "running", "Searching" }, { "completed", "Searched" }, { "failed", "Failed to search" } });
+	search->start("synthetic.lookup", R"({"query":"unseen-subject","limit":7})", search_presentation, "unseen-subject");
+	unknown->start("future.tool", "{}", Dictionary(), String());
+	CHECK(search->get_status_text() == "Searching unseen-subject");
+	CHECK(unknown->get_status_text() == "Running future.tool");
+	CHECK_FALSE(search->is_expanded());
+
+	Ref<InputEventMouseButton> click;
+	click.instantiate();
+	click->set_button_index(MouseButton::LEFT);
+	click->set_pressed(true);
+	search->gui_input(click);
+	CHECK(search->is_expanded());
+	CHECK(search->get_detail_text().contains("synthetic.lookup"));
+	CHECK(search->get_detail_text().contains("unseen-subject"));
+	const float expanded_height = search->get_minimum_size().y;
+	CHECK(expanded_height > 20.0f * EDSCALE);
+
+	search->finish(Dictionary({ { "ok", true }, { "data", Dictionary({ { "value", 7 } }) } }), 4);
+	CHECK(search->get_status_text() == "Searched unseen-subject");
+	CHECK(search->get_detail_text().contains("Result"));
+	CHECK(search->get_detail_text().contains("\"value\": 7"));
+	unknown->finish(Dictionary({ { "ok", false }, { "error", Dictionary({ { "code", "SYNTHETIC_FAILURE" }, { "message", "failed" } }) } }), 5);
+	CHECK(unknown->get_status_text() == "Failed future.tool");
+
 	search->queue_free();
 	unknown->queue_free();
 	MessageQueue::get_singleton()->flush();

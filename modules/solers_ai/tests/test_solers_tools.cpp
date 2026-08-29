@@ -64,6 +64,7 @@
 #include "modules/solers_ai/core/solers_asset_service.h"
 #include "modules/solers_ai/core/solers_builtin_skills.h"
 #include "modules/solers_ai/core/solers_file_checkpoint.h"
+#include "modules/solers_ai/core/solers_geometry_facts.h"
 #include "modules/solers_ai/core/solers_observation_service.h"
 #include "modules/solers_ai/core/solers_permission_manager.h"
 #include "modules/solers_ai/core/solers_reflection_service.h"
@@ -327,6 +328,20 @@ TEST_CASE("[SolersToolRegistry] schema preflight runs before approval or handler
 	const Dictionary invalid = registry.call_tool(SNAME("synthetic.write"), invalid_args);
 	CHECK_FALSE((bool)invalid.get("ok", true));
 	CHECK(Dictionary(invalid.get("error", Dictionary())).get("code", String()) == "TOOL_ARGUMENT_INVALID");
+	CHECK(calls == 0);
+	CHECK(permissions.get_pending_request_count() == 0);
+
+	Dictionary unsupported_args;
+	unsupported_args["amount"] = 1.0;
+	unsupported_args["unexpected"] = true;
+	const Dictionary unsupported = registry.call_tool(SNAME("synthetic.write"), unsupported_args);
+	CHECK_FALSE((bool)unsupported.get("ok", true));
+	const String unsupported_message = Dictionary(unsupported.get("error", Dictionary())).get("message", String());
+	CHECK(unsupported_message.contains("unexpected"));
+	CHECK(unsupported_message.contains("Supported fields: amount"));
+	const Dictionary echoed_arguments = Dictionary(unsupported.get("data", Dictionary())).get("arguments", Dictionary());
+	CHECK((double)echoed_arguments.get("amount", 0.0) == 1.0);
+	CHECK((bool)echoed_arguments.get("unexpected", false));
 	CHECK(calls == 0);
 	CHECK(permissions.get_pending_request_count() == 0);
 
@@ -619,13 +634,24 @@ TEST_CASE("[SolersToolRegistry] ClassDB member queries match whitespace-separate
 	registry.set_observation_service(&observation_service);
 	registry.register_default_tools();
 	const Dictionary tool = solers_test_find_dictionary(registry.list_tools(), SNAME("name"), "engine.describe");
-	const Dictionary classes_schema = Dictionary(Dictionary(tool.get("input_schema", Dictionary())).get("properties", Dictionary())).get("classes", Dictionary());
+	const Dictionary engine_properties = Dictionary(tool.get("input_schema", Dictionary())).get("properties", Dictionary());
+	const Dictionary classes_schema = engine_properties.get("classes", Dictionary());
 	const Dictionary class_schema = classes_schema.get("items", Dictionary());
 	CHECK_FALSE(Array(class_schema.get("required", Array())).has("max_members"));
+	CHECK(engine_properties.has("max_members"));
+	CHECK(Dictionary(tool.get("ui", Dictionary())).get("running", String()) == "Searching");
+	CHECK(PackedStringArray(tool.get("ui_subject_paths", PackedStringArray())).has("/classes/0/class_name"));
 	const Dictionary capture_tool = solers_test_find_dictionary(registry.list_tools(), SNAME("name"), "render.capture");
-	CHECK(String(capture_tool.get("description", String())).contains("Spatial facts are observed independently"));
-	CHECK(Dictionary(Dictionary(capture_tool.get("input_schema", Dictionary())).get("properties", Dictionary())).has("focus_paths"));
+	CHECK(String(capture_tool.get("description", String())).contains("geometric framing facts"));
+	const Dictionary capture_properties = Dictionary(capture_tool.get("input_schema", Dictionary())).get("properties", Dictionary());
+	CHECK(capture_properties.has("focus_paths"));
+	CHECK(capture_properties.has("camera_path"));
+	CHECK(capture_properties.has("include_render_state"));
+	CHECK_FALSE(capture_properties.has("node_path"));
+	CHECK(Array(Dictionary(capture_properties.get("target", Dictionary())).get("enum", Array())).has("focus"));
 	CHECK(PackedStringArray(capture_tool.get("required_model_inputs", PackedStringArray())).has("image"));
+	const Dictionary scene_update_tool = solers_test_find_dictionary(registry.list_tools(), SNAME("name"), "scene.node.update");
+	CHECK(Dictionary(scene_update_tool.get("ui", Dictionary())).get("completed", String()) == "Updated");
 
 	Dictionary class_request;
 	class_request["class_name"] = "CameraAttributesPhysical";
@@ -667,6 +693,16 @@ TEST_CASE("[SolersToolRegistry] ClassDB member queries match whitespace-separate
 	}
 	CHECK(names.has("exposure_aperture"));
 	CHECK(names.has("exposure_sensitivity"));
+
+	Dictionary paged_args;
+	paged_args["max_members"] = 1;
+	paged_args["classes"] = Array({ Dictionary({ { "class_name", "Node3D" } }), Dictionary({ { "class_name", "Resource" }, { "max_members", 2 } }) });
+	const Dictionary paged = registry.call_tool(SNAME("engine.describe"), paged_args);
+	REQUIRE((bool)paged.get("ok", false));
+	const Array paged_classes = Dictionary(paged.get("data", Dictionary())).get("classes", Array());
+	REQUIRE(paged_classes.size() == 2);
+	CHECK(PackedStringArray(Dictionary(paged_classes[0]).get("member_names", PackedStringArray())).size() == 1);
+	CHECK(PackedStringArray(Dictionary(paged_classes[1]).get("member_names", PackedStringArray())).size() == 2);
 }
 
 TEST_CASE("[SolersToolRegistry] project.search gives empty queries one explicit meaning") {
@@ -981,6 +1017,49 @@ TEST_CASE("[SolersFileCheckpoint] directory state restores the exact recursive d
 	CHECK_FALSE(DirAccess::exists(checkpoint.get("checkpoint_path", String())));
 }
 
+TEST_CASE("[SolersGeometryFacts][SceneTree] native bounds and framing cover arbitrary visual instances") {
+	Node *host = memnew(Node);
+	SceneTree::get_singleton()->get_root()->add_child(host);
+	Node3D *visual_root = memnew(Node3D);
+	host->add_child(visual_root);
+	Decal *visual = memnew(Decal);
+	visual->set_size(Vector3(2.0, 0.5, 3.0));
+	visual->set_position(Vector3(20.0, 1.0, -8.0));
+	visual_root->add_child(visual);
+
+	AABB bounds;
+	bool found = false;
+	int visual_count = 0;
+	solers_accumulate_world_aabb(visual_root, bounds, found, &visual_count);
+	CHECK(found);
+	CHECK(visual_count == 1);
+	CHECK(bounds.has_volume());
+
+	SubViewport *viewport = memnew(SubViewport);
+	viewport->set_size(Size2i(800, 600));
+	host->add_child(viewport);
+	Camera3D *camera = memnew(Camera3D);
+	viewport->add_child(camera);
+	camera->set_perspective(70.0, 0.05, 100.0);
+	camera->set_current(true);
+
+	camera->set_far(5.0);
+	const Dictionary beyond_far = solers_project_aabb(camera, bounds);
+	CHECK_FALSE((bool)beyond_far.get("in_depth_range", true));
+	camera->set_far(100.0);
+	const Dictionary initially_outside = solers_project_aabb(camera, bounds);
+	CHECK((bool)initially_outside.get("in_front", false));
+	CHECK_FALSE((bool)initially_outside.get("in_frame", true));
+	camera->set_transform(solers_frame_aabb(camera->get_global_transform(), bounds, camera->get_fov(), (real_t)viewport->get_size().x / (real_t)viewport->get_size().y, camera->get_keep_aspect_mode(), camera->get_near()));
+	const Dictionary framed = solers_project_aabb(camera, bounds);
+	CHECK((bool)framed.get("in_frame", false));
+	CHECK((bool)framed.get("fully_in_frame", false));
+	CHECK((real_t)framed.get("clipped_fraction", 1.0) == doctest::Approx(0.0));
+
+	host->queue_free();
+	MessageQueue::get_singleton()->flush();
+}
+
 TEST_CASE("[SolersToolRegistry] ClassDB inheritance filters deferred tools") {
 	SolersPermissionManager permissions;
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
@@ -1264,6 +1343,33 @@ TEST_CASE("[SolersToolRegistry] normalize_tool_args is public and idempotent") {
 	CHECK(normalized_again.size() == normalized.size());
 	CHECK(normalized_again.get("value", String()) == "kept");
 	CHECK((bool)normalized_again.has("required_empty"));
+}
+
+TEST_CASE("[SolersToolRegistry] tool presentation follows capability data") {
+	SolersToolRegistry registry;
+	SolersToolCapability nested_capability;
+	nested_capability.ui_kind = SolersToolUiKind::READ;
+	nested_capability.ui_subject_paths = PackedStringArray({ "/items/0/label" });
+	Dictionary nested_schema = empty_tool_schema();
+	registry.register_tool(memnew(SolersFunctionTool("synthetic.presentation", "Synthetic presentation contract.", nested_schema, SolersToolExposure::MODEL, nested_capability,
+			[](const SolersToolContext &, const Dictionary &) { return Dictionary({ { "ok", true }, { "data", Dictionary() } }); })));
+
+	const Dictionary definition = registry.get_tool_definition("synthetic.presentation");
+	CHECK(Dictionary(definition.get("ui", Dictionary())).get("running", String()) == "Reading");
+	CHECK(Dictionary(definition.get("ui", Dictionary())).get("completed", String()) == "Read");
+	const Dictionary nested_args({ { "items", Array({ Dictionary({ { "label", "unseen-subject" } }) }) } });
+	CHECK(registry.summarize_tool_args_for_ui("synthetic.presentation", nested_args) == "unseen-subject");
+
+	SolersToolCapability access_capability;
+	access_capability.mutation_domains = SolersToolMutationDomain::FILES;
+	access_capability.operation_mode = SolersOperationMode::APPLY;
+	access_capability.resource_access = [](const Dictionary &p_args) {
+		return Array({ Dictionary({ { "mode", "write" }, { "key", "project:" + String(p_args.get("destination", String())) } }) });
+	};
+	registry.register_tool(memnew(SolersFunctionTool("synthetic.access-presentation", "Synthetic access presentation contract.", empty_tool_schema(), SolersToolExposure::MODEL, access_capability,
+			[](const SolersToolContext &, const Dictionary &) { return Dictionary({ { "ok", true }, { "data", Dictionary() } }); })));
+	CHECK(Dictionary(registry.get_tool_definition("synthetic.access-presentation").get("ui", Dictionary())).get("running", String()) == "Writing");
+	CHECK(registry.summarize_tool_args_for_ui("synthetic.access-presentation", Dictionary({ { "destination", "res://result.data" } })) == "res://result.data");
 }
 
 TEST_CASE("[SolersToolRegistry] resource access is parameter-aware and failure conflicts only block writes") {
