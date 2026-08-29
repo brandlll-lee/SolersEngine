@@ -48,6 +48,7 @@ bool SolersBuiltinSkills::find_by_name(const String &p_name, SolersBuiltinSkillV
 		if (name == String::utf8(record.name)) {
 			r_skill.name = String::utf8(record.name);
 			r_skill.description = String::utf8(record.description);
+			r_skill.tools = String::utf8(record.tools).split(",", false);
 			r_skill.content = String::utf8(record.content);
 			return true;
 		}

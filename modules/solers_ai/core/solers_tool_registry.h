@@ -122,7 +122,8 @@ class SolersToolRegistry : public Object {
 			SolersPermissionManager::Permission p_permission, SolersToolMutationDomain p_mutation_domains,
 			SolersFunctionTool::Handler p_handler, std::function<Array(const Dictionary &)> p_resource_access,
 			const StringName &p_target_class = StringName(),
-			SolersFunctionTool::PollHandler p_poll_handler = {}, SolersFunctionTool::ReadyHandler p_ready_handler = {}, SolersFunctionTool::CompletionHandler p_completion_handler = {});
+			SolersFunctionTool::PollHandler p_poll_handler = {}, SolersFunctionTool::ReadyHandler p_ready_handler = {}, SolersFunctionTool::CompletionHandler p_completion_handler = {},
+			const StringName &p_target_kind = StringName());
 
 	void _register_observation_tools();
 	void _register_script_tools();
@@ -131,20 +132,11 @@ class SolersToolRegistry : public Object {
 	void _register_addon_tools();
 	void _register_reflection_tools();
 	void _register_skill_tools();
-	void _register_authority_tools();
 	Dictionary _inspect_engine(const Dictionary &p_args);
-	SolersTool *_operation(SolersOperationDomain p_domain, SolersOperationMode p_mode, const StringName &p_name) const;
-	Array _operation_definitions(SolersOperationDomain p_domain, SolersOperationMode p_mode, const StringName &p_class = StringName(), const StringName &p_kind = StringName()) const;
-	Array _operation_names(SolersOperationDomain p_domain, SolersOperationMode p_mode, const StringName &p_class = StringName(), const StringName &p_kind = StringName()) const;
-	Array _operation_summaries(SolersOperationDomain p_domain, SolersOperationMode p_mode) const;
-	Dictionary _validate_operation(SolersOperationDomain p_domain, SolersOperationMode p_mode, const Dictionary &p_args) const;
-	SolersToolMutationDomain _operation_domains(SolersOperationDomain p_domain, SolersOperationMode p_mode, const Dictionary &p_args) const;
-	Array _operation_resource_access(SolersOperationDomain p_domain, SolersOperationMode p_mode, const Dictionary &p_args) const;
-	SolersToolExecution _operation_execution(SolersOperationDomain p_domain, SolersOperationMode p_mode, const Dictionary &p_args) const;
-	Dictionary _execute_operation(SolersOperationDomain p_domain, SolersOperationMode p_mode, const SolersToolContext &p_context, const Dictionary &p_args);
-	Dictionary _poll_operation(SolersOperationDomain p_domain, SolersOperationMode p_mode, const SolersToolContext &p_context, const Dictionary &p_args);
-	bool _is_operation_ready(SolersOperationDomain p_domain, SolersOperationMode p_mode, const SolersToolContext &p_context, const Dictionary &p_args) const;
-	void _complete_operation(SolersOperationDomain p_domain, SolersOperationMode p_mode, const SolersToolContext &p_context, const Dictionary &p_args, const Dictionary &p_result);
+	Array _applicable_tools(SolersOperationDomain p_domain, SolersOperationMode p_mode, const StringName &p_class = StringName(), const StringName &p_kind = StringName()) const;
+	Dictionary _with_added_tools(const Dictionary &p_result, const Array &p_tools) const;
+	Dictionary _validate_expected_state(const SolersTool *p_tool, const Dictionary &p_args) const;
+	Dictionary _model_input_schema(const SolersTool *p_tool) const;
 	Dictionary _compact_addon_contract(const SolersToolContext &p_context, const Dictionary &p_result);
 	Dictionary _run_control(const Dictionary &p_args, const String &p_call_id) const;
 	Dictionary _poll_runtime_control(const Dictionary &p_args) const;
@@ -183,7 +175,6 @@ public:
 	void register_tool(SolersTool *p_tool);
 	Array list_tools() const;
 	Dictionary get_tool_definition(const StringName &p_name) const;
-	Dictionary get_tool_definition(const StringName &p_name, const Dictionary &p_args) const;
 	bool is_execution_ready(const StringName &p_name, const Dictionary &p_args) const;
 	Dictionary build_delivery_report(const Dictionary &p_args = Dictionary(), int p_token_budget = INT32_MAX) const;
 	uint64_t get_tool_catalog_revision() const { return tool_catalog_revision; }

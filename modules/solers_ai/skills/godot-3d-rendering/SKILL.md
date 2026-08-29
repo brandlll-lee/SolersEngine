@@ -1,6 +1,7 @@
 ---
 name: godot-3d-rendering
 description: Godot 4 3D layout, PBR, lighting, single GI path, Environment tonemap (ACES/AgX), physical light units, fog, lightmaps, and photoreal verification. Prefer this over a separate photorealism skill.
+tools: scene.csg.bake, scene.lightmap.bake, mesh.unwrap_uv2
 ---
 
 # 3D Scenes, Materials, Lighting, and Photoreal Look
@@ -17,14 +18,14 @@ Use for 3D layout, imported models, PBR materials, lights, Environment/GI, shado
 | Lights | `DirectionalLight3D` / `OmniLight3D` / `SpotLight3D`; physical lux/lumen when `physical_light_units` on |
 | GI (pick **one** final) | SDFGI (dynamic/large) **or** `LightmapGI` (static) **or** `VoxelGI` — not two finals |
 | Materials | One PBR map family (albedo/normal/roughness); `StandardMaterial3D` / `ORMMaterial3D` |
-| CSG | Whitebox through ClassDB; bake mesh or collision artifacts with `editor.apply` |
+| CSG | Whitebox through ClassDB; bake mesh or collision artifacts with `scene.csg.bake` |
 | UV2 / lightmaps | Discover the applicable native capability with `engine.describe`; transact only after topology is stable |
 | Exposure | `CameraAttributesPhysical` / `Practical` on `Camera3D` when using physical units |
 
 ## Laws
 - One authoritative final GI path; seal leaks before blaming lights.
-- Treat the live edited scene as the authority; construct visible editor state through `editor.apply`, not script-driven editor rebuilds.
-- Create or edit scene roots and Resources through `editor.apply` using ClassDB property metadata and the state/hash returned by the matching query.
+- Treat the live edited scene as the authority; construct visible editor state through the applicable scene/resource tools, not script-driven editor rebuilds.
+- Create or edit scene roots and Resources through the applicable scene/resource tools using ClassDB property metadata and the state/hash returned by the matching query.
 - With `use_physical_light_units`: Directional intensity is `light_intensity_lux` (`PARAM_INTENSITY`); `light_energy` is a dimensionless multiplier. Never put lux-scale numbers into `light_energy`.
 - After any appearance change, capture the intended viewport. Its receipt binds pixels to the exact World3D RenderState; unchanged pixels and changed RenderState are different facts.
 - `object.query target=relations` measures explicit world-AABB relations. A capture is not a geometry measurement, and node cardinality is not a lighting verdict.

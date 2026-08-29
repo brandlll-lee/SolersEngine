@@ -44,7 +44,7 @@ Use for 2D worlds, sprites, tile maps, parallax, CanvasItem draw order, 2D light
 | Expecting Container-less Control layout rules in 2D world | World = Node2D tree; UI = Control tree |
 
 ## Verify
-1. `editor.query` for layers, TileSet paths, Camera2D limits, stretch settings (`project.settings` / project info).
+1. `object.query` for layers, TileSet paths, Camera2D limits, and `project.settings` for stretch settings.
 2. `runtime.control` at target resolutions.
 3. `render.capture` — draw order, filtering, parallax, light masks.
 4. `runtime.observe` for missing textures / tile errors.

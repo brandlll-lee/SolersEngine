@@ -59,7 +59,7 @@ inline bool solers_object_id_from_variant(const Variant &p_value, ObjectID &r_id
 
 enum class SolersToolExposure {
 	MODEL,
-	OPERATION,
+	DEFERRED,
 	HIDDEN,
 };
 
@@ -132,8 +132,6 @@ struct SolersToolCapability {
 	// same authoritative tool definition as its schema and handler.
 	std::function<SolersPermissionManager::Permission(const Dictionary &)> permission_resolver;
 	SolersToolMutationDomain mutation_domains = SolersToolMutationDomain::NONE;
-	// Resolve the reversal policy for a domain tool whose validated operations
-	// use different native persistence mechanisms.
 	std::function<SolersToolMutationDomain(const Dictionary &)> mutation_domain_resolver;
 	std::function<Dictionary(const Dictionary &)> argument_validator;
 	SolersOperationDomain operation_domain = SolersOperationDomain::NONE;

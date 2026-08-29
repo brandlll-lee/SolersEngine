@@ -99,9 +99,13 @@ class SolersAgentSession : public Object {
 	Phase phase = PHASE_STREAMING;
 	Array tool_queue; // provider-ordered tool calls for this step (MAIN_THREAD tools run serially)
 	Array failed_resource_accesses;
+	HashSet<StringName> active_tool_names;
+	HashSet<StringName> activated_model_tool_names;
+	uint64_t active_tool_revision = 0;
 	Array cached_request_tools;
 	int cached_request_tool_tokens = 0;
 	uint64_t cached_tool_catalog_revision = 0;
+	uint64_t cached_active_tool_revision = 0;
 	Array turn_attachments;
 	Array turn_mentions;
 	int tool_queue_index = 0; // next provider-ordered call to start
@@ -200,6 +204,9 @@ class SolersAgentSession : public Object {
 	void _on_godot_error(const String &p_message, ErrorHandlerType p_type, int64_t p_source_thread, const String &p_function, const String &p_file, int p_line);
 	Dictionary _take_godot_diagnostics();
 	Array _collect_tools();
+	Array _activate_tools(const Array &p_names);
+	void _restore_active_tools();
+	void _load_active_tools(const Array &p_model_names);
 	bool _refresh_active_model_limits();
 	int _active_model_input_support(const String &p_modality) const;
 	Dictionary _build_request(const Array &p_messages, const String &p_request_system_prompt, const Array &p_tools) const;
@@ -218,7 +225,6 @@ class SolersAgentSession : public Object {
 	Dictionary _surface_tool_call(const Dictionary &p_call);
 	Array _attachments_for_ids(const Array &p_ids) const;
 	void _on_model_turn_complete();
-	Dictionary _completion_error() const;
 	void _finish_turn(const String &p_outcome, const String &p_message, const Dictionary &p_error = Dictionary());
 	void _poll_tool_queue();
 	void _poll_awaiting_approval();
@@ -242,7 +248,7 @@ class SolersAgentSession : public Object {
 	bool _append_background_asset_deltas(bool p_waited_only);
 	void _resume_next_background_asset();
 	int64_t _write_transcript_message(const String &p_role, const String &p_content, const Array &p_mentions = Array(), const Array &p_tool_calls = Array(), const String &p_reasoning = String(), const Array &p_attachments = Array(), int64_t p_event_id = 0) const;
-	void _write_transcript_tool(const String &p_call_id, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result, const String &p_delivered_content) const;
+	void _write_transcript_tool(const String &p_call_id, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result, const String &p_delivered_content, const Array &p_added_tool_names) const;
 	void _write_transcript_plan() const;
 	int64_t _write_transcript_compaction(const String &p_phase, const Dictionary &p_payload) const;
 	Dictionary _tool_denied_result(const String &p_code, const String &p_message) const;

@@ -1,6 +1,7 @@
 ---
 name: godot-camera-cinematography
 description: Generic Godot 4 camera building blocks - Camera3D authority, SpringArm3D third-person, Marker3D shots, seamless Tween interpolate_with transitions, PathFollow3D moves, CameraAttributes, input freeze, and runtime visual verification. Not a Black-Eye clone.
+tools: runtime.observe, runtime.control
 ---
 
 # Camera Cinematography (Generic)
@@ -36,7 +37,7 @@ Instance property values: `object.query target=scene|resource`. Use `engine.desc
 ## Agent tool sequence
 1. `skill.read` this skill (and `godot-scripting-input-gameplay` if input ownership is unclear).
 2. `object.query target=scene` for the live camera (`current`, `fov`, `global_transform`, parent rig).
-3. `editor.apply` with the inspected state receipt to create Marker shots, Area triggers, cinematic `Camera3D`, connections, and hierarchy layout.
+3. Use the applicable scene tools with the inspected state receipt to create Marker shots, Area triggers, cinematic `Camera3D`, connections, and hierarchy layout.
 4. `script.edit` for the transition controller.
 5. `runtime.control` → play → trigger → `render.capture target=runtime` (and `target=camera` with `node_path` when needed) → `runtime.observe`. Spatial placement still requires `object.query target=relations`, not a capture.
 

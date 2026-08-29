@@ -1,6 +1,7 @@
 ---
 name: godot-scripting-input-gameplay
 description: GDScript 4 lifecycle, InputMap, signals, process_mode/pause, Autoloads, save paths, and Godot 3→4 syntax traps for gameplay scripts.
+tools: project.settings, project.path, script.edit, script.validate, runtime.observe, runtime.control
 ---
 
 # Scripting, Input, and Gameplay
@@ -26,7 +27,7 @@ Use for game rules, interaction, input, lifecycle, state ownership, Autoloads, o
 - Prefer signals over polling; prefer InputMap over hard-coded keys.
 - Do not invent ClassDB methods — `engine.describe` first.
 - Do not put physics motion in `_process` unless intentionally frame-rate coupled.
-- Build visible editor state with `editor.apply`; keep scripts responsible for runtime behavior.
+- Build visible editor state with the applicable scene/resource tools; keep scripts responsible for runtime behavior.
 
 ## Recipes
 **InputMap move vector (4.x):**
@@ -34,7 +35,7 @@ Use for game rules, interaction, input, lifecycle, state ownership, Autoloads, o
 var v := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 velocity = (transform.basis * Vector3(v.x, 0, v.y)).normalized() * speed
 ```
-**Persist InputMap before first Play:** write actions through `editor.apply` operation `project.settings`; gameplay scripts consume that one project-owned action map and never duplicate it with raw keys or runtime `_ensure_*` registration.
+**Persist InputMap before first Play:** write actions through `project.settings`; gameplay scripts consume that one project-owned action map and never duplicate it with raw keys or runtime `_ensure_*` registration.
 **Awaitable signal once:**
 ```gdscript
 await $Button.pressed
@@ -58,7 +59,7 @@ cfg.save("user://save.cfg")
 | `pause_mode` | `process_mode` |
 | Listening only in `_input` for gameplay that UI might consume | Use `_unhandled_input` so Controls can mark handled |
 | Editing Autoload scripts as if they were scene-unique | Autoloads are singletons — one instance, careful with scene-specific state |
-| Registering InputMap only in the editor session, then Play | Persist with `editor.apply` first; Play uses the project map |
+| Registering InputMap only in the editor session, then Play | Persist with `project.settings` first; Play uses the project map |
 
 ## Verify
 1. `project.search` / `script.edit` / `script.validate`.

@@ -96,7 +96,7 @@ Array SolersMCPAdapter::_tool_definitions_for_mcp() const {
 	for (int i = 0; i < definitions.size(); i++) {
 		Dictionary definition = definitions[i];
 		const String exposure = definition.get("exposure", "direct");
-		if (exposure == "deferred" || exposure == "transaction" || exposure == "hidden") {
+		if (exposure == "deferred" || exposure == "hidden") {
 			continue;
 		}
 		Dictionary tool;

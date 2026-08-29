@@ -1,6 +1,7 @@
 ---
 name: godot-procedural-terrain
 description: Procedural heightfields, Noise/Mesh/MultiMesh terrain, collision and navigation bake, LOD, and third-party terrain addons only through addon.inspect Contracts.
+tools: scene.csg.bake, mesh.unwrap_uv2, addon.search, addon.inspect, addon.ensure, addon.list
 ---
 
 # Procedural Terrain and Large Landscapes
@@ -34,7 +35,7 @@ Use for heightmaps, procedural ground meshes, vegetation instancing, terrain col
 | Wrong | Correct |
 |-------|---------|
 | Hardcoding a vendor terrain class in generic plans | Contract from `addon.inspect` |
-| Inventing `terrain.sculpt` tools | `editor.apply` / addon ClassDB / native mesh |
+| Inventing `terrain.sculpt` tools | `scene.node.update` / addon ClassDB / native mesh |
 | Height scale mismatch (cm vs m) | Measure extents; fix noise amplitude |
 | Navmesh before holes/collision final | Bake after walkable surface settles |
 | No far-camera perf check | Capture near + far; watch draw cost |

@@ -2495,7 +2495,7 @@ Dictionary SolersAssetService::start_project_import(const Dictionary &p_args) {
 		// not by inflating a tool argument mid-task.
 		const int64_t budget_ceiling = ProjectSettings::get_singleton()->get_setting("solers/import/max_source_triangles", 2000000);
 		if (asset_kind == "3d" && budget_ceiling > 0 && (max_triangles == 0 || max_triangles > budget_ceiling)) {
-			return _error("BUDGET_CEILING_EXCEEDED", vformat("Declared max_triangles %d exceeds the project ceiling of %d (solers/import/max_source_triangles). Import a variant that fits, or raise that project setting through editor.apply project.settings first if the project can truly afford the density.", max_triangles, budget_ceiling));
+			return _error("BUDGET_CEILING_EXCEEDED", vformat("Declared max_triangles %d exceeds the project ceiling of %d (solers/import/max_source_triangles). Import a variant that fits, or raise that project setting through project.settings first if the project can truly afford the density.", max_triangles, budget_ceiling));
 		}
 	}
 	if (max_triangles < 0 && asset_kind == "3d") {

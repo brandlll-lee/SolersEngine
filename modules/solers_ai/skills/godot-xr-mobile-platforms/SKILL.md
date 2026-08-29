@@ -1,6 +1,7 @@
 ---
 name: godot-xr-mobile-platforms
 description: Godot 4 OpenXR/mobile/web constraints - renderer choice, lifecycle, permissions, XR interfaces, touch/tracked input, and on-device verification.
+tools: project.settings, runtime.observe, runtime.control, export.list_presets, export.validate_presets, export.run_preset
 ---
 
 # XR, Mobile, and Platforms

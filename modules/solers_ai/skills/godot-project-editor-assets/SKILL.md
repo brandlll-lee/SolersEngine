@@ -1,6 +1,7 @@
 ---
 name: godot-project-editor-assets
 description: Godot project settings, res:// ownership, .import/.uid sidecar hygiene, addon Contract via addon.inspect, and asset.generate/acquire without vendor skill dumps.
+tools: project.settings, project.path, script.edit, script.validate, asset.catalog.search, asset.catalog.inspect, asset.catalog.acquire, asset.generate, asset.capabilities, asset.run_operation, asset.status, job.wait, addon.search, addon.inspect, addon.ensure, addon.list
 ---
 
 # Project, Editor, and Assets
@@ -29,7 +30,7 @@ Use for project settings, folder layout, imports, resources, editor state, addon
 **Import four-pack (mental model):** source file + `.import` + `.uid` + (optional) imported companion — move/rename with Godot/`project` tools so sidecars stay coherent.
 **Generate/acquire:** set final `target_dir`, `import_profile` (`runtime` default; `baked_static` only if lightmaps), optional `max_triangles` / `map_types` → call generate/acquire → let the job reach terminal import (do not busy-poll status).
 **Addon:** `addon.inspect` → read Contract/entry classes → install/enable only if pinned and trusted → restart if the Contract says so.
-**CSG:** whitebox from ClassDB -> bake native mesh/collision artifacts with `editor.apply` after topology is verified.
+**CSG:** whitebox from ClassDB -> bake native mesh/collision artifacts with `scene.csg.bake` after topology is verified.
 
 ## Traps
 | Wrong | Correct |

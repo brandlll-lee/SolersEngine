@@ -46,6 +46,9 @@ def _escape_c_string(value: str) -> str:
 
 def _load_skill(skill_path: Path) -> dict[str, object]:
     content = skill_path.read_text(encoding="utf-8")
+    frontmatter = _FRONTMATTER_RE.match(content.replace("\r\n", "\n"))
+    if frontmatter is None:
+        raise ValueError(f"{skill_path}: missing YAML frontmatter delimited by ---")
     fields = _parse_frontmatter(content)
 
     name = str(fields.get("name", "")).strip()
@@ -54,12 +57,14 @@ def _load_skill(skill_path: Path) -> dict[str, object]:
         raise ValueError(f"{skill_path}: frontmatter.name is required")
     if not description:
         raise ValueError(f"{skill_path}: frontmatter.description is required")
-    if len(content.strip()) <= len(_FRONTMATTER_RE.match(content.replace("\r\n", "\n")).group(0)):
+    if len(content.strip()) <= len(frontmatter.group(0)):
         raise ValueError(f"{skill_path}: skill body is empty")
 
+    tools = [item.strip() for item in str(fields.get("tools", "")).split(",") if item.strip()]
     return {
         "name": name,
         "description": description,
+        "tools": tools,
         "content": content,
     }
 
@@ -82,6 +87,7 @@ def make_builtin_skills_header(target, source, env):
             "struct SolersBuiltinSkillRecord {\n"
             "\tconst char *name;\n"
             "\tconst char *description;\n"
+            "\tconst char *tools;\n"
             "\tconst char *content;\n"
             "};\n\n"
         )
@@ -96,6 +102,7 @@ def make_builtin_skills_header(target, source, env):
             file.write("\t{\n")
             file.write(f'\t\t"{_escape_c_string(str(skill["name"]))}",\n')
             file.write(f'\t\t"{_escape_c_string(str(skill["description"]))}",\n')
+            file.write(f'\t\t"{_escape_c_string(",".join(skill["tools"]))}",\n')
             file.write(f"\t\tSOLERS_BUILTIN_SKILL_CONTENT_{slug},\n")
             file.write("\t},\n")
         file.write("};\n\n")

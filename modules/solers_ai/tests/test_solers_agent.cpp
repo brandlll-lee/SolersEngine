@@ -114,11 +114,108 @@ String make_event_stream_response(const String &p_body) {
 	return vformat("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", p_body.utf8().length(), p_body);
 }
 
+String make_chat_tools_response(const Array &p_calls) {
+	Array native_calls;
+	for (int i = 0; i < p_calls.size(); i++) {
+		const Dictionary call = p_calls[i];
+		Dictionary function;
+		function["name"] = call.get("name", String());
+		function["arguments"] = call.get("arguments", "{}");
+		Dictionary native_call;
+		native_call["index"] = i;
+		native_call["id"] = call.get("id", String());
+		native_call["type"] = "function";
+		native_call["function"] = function;
+		native_calls.push_back(native_call);
+	}
+	Dictionary delta;
+	delta["role"] = "assistant";
+	delta["tool_calls"] = native_calls;
+	const Dictionary streamed({ { "choices", Array({ Dictionary({ { "delta", delta }, { "finish_reason", Variant() } }) }) } });
+	const Dictionary finished({ { "choices", Array({ Dictionary({ { "delta", Dictionary() }, { "finish_reason", "tool_calls" } }) }) } });
+	return make_event_stream_response("data: " + JSON::stringify(streamed) + "\n\ndata: " + JSON::stringify(finished) + "\n\ndata: [DONE]\n\n");
+}
+
 String make_chat_tool_response(const String &p_call_id, const String &p_tool_name) {
-	return make_event_stream_response(vformat("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"%s\",\"type\":\"function\",\"function\":{\"name\":\"%s\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n"
-											  "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"
-											  "data: [DONE]\n\n",
-			p_call_id, p_tool_name));
+	return make_chat_tools_response(make_tool_calls(p_call_id, p_tool_name));
+}
+
+bool read_http_request(const Ref<StreamPeerTCP> &p_connection, PackedByteArray &r_buffer, String &r_body) {
+	p_connection->poll();
+	const int available = p_connection->get_available_bytes();
+	if (available > 0) {
+		const int offset = r_buffer.size();
+		r_buffer.resize(offset + available);
+		int received = 0;
+		if (p_connection->get_partial_data(r_buffer.ptrw() + offset, available, received) != OK) {
+			return false;
+		}
+		r_buffer.resize(offset + received);
+	}
+	if (r_buffer.is_empty()) {
+		return false;
+	}
+	const String request = String::utf8((const char *)r_buffer.ptr(), r_buffer.size());
+	const int separator = request.find("\r\n\r\n");
+	if (separator < 0) {
+		return false;
+	}
+	int content_length = -1;
+	for (const String &line : request.substr(0, separator).split("\r\n")) {
+		if (line.to_lower().begins_with("content-length:")) {
+			content_length = line.get_slice(":", 1).strip_edges().to_int();
+			break;
+		}
+	}
+	const int body_offset = separator + 4;
+	if (content_length < 0 || r_buffer.size() < body_offset + content_length) {
+		return false;
+	}
+	r_body = String::utf8((const char *)r_buffer.ptr() + body_offset, content_length);
+	return true;
+}
+
+int serve_agent_responses(SolersAgentSession &p_session, const Ref<TCPServer> &p_server, const Array &p_responses, Array *r_request_bodies = nullptr) {
+	int served = 0;
+	Ref<StreamPeerTCP> connection;
+	PackedByteArray request_buffer;
+	Vector<Ref<StreamPeerTCP>> completed_connections;
+	const uint64_t deadline = OS::get_singleton()->get_ticks_msec() + 5000;
+	while (p_session.is_running() && OS::get_singleton()->get_ticks_msec() < deadline) {
+		p_session.poll();
+		if (connection.is_null() && served < p_responses.size() && p_server->is_connection_available()) {
+			connection = p_server->take_connection();
+		}
+		if (connection.is_valid()) {
+			String body;
+			if (read_http_request(connection, request_buffer, body)) {
+				if (r_request_bodies) {
+					r_request_bodies->push_back(body);
+				}
+				const CharString response = String(p_responses[served++]).utf8();
+				connection->put_data((const uint8_t *)response.get_data(), response.length());
+				completed_connections.push_back(connection);
+				connection.unref();
+				request_buffer.clear();
+			}
+		}
+		OS::get_singleton()->delay_usec(1000);
+	}
+	return served;
+}
+
+Dictionary find_request_tool(const String &p_body, const String &p_name) {
+	const Variant parsed = JSON::parse_string(p_body);
+	if (parsed.get_type() != Variant::DICTIONARY) {
+		return Dictionary();
+	}
+	for (const Variant &value : Array(Dictionary(parsed).get("tools", Array()))) {
+		const Dictionary function = Dictionary(value).get("function", Dictionary());
+		if (function.get("name", String()) == p_name) {
+			return function;
+		}
+	}
+	return Dictionary();
 }
 
 TEST_CASE("[SolersTrace] transcript parser skips incomplete audit records silently") {
@@ -141,7 +238,7 @@ TEST_CASE("[SolersContextManager] compaction replaces the active prefix and pres
 	old_summary["origin"] = "compaction_summary";
 	history.push_back(old_summary);
 	history.push_back(make_user_message(String("obsolete ").repeat(8000), 1));
-	history.push_back(SolersLLMMessage::tool_result("call_old", "editor.apply", R"({"ok":true,"data":{"mutation":{"receipt":{"scene_after":{"root_object_id":42,"version":7}}}}})"));
+	history.push_back(SolersLLMMessage::tool_result("call_old", "scene.node.update", R"({"ok":true,"data":{"mutation":{"receipt":{"scene_after":{"root_object_id":42,"version":7}}}}})"));
 	history.push_back(make_user_message("Continue the current build exactly.", 2));
 	history.push_back(SolersLLMMessage::assistant("Capturing.", make_tool_calls("call_live", "render.capture")));
 	history.push_back(SolersLLMMessage::tool_result("call_live", "render.capture", String("exact payload ").repeat(1000)));
@@ -185,13 +282,13 @@ TEST_CASE("[SolersContextManager] completed-turn projection preserves the exact 
 TEST_CASE("[SolersContextManager] completed tool evidence is outside tool-call syntax") {
 	Array history;
 	history.push_back(make_user_message("Inspect the scene.", 1));
-	Array consumed_calls = make_tool_calls("consumed", "editor.apply");
+	Array consumed_calls = make_tool_calls("consumed", "scene.node.update");
 	Dictionary consumed_call = consumed_calls[0];
 	const String consumed_arguments = JSON::stringify(Dictionary({ { "capability", "scene.node.update" }, { "arguments", Dictionary({ { "properties", Dictionary({ { "large", String("argument ").repeat(2000) } }) } }) } }));
 	consumed_call["arguments"] = consumed_arguments;
 	consumed_calls[0] = consumed_call;
 	history.push_back(SolersLLMMessage::assistant("Applying the observed state.", consumed_calls));
-	history.push_back(SolersLLMMessage::tool_result("consumed", "editor.apply", R"({"ok":true,"data":{"mutation":{"receipt":{"scene_after":{"version":9}}}}})"));
+	history.push_back(SolersLLMMessage::tool_result("consumed", "scene.node.update", R"({"ok":true,"data":{"mutation":{"receipt":{"scene_after":{"version":9}}}}})"));
 	history.push_back(SolersLLMMessage::assistant("The scene receipt is now version 9.", Array()));
 	Array live_calls = make_tool_calls("live", "render.capture");
 	Dictionary live_call = live_calls[0];
@@ -323,7 +420,7 @@ TEST_CASE("[SolersSession][SceneTree][Editor] journal rows preserve terminal sem
 	dock->set_agent_session(&restored);
 	dock->load_chat_history(timeline);
 	SolersPermissionManager permissions;
-	const Dictionary denied_request = permissions.request_user_approval("editor.apply", Dictionary({ { "operation", "scene.node.update" }, { "arguments", Dictionary() } }), SolersPermissionManager::PERMISSION_EDIT_SCENE);
+	const Dictionary denied_request = permissions.request_user_approval("scene.node.update", Dictionary(), SolersPermissionManager::PERMISSION_EDIT_SCENE);
 	dock->set_services(nullptr, nullptr, nullptr, &permissions, nullptr);
 	MessageQueue::get_singleton()->flush();
 	Node *approval_mode = dock->find_child("ApprovalModeOption", true, false);
@@ -371,7 +468,7 @@ TEST_CASE("[SolersSession][SceneTree][Editor] journal rows preserve terminal sem
 	Label *permission_details = Object::cast_to<Label>(dock->find_child("PermissionDetails", true, false));
 	REQUIRE(bool(permission_prompt && allow_once && allow_always && deny && permission_tool && permission_details));
 	CHECK(permission_prompt->is_visible_in_tree());
-	CHECK(permission_tool->get_text() == "editor.apply");
+	CHECK(permission_tool->get_text() == "scene.node.update");
 	CHECK(permission_details->get_text().contains("scene"));
 	CHECK(dock->find_child("QuestionPanel", true, false) == nullptr);
 	deny->emit_signal(SceneStringName(pressed));
@@ -540,19 +637,7 @@ TEST_CASE("[SolersAgentSession][Editor] repeated read observations remain execut
 	REQUIRE((bool)session.start_turn(Dictionary({ { "prompt", "Observe the same authority twice, then finish." } })).get("ok", false));
 
 	Array responses({ make_chat_tool_response("call_first", registry.get_model_tool_name("synthetic.stable_observation")), make_chat_tool_response("call_second", registry.get_model_tool_name("synthetic.stable_observation")), make_event_stream_response("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"Complete.\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n") });
-	Vector<Ref<StreamPeerTCP>> connections;
-	int served = 0;
-	const uint64_t deadline = OS::get_singleton()->get_ticks_msec() + 5000;
-	while (session.is_running() && OS::get_singleton()->get_ticks_msec() < deadline) {
-		session.poll();
-		if (served < responses.size() && server->is_connection_available()) {
-			Ref<StreamPeerTCP> connection = server->take_connection();
-			const CharString response = String(responses[served++]).utf8();
-			connection->put_data((const uint8_t *)response.get_data(), response.length());
-			connections.push_back(connection);
-		}
-		OS::get_singleton()->delay_usec(1000);
-	}
+	const int served = serve_agent_responses(session, server, responses);
 	session.abort();
 	server->stop();
 	const Dictionary status = session.get_status();
@@ -563,6 +648,154 @@ TEST_CASE("[SolersAgentSession][Editor] repeated read observations remain execut
 	CHECK_MESSAGE(JSON::stringify(session.get_messages()).count("fact") == 2, JSON::stringify(session.get_messages()));
 	session.reset_conversation();
 	session.shutdown();
+}
+
+TEST_CASE("[SolersAgentSession][Editor] observations activate exact deferred schemas on the next request") {
+	Ref<TCPServer> server;
+	server.instantiate();
+	REQUIRE(server->listen(0, IPAddress("127.0.0.1")) == OK);
+	EditorSettings *editor_settings = EditorSettings::get_singleton();
+	REQUIRE(editor_settings != nullptr);
+	SolersProviderRegistry providers;
+	SolersSettingsService settings;
+	settings.set_provider_registry(&providers);
+	const String prefix = "solers/ai/";
+	const String provider_prefix = prefix + "providers/custom_openai_compatible/";
+	ScopedAgentSettings restore(editor_settings, Array({ prefix + "provider", prefix + "local_models_only", provider_prefix + "configured", provider_prefix + "model", provider_prefix + "reasoning_effort", provider_prefix + "base_url", provider_prefix + "context_window", provider_prefix + "max_tokens", provider_prefix + "api_key" }));
+	Dictionary config({ { "provider", "custom_openai_compatible" }, { "model", "synthetic-model" }, { "base_url", vformat("http://127.0.0.1:%d/v1", server->get_local_port()) }, { "api_key", "synthetic-key" } });
+	REQUIRE((bool)settings.set_provider_config(config).get("ok", false));
+
+	SolersPermissionManager permissions;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
+	SolersToolRegistry registry;
+	registry.set_permission_manager(&permissions);
+	registry.register_default_tools();
+	int observation_executions = 0;
+	int deferred_executions = 0;
+	SolersToolCapability observation_capability;
+	observation_capability.permission = SolersPermissionManager::PERMISSION_OBSERVE;
+	registry.register_tool(memnew(SolersFunctionTool("synthetic.bootstrap_observation", "Return one observation and advertise its native follow-ups.", Dictionary({ { "type", "object" }, { "properties", Dictionary() }, { "additionalProperties", false } }), SolersToolExposure::MODEL, observation_capability,
+			[&observation_executions](const SolersToolContext &, const Dictionary &) {
+				observation_executions++;
+				return Dictionary({ { "ok", true }, { "data", Dictionary({ { "fact", "bootstrap" } }) }, { "added_tools", Array({ "synthetic.deferred_operation", "synthetic.retired_operation" }) } });
+			})));
+	registry.register_tool(memnew(SolersFunctionTool("synthetic.failed_observation", "Return a failed observation that cannot activate tools.", Dictionary({ { "type", "object" }, { "properties", Dictionary() }, { "additionalProperties", false } }), SolersToolExposure::MODEL, observation_capability,
+			[](const SolersToolContext &, const Dictionary &) {
+				return Dictionary({ { "ok", false }, { "error", Dictionary({ { "code", "SYNTHETIC_OBSERVATION_FAILED" }, { "message", "Synthetic observation failed." }, { "recoverable", true } }) }, { "added_tools", Array({ "synthetic.failure_operation" }) } });
+			})));
+	SolersToolCapability deferred_capability;
+	deferred_capability.permission = SolersPermissionManager::PERMISSION_OBSERVE;
+	deferred_capability.operation_domain = SolersOperationDomain::EDITOR;
+	deferred_capability.operation_mode = SolersOperationMode::QUERY;
+	const Dictionary deferred_schema({ { "type", "object" }, { "properties", Dictionary({ { "exact_value", Dictionary({ { "type", "string" } }) } }) }, { "additionalProperties", false } });
+	registry.register_tool(memnew(SolersFunctionTool("synthetic.deferred_operation", "Return the observation's exact deferred follow-up.", deferred_schema, SolersToolExposure::DEFERRED, deferred_capability,
+			[&deferred_executions](const SolersToolContext &, const Dictionary &) {
+				deferred_executions++;
+				return Dictionary({ { "ok", true }, { "data", Dictionary({ { "fact", "deferred" } }) } });
+			})));
+	registry.register_tool(memnew(SolersFunctionTool("synthetic.retired_operation", "Synthetic capability used to verify catalog invalidation.", deferred_schema, SolersToolExposure::DEFERRED, deferred_capability,
+			[](const SolersToolContext &, const Dictionary &) { return Dictionary({ { "ok", true }, { "data", Dictionary() } }); })));
+	registry.register_tool(memnew(SolersFunctionTool("synthetic.rewound_operation", "Synthetic capability used to verify rewind restoration.", deferred_schema, SolersToolExposure::DEFERRED, deferred_capability,
+			[](const SolersToolContext &, const Dictionary &) { return Dictionary({ { "ok", true }, { "data", Dictionary() } }); })));
+	registry.register_tool(memnew(SolersFunctionTool("synthetic.failure_operation", "Capability that must not be activated by a failed observation.", deferred_schema, SolersToolExposure::DEFERRED, deferred_capability,
+			[](const SolersToolContext &, const Dictionary &) { return Dictionary({ { "ok", true }, { "data", Dictionary() } }); })));
+
+	const String session_id = "deferred-activation-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
+	const String project = "test://" + session_id;
+	SolersTestPaths cleanup;
+	cleanup.add(solers_session_dir().path_join("sessions").path_join(session_id.sha256_text() + ".jsonl"));
+	SolersAgentSession session;
+	session.set_models_dev(nullptr);
+	session.set_tool_registry(&registry);
+	session.set_settings_service(&settings);
+	session.set_session(project, session_id);
+	REQUIRE((bool)session.start_turn(Dictionary({ { "prompt", "Observe, then use the returned follow-up capability." } })).get("ok", false));
+
+	Array first_calls = make_tool_calls("call_bootstrap", registry.get_model_tool_name("synthetic.bootstrap_observation"));
+	first_calls.append_array(make_tool_calls("call_inactive", registry.get_model_tool_name("synthetic.deferred_operation")));
+	first_calls.append_array(make_tool_calls("call_failed", registry.get_model_tool_name("synthetic.failed_observation")));
+	const String completed_response = make_event_stream_response("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"Complete.\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n");
+	Array request_bodies;
+	const Array responses({ make_chat_tools_response(first_calls), make_chat_tool_response("call_deferred", registry.get_model_tool_name("synthetic.deferred_operation")), completed_response });
+	const int served = serve_agent_responses(session, server, responses, &request_bodies);
+	const Dictionary status = session.get_status();
+	CHECK(served == 3);
+	CHECK(observation_executions == 1);
+	CHECK(deferred_executions == 1);
+	CHECK((int)status.get("model_requests", 0) == 3);
+	CHECK(status.get("last_outcome", String()) == "completed");
+	const String conversation = JSON::stringify(session.get_messages());
+	CHECK(conversation.contains("TOOL_NOT_ACTIVE"));
+	CHECK(conversation.contains("deferred"));
+	CHECK_FALSE(conversation.contains("\"added_tools\""));
+	REQUIRE(request_bodies.size() == 3);
+	const String deferred_model_name = registry.get_model_tool_name("synthetic.deferred_operation");
+	const String retired_model_name = registry.get_model_tool_name("synthetic.retired_operation");
+	const String rewound_model_name = registry.get_model_tool_name("synthetic.rewound_operation");
+	const String failure_model_name = registry.get_model_tool_name("synthetic.failure_operation");
+	CHECK(find_request_tool(request_bodies[0], deferred_model_name).is_empty());
+	CHECK(find_request_tool(request_bodies[0], retired_model_name).is_empty());
+	CHECK(find_request_tool(request_bodies[0], failure_model_name).is_empty());
+	const Dictionary activated_tool = find_request_tool(request_bodies[1], deferred_model_name);
+	REQUIRE_FALSE(activated_tool.is_empty());
+	CHECK(Dictionary(activated_tool.get("parameters", Dictionary())).recursive_equal(deferred_schema, 0));
+	CHECK(find_request_tool(request_bodies[1], failure_model_name).is_empty());
+	CHECK_FALSE(String(request_bodies[1]).contains("added_tool_names"));
+	REQUIRE(solers_transcript_flush(session_id) == OK);
+	session.shutdown();
+	const int64_t rewind_target_event_id = 100000;
+	auto write_branch_event = [&](int64_t p_event_id, const String &p_type, Dictionary p_event) {
+		p_event["event_id"] = p_event_id;
+		p_event["event_type"] = p_type;
+		p_event["project_path"] = project;
+		p_event["session_id"] = session_id;
+		solers_transcript_write(p_event);
+	};
+	write_branch_event(rewind_target_event_id, "message", Dictionary({ { "role", SolersLLMRole::USER }, { "author", "human" }, { "content", "Discarded branch." } }));
+	write_branch_event(rewind_target_event_id + 1, "tool_result", Dictionary({ { "role", SolersLLMRole::TOOL }, { "call_id", "rewound_call" }, { "tool", "synthetic.rewound_operation" }, { "content", R"({"ok":true})" }, { "added_tool_names", Array({ rewound_model_name }) } }));
+	write_branch_event(rewind_target_event_id + 2, "session_rewind", Dictionary({ { "target_event_id", rewind_target_event_id } }));
+	REQUIRE(solers_transcript_flush(session_id) == OK);
+
+	SolersToolRegistry restored_registry;
+	restored_registry.set_permission_manager(&permissions);
+	restored_registry.register_default_tools();
+	restored_registry.register_tool(memnew(SolersFunctionTool("synthetic.deferred_operation", "Return the observation's exact deferred follow-up.", deferred_schema, SolersToolExposure::DEFERRED, deferred_capability,
+			[&deferred_executions](const SolersToolContext &, const Dictionary &) {
+				deferred_executions++;
+				return Dictionary({ { "ok", true }, { "data", Dictionary({ { "fact", "deferred" } }) } });
+			})));
+	restored_registry.register_tool(memnew(SolersFunctionTool("synthetic.retired_operation", "No longer model-visible.", deferred_schema, SolersToolExposure::HIDDEN, deferred_capability,
+			[](const SolersToolContext &, const Dictionary &) { return Dictionary({ { "ok", true }, { "data", Dictionary() } }); })));
+	restored_registry.register_tool(memnew(SolersFunctionTool("synthetic.rewound_operation", "Synthetic capability used to verify rewind restoration.", deferred_schema, SolersToolExposure::DEFERRED, deferred_capability,
+			[](const SolersToolContext &, const Dictionary &) { return Dictionary({ { "ok", true }, { "data", Dictionary() } }); })));
+	SolersAgentSession restored_session;
+	restored_session.set_models_dev(nullptr);
+	restored_session.set_tool_registry(&restored_registry);
+	restored_session.set_settings_service(&settings);
+	restored_session.set_session(project, session_id);
+	restored_registry.register_tool(memnew(SolersFunctionTool("synthetic.revision_observation", "New default observation after a catalog revision.", Dictionary({ { "type", "object" }, { "properties", Dictionary() } }), SolersToolExposure::MODEL, observation_capability,
+			[](const SolersToolContext &, const Dictionary &) { return Dictionary({ { "ok", true }, { "data", Dictionary() } }); })));
+	REQUIRE((bool)restored_session.start_turn(Dictionary({ { "prompt", "Continue from the restored capability state." } })).get("ok", false));
+	CHECK(serve_agent_responses(restored_session, server, Array({ completed_response }), &request_bodies) == 1);
+	REQUIRE(request_bodies.size() == 4);
+	const Dictionary restored_tool = find_request_tool(request_bodies[3], deferred_model_name);
+	REQUIRE_FALSE(restored_tool.is_empty());
+	CHECK(Dictionary(restored_tool.get("parameters", Dictionary())).recursive_equal(deferred_schema, 0));
+	CHECK(find_request_tool(request_bodies[3], retired_model_name).is_empty());
+	CHECK(find_request_tool(request_bodies[3], rewound_model_name).is_empty());
+	CHECK_FALSE(find_request_tool(request_bodies[3], restored_registry.get_model_tool_name("synthetic.revision_observation")).is_empty());
+
+	restored_session.reset_conversation();
+	const String reset_session_id = restored_session.get_status().get("session_id", String());
+	cleanup.add(solers_session_dir().path_join("sessions").path_join(reset_session_id.sha256_text() + ".jsonl"));
+	REQUIRE((bool)restored_session.start_turn(Dictionary({ { "prompt", "Attempt the deferred capability without a new observation." } })).get("ok", false));
+	CHECK(serve_agent_responses(restored_session, server, Array({ make_chat_tool_response("call_after_reset", deferred_model_name), completed_response }), &request_bodies) == 2);
+	REQUIRE(request_bodies.size() == 6);
+	CHECK(find_request_tool(request_bodies[4], deferred_model_name).is_empty());
+	CHECK(deferred_executions == 1);
+	CHECK(JSON::stringify(restored_session.get_messages()).contains("TOOL_NOT_ACTIVE"));
+	restored_session.shutdown();
+	server->stop();
 }
 
 TEST_CASE("[SolersAgentSession] validates the Codex update_plan contract") {

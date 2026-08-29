@@ -1,6 +1,7 @@
 ---
 name: godot-debugging-performance-export
 description: Reproduce Godot failures with runtime.observe, profile one bottleneck, apply native fixes, validate export presets, and smoke-test packaged builds.
+tools: runtime.observe, runtime.control, export.list_presets, export.validate_presets, export.run_preset, project.delivery_report, history.revert
 ---
 
 # Debugging, Performance, and Export
