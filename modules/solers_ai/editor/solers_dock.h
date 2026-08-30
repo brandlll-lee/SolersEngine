@@ -203,7 +203,6 @@ class SolersDock : public PanelContainer {
 	void _on_agent_reasoning_delta(const String &p_text);
 	void _on_agent_assistant_message(const String &p_text);
 	void _on_agent_tool_started(const String &p_id, const String &p_name, const String &p_arguments);
-	void _on_agent_tool_updated(const String &p_id, const String &p_name, const String &p_arguments);
 	void _on_agent_tool_awaiting_approval(const String &p_id, const String &p_name);
 	void _on_agent_tool_finished(const String &p_id, const String &p_name, const Dictionary &p_result, int p_duration_msec);
 	void _on_agent_turn_completed(const Dictionary &p_result);

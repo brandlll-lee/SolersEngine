@@ -90,8 +90,12 @@ static String _pretty_tool_json(const String &p_json) {
 	if (raw.is_empty()) {
 		return "{}";
 	}
-	const Variant parsed = JSON::parse_string(raw);
-	return parsed.get_type() == Variant::NIL && raw != "null" ? raw : JSON::stringify(parsed, "  ", false, true);
+	Ref<JSON> json;
+	json.instantiate();
+	if (json->parse(raw) == OK) {
+		return JSON::stringify(json->get_data(), "  ", false, true);
+	}
+	return raw;
 }
 
 /* ------------------------------------------------------------------ */

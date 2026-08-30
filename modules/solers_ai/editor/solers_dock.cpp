@@ -403,7 +403,9 @@ static Dictionary solers_tool_ui_for_call(const SolersToolRegistry *p_registry, 
 	}
 	const Dictionary tool = p_registry->get_tool_definition(StringName(p_name));
 	state["presentation"] = tool.get("ui", Dictionary());
-	const Variant parsed = JSON::parse_string(p_arguments);
+	Ref<JSON> json;
+	json.instantiate();
+	const Variant parsed = json->parse(p_arguments) == OK ? json->get_data() : Variant();
 	if (parsed.get_type() == Variant::DICTIONARY) {
 		state["subject"] = p_registry->summarize_tool_args_for_ui(StringName(p_name), parsed);
 	}
@@ -2870,7 +2872,6 @@ void SolersDock::set_agent_session(SolersAgentSession *p_agent_session) {
 	agent_session->connect(SNAME("reasoning_delta"), callable_mp(this, &SolersDock::_on_agent_reasoning_delta));
 	agent_session->connect(SNAME("assistant_message"), callable_mp(this, &SolersDock::_on_agent_assistant_message));
 	agent_session->connect(SNAME("tool_call_started"), callable_mp(this, &SolersDock::_on_agent_tool_started));
-	agent_session->connect(SNAME("tool_call_updated"), callable_mp(this, &SolersDock::_on_agent_tool_updated));
 	agent_session->connect(SNAME("tool_call_awaiting_approval"), callable_mp(this, &SolersDock::_on_agent_tool_awaiting_approval));
 	agent_session->connect(SNAME("tool_call_finished"), callable_mp(this, &SolersDock::_on_agent_tool_finished));
 	agent_session->connect(SNAME("turn_completed"), callable_mp(this, &SolersDock::_on_agent_turn_completed));
@@ -2995,19 +2996,6 @@ void SolersDock::_on_agent_tool_started(const String &p_id, const String &p_name
 	}
 	last_started_tool_cell = cell;
 	_on_cell_content_changed();
-}
-
-void SolersDock::_on_agent_tool_updated(const String &p_id, const String &p_name, const String &p_arguments) {
-	if (!p_id.is_empty()) {
-		SolersToolCell **found = tool_cells_by_id.getptr(p_id);
-		if (found && *found) {
-			const Dictionary ui = solers_tool_ui_for_call(tool_registry, p_name, p_arguments);
-			(*found)->update(p_name, p_arguments, ui.get("presentation", Dictionary()), ui.get("subject", String()));
-			_on_cell_content_changed();
-			return;
-		}
-	}
-	_on_agent_tool_started(p_id, p_name, p_arguments);
 }
 
 void SolersDock::_on_agent_tool_awaiting_approval(const String &p_id, const String &p_name) {

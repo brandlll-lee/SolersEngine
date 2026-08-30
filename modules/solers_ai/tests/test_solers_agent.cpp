@@ -44,6 +44,7 @@
 #include "scene/gui/scroll_container.h"
 #include "scene/main/scene_tree.h"
 #include "scene/main/window.h"
+#include "tests/signal_watcher.h"
 #include "tests/test_macros.h"
 #include "tests/test_tools.h"
 
@@ -138,6 +139,15 @@ String make_chat_tools_response(const Array &p_calls) {
 
 String make_chat_tool_response(const String &p_call_id, const String &p_tool_name) {
 	return make_chat_tools_response(make_tool_calls(p_call_id, p_tool_name));
+}
+
+String make_fragmented_chat_tool_response(const String &p_call_id, const String &p_tool_name) {
+	const String id = JSON::stringify(p_call_id);
+	const String name = JSON::stringify(p_tool_name);
+	const String first = vformat("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":%s,\"type\":\"function\",\"function\":{\"name\":%s,\"arguments\":\"{\"}}]},\"finish_reason\":null}]}\n\n", id, name);
+	const String second = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"}\"}}]},\"finish_reason\":null}]}\n\n";
+	const String completed = "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n";
+	return make_event_stream_response(first + second + completed);
 }
 
 bool read_http_request(const Ref<StreamPeerTCP> &p_connection, PackedByteArray &r_buffer, String &r_body) {
@@ -636,7 +646,8 @@ TEST_CASE("[SolersAgentSession][Editor] repeated read observations remain execut
 	session.set_session("test://" + session_id, session_id);
 	REQUIRE((bool)session.start_turn(Dictionary({ { "prompt", "Observe the same authority twice, then finish." } })).get("ok", false));
 
-	Array responses({ make_chat_tool_response("call_first", registry.get_model_tool_name("synthetic.stable_observation")), make_chat_tool_response("call_second", registry.get_model_tool_name("synthetic.stable_observation")), make_event_stream_response("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"Complete.\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n") });
+	SIGNAL_WATCH(&session, "tool_call_started");
+	Array responses({ make_fragmented_chat_tool_response("call_first", registry.get_model_tool_name("synthetic.stable_observation")), make_chat_tool_response("call_second", registry.get_model_tool_name("synthetic.stable_observation")), make_event_stream_response("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"Complete.\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n") });
 	const int served = serve_agent_responses(session, server, responses);
 	session.abort();
 	server->stop();
@@ -645,6 +656,9 @@ TEST_CASE("[SolersAgentSession][Editor] repeated read observations remain execut
 	CHECK(executions == 2);
 	CHECK((int)status.get("model_requests", 0) == 3);
 	CHECK(status.get("last_outcome", String()) == "completed");
+	CHECK((int)status.get("godot_log_errors", -1) == 0);
+	SIGNAL_CHECK("tool_call_started", Array({ Array({ "call_first", "synthetic.stable_observation", "{}" }), Array({ "call_second", "synthetic.stable_observation", "{}" }) }));
+	SIGNAL_UNWATCH(&session, "tool_call_started");
 	CHECK_MESSAGE(JSON::stringify(session.get_messages()).count("fact") == 2, JSON::stringify(session.get_messages()));
 	session.reset_conversation();
 	session.shutdown();

@@ -137,7 +137,6 @@ void SolersAgentSession::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("reasoning_delta", PropertyInfo(Variant::STRING, "text")));
 	ADD_SIGNAL(MethodInfo("assistant_message", PropertyInfo(Variant::STRING, "text")));
 	ADD_SIGNAL(MethodInfo("tool_call_started", PropertyInfo(Variant::STRING, "id"), PropertyInfo(Variant::STRING, "name"), PropertyInfo(Variant::STRING, "arguments")));
-	ADD_SIGNAL(MethodInfo("tool_call_updated", PropertyInfo(Variant::STRING, "id"), PropertyInfo(Variant::STRING, "name"), PropertyInfo(Variant::STRING, "arguments")));
 	ADD_SIGNAL(MethodInfo("tool_call_awaiting_approval", PropertyInfo(Variant::STRING, "id"), PropertyInfo(Variant::STRING, "name")));
 	ADD_SIGNAL(MethodInfo("tool_call_finished", PropertyInfo(Variant::STRING, "id"), PropertyInfo(Variant::STRING, "name"), PropertyInfo(Variant::DICTIONARY, "result"), PropertyInfo(Variant::INT, "duration_msec")));
 	ADD_SIGNAL(MethodInfo("turn_completed", PropertyInfo(Variant::DICTIONARY, "result")));
@@ -1661,7 +1660,6 @@ Dictionary SolersAgentSession::_surface_tool_call(const Dictionary &p_call) {
 		return call;
 	}
 
-	const bool was_announced = (bool)call.get("ui_announced", false);
 	const String canonical_name = call.get("canonical_name", String());
 	const Dictionary definition = tool_registry ? tool_registry->get_tool_definition(StringName(canonical_name)) : Dictionary();
 	call["timeline_visible"] = definition.get("timeline_visible", true);
@@ -1671,11 +1669,7 @@ Dictionary SolersAgentSession::_surface_tool_call(const Dictionary &p_call) {
 	if (!(bool)call["timeline_visible"]) {
 		return call;
 	}
-	if (was_announced) {
-		emit_signal(SNAME("tool_call_updated"), id, canonical_name, arguments);
-	} else {
-		emit_signal(SNAME("tool_call_started"), id, canonical_name, arguments);
-	}
+	emit_signal(SNAME("tool_call_started"), id, canonical_name, arguments);
 	return call;
 }
 
@@ -2029,7 +2023,7 @@ void SolersAgentSession::poll() {
 			current_reasoning += text;
 			emit_signal(SNAME("reasoning_delta"), text);
 		} else if (kind == SolersLLMEventKind::TOOL_INPUT_START || kind == SolersLLMEventKind::TOOL_INPUT_DELTA) {
-			_surface_tool_call(_tool_call_from_event(e));
+			_merge_streamed_tool_call(_tool_call_from_event(e));
 		} else if (kind == SolersLLMEventKind::TOOL_CALL) {
 			Dictionary call = _surface_tool_call(_tool_call_from_event(e));
 			pending_tool_calls.push_back(call);
@@ -2807,7 +2801,6 @@ void SolersAgentSession::_poll_tool_executing() {
 			progress["status"] = "pending";
 			progress["data"] = pending_data;
 			_write_transcript_event("tool_progress", progress);
-			emit_signal(SNAME("tool_call_updated"), id, canonical_name, JSON::stringify(pending_data, "", false, true));
 		}
 		_park_pending_tool(Dictionary(poll_args));
 		return;
