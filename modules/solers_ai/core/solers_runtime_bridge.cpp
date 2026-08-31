@@ -225,6 +225,8 @@ public:
 			result["runtime_epoch"] = request.get("runtime_epoch", 0);
 			result["runtime_frame"] = (int64_t)Engine::get_singleton()->get_frames_drawn();
 			result["ok"] = root != nullptr;
+			result["scene_file_path"] = root ? root->get_scene_file_path() : String();
+			result["root_object_id"] = root ? solers_object_id_to_string(root->get_instance_id()) : String();
 			result["camera_path"] = camera ? String(camera->get_path()) : String();
 			Array spatial;
 			const Array focus_paths = request.get("focus_paths", Array());

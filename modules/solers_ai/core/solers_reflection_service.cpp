@@ -724,6 +724,14 @@ Dictionary SolersReflectionService::update_node(const Dictionary &p_args) {
 	Dictionary data;
 	data["node_path"] = safe_path;
 	data["properties"] = applied;
+	Node *edited_root = SceneTree::get_singleton()->get_edited_scene_root();
+	data["scene_file_path"] = edited_root ? edited_root->get_scene_file_path() : String();
+	data["owner_path"] = node->get_owner() ? String(node->get_owner()->get_path()) : String();
+	data["owner_object_id"] = node->get_owner() ? solers_object_id_to_string(node->get_owner()->get_instance_id()) : String();
+	data["instance_scene_path"] = _instance_scene_path(node);
+	data["node_object_id"] = solers_object_id_to_string(node->get_instance_id());
+	data["inside_tree"] = node->is_inside_tree();
+	data["edited_scene_root_object_id"] = edited_root ? solers_object_id_to_string(edited_root->get_instance_id()) : String();
 	return _ok(data);
 }
 

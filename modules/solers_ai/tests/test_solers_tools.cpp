@@ -1620,6 +1620,15 @@ TEST_CASE("[SolersToolRegistry][SceneTree][Editor] node updates are atomic nativ
 		CHECK(history->get_version() == before + 1);
 		CHECK(camera->get_position() == Vector3(1, 2, 3));
 		CHECK(camera->is_current());
+		const Dictionary updated_data = updated.get("data", Dictionary());
+	CHECK(String(updated_data.get("scene_file_path", String())).is_empty());
+	CHECK(String(updated_data.get("owner_object_id", String())) == solers_object_id_to_string(root->get_instance_id()));
+	CHECK(String(updated_data.get("instance_scene_path", String())).is_empty());
+	CHECK(String(updated_data.get("node_object_id", String())) == solers_object_id_to_string(camera->get_instance_id()));
+		CHECK_FALSE((bool)updated_data.get("inside_tree", true));
+	CHECK(String(updated_data.get("edited_scene_root_object_id", String())) == solers_object_id_to_string(root->get_instance_id()));
+	CHECK(String(updated_data.get("node_path", String())) == "ContractCamera");
+		CHECK(Dictionary(updated_data.get("properties", Dictionary())).has("position"));
 		REQUIRE(manager->undo_history(history_id));
 		CHECK(camera->get_position() == Vector3());
 		CHECK_FALSE(camera->is_current());
@@ -1925,6 +1934,11 @@ TEST_CASE("[SolersRuntimeBridge][SceneTree] exact object observations use native
 	CHECK(observed.get("node_path", String()) == node_path);
 	CHECK(observed.get("owner_path", String()) == String(scene->get_path()));
 	CHECK(observed.get("scene_file_path", String()) == "res://player_contract.tscn");
+	CHECK(String(observed.get("class_name", String())) == "AnimationPlayer");
+	CHECK(String(observed.get("node_path", String())) == node_path);
+	CHECK(String(observed.get("object_id", String())) == object_id);
+	CHECK(observed.has("properties"));
+	CHECK(observed.has("property_info"));
 	const Dictionary properties = observed.get("properties", Dictionary());
 	CHECK(Math::is_equal_approx((double)properties.get("speed_scale", 0.0), 1.0));
 	CHECK_FALSE(properties.has("current_animation_length"));
