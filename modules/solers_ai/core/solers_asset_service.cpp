@@ -58,6 +58,7 @@
 #include "scene/resources/packed_scene.h"
 
 #include "modules/solers_ai/core/solers_geometry_facts.h"
+#include "modules/solers_ai/core/solers_path_utils.h"
 #include "modules/solers_ai/core/solers_secret_store.h"
 #include "modules/solers_ai/generated/terrain3d_lock.gen.h"
 #include "modules/solers_ai/plugins/solers_plugin.h"
@@ -460,14 +461,18 @@ String SolersAssetService::_source_dir(const String &p_asset_id) {
 }
 
 static Dictionary _solers_project_request(const Dictionary &p_args, const String &p_kind, const String &p_name, const String &p_job_id, bool p_default_target) {
-	String target_dir = String(p_args.get("target_dir", String())).replace_char('\\', '/').simplify_path();
+	String target_dir = String(p_args.get("target_dir", String())).strip_edges();
 	if (target_dir.is_empty() && p_default_target) {
 		target_dir = "res://assets/" + p_kind + "/" + SolersPlugin::safe_slug(p_name) + "-" + p_job_id.right(8);
 	}
 	Dictionary result;
-	if (!target_dir.is_empty() && (!target_dir.begins_with("res://") || target_dir.contains(".."))) {
-		result["error"] = SolersPlugin::error_data("INVALID_TARGET", "target_dir must stay inside res://.");
-		return result;
+	if (!target_dir.is_empty()) {
+		const SolersPath::NormalizedPath normalized_target = SolersPath::normalize_project_path(target_dir);
+		if (!normalized_target.valid) {
+			result["error"] = SolersPlugin::error_data("INVALID_TARGET", normalized_target.error);
+			return result;
+		}
+		target_dir = normalized_target.value;
 	}
 	Dictionary import_options;
 	const char *option_names[] = { "map_types", "import_profile", "max_triangles" };
@@ -2506,10 +2511,11 @@ Dictionary SolersAssetService::start_project_import(const Dictionary &p_args) {
 	if (target_dir.is_empty()) {
 		target_dir = "res://assets/" + String(manifest.get("kind", "asset")) + "/" + SolersPlugin::safe_slug(String(manifest.get("name", asset_id))) + "-" + asset_id.right(8);
 	}
-	target_dir = target_dir.replace_char('\\', '/').simplify_path();
-	if (!target_dir.begins_with("res://") || target_dir.contains("..")) {
-		return _error("INVALID_TARGET", "target_dir must stay inside res://.");
+	const SolersPath::NormalizedPath normalized_target = SolersPath::normalize_project_path(target_dir);
+	if (!normalized_target.valid) {
+		return _error("INVALID_TARGET", normalized_target.error);
 	}
+	target_dir = normalized_target.value;
 	if (EditorFileSystem *filesystem = _solers_editor_filesystem()) {
 		Vector<String> selected_files;
 		selected_files.resize(files.size());

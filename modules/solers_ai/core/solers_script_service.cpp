@@ -53,6 +53,7 @@
 #include "servers/rendering/shader_types.h"
 
 #include "modules/solers_ai/core/solers_action_timeline.h"
+#include "modules/solers_ai/core/solers_path_utils.h"
 #include "modules/solers_ai/core/solers_resource_service.h"
 
 void SolersScriptService::_bind_methods() {
@@ -84,39 +85,6 @@ Dictionary SolersScriptService::_error(const String &p_code, const String &p_mes
 	return result;
 }
 
-bool SolersScriptService::_normalize_project_path(const String &p_path, String &r_res_path, String &r_error, bool p_allow_project_data) const {
-	String path = p_path.strip_edges().replace_char('\\', '/');
-	if (path.is_empty()) {
-		r_error = "Path is empty.";
-		return false;
-	}
-	if (path.is_absolute_path() && !path.begins_with("res://")) {
-		r_error = "Only res:// or project-relative paths are allowed.";
-		return false;
-	}
-	if (!path.begins_with("res://")) {
-		path = String("res://").path_join(path);
-	}
-
-	path = path.simplify_path();
-	if (!path.begins_with("res://") || path.contains("..")) {
-		r_error = "Path escapes the project root.";
-		return false;
-	}
-	if (path.begins_with("res://.git/") || path == "res://.git") {
-		r_error = "Refusing to operate on .git metadata.";
-		return false;
-	}
-	const String project_data_path = ProjectSettings::get_singleton() ? ProjectSettings::get_singleton()->get_project_data_path() : "res://.godot";
-	if (!p_allow_project_data && (path == project_data_path || path.begins_with(project_data_path + "/"))) {
-		r_error = "Refusing to edit Godot project data directly.";
-		return false;
-	}
-
-	r_res_path = path;
-	return true;
-}
-
 Dictionary SolersScriptService::_validate_source(const String &p_path, const String &p_source) const {
 	Dictionary data;
 	Array errors;
@@ -124,7 +92,8 @@ Dictionary SolersScriptService::_validate_source(const String &p_path, const Str
 	Array functions;
 
 	const String extension = p_path.get_extension().to_lower();
-	if (extension == "gdshader" || extension == "gdshaderinc") {
+	const String resource_type = ResourceLoader::get_resource_type(p_path);
+	if (resource_type == "Shader" || resource_type == "ShaderInclude") {
 		String preprocessed;
 		String preprocess_error;
 		List<ShaderPreprocessor::FilePosition> preprocess_positions;
@@ -133,7 +102,7 @@ Dictionary SolersScriptService::_validate_source(const String &p_path, const Str
 		ShaderLanguage language;
 		if (validation_error == OK) {
 			ShaderLanguage::ShaderCompileInfo compile_info;
-			if (extension == "gdshaderinc") {
+			if (resource_type == "ShaderInclude") {
 				compile_info.is_include = true;
 			} else {
 				Shader::Mode mode = Shader::MODE_SPATIAL;
@@ -251,15 +220,12 @@ static bool _solers_is_native_serialized_resource_path(const String &p_path) {
 
 static bool _solers_is_script_source_path(const String &p_path) {
 	const String extension = p_path.get_extension().to_lower();
-	return extension == "gd" || extension == "cs" || extension == "gdshader" || extension == "gdshaderinc";
+	return ScriptServer::get_language_for_extension(extension) != nullptr || ResourceLoader::get_resource_type(p_path) == "Shader" || ResourceLoader::get_resource_type(p_path) == "ShaderInclude";
 }
 
 static bool _solers_is_project_settings_path(const String &p_path) {
-	String path = p_path.strip_edges().replace_char('\\', '/');
-	if (!path.begins_with("res://")) {
-		path = String("res://").path_join(path);
-	}
-	return path.simplify_path() == "res://project.godot";
+	const SolersPath::NormalizedPath normalized = SolersPath::normalize_project_path(p_path);
+	return normalized.valid && normalized.value == "res://project.godot";
 }
 
 Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
@@ -275,11 +241,11 @@ Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
 	const bool create = p_args.get("create", true);
 	const bool overwrite = p_args.get("overwrite", true);
 
-	String res_path;
-	String path_error;
-	if (!_normalize_project_path(path_arg, res_path, path_error)) {
-		return _error("INVALID_PATH", path_error);
+	const SolersPath::NormalizedPath normalized_path = SolersPath::normalize_project_path(path_arg);
+	if (!normalized_path.valid) {
+		return _error("INVALID_PATH", normalized_path.error);
 	}
+	const String res_path = normalized_path.value;
 	if (_solers_is_project_settings_path(res_path)) {
 		return _error("EDITOR_OWNED_FILE", "Modify project.godot through project.settings so live ProjectSettings stays synchronized.");
 	}
@@ -386,11 +352,11 @@ Dictionary SolersScriptService::patch_file(const Dictionary &p_args) {
 		return _error("INVALID_ARGUMENT", "old_text, new_text, and expected_sha256 are required for script.edit replace.");
 	}
 
-	String res_path;
-	String path_error;
-	if (!_normalize_project_path(path_arg, res_path, path_error)) {
-		return _error("INVALID_PATH", path_error);
+	const SolersPath::NormalizedPath normalized_path = SolersPath::normalize_project_path(path_arg);
+	if (!normalized_path.valid) {
+		return _error("INVALID_PATH", normalized_path.error);
 	}
+	const String res_path = normalized_path.value;
 	if (_solers_is_project_settings_path(res_path)) {
 		return _error("EDITOR_OWNED_FILE", "Modify project.godot through project.settings so live ProjectSettings stays synchronized.");
 	}
@@ -512,11 +478,11 @@ Dictionary SolersScriptService::edit_project(const Dictionary &p_args) {
 
 	if (operation == "create_directory") {
 		const String dir_arg = p_args.get("path", String());
-		String res_dir;
-		String dir_error;
-		if (!_normalize_project_path(dir_arg, res_dir, dir_error)) {
-			return _error("INVALID_PATH", dir_error);
+		const SolersPath::NormalizedPath normalized_dir = SolersPath::normalize_project_path(dir_arg);
+		if (!normalized_dir.valid) {
+			return _error("INVALID_PATH", normalized_dir.error);
 		}
+		const String res_dir = normalized_dir.value;
 		const String global_dir = ProjectSettings::get_singleton()->globalize_path(res_dir);
 		const bool existed = DirAccess::dir_exists_absolute(global_dir);
 		if (!existed) {
@@ -601,11 +567,11 @@ Dictionary SolersScriptService::validate_script(const Dictionary &p_args) const 
 	const String path_arg = p_args.get("path", String());
 	const String source_override = p_args.get("source", String());
 
-	String res_path;
-	String path_error;
-	if (!_normalize_project_path(path_arg, res_path, path_error)) {
-		return _error("INVALID_PATH", path_error);
+	const SolersPath::NormalizedPath normalized_path = SolersPath::normalize_project_path(path_arg);
+	if (!normalized_path.valid) {
+		return _error("INVALID_PATH", normalized_path.error);
 	}
+	const String res_path = normalized_path.value;
 
 	String source = source_override;
 	if (source.is_empty()) {

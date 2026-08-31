@@ -76,6 +76,7 @@
 #include "servers/rendering/rendering_server.h"
 
 #include "modules/solers_ai/core/solers_context_manager.h"
+#include "modules/solers_ai/core/solers_path_utils.h"
 #include "modules/solers_ai/core/solers_resource_service.h"
 
 static constexpr uint64_t SOLERS_CAPTURE_TIMEOUT_MSEC = 10000;
@@ -1141,32 +1142,6 @@ bool SolersObservationService::is_viewport_capture_ready(const Dictionary &p_arg
 	return ready;
 }
 
-bool SolersObservationService::_normalize_project_path(const String &p_path, String &r_res_path, String &r_error) const {
-	String path = p_path.strip_edges().replace_char('\\', '/');
-	if (path.is_empty()) {
-		r_error = "Path is empty.";
-		return false;
-	}
-
-	if (path.is_absolute_path() && !path.begins_with("res://")) {
-		r_error = "Only res:// or project-relative paths are allowed.";
-		return false;
-	}
-
-	if (!path.begins_with("res://")) {
-		path = String("res://").path_join(path);
-	}
-
-	path = path.simplify_path();
-	if (!path.begins_with("res://") || path.contains("..")) {
-		r_error = "Path escapes the project root.";
-		return false;
-	}
-
-	r_res_path = path;
-	return true;
-}
-
 void SolersObservationService::_refresh_project_files() {
 	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
 	if (!filesystem || filesystem->is_scanning() || filesystem->is_importing() || !filesystem->get_filesystem()) {
@@ -1264,12 +1239,12 @@ Dictionary SolersObservationService::inspect_project_delivery(const Dictionary &
 	Vector<String> queue;
 	HashSet<String> reachable;
 	for (int i = 0; i < roots.size(); i++) {
-		String path;
-		String error;
-		if (!_normalize_project_path(roots[i], path, error)) {
-			blockers.push_back(Dictionary({ { "code", "INVALID_ROOT" }, { "path", roots[i] }, { "message", error } }));
+		const SolersPath::NormalizedPath normalized_path = SolersPath::normalize_project_path(roots[i]);
+		if (!normalized_path.valid) {
+			blockers.push_back(Dictionary({ { "code", "INVALID_ROOT" }, { "path", roots[i] }, { "message", normalized_path.error } }));
 			continue;
 		}
+		const String path = normalized_path.value;
 		if (!reachable.has(path)) {
 			reachable.insert(path);
 			queue.push_back(path);
@@ -1405,13 +1380,13 @@ static bool _solers_is_packed_scene_type(const String &p_resource_type) {
 
 Dictionary SolersObservationService::observe_path(const String &p_path) const {
 	Dictionary result;
-	String res_path;
-	String path_error;
-	if (!_normalize_project_path(p_path, res_path, path_error)) {
+	const SolersPath::NormalizedPath normalized_path = SolersPath::normalize_project_path(p_path);
+	if (!normalized_path.valid) {
 		result["ok"] = false;
-		result["error"] = path_error;
+		result["error"] = normalized_path.error;
 		return result;
 	}
+	String res_path = normalized_path.value;
 	if (res_path != "res://" && res_path.ends_with("/")) {
 		res_path = res_path.substr(0, res_path.length() - 1);
 	}
@@ -1568,13 +1543,13 @@ Dictionary SolersObservationService::observe_path(const String &p_path) const {
 
 Dictionary SolersObservationService::digest_packed_scene(const String &p_path, int p_max_nodes) const {
 	Dictionary result;
-	String res_path;
-	String path_error;
-	if (!_normalize_project_path(p_path, res_path, path_error)) {
+	const SolersPath::NormalizedPath normalized_path = SolersPath::normalize_project_path(p_path);
+	if (!normalized_path.valid) {
 		result["ok"] = false;
-		result["error"] = path_error;
+		result["error"] = normalized_path.error;
 		return result;
 	}
+	const String res_path = normalized_path.value;
 	const String resource_type = ResourceLoader::get_resource_type(res_path);
 	if (!_solers_is_packed_scene_type(resource_type)) {
 		result["ok"] = false;
@@ -1798,13 +1773,13 @@ Dictionary SolersObservationService::search_project(const Dictionary &p_args, in
 
 Dictionary SolersObservationService::read_project_file(const String &p_path, int p_line_start, int p_line_count, bool p_raw, int p_token_budget) const {
 	Dictionary result;
-	String res_path;
-	String path_error;
-	if (!_normalize_project_path(p_path, res_path, path_error)) {
+	const SolersPath::NormalizedPath normalized_path = SolersPath::normalize_project_path(p_path);
+	if (!normalized_path.valid) {
 		result["ok"] = false;
-		result["error"] = path_error;
+		result["error"] = normalized_path.error;
 		return result;
 	}
+	const String res_path = normalized_path.value;
 
 	if (!FileAccess::exists(res_path)) {
 		result["ok"] = false;

@@ -40,7 +40,6 @@ class SolersFileCheckpoint : public Object {
 
 	SolersActionTimeline *action_timeline = nullptr;
 
-	bool _normalize_project_path(const String &p_path, String &r_res_path, String &r_error) const;
 	String _checkpoint_root() const;
 	Dictionary _ok(const Variant &p_data) const;
 	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;

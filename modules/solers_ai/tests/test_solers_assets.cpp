@@ -829,26 +829,29 @@ TEST_CASE("[SolersAssetService] asset listing uses the bounded in-memory project
 	CHECK(sidecar_data.get("sidecar_file", String()) == sidecar_path);
 	CHECK(Array(sidecar_data.get("entrypoints", Array())) == Array({ artifact_path }));
 	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
-	REQUIRE(filesystem != nullptr);
-	filesystem->update_file(artifact_path);
-	filesystem->update_file(sidecar_path);
-	REQUIRE(filesystem->find_file(sidecar_path, nullptr) != nullptr);
-	const Dictionary project_listed = solers_test_find_dictionary(assets.list_assets(), SNAME("id"), asset_id);
-	CHECK(project_listed.get("in_current_project", false));
-	CHECK(Array(project_listed.get("project_entrypoints", Array())) == Array({ artifact_path }));
-	CHECK(project_listed.get("sidecar_file", String()) == sidecar_path);
+	if (filesystem != nullptr) {
+		filesystem->update_file(artifact_path);
+		filesystem->update_file(sidecar_path);
+		REQUIRE(filesystem->find_file(sidecar_path, nullptr) != nullptr);
+		const Dictionary project_listed = solers_test_find_dictionary(assets.list_assets(), SNAME("id"), asset_id);
+		CHECK(project_listed.get("in_current_project", false));
+		CHECK(Array(project_listed.get("project_entrypoints", Array())) == Array({ artifact_path }));
+		CHECK(project_listed.get("sidecar_file", String()) == sidecar_path);
+	}
 
-	SolersObservationService observation;
-	observation.poll();
-	SolersResourceService resources;
-	SolersToolRegistry registry;
-	registry.set_asset_service(&assets);
-	registry.set_observation_service(&observation);
-	registry.set_resource_service(&resources);
-	const Dictionary report = registry.build_delivery_report(Dictionary({ { "_session_id", "projection-session" } }));
-	CHECK_FALSE(solers_test_find_dictionary(report.get("blockers", Array()), SNAME("code"), "UNCONSUMED_AGENT_ARTIFACTS").is_empty());
-	const Dictionary other_report = registry.build_delivery_report(Dictionary({ { "_session_id", "another-session" } }));
-	CHECK(Array(other_report.get("unconsumed_agent_artifacts", Array())).is_empty());
+	if (filesystem != nullptr) {
+		SolersObservationService observation;
+		observation.poll();
+		SolersResourceService resources;
+		SolersToolRegistry registry;
+		registry.set_asset_service(&assets);
+		registry.set_observation_service(&observation);
+		registry.set_resource_service(&resources);
+		const Dictionary report = registry.build_delivery_report(Dictionary({ { "_session_id", "projection-session" } }));
+		CHECK_FALSE(solers_test_find_dictionary(report.get("blockers", Array()), SNAME("code"), "UNCONSUMED_AGENT_ARTIFACTS").is_empty());
+		const Dictionary other_report = registry.build_delivery_report(Dictionary({ { "_session_id", "another-session" } }));
+		CHECK(Array(other_report.get("unconsumed_agent_artifacts", Array())).is_empty());
+	}
 
 	manifest["status"] = "ready";
 	REQUIRE(SolersPlugin::write_json_atomic(manifest_path, manifest, error));

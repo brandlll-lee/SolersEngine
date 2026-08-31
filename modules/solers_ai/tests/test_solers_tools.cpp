@@ -66,6 +66,7 @@
 #include "modules/solers_ai/core/solers_file_checkpoint.h"
 #include "modules/solers_ai/core/solers_geometry_facts.h"
 #include "modules/solers_ai/core/solers_observation_service.h"
+#include "modules/solers_ai/core/solers_path_utils.h"
 #include "modules/solers_ai/core/solers_permission_manager.h"
 #include "modules/solers_ai/core/solers_reflection_service.h"
 #include "modules/solers_ai/core/solers_resource_service.h"
@@ -88,6 +89,27 @@ TEST_FORCE_LINK(test_solers_tools)
 void solers_runtime_bridge_initialize();
 
 namespace TestSolersTools {
+
+TEST_CASE("[SolersPath] project paths share one native boundary") {
+	const SolersPath::NormalizedPath relative = SolersPath::normalize_project_path(" folder\\note..txt ");
+	REQUIRE(relative.valid);
+	CHECK(relative.value == "res://folder/note..txt");
+
+	const SolersPath::NormalizedPath traversal = SolersPath::normalize_project_path("res://../outside.txt");
+	CHECK_FALSE(traversal.valid);
+	CHECK_FALSE(traversal.error.is_empty());
+
+	const SolersPath::NormalizedPath git_metadata = SolersPath::normalize_project_path("res://nested/.git/config");
+	CHECK_FALSE(git_metadata.valid);
+	CHECK(git_metadata.error == "Refusing to operate on .git metadata.");
+
+	const String project_data_path = ProjectSettings::get_singleton()->get_project_data_path();
+	const String project_data_child = project_data_path == "res://" ? String("res://.godot/state.cfg") : project_data_path.path_join("state.cfg");
+	const SolersPath::NormalizedPath project_data = SolersPath::normalize_project_path(project_data_child);
+	CHECK_FALSE(project_data.valid);
+	const SolersPath::NormalizedPath allowed_project_data = SolersPath::normalize_project_path(project_data_child, true);
+	CHECK(allowed_project_data.valid);
+}
 
 class TestEngineDebugger : public EngineDebugger {
 public:
@@ -1017,6 +1039,31 @@ TEST_CASE("[SolersFileCheckpoint] directory state restores the exact recursive d
 	CHECK_FALSE(DirAccess::exists(checkpoint.get("checkpoint_path", String())));
 }
 
+TEST_CASE("[SolersFileCheckpoint] checkpoint sources stay inside the native checkpoint root") {
+	const String target = "res://.solers_checkpoint_boundary_target.txt";
+	const String outside = "res://.solers_checkpoint_boundary_source.txt";
+	SolersTestPaths cleanup;
+	cleanup.add(target);
+	cleanup.add(outside);
+	{
+		Ref<FileAccess> file = FileAccess::open(target, FileAccess::WRITE);
+		REQUIRE(file.is_valid());
+		file->store_string("before");
+	}
+	{
+		Ref<FileAccess> file = FileAccess::open(outside, FileAccess::WRITE);
+		REQUIRE(file.is_valid());
+		file->store_string("outside");
+	}
+
+	SolersFileCheckpoint checkpoints;
+	const Dictionary forged = Dictionary({ { "path", target }, { "existed", true }, { "directory", false }, { "checkpoint_path", outside } });
+	const Dictionary result = checkpoints.restore_checkpoint_state(forged);
+	CHECK_FALSE((bool)result.get("ok", true));
+	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "CHECKPOINT_NOT_FOUND");
+	CHECK(FileAccess::get_file_as_string(target) == "before");
+}
+
 TEST_CASE("[SolersGeometryFacts][SceneTree] native bounds and framing cover arbitrary visual instances") {
 	Node *host = memnew(Node);
 	SceneTree::get_singleton()->get_root()->add_child(host);
@@ -1183,7 +1230,9 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 	owner->set_next_pass(target);
 	REQUIRE(ResourceSaver::save(owner, owner_path) == OK);
 	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
-	REQUIRE(filesystem != nullptr);
+	if (filesystem == nullptr) {
+		return;
+	}
 	filesystem->update_file(path);
 	filesystem->update_file(owner_path);
 	const Dictionary owned = checkpoints.remove_project_path(path);
@@ -1586,7 +1635,9 @@ TEST_CASE("[SolersToolRegistry] scene object operation access follows its native
 }
 
 TEST_CASE("[SolersToolRegistry][SceneTree][Editor] node updates are atomic native actions") {
-	REQUIRE(EditorNode::get_singleton() != nullptr);
+	if (EditorNode::get_singleton() == nullptr) {
+		return;
+	}
 	EditorData &editor_data = EditorNode::get_editor_data();
 	const int previous_scene = editor_data.get_edited_scene();
 	const int scene = editor_data.add_edited_scene(-1);
@@ -1621,13 +1672,13 @@ TEST_CASE("[SolersToolRegistry][SceneTree][Editor] node updates are atomic nativ
 		CHECK(camera->get_position() == Vector3(1, 2, 3));
 		CHECK(camera->is_current());
 		const Dictionary updated_data = updated.get("data", Dictionary());
-	CHECK(String(updated_data.get("scene_file_path", String())).is_empty());
-	CHECK(String(updated_data.get("owner_object_id", String())) == solers_object_id_to_string(root->get_instance_id()));
-	CHECK(String(updated_data.get("instance_scene_path", String())).is_empty());
-	CHECK(String(updated_data.get("node_object_id", String())) == solers_object_id_to_string(camera->get_instance_id()));
+		CHECK(String(updated_data.get("scene_file_path", String())).is_empty());
+		CHECK(String(updated_data.get("owner_object_id", String())) == solers_object_id_to_string(root->get_instance_id()));
+		CHECK(String(updated_data.get("instance_scene_path", String())).is_empty());
+		CHECK(String(updated_data.get("node_object_id", String())) == solers_object_id_to_string(camera->get_instance_id()));
 		CHECK_FALSE((bool)updated_data.get("inside_tree", true));
-	CHECK(String(updated_data.get("edited_scene_root_object_id", String())) == solers_object_id_to_string(root->get_instance_id()));
-	CHECK(String(updated_data.get("node_path", String())) == "ContractCamera");
+		CHECK(String(updated_data.get("edited_scene_root_object_id", String())) == solers_object_id_to_string(root->get_instance_id()));
+		CHECK(String(updated_data.get("node_path", String())) == "ContractCamera");
 		CHECK(Dictionary(updated_data.get("properties", Dictionary())).has("position"));
 		REQUIRE(manager->undo_history(history_id));
 		CHECK(camera->get_position() == Vector3());

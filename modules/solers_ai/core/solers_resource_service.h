@@ -50,7 +50,6 @@ class SolersResourceService : public Object {
 
 	Dictionary _ok(const Variant &p_data) const;
 	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
-	bool _normalize_project_path(const String &p_path, String &r_res_path, String &r_error) const;
 	bool _resolve_native_object(const Variant &p_object_id, Object *&r_object, String &r_error) const;
 	Dictionary _read_method(Object *p_object, const StringName &p_method, const Array &p_arguments) const;
 	String _export_filter_to_string(int p_filter) const;

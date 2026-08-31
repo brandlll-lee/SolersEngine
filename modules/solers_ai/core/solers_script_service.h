@@ -41,7 +41,6 @@ class SolersScriptService : public Object {
 	SolersActionTimeline *action_timeline = nullptr;
 	Error project_settings_save_error = OK;
 
-	bool _normalize_project_path(const String &p_path, String &r_res_path, String &r_error, bool p_allow_project_data = false) const;
 	Dictionary _ok(const Variant &p_data) const;
 	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
 	Dictionary _validate_source(const String &p_path, const String &p_source) const;

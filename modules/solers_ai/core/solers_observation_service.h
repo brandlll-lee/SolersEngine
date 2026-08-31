@@ -68,7 +68,6 @@ class SolersObservationService : public Object {
 	Array performance_monitor_names;
 	Array performance_monitor_types;
 
-	bool _normalize_project_path(const String &p_path, String &r_res_path, String &r_error) const;
 	void _refresh_project_files();
 	void _render_frame_post_draw();
 	Dictionary _capture_error(const String &p_code, const String &p_message, bool p_recoverable = true) const;

@@ -51,6 +51,7 @@
 #include "modules/modules_enabled.gen.h"
 #include "modules/solers_ai/core/solers_action_timeline.h"
 #include "modules/solers_ai/core/solers_geometry_facts.h"
+#include "modules/solers_ai/core/solers_path_utils.h"
 #include "modules/solers_ai/core/solers_resource_service.h"
 #include "modules/solers_ai/core/solers_tool.h"
 #ifdef MODULE_CSG_ENABLED
@@ -934,12 +935,13 @@ static bool _solers_scene_contains_path(Node *p_node, const String &p_scene_path
 }
 
 Dictionary SolersReflectionService::instantiate_scene(const Dictionary &p_args) {
-	const String source_path = String(p_args.get("source_path", String())).strip_edges().replace_char('\\', '/').simplify_path();
+	const SolersPath::NormalizedPath normalized_source = SolersPath::normalize_project_path(p_args.get("source_path", String()));
+	if (!normalized_source.valid) {
+		return _error("INVALID_RESOURCE_PATH", normalized_source.error);
+	}
+	const String source_path = normalized_source.value;
 	const String parent_path = String(p_args.get("parent_path", ".")).strip_edges();
 	const String requested_name = String(p_args.get("name", String())).strip_edges();
-	if (!source_path.begins_with("res://")) {
-		return _error("INVALID_RESOURCE_PATH", "source_path must be a loadable res:// scene or mesh resource.");
-	}
 	const Variant properties_value = p_args.get("properties", Dictionary());
 	if (properties_value.get_type() != Variant::DICTIONARY) {
 		return _error("INVALID_ARGUMENT", "scene.instance.instantiate properties must be an object.");
@@ -1143,14 +1145,11 @@ Dictionary SolersReflectionService::attach_script(const Dictionary &p_args) {
 		return _error("NODE_NOT_FOUND", error);
 	}
 
-	String normalized_script_path = script_path.strip_edges().replace_char('\\', '/');
-	if (!normalized_script_path.begins_with("res://")) {
-		normalized_script_path = String("res://").path_join(normalized_script_path);
+	const SolersPath::NormalizedPath normalized_script = SolersPath::normalize_project_path(script_path);
+	if (!normalized_script.valid) {
+		return _error("INVALID_PATH", normalized_script.error);
 	}
-	normalized_script_path = normalized_script_path.simplify_path();
-	if (!normalized_script_path.begins_with("res://") || normalized_script_path.contains("..")) {
-		return _error("INVALID_PATH", "Script path escapes the project root.");
-	}
+	const String normalized_script_path = normalized_script.value;
 	if (!FileAccess::exists(normalized_script_path)) {
 		return _error("SCRIPT_NOT_FOUND", vformat("Script does not exist: %s", normalized_script_path));
 	}
