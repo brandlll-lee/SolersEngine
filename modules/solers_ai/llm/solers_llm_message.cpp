@@ -32,7 +32,6 @@
 
 #include "core/crypto/crypto_core.h"
 #include "core/io/file_access.h"
-#include "core/io/json.h"
 #include "core/templates/hash_map.h"
 #include "core/templates/hash_set.h"
 
@@ -65,31 +64,31 @@ static String _solers_attachment_reference(const Dictionary &p_attachment) {
 	return vformat("[Image evidence%s is represented by its native receipt; request a fresh capture if pixels are needed.]", identity);
 }
 
-static String _solers_capture_view_key(const Dictionary &p_message, const Dictionary &p_attachment) {
+static String _solers_capture_view_key(const Dictionary &p_attachment) {
 	if (String(p_attachment.get("source", String())) != "tool_capture") {
 		return String();
 	}
-	const Variant parsed = JSON::parse_string(p_message.get("content", String()));
-	if (parsed.get_type() != Variant::DICTIONARY) {
-		return String();
-	}
-	const Dictionary data = Dictionary(parsed).get("data", Dictionary());
-	return String(Dictionary(data.get("render_receipt", Dictionary())).get("view_key", String()));
+	return p_attachment.get("view_key", String());
 }
 
 Array SolersLLMMessage::project_attachments(const Array &p_messages) {
 	HashSet<String> current_views;
+	HashSet<String> consumed;
 	HashSet<String> superseded;
+	bool has_later_assistant = false;
 	for (int i = p_messages.size() - 1; i >= 0; i--) {
 		const Dictionary message = p_messages[i];
 		const Array attachments = message.get("attachments", Array());
 		for (int a = 0; a < attachments.size(); a++) {
 			const Dictionary attachment = attachments[a];
-			const String view_key = _solers_capture_view_key(message, attachment);
+			const String identity = attachment_identity(attachment);
+			if (has_later_assistant && !identity.is_empty()) {
+				consumed.insert(identity);
+			}
+			const String view_key = _solers_capture_view_key(attachment);
 			if (view_key.is_empty()) {
 				continue;
 			}
-			const String identity = attachment_identity(attachment);
 			if (current_views.has(view_key)) {
 				if (!identity.is_empty()) {
 					superseded.insert(identity);
@@ -97,6 +96,9 @@ Array SolersLLMMessage::project_attachments(const Array &p_messages) {
 			} else {
 				current_views.insert(view_key);
 			}
+		}
+		if (String(message.get("role", String())) == SolersLLMRole::ASSISTANT) {
+			has_later_assistant = true;
 		}
 	}
 	HashSet<String> seen;
@@ -113,7 +115,7 @@ Array SolersLLMMessage::project_attachments(const Array &p_messages) {
 		for (int a = 0; a < attachments.size(); a++) {
 			const Dictionary attachment = attachments[a];
 			const String key = attachment_identity(attachment);
-			const bool reference_only = !key.is_empty() && (seen.has(key) || superseded.has(key));
+			const bool reference_only = !key.is_empty() && (consumed.has(key) || seen.has(key) || superseded.has(key));
 			if (reference_only) {
 				if (!content.is_empty()) {
 					content += "\n";

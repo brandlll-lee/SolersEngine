@@ -517,6 +517,10 @@ Dictionary SolersObservationService::_attach_render_receipt(Dictionary p_result,
 		view_key += ":" + String::num_int64((int64_t)p_pending.get("viewport_rid", 0));
 	}
 	receipt["view_key"] = view_key.sha256_text();
+	Dictionary attachment = data.get("attachment", Dictionary());
+	attachment["view_key"] = receipt["view_key"];
+	data["attachment"] = attachment;
+	p_result["attachments"] = Array({ attachment });
 	const Dictionary *previous = last_render_by_view.getptr(view_key);
 	const bool same_pixels = previous && String(previous->get("image_sha256", String())) == String(receipt.get("image_sha256", String()));
 	receipt["same_pixels"] = same_pixels;

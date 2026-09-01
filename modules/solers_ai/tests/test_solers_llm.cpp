@@ -559,7 +559,7 @@ TEST_CASE("[SolersOpenAIChatProtocol] preserves one assistant tool_call and tool
 	CHECK(second_output.get("tool_call_id", String()) == "call_b");
 }
 
-TEST_CASE("[SolersLLMMessage] attachment projection resends retained image bytes for stateless requests") {
+TEST_CASE("[SolersLLMMessage] attachment projection sends current pixels until a model response consumes them") {
 	const String image_path = "user://.solers_tool_image_contract.bin";
 	SolersTestPaths cleanup;
 	cleanup.add(image_path);
@@ -580,6 +580,13 @@ TEST_CASE("[SolersLLMMessage] attachment projection resends retained image bytes
 	attachment["local_path"] = image_path;
 	Array attachments;
 	attachments.push_back(attachment);
+	Dictionary capture_attachment = attachment.duplicate(true);
+	capture_attachment["id"] = "runtime_capture";
+	capture_attachment["content_sha256"] = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+	capture_attachment["source"] = "tool_capture";
+	capture_attachment["view_key"] = "runtime_view";
+	Array capture_attachments;
+	capture_attachments.push_back(capture_attachment);
 
 	Array calls;
 	Dictionary call;
@@ -598,24 +605,19 @@ TEST_CASE("[SolersLLMMessage] attachment projection resends retained image bytes
 	user_message["attachments"] = attachments;
 	messages.push_back(user_message);
 	messages.push_back(SolersLLMMessage::assistant("", calls));
-	messages.push_back(SolersLLMMessage::tool_result("call_capture", "render_capture", "{\"ok\":true}", attachments));
+	messages.push_back(SolersLLMMessage::tool_result("call_capture", "render_capture", "{\"ok\":true}", capture_attachments));
 	messages.push_back(SolersLLMMessage::tool_result("call_query", "object_query", "{\"ok\":true}"));
 
 	const Array first_projection = SolersLLMMessage::project_attachments(messages);
-	CHECK(Array(Dictionary(first_projection[0]).get("attachments", Array())).size() == 1);
-	CHECK_FALSE(Dictionary(first_projection[2]).has("attachments"));
-	CHECK(String(Dictionary(first_projection[2]).get("content", String())).contains("sha256=aaaaaaaa"));
+	CHECK_FALSE(Dictionary(first_projection[0]).has("attachments"));
+	CHECK(String(Dictionary(first_projection[0]).get("content", String())).contains("sha256=aaaaaaaa"));
+	CHECK(Array(Dictionary(first_projection[2]).get("attachments", Array())).size() == 1);
 
 	Dictionary request;
 	request["model"] = "custom-gateway-model";
 	request["messages"] = first_projection;
 	SolersOpenAIChatProtocol openai;
 	const Dictionary first_body = openai.build_request_body(request);
-	const Array openai_messages = first_body.get("messages", Array());
-	REQUIRE(openai_messages.size() == 4);
-	const Array user_content = Dictionary(openai_messages[0]).get("content", Array());
-	REQUIRE(user_content.size() == 2);
-	CHECK(Dictionary(user_content[1]).get("type", String()) == "image_url");
 	CHECK(JSON::stringify(first_body).count("data:image/png;base64,") == 1);
 	SolersLLMProtocolRegistry protocols;
 	protocols.register_builtin_protocols();
@@ -638,12 +640,14 @@ TEST_CASE("[SolersLLMMessage] attachment projection resends retained image bytes
 	const Dictionary anthropic_body = anthropic.build_request_body(request);
 	CHECK(JSON::stringify(anthropic_body).count("\"type\":\"image\"") == 1);
 
+	messages.push_back(SolersLLMMessage::assistant("Observed the current pixels.", Array()));
 	const Array second_projection = SolersLLMMessage::project_attachments(messages);
-	CHECK(Array(Dictionary(second_projection[0]).get("attachments", Array())).size() == 1);
+	CHECK_FALSE(Dictionary(second_projection[0]).has("attachments"));
 	CHECK_FALSE(Dictionary(second_projection[2]).has("attachments"));
+	CHECK(String(Dictionary(second_projection[2]).get("content", String())).contains("sha256=bbbbbbbb"));
 	request["messages"] = second_projection;
-	CHECK(JSON::stringify(openai.build_request_body(request)).count("data:image/png;base64,") == 1);
-	CHECK(JSON::stringify(anthropic.build_request_body(request)).count("\"type\":\"image\"") == 1);
+	CHECK(JSON::stringify(openai.build_request_body(request)).count("data:image/png;base64,") == 0);
+	CHECK(JSON::stringify(anthropic.build_request_body(request)).count("\"type\":\"image\"") == 0);
 }
 
 TEST_CASE("[SolersLLMMessage] attachment projection keeps one latest image per semantic view across epochs") {
@@ -651,14 +655,17 @@ TEST_CASE("[SolersLLMMessage] attachment projection keeps one latest image per s
 	old_capture["id"] = "capture_old";
 	old_capture["content_sha256"] = "old_pixels";
 	old_capture["source"] = "tool_capture";
+	old_capture["view_key"] = "runtime_view";
 	Dictionary new_capture;
 	new_capture["id"] = "capture_new";
 	new_capture["content_sha256"] = "new_pixels";
 	new_capture["source"] = "tool_capture";
+	new_capture["view_key"] = "runtime_view";
 	Dictionary editor_capture;
 	editor_capture["id"] = "capture_editor";
 	editor_capture["content_sha256"] = "editor_pixels";
 	editor_capture["source"] = "tool_capture";
+	editor_capture["view_key"] = "editor_view";
 	Array old_attachments;
 	old_attachments.push_back(old_capture);
 	Array new_attachments;
@@ -666,22 +673,10 @@ TEST_CASE("[SolersLLMMessage] attachment projection keeps one latest image per s
 	Array editor_attachments;
 	editor_attachments.push_back(editor_capture);
 
-	const String old_result = JSON::stringify(Dictionary({
-			{ "ok", true },
-			{ "data", Dictionary({ { "render_receipt", Dictionary({ { "target", "runtime" }, { "runtime_epoch", 7 }, { "view_key", "runtime_view" } }) } }) },
-	}));
-	const String new_result = JSON::stringify(Dictionary({
-			{ "ok", true },
-			{ "data", Dictionary({ { "render_receipt", Dictionary({ { "target", "runtime" }, { "runtime_epoch", 8 }, { "view_key", "runtime_view" } }) } }) },
-	}));
-	const String editor_result = JSON::stringify(Dictionary({
-			{ "ok", true },
-			{ "data", Dictionary({ { "render_receipt", Dictionary({ { "target", "editor" }, { "view_key", "editor_view" } }) } }) },
-	}));
 	Array messages;
-	messages.push_back(SolersLLMMessage::tool_result("old", "render.capture", old_result, old_attachments));
-	messages.push_back(SolersLLMMessage::tool_result("new", "render.capture", new_result, new_attachments));
-	messages.push_back(SolersLLMMessage::tool_result("editor", "render.capture", editor_result, editor_attachments));
+	messages.push_back(SolersLLMMessage::tool_result("old", "render.capture", "Tool 'render.capture' evidence: old.", old_attachments));
+	messages.push_back(SolersLLMMessage::tool_result("new", "render.capture", "Tool 'render.capture' evidence: new.", new_attachments));
+	messages.push_back(SolersLLMMessage::tool_result("editor", "render.capture", "Tool 'render.capture' evidence: editor.", editor_attachments));
 
 	const Array projected = SolersLLMMessage::project_attachments(messages);
 	CHECK_FALSE(Dictionary(projected[0]).has("attachments"));

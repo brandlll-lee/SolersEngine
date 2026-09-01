@@ -185,8 +185,8 @@ public:
 	static Dictionary encode_image_attachment(const Dictionary &p_attachment);
 	// Stable content-addressed identity: sha256, then attachment id, then path.
 	static String attachment_identity(const Dictionary &p_attachment);
-	// Build the wire projection once for every protocol. Previously delivered
-	// images become compact hash references; new images appear exactly once.
+	// Build the wire projection once for every protocol. Images followed by a
+	// model response become compact hash references; current evidence stays live.
 	static Array project_attachments(const Array &p_messages);
 
 	static Dictionary system(const String &p_text) {
