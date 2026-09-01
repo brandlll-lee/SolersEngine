@@ -524,8 +524,6 @@ TEST_CASE("[SolersUI][SceneTree][Editor] editor locale and technical tool presen
 
 	search->finish(Dictionary({ { "ok", true }, { "data", Dictionary({ { "value", 7 } }) } }), 4);
 	CHECK(search->get_status_text() == "Searched unseen-subject");
-	CHECK(search->get_detail_text().contains("Result"));
-	CHECK(search->get_detail_text().contains("\"value\": 7"));
 	unknown->finish(Dictionary({ { "ok", false }, { "error", Dictionary({ { "code", "SYNTHETIC_FAILURE" }, { "message", "failed" } }) } }), 5);
 	CHECK(unknown->get_status_text() == "Failed future.tool");
 

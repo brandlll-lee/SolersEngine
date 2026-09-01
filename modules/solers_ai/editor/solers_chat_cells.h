@@ -168,8 +168,6 @@ class SolersThinkingCell : public Control {
 	float shimmer_phase = 0.0f;
 	bool hovering = false;
 
-	Callable content_changed;
-
 	void _shape(float p_cell_width);
 	String _header_text() const;
 	float _header_height() const;
@@ -186,8 +184,6 @@ public:
 	void set_settled_reasoning(const String &p_text);
 	void set_done();
 	bool is_active() const { return active; }
-
-	void set_content_changed_callback(const Callable &p_cb) { content_changed = p_cb; }
 
 	SolersThinkingCell();
 };
@@ -211,7 +207,6 @@ public:
 private:
 	String tool_name;
 	String arguments_json;
-	String result_json;
 	String subject;
 	Dictionary presentation;
 	Status status = STATUS_RUNNING;
@@ -222,8 +217,6 @@ private:
 	Ref<TextParagraph> detail_paragraph;
 	float shaped_for_width = -1.0f;
 	float cell_height = 0.0f;
-
-	Callable content_changed;
 
 	String _detail_text() const;
 	void _shape(float p_cell_width);
@@ -243,8 +236,6 @@ public:
 	String get_detail_text() const { return _detail_text(); }
 	Status get_status() const { return status; }
 	bool is_expanded() const { return expanded; }
-
-	void set_content_changed_callback(const Callable &p_cb) { content_changed = p_cb; }
 
 	SolersToolCell();
 };

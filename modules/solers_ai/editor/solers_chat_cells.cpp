@@ -684,9 +684,6 @@ void SolersThinkingCell::_shape(float p_cell_width) {
 	cell_height = _header_height() + body_height;
 	if (!Math::is_equal_approx(old_height, cell_height)) {
 		update_minimum_size();
-		if (content_changed.is_valid()) {
-			content_changed.call();
-		}
 	}
 }
 
@@ -803,7 +800,6 @@ void SolersToolCell::start(const String &p_tool_name, const String &p_arguments_
 	presentation = p_presentation;
 	subject = p_subject.strip_edges();
 	status = STATUS_RUNNING;
-	result_json.clear();
 	duration_msec = -1;
 	set_tooltip_text(subject.is_empty() ? tool_name : tool_name + "\n" + subject);
 	shaped_for_width = -1.0f;
@@ -830,7 +826,6 @@ void SolersToolCell::update(const String &p_tool_name, const String &p_arguments
 
 void SolersToolCell::finish(const Dictionary &p_result, int p_duration_msec) {
 	status = (bool)p_result.get("ok", false) ? STATUS_OK : STATUS_ERROR;
-	result_json = JSON::stringify(p_result, "  ", false, true);
 	duration_msec = p_duration_msec;
 	set_process_internal(false);
 	shaped_for_width = -1.0f;
@@ -852,9 +847,6 @@ String SolersToolCell::get_status_text() const {
 
 String SolersToolCell::_detail_text() const {
 	String details = "Tool\n" + tool_name + "\n\nArguments\n" + _pretty_tool_json(arguments_json);
-	if (!result_json.is_empty()) {
-		details += "\n\nResult\n" + result_json;
-	}
 	return details;
 }
 
@@ -893,9 +885,6 @@ void SolersToolCell::_shape(float p_cell_width) {
 	cell_height = height;
 	if (!Math::is_equal_approx(old_height, cell_height)) {
 		update_minimum_size();
-		if (content_changed.is_valid()) {
-			content_changed.call();
-		}
 	}
 }
 

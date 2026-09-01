@@ -34,7 +34,6 @@
 #include "core/io/json.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
-#include "core/object/message_queue.h"
 #include "core/os/os.h"
 #include "core/os/time.h"
 #include "editor/editor_interface.h"
@@ -2720,9 +2719,6 @@ bool SolersAgentSession::_collect_tool_thread_result(bool p_wait) {
 	}
 	if (tool_thread.is_started()) {
 		tool_thread.wait_to_finish();
-	}
-	if (CallQueue *queue = MessageQueue::get_main_singleton(); queue && queue->flush() == ERR_BUSY && !p_wait) {
-		return false;
 	}
 	if (state->token == tool_exec_token && running && phase == PHASE_TOOL_EXECUTING) {
 		deferred_result = state->result;

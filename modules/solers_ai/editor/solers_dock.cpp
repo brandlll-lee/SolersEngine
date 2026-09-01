@@ -1666,7 +1666,6 @@ void SolersDock::_append_history_message(const Dictionary &p_message) {
 		const String reasoning = String(p_message.get("reasoning", String())).strip_edges();
 		if (!reasoning.is_empty()) {
 			SolersThinkingCell *thinking = memnew(SolersThinkingCell);
-			thinking->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
 			_ensure_assistant_row()->add_child(thinking);
 			thinking->set_settled_reasoning(reasoning);
 		}
@@ -2926,7 +2925,6 @@ void SolersDock::_on_agent_reasoning_delta(const String &p_text) {
 	VBoxContainer *mount = _ensure_assistant_row();
 	if (!active_thinking_cell || !active_thinking_cell->is_active()) {
 		active_thinking_cell = memnew(SolersThinkingCell);
-		active_thinking_cell->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
 		mount->add_child(active_thinking_cell);
 	}
 	active_thinking_cell->append_reasoning(p_text);
@@ -2987,7 +2985,6 @@ void SolersDock::_on_agent_tool_started(const String &p_id, const String &p_name
 		return;
 	}
 	SolersToolCell *cell = memnew(SolersToolCell);
-	cell->set_content_changed_callback(callable_mp(this, &SolersDock::_on_cell_content_changed));
 	mount->add_child(cell);
 	const Dictionary ui = solers_tool_ui_for_call(tool_registry, p_name, p_arguments);
 	cell->start(p_name, p_arguments, ui.get("presentation", Dictionary()), ui.get("subject", String()));

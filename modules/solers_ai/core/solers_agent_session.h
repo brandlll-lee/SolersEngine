@@ -129,11 +129,6 @@ class SolersAgentSession : public Object {
 	bool deferred_polling = false;
 	bool deferred_is_resume = false;
 	uint64_t tool_exec_token = 0;
-	// Tool execution is requested here and performed from the next poll()
-	// tick. poll() runs on the plain main-loop stack (EditorNode process),
-	// the same context as a user-triggered editor action — unlike
-	// call_deferred, whose MessageQueue::flush() context forbids progress
-	// dialogs and broke save/play tools.
 	bool tool_exec_requested = false;
 	String last_progress_call_id;
 	uint64_t last_progress_msec = 0;
