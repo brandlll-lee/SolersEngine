@@ -583,7 +583,8 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 			const String tool = event.get("tool", String());
 			const String delivered = event.get("content", String());
 			if (!call_id.is_empty() && !delivered.is_empty()) {
-				scan.restored->push_back(SolersLLMMessage::tool_result(call_id, tool, delivered, Array(), added_tool_names));
+				const String model_context = event.has("result_summary") ? vformat("Tool '%s' evidence: args=%s result=%s. Re-query native state for detail.", tool, JSON::stringify(event.get("args_summary", Dictionary()), "", false, true), String(event.get("result_summary", String()))) : String();
+				scan.restored->push_back(SolersLLMMessage::tool_result(call_id, tool, delivered, Array(), added_tool_names, model_context));
 			}
 			return true;
 		}
@@ -1056,6 +1057,10 @@ String SolersAgentSession::_default_system_prompt() const {
 			"- Prefer the smallest coherent native change. Use ClassDB metadata and native documentation for unfamiliar engine types.\n"
 			"- Tool errors and Godot diagnostics are authoritative. Change the cause before retrying; never repeat an identical failed call.\n"
 			"- Background operations return stable job ids. Continue independent work, then use the advertised wait operation once when nothing else is runnable.\n"
+			"- For project-scale tasks, map relevant files, live objects, runtime state, and pixels as needed; "
+			"choose the next observation from the evidence.\n"
+			"- Before changing state, form a falsifiable hypothesis and compare native evidence after the change; "
+			"do not declare success from intent alone.\n"
 			"- Text without tool calls ends the turn. Use update_plan only for concise progress and finish with a clear summary.";
 	if (tool_registry) {
 		const String skill_catalog = tool_registry->get_skill_catalog_prompt();
@@ -2900,7 +2905,8 @@ void SolersAgentSession::_deliver_tool_result(const String &p_id, const String &
 		turn_runtime_owned = false;
 	}
 
-	Dictionary message = SolersLLMMessage::tool_result(p_id, p_model_name, content, result.get("attachments", Array()), added_tool_names);
+	const String model_context = tool_registry ? vformat("Tool '%s' evidence: args=%s result=%s. Re-query native state for detail.", p_canonical_name, JSON::stringify(tool_registry->summarize_tool_args_for_audit(StringName(p_canonical_name), p_args), "", false, true), tool_registry->summarize_tool_result_for_audit(result)) : String();
+	Dictionary message = SolersLLMMessage::tool_result(p_id, p_model_name, content, result.get("attachments", Array()), added_tool_names, model_context);
 	messages.push_back(message);
 
 	if (!(bool)result.get("ok", false)) {

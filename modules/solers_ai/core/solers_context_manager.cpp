@@ -248,11 +248,18 @@ Array SolersContextManager::project_tool_evidence(const Array &p_messages) {
 			} else {
 				message["tool_calls"] = active_calls;
 			}
-		} else if (role == String(SolersLLMRole::TOOL) && completed_calls.has(message.get("tool_call_id", String()))) {
-			message["role"] = MODEL_CONTEXT_ROLE;
-			message["origin"] = "tool_evidence";
-			message.erase("tool_call_id");
-			message.erase("name");
+		} else if (role == String(SolersLLMRole::TOOL)) {
+			if (completed_calls.has(message.get("tool_call_id", String()))) {
+				const String model_context = message.get("model_context", String());
+				if (!model_context.is_empty()) {
+					message["content"] = model_context;
+				}
+				message["role"] = MODEL_CONTEXT_ROLE;
+				message["origin"] = "tool_evidence";
+				message.erase("tool_call_id");
+				message.erase("name");
+			}
+			message.erase("model_context");
 		}
 		projected.push_back(message);
 	}

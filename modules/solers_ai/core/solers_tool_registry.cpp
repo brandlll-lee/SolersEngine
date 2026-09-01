@@ -2270,7 +2270,6 @@ void SolersToolRegistry::_register_reflection_tools() {
 					Dictionary state = _solers_resource_state_receipt(file_checkpoint, a.get("path", String()));
 					state["expected_state"] = Dictionary({ { "resources", Array({ state.duplicate(true) }) } });
 					const Array capabilities = _applicable_tools(SolersOperationDomain::EDITOR, SolersOperationMode::APPLY, StringName(), SNAME("path"));
-					state["capabilities"] = capabilities;
 					return _with_added_tools(_ok(state), capabilities);
 				}
 				if (target == "resource") {
@@ -2288,7 +2287,6 @@ void SolersToolRegistry::_register_reflection_tools() {
 							data["expected_state"] = Dictionary({ { "resources", Array({ state.duplicate(true) }) } });
 						}
 						const Array capabilities = _applicable_tools(SolersOperationDomain::EDITOR, SolersOperationMode::APPLY, StringName(data.get("resource_type", String())));
-						data["capabilities"] = capabilities;
 						result["data"] = data;
 						result = _with_added_tools(result, capabilities);
 					}
@@ -2345,7 +2343,6 @@ void SolersToolRegistry::_register_reflection_tools() {
 					}
 					const Dictionary object = data.get("object", Dictionary());
 					const Array capabilities = _applicable_tools(SolersOperationDomain::EDITOR, SolersOperationMode::APPLY, StringName(object.get("class_name", String())));
-					data["capabilities"] = capabilities;
 					return _with_added_tools(_ok(data), capabilities);
 				}
 
@@ -2376,7 +2373,6 @@ void SolersToolRegistry::_register_reflection_tools() {
 					for (int i = 0; i < nodes.size(); i++) {
 						Dictionary node = nodes[i];
 						const Array capabilities = _applicable_tools(SolersOperationDomain::EDITOR, SolersOperationMode::APPLY, StringName(node.get("class_name", String())));
-						node["capabilities"] = capabilities;
 						for (const Variant &name : capabilities) {
 							if (!added_tools.has(name)) {
 								added_tools.push_back(name);

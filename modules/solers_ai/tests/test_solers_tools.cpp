@@ -999,7 +999,7 @@ TEST_CASE("[SolersToolRegistry] resource query uses the same native read contrac
 	REQUIRE(expected_resources.size() == 1);
 	CHECK(Dictionary(expected_resources[0]).get("path", String()) == path);
 	CHECK(Dictionary(expected_resources[0]).get("sha256", String()) == state.get("sha256", String()));
-	const Array capabilities = data.get("capabilities", Array());
+	const Array capabilities = result.get("added_tools", Array());
 	CHECK(capabilities.has("resource.update"));
 	CHECK_FALSE(capabilities.has("scene.node.create"));
 }
@@ -1120,7 +1120,7 @@ TEST_CASE("[SolersToolRegistry] ClassDB inheritance filters deferred tools") {
 	auto describe = [&registry](Object *p_object) {
 		const Dictionary result = registry.call_tool("object.query", Dictionary({ { "target", "object" }, { "object_id", solers_object_id_to_string(p_object->get_instance_id()) } }));
 		CHECK((bool)result.get("ok", false));
-		return Array(Dictionary(result.get("data", Dictionary())).get("capabilities", Array())); };
+		return Array(result.get("added_tools", Array())); };
 	LightmapGI *lightmap = memnew(LightmapGI);
 	Decal *decal = memnew(Decal);
 	const Array lightmap_capabilities = describe(lightmap);

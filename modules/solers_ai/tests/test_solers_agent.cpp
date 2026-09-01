@@ -325,6 +325,17 @@ TEST_CASE("[SolersContextManager] completed tool evidence is outside tool-call s
 	CHECK(String(Dictionary(projected[5]).get("content", String())) == "exact image receipt");
 }
 
+TEST_CASE("[SolersContextManager] consumed tool evidence keeps a compact requery receipt") {
+	Array history;
+	history.push_back(SolersLLMMessage::assistant("Inspecting.", make_tool_calls("compact", "object.query")));
+	history.push_back(SolersLLMMessage::tool_result("compact", "object.query", String("large scene payload ").repeat(2000), Array(), Array(), "Tool 'object.query' evidence: args={path=res://main.tscn} result=ok=1 count=128. Re-query native state for detail."));
+	history.push_back(SolersLLMMessage::assistant("Continue.", Array()));
+	const Array projected = SolersContextManager::project_tool_evidence(history);
+	const String wire = JSON::stringify(projected);
+	CHECK(wire.contains("Re-query native state for detail."));
+	CHECK_FALSE(wire.contains("large scene payload"));
+}
+
 TEST_CASE("[SolersContextManager] envelope clamp keeps head and tail under the token budget") {
 	const String body = String("token-text-").repeat(2000);
 	const String clamped = SolersContextManager::clamp_to_tokens(body, 64);
