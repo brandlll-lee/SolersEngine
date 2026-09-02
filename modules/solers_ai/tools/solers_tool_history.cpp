@@ -486,14 +486,14 @@ Dictionary SolersToolRegistry::_validate_expected_state(const SolersTool *p_tool
 	if (!expected.has("resources")) {
 		return _error("RESOURCE_STATE_INVALID", "expected_state.resources must contain native file receipts.");
 	}
-	Dictionary expected_sha;
+	Dictionary expected_resources;
 	for (const Variant &item : Array(expected.get("resources", Array()))) {
 		const Dictionary receipt = item;
 		const String path = receipt.get("path", String());
-		if (path.is_empty() || expected_sha.has(path)) {
+		if (path.is_empty() || expected_resources.has(path)) {
 			return _error("RESOURCE_STATE_INVALID", "expected_state.resources must contain unique resource paths.");
 		}
-		expected_sha[path] = receipt.get("sha256", String());
+		expected_resources[path] = receipt;
 	}
 	for (const Variant &item : resolve_resource_access(p_tool->name(), p_args)) {
 		const Dictionary access = item;
@@ -502,9 +502,17 @@ Dictionary SolersToolRegistry::_validate_expected_state(const SolersTool *p_tool
 			continue;
 		}
 		const String path = key.trim_prefix("project:");
-		const Dictionary state = _solers_checkpoint_target_state(file_checkpoint, path);
-		if ((bool)state.get("existed", false) && String(expected_sha.get(path, String())) != String(state.get("content_sha256", String()))) {
-			return _error("RESOURCE_STATE_CONFLICT", vformat("Resource changed since it was inspected: %s", path));
+		if (!expected_resources.has(path)) {
+			return _error("RESOURCE_STATE_INVALID", vformat("expected_state.resources is missing the native receipt for %s.", path));
+		}
+		const Dictionary expected_resource = expected_resources[path];
+		const Dictionary actual_resource = _resource_state_receipt(file_checkpoint, path);
+		const bool exists = expected_resource.get("exists", false);
+		if (exists != (bool)actual_resource.get("exists", false) ||
+				(exists && expected_resource.get("sha256", String()) != actual_resource.get("sha256", String()))) {
+			Dictionary failure = _error("RESOURCE_STATE_CONFLICT", vformat("Resource changed since it was inspected: %s", path));
+			failure["data"] = Dictionary({ { "expected_state", expected_resource }, { "actual_state", actual_resource } });
+			return failure;
 		}
 	}
 	return Dictionary();

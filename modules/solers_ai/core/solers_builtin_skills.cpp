@@ -48,7 +48,6 @@ bool SolersBuiltinSkills::find_by_name(const String &p_name, SolersBuiltinSkillV
 		if (name == String::utf8(record.name)) {
 			r_skill.name = String::utf8(record.name);
 			r_skill.description = String::utf8(record.description);
-			r_skill.tools = String::utf8(record.tools).split(",", false);
 			r_skill.content = String::utf8(record.content);
 			return true;
 		}
@@ -62,7 +61,8 @@ String SolersBuiltinSkills::build_catalog_prompt() {
 	}
 
 	String out = "\n\nBuilt-in Solers skills:\n"
-				 "Use skill.read with an exact name when a skill is relevant. The catalog is only a summary; read the skill before following it.\n";
+				 "Guidance follows the current Godot 4 documentation; confirm the project version, and prefer live ClassDB and engine facts when they differ.\n"
+				 "Read a relevant skill when domain guidance would help. Skills explain Godot relationships; they neither unlock tools nor prescribe a call order.\n";
 	for (int i = 0; i < SOLERS_BUILTIN_SKILL_COUNT; i++) {
 		const SolersBuiltinSkillRecord &record = SOLERS_BUILTIN_SKILLS[i];
 		out += vformat("- %s: %s\n", String::utf8(record.name), String::utf8(record.description));

@@ -1,69 +1,40 @@
 ---
 name: godot-scripting-input-gameplay
-description: GDScript 4 lifecycle, InputMap, signals, process_mode/pause, Autoloads, save paths, and Godot 3→4 syntax traps for gameplay scripts.
-tools: project.settings, project.path, script.edit, script.validate, runtime.observe, runtime.control
+description: Godot 4 scripts, scene-tree lifecycle, signals, input, frame callbacks, pause, autoloads, and persistence.
 ---
 
-# Scripting, Input, and Gameplay
+# Godot Scripting, Input, and Gameplay
 
-## When to use
-Use for game rules, interaction, input, lifecycle, state ownership, Autoloads, or save/load. Camera motion → `godot-camera-cinematography`. Shader syntax → `godot-shaders` (when present).
+## Scope
+Use when working with scripts, node lifecycle, signals, input actions, process frames, pause, autoloads, or saved game data.
 
-## Facts
-| Concern | Authority |
-|---------|-----------|
-| Script language | GDScript 2.0 (Godot 4.x). Unknown API → `engine.describe` |
-| Input | `InputMap` actions + `Input.get_vector` / `is_action_*` — not raw `KEY_*` as the primary path |
-| InputMap persistence | Running games read **project** InputMap (`project.godot` / `ProjectSettings`). Editor-only `InputMap.action_add_event` does **not** make Play see actions |
-| Events | `_input` → `_shortcut_input` → `_gui_input` (Controls) → `_unhandled_input` / `_unhandled_key_input` |
-| Frame work | `_physics_process` for movement/physics; `_process` for visuals/UI; match the phase |
-| Mutable state | One owner node/script per fact; others read signals or call into the owner |
-| Scene ready | Children `_ready` before parent; `@onready` runs before `_ready` |
-| Pause | `Node.process_mode` (`PROCESS_MODE_INHERIT/PAUSABLE/WHEN_PAUSED/ALWAYS/DISABLED`) + `get_tree().paused` |
-| Persist | Prefer `user://` for saves; `res://` is read-only in exported games |
+## Native model
+- Script instances extend Godot Objects. Node scripts participate in SceneTree lifecycle and notifications; RefCounted
+  instances use reference-counted lifetime instead of scene-tree ownership.
+- Nodes enter the tree parent-first, receive ready child-first, and exit child-first. Deferred calls and queued deletion
+  execute through the main loop rather than immediately at the source line.
+- `_process()` follows rendered frames; `_physics_process()` follows fixed physics ticks. A Node's process mode and the
+  SceneTree pause state determine which callbacks run.
+- Signals connect an emitter to Callables and remain independent of direct parent-child method calls.
+- InputMap defines named actions. Viewport dispatches input through input, GUI, shortcut, unhandled, and physics-picking
+  stages until the event is handled.
+- Autoloads are Nodes or scripts inserted near the root of the running SceneTree. They provide lifetime and reachability,
+  not automatic ownership or synchronization of application state.
+- Persistent runtime data is written under `user://`; file format and migration remain part of the game's data contract.
 
-## Laws
-- One owner per mutable gameplay fact; no duplicate state machines.
-- Prefer signals over polling; prefer InputMap over hard-coded keys.
-- Do not invent ClassDB methods — `engine.describe` first.
-- Do not put physics motion in `_process` unless intentionally frame-rate coupled.
-- Build visible editor state with the applicable scene/resource tools; keep scripts responsible for runtime behavior.
+## Compatibility and prerequisites
+- GDScript, C#, GDExtension, engine version, and export platform expose different language and deployment constraints.
+- Scene paths, signal signatures, InputMap actions, and autoload definitions must match the loaded project state.
 
-## Recipes
-**InputMap move vector (4.x):**
-```gdscript
-var v := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
-velocity = (transform.basis * Vector3(v.x, 0, v.y)).normalized() * speed
-```
-**Persist InputMap before first Play:** write actions through `project.settings`; gameplay scripts consume that one project-owned action map and never duplicate it with raw keys or runtime `_ensure_*` registration.
-**Awaitable signal once:**
-```gdscript
-await $Button.pressed
-# or: await get_tree().create_timer(0.5).timeout
-```
-**Minimal save:**
-```gdscript
-var cfg := ConfigFile.new()
-cfg.set_value("player", "hp", hp)
-cfg.save("user://save.cfg")
-```
+## Authoritative state
+Parsed scripts, ClassDB, the live SceneTree, connected signals, current process and pause state, InputMap, runtime input
+events, script diagnostics, and persisted files are authoritative.
 
-## Traps
-| Wrong (often Godot 3 prior) | Correct (Godot 4) |
-|-----------------------------|-------------------|
-| `onready var x = $Y` | `@onready var x = $Y` |
-| `yield(x, "sig")` / `yield(get_tree(), "idle_frame")` | `await x.sig` / `await get_tree().process_frame` |
-| `export var speed` | `@export var speed: float` |
-| `connect("pressed", self, "_on")` | `pressed.connect(_on)` or `pressed.connect(Callable(self, "_on"))` |
-| Untyped `Array` / `Dictionary` everywhere | Prefer typed `Array[Node]`, `Dictionary` with documented keys |
-| `pause_mode` | `process_mode` |
-| Listening only in `_input` for gameplay that UI might consume | Use `_unhandled_input` so Controls can mark handled |
-| Editing Autoload scripts as if they were scene-unique | Autoloads are singletons — one instance, careful with scene-specific state |
-| Registering InputMap only in the editor session, then Play | Persist with `project.settings` first; Play uses the project map |
-
-## Verify
-1. `project.search` / `script.edit` / `script.validate`.
-2. Confirm InputMap actions exist in project settings before `runtime.control` play.
-3. `runtime.control` play → hold the complete action state for declared `physics_frames` while observing owner properties before/after → release all actions.
-4. `runtime.observe` digest for errors; confirm pause/`process_mode` behavior if used.
-5. `project.delivery_report`; re-open the project if Autoload or InputMap changed.
+## Official references
+- https://docs.godotengine.org/en/latest/tutorials/scripting/gdscript/index.html
+- https://docs.godotengine.org/en/latest/tutorials/scripting/scene_tree.html
+- https://docs.godotengine.org/en/latest/tutorials/scripting/idle_and_physics_processing.html
+- https://docs.godotengine.org/en/latest/tutorials/inputs/inputevent.html
+- https://docs.godotengine.org/en/latest/tutorials/scripting/pausing_games.html
+- https://docs.godotengine.org/en/latest/tutorials/scripting/singletons_autoload.html
+- https://docs.godotengine.org/en/latest/tutorials/io/saving_games.html

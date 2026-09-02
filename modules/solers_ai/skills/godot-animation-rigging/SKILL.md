@@ -1,52 +1,35 @@
 ---
 name: godot-animation-rigging
-description: Godot 4 AnimationPlayer/AnimationTree, Skeleton3D retarget, bone maps, blend spaces, IK, root motion authority, and import-safe animation wrappers.
+description: Godot 4 animation resources, playback, blending, skeletons, retargeting, and root motion.
 ---
 
-# Animation, Rigging, and State Machines
+# Godot Animation and Rigging
 
-## When to use
-Use for clips, skeletons, retargeting, AnimationTree graphs, IK, one-shots, or root motion. Mesh/material look → `godot-3d-rendering`. Camera blends → `godot-camera-cinematography`.
+## Scope
+Use when working with animation clips, playback, transitions, blending, skeletons, retargeting, IK, or root motion.
 
-## Facts
-| Piece | Role |
-|-------|------|
-| `AnimationPlayer` | Owns animation libraries/tracks |
-| `AnimationTree` | Blends / state machines / blend spaces on top of a player |
-| `Skeleton3D` / `Skeleton2D` | Bones, rest pose, modifiers |
-| `BoneMap` / retarget | Profile mapping for imported humanoids |
-| Importer | Owns GLB/FBX animation — edit wrappers / inherited scenes, not raw import dumps |
-| Root motion | `AnimationTree` / player root motion → **or** gameplay `velocity`, never both as authority |
-| IK | `SkeletonIK3D` / modifiers — secondary to authored poses |
+## Native model
+- Animation stores typed tracks whose keys target properties, transforms, methods, audio, or nested animations.
+- AnimationPlayer owns AnimationLibrary resources and resolves track NodePaths relative to its root node.
+- AnimationTree does not store animations. It evaluates an AnimationNode graph using animations supplied by an
+  AnimationPlayer and exposes graph parameters at runtime.
+- Skeleton3D owns a bone hierarchy, rest transforms, and poses. Skin binds mesh vertices to skeleton bones.
+- BoneMap and SkeletonProfile define retargeting correspondence. Imported animation and skeleton settings belong to the
+  source asset's import configuration.
+- Root motion removes selected root-bone motion from the visible pose and exposes the blended delta through
+  AnimationTree for application by gameplay code.
 
-## Laws
-- One locomotion authority: root motion **or** CharacterBody velocity.
-- Keep imported clips, the blend graph, locomotion state, and camera motion under distinct native owners; connect them through explicit parameters instead of one catch-all player script.
-- Do not hand-edit importer output as the long-term source of truth.
-- Verify rest pose + bone map before blaming blend graphs.
-- Inspect the imported `AnimationPlayer` inventory first; missing semantic clips are an asset fact, not a state-machine fallback opportunity.
-- AnimationTree advances with the player process mode — match physics/render intent.
+## Compatibility and prerequisites
+- Track paths, bone names, animation-library names, and imported resource identities must match the instantiated scene.
+- Reimport can replace importer-owned animation and skeleton data; project-owned overrides belong outside generated data.
 
-## Recipes
-**Clip only:** `AnimationPlayer.play("run")` for simple props/UI.
-**Locomotion graph:** Player + Tree; `AnimationNodeStateMachine` with Idle/Walk/Run; blend space 1D on speed.
-**Retarget:** import with bone map → confirm rest → then build Tree.
-**One-shot:** `AnimationNodeOneShot` for attack/emote over base locomotion.
+## Authoritative state
+Animation resources, resolved tracks, AnimationPlayer playback, AnimationTree parameters, Skeleton3D rest and pose,
+import settings, runtime transforms, and diagnostics are authoritative.
 
-## Traps
-| Wrong | Correct |
-|-------|---------|
-| Editing `.glb` import internals for tweaks | Inherited scene / extra library |
-| Script `position` + root motion together | Pick one authority |
-| Broken elbows from bad retarget “fixed” in Tree | Fix BoneMap / rest first |
-| Godot 3 `AnimationTreePlayer` mental model | Current `AnimationTree` node graph |
-| Assuming locomotion clips loop | Verify each imported `Animation.loop_mode` |
-| Mapping every state to the first available clip | Report missing clips; do not fabricate a state machine |
-
-## Verify
-1. `resource.inspect` and `scene.inspect` for skeleton, libraries, and Tree parameters.
-2. `runtime.control` — each clip, interrupt, blend; watch feet/hands.
-3. For locomotion transitions: `runtime.control set_input_actions` → independently observe spatial facts and capture while moving → release all actions.
-   Correlate both receipts by `runtime_epoch`; a missing spatial receipt must not suppress valid pixels.
-4. `runtime.observe` digest for missing tracks / errors.
-5. Confirm no double translation when root motion enabled.
+## Official references
+- https://docs.godotengine.org/en/latest/tutorials/animation/index.html
+- https://docs.godotengine.org/en/latest/tutorials/animation/animation_tree.html
+- https://docs.godotengine.org/en/latest/tutorials/animation/retargeting_3d_skeletons.html
+- https://docs.godotengine.org/en/latest/classes/class_animationplayer.html
+- https://docs.godotengine.org/en/latest/classes/class_skeleton3d.html

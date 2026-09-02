@@ -1,46 +1,41 @@
 ---
 name: godot-ui-i18n-accessibility
-description: Godot 4 Control layout with Containers, Theme ownership, focus order, TranslationServer/locale, accessibility labels, and multi-resolution verification.
+description: Godot 4 Control layout, containers, themes, focus, internationalization, bidirectional text, and accessibility.
 ---
 
-# UI, Internationalization, and Accessibility
+# Godot UI, Internationalization, and Accessibility
 
-## When to use
-Use for menus, HUDs, forms, themes, localization, keyboard/controller focus, RTL, or accessibility. World-space 2D/3D labels are not a substitute for Control trees.
+## Scope
+Use when working with Control interfaces, layout, themes, focus, localized content, text direction, or accessibility.
 
-## Facts
-| Piece | Role |
-|-------|------|
-| Containers | `VBox`/`HBox`/`Grid`/`Margin`/`PanelContainer` — primary layout authority |
-| Anchors / size flags | Responsive fill; avoid absolute pixel layout for full screens |
-| `Theme` / `ThemeTypeVariation` | Central colors, fonts, styleboxes — not per-node copy-paste |
-| Focus | `focus_mode`, neighbor paths, `grab_focus()`; Controllers use ui_* InputMap |
-| Text | Prefer `tr("KEY")` / `TranslationServer`; CSV or `.translation` resources |
-| Stretch | `display/window/stretch/*` — UI scale vs game viewport |
-| A11y | Accessible names/descriptions on Controls where the platform exposes them |
+## Native model
+- Control defines a rectangle using anchors and offsets relative to its parent Control or Viewport, plus minimum-size and
+  size-flag constraints.
+- Container owns the layout of its child Controls while they are children of that Container. Each Container type applies
+  a specific arrangement using child minimum sizes and size flags.
+- Theme resources provide typed colors, constants, fonts, font sizes, icons, and StyleBoxes through hierarchy and type
+  lookup; local theme overrides take precedence.
+- GUI input is delivered to Controls through Viewport hit testing and `_gui_input()`. Mouse filtering controls propagation;
+  keyboard and controller input use the current focus owner and focus-neighbor graph.
+- TranslationServer selects locale and resolves translations. Project translation resources and domains define available
+  messages.
+- Layout direction and text direction support left-to-right and right-to-left content. Control accessibility properties
+  expose names, descriptions, roles, values, and relationships to assistive technology where supported.
+- Viewport content scale and stretch settings map project UI coordinates to window and display sizes.
 
-## Laws
-- Layout lives in Containers + anchors; scripts do not set `position` every frame for responsive UI.
-- One Theme owner per visual language; overrides are exceptions, not the system.
-- Every actionable control is reachable by keyboard/gamepad focus.
-- User-facing strings are translation keys — not hard-coded English in shipping UI.
+## Compatibility and prerequisites
+- Font coverage, shaping, locale resources, accessibility backend, input method, and platform window behavior vary by target.
+- Container layout, theme inheritance, translation, and focus operate on the instantiated Control tree, not isolated files.
 
-## Recipes
-**Screen shell:** root `Control` full-rect → `MarginContainer` → content `VBoxContainer`.
-**Modal:** `CanvasLayer` + dimmer `ColorRect` mouse-filter stop + focused default button.
-**Locale swap:** `TranslationServer.set_locale(code)` then refresh any non-auto text.
+## Authoritative state
+The live Control tree and rectangles, minimum sizes, Container assignment, resolved Theme items, focus owner, input events,
+TranslationServer locale and messages, accessibility output, Viewport scale, and rendered interface are authoritative.
 
-## Traps
-| Wrong | Correct |
-|-------|---------|
-| Absolute positioning for whole menus | Containers + size flags |
-| Duplicating StyleBox on every button | Theme / type variation |
-| Focus stuck on hidden controls | `visible` + `focus_mode` discipline; re-grab on show |
-| Text that fits EN only | Test long DE/FR strings and RTL if required |
-| Putting HUD in world `Node2D` without CanvasLayer | Separate UI CanvasLayer |
-
-## Verify
-1. `scene.inspect` for the Control tree, Theme paths, stretch settings.
-2. `runtime.control` at 16:9 and tall mobile sizes; tab/gamepad through focus.
-3. `render.capture` for clipping/contrast; swap locale and re-capture.
-4. `runtime.observe` for missing translations / layout errors.
+## Official references
+- https://docs.godotengine.org/en/latest/tutorials/ui/size_and_anchors.html
+- https://docs.godotengine.org/en/latest/tutorials/ui/gui_containers.html
+- https://docs.godotengine.org/en/latest/tutorials/ui/gui_skinning.html
+- https://docs.godotengine.org/en/latest/tutorials/ui/gui_navigation.html
+- https://docs.godotengine.org/en/latest/tutorials/i18n/internationalizing_games.html
+- https://docs.godotengine.org/en/latest/tutorials/ui/gui_accessibility.html
+- https://docs.godotengine.org/en/latest/tutorials/rendering/multiple_resolutions.html

@@ -721,12 +721,11 @@ Dictionary SolersProjectObservation::read_project_file(const String &p_path, int
 	const String resource_type = p_raw ? String() : ResourceLoader::get_resource_type(res_path);
 	if (_solers_is_packed_scene_type(resource_type)) {
 		const Dictionary observed = observe_path(res_path);
-		result["ok"] = false;
-		result["code"] = "SCENE_TEXT_DENIED";
-		result["error"] = "PackedScene source text is not the scene fact model. The digest field is the complete answer for structure/identity — do not retry with raw=true. Use scene.inspect for live details. Pass raw=true only when editing .tscn/.scn source text.";
+		result["ok"] = true;
 		result["path"] = res_path;
 		result["resource_type"] = resource_type;
-		result["recovery"] = "Use the included digest or scene.inspect. Do not call project.read_file with raw=true for observation.";
+		result["content_kind"] = "packed_scene_digest";
+		result["sha256"] = FileAccess::get_sha256(res_path);
 		if ((bool)observed.get("ok", false) && observed.has("digest")) {
 			result["digest"] = observed["digest"];
 		}

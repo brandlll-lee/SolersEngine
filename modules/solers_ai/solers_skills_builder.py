@@ -60,11 +60,9 @@ def _load_skill(skill_path: Path) -> dict[str, object]:
     if len(content.strip()) <= len(frontmatter.group(0)):
         raise ValueError(f"{skill_path}: skill body is empty")
 
-    tools = [item.strip() for item in str(fields.get("tools", "")).split(",") if item.strip()]
     return {
         "name": name,
         "description": description,
-        "tools": tools,
         "content": content,
     }
 
@@ -87,7 +85,6 @@ def make_builtin_skills_header(target, source, env):
             "struct SolersBuiltinSkillRecord {\n"
             "\tconst char *name;\n"
             "\tconst char *description;\n"
-            "\tconst char *tools;\n"
             "\tconst char *content;\n"
             "};\n\n"
         )
@@ -102,7 +99,6 @@ def make_builtin_skills_header(target, source, env):
             file.write("\t{\n")
             file.write(f'\t\t"{_escape_c_string(str(skill["name"]))}",\n')
             file.write(f'\t\t"{_escape_c_string(str(skill["description"]))}",\n')
-            file.write(f'\t\t"{_escape_c_string(",".join(skill["tools"]))}",\n')
             file.write(f"\t\tSOLERS_BUILTIN_SKILL_CONTENT_{slug},\n")
             file.write("\t},\n")
         file.write("};\n\n")

@@ -494,54 +494,25 @@ TEST_CASE("[SolersBuiltinSkills] registry catalog and content stay consistent wi
 		REQUIRE(SolersBuiltinSkills::find_by_name(name, skill));
 		CHECK(skill.name == name);
 		CHECK(!skill.description.is_empty());
-		CHECK(skill.content.contains("## When to use"));
-		CHECK(skill.content.contains("## Verify"));
-		CHECK_FALSE(skill.content.contains("photorealism-pipeline"));
-		CHECK_FALSE(skill.name == "photorealism-pipeline");
-		CHECK_FALSE(skill.name == "destruction-vfx");
-		CHECK_FALSE(skill.name == "godot-plugins-terrain");
+		CHECK(skill.content.contains("## Scope"));
+		CHECK(skill.content.contains("## Native model"));
+		CHECK(skill.content.contains("## Compatibility and prerequisites"));
+		CHECK(skill.content.contains("## Authoritative state"));
+		CHECK(skill.content.contains("## Official references"));
+		CHECK(skill.content.contains("docs.godotengine.org/en/latest/"));
+		CHECK_FALSE(skill.content.contains("\ntools:"));
+		CHECK_FALSE(skill.content.contains("## Recipes"));
+		CHECK_FALSE(skill.content.contains("## Laws"));
 	}
 
 	SolersBuiltinSkillView rendering;
 	REQUIRE(SolersBuiltinSkills::find_by_name("godot-3d-rendering", rendering));
-	// Extra parentheses: doctest can only decompose a single comparison, so a
-	// chained condition has to reach it as one already-evaluated bool.
-	CHECK((rendering.content.contains("one authoritative final GI path") || rendering.content.contains("One authoritative final GI path") || rendering.content.contains("one final GI")));
-	CHECK(rendering.content.contains("physical_light_units"));
-	CHECK(rendering.description.to_lower().contains("photoreal"));
-
-	SolersBuiltinSkillView camera;
-	REQUIRE(SolersBuiltinSkills::find_by_name("godot-camera-cinematography", camera));
-	CHECK(camera.content.contains("interpolate_with"));
-	CHECK(camera.content.contains("make_current"));
-	CHECK(camera.content.contains("godot-3d-rendering"));
-	CHECK_FALSE(camera.content.contains("photorealism-pipeline"));
-
-	SolersBuiltinSkillView terrain;
-	REQUIRE(SolersBuiltinSkills::find_by_name("godot-procedural-terrain", terrain));
-	CHECK(terrain.content.contains("addon.inspect"));
-	CHECK_FALSE(terrain.content.contains("Terrain3D"));
-
-	SolersBuiltinSkillView vfx;
-	REQUIRE(SolersBuiltinSkills::find_by_name("godot-vfx-particles", vfx));
-	CHECK(vfx.content.contains("decompress"));
-
-	SolersBuiltinSkillView shaders;
-	REQUIRE(SolersBuiltinSkills::find_by_name("godot-shaders", shaders));
-	CHECK(shaders.content.contains("shader_type"));
-
-	SolersBuiltinSkillView assets;
-	REQUIRE(SolersBuiltinSkills::find_by_name("godot-project-editor-assets", assets));
-	CHECK(assets.content.contains(".import"));
-	CHECK(assets.content.contains("asset.capabilities"));
-	CHECK_FALSE(assets.content.contains("meshy-6"));
-
-	SolersBuiltinSkillView animation;
-	REQUIRE(SolersBuiltinSkills::find_by_name("godot-animation-rigging", animation));
-	CHECK(animation.content.contains("Correlate both receipts by `runtime_epoch`"));
-	CHECK(animation.content.contains("must not suppress valid pixels"));
-	SolersBuiltinSkillView gameplay;
-	REQUIRE(SolersBuiltinSkills::find_by_name("godot-scripting-input-gameplay", gameplay));
+	CHECK(rendering.content.contains("LightmapGI"));
+	CHECK(rendering.content.contains("VoxelGI"));
+	CHECK(rendering.content.contains("SDFGI"));
+	CHECK(rendering.content.contains("UV2"));
+	CHECK(rendering.content.contains("Forward+"));
+	CHECK(rendering.content.contains("CameraAttributes"));
 
 	SolersBuiltinSkillView missing;
 	CHECK_FALSE(SolersBuiltinSkills::find_by_name("synthetic-never-registered-skill", missing));
@@ -564,8 +535,24 @@ TEST_CASE("[SolersToolRegistry] skill.read serves compiled builtin skills") {
 	const Dictionary data = result.get("data", Dictionary());
 	CHECK(data.get("name", String()) == "godot-3d-rendering");
 	CHECK(!String(data.get("content", String())).is_empty());
-	CHECK(String(data.get("content", String())).contains("physical_light_units"));
+	CHECK(String(data.get("content", String())).contains("## Native model"));
 	CHECK_FALSE(result.has("added_tools"));
+}
+
+TEST_CASE("[SolersToolRegistry] optional tools are discovered from live capability metadata") {
+	SolersPermissionManager permissions;
+	SolersToolRegistry registry;
+	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
+	registry.set_permission_manager(&permissions);
+	registry.register_default_tools();
+
+	const Dictionary result = registry.call_tool(StringName("tool.search"), Dictionary({ { "query", "revert" }, { "mode", "apply" } }));
+	REQUIRE((bool)result.get("ok", false));
+	const Dictionary data = result.get("data", Dictionary());
+	const Array matches = data.get("tools", Array());
+	REQUIRE(matches.size() == 1);
+	CHECK(Dictionary(matches[0]).get("name", String()) == "history.revert");
+	CHECK(Array(result.get("added_tools", Array())).has("history.revert"));
 }
 
 TEST_CASE("[SolersToolRegistry] skill.read rejects unknown builtin skills") {
@@ -639,7 +626,11 @@ TEST_CASE("[SolersToolRegistry] default tools keep one portable ABI across provi
 	CHECK_FALSE(Dictionary(Dictionary(query.get("input_schema", Dictionary())).get("properties", Dictionary())).has("expected_state"));
 	const Dictionary resource_edit = solers_test_find_dictionary(tools, SNAME("name"), "resource.edit");
 	REQUIRE_FALSE(resource_edit.is_empty());
-	CHECK_FALSE(Array(Dictionary(resource_edit.get("input_schema", Dictionary())).get("required", Array())).has("expected_state"));
+	const Dictionary resource_edit_schema = resource_edit.get("input_schema", Dictionary());
+	CHECK_FALSE(Array(resource_edit_schema.get("required", Array())).has("expected_state"));
+	const Dictionary state_schema = Dictionary(resource_edit_schema.get("properties", Dictionary())).get("expected_state", Dictionary());
+	const Dictionary resources_schema = Dictionary(state_schema.get("properties", Dictionary())).get("resources", Dictionary());
+	CHECK(Array(Dictionary(resources_schema.get("items", Dictionary())).get("required", Array())) == Array({ "path", "exists" }));
 	const Dictionary script_edit = solers_test_find_dictionary(tools, SNAME("name"), "script.edit");
 	const Dictionary script_properties = Dictionary(script_edit.get("input_schema", Dictionary())).get("properties", Dictionary());
 	CHECK(script_properties.has("expected_sha256"));
@@ -908,6 +899,11 @@ TEST_CASE("[SolersToolRegistry] a registered deferred tool needs no dispatcher b
 	Dictionary args;
 	args["expected_state"] = Dictionary({ { "resources", Array() } });
 	args["content"] = "native capability";
+	const Dictionary incomplete = registry.call_tool_with_context("synthetic.operation", args, context);
+	CHECK_FALSE((bool)incomplete.get("ok", true));
+	CHECK(Dictionary(incomplete.get("error", Dictionary())).get("code", String()) == "RESOURCE_STATE_INVALID");
+	CHECK_FALSE(executed);
+	args["expected_state"] = Dictionary({ { "resources", Array({ Dictionary({ { "path", path }, { "exists", false } }) }) } });
 	const Dictionary result = registry.call_tool_with_context("synthetic.operation", args, context);
 	REQUIRE((bool)result.get("ok", false));
 	CHECK(executed);
@@ -1154,7 +1150,7 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 	context.session_id = "resource-operation-contract";
 
 	Dictionary create_args;
-	create_args["expected_state"] = Dictionary({ { "resources", Array() } });
+	create_args["expected_state"] = Dictionary({ { "resources", Array({ Dictionary({ { "path", path }, { "exists", false } }) }) } });
 	create_args["class_name"] = "StandardMaterial3D";
 	create_args["path"] = path;
 	const Dictionary created = registry.call_tool_with_context(SNAME("resource.edit"), create_args, context);
@@ -1169,7 +1165,7 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 	context.call_id = "query_resource";
 	const Dictionary observed = registry.call_tool_with_context(SNAME("resource.inspect"), query, context);
 	REQUIRE((bool)observed.get("ok", false));
-	Dictionary expected_resource = observed.get("data", Dictionary());
+	Dictionary expected_resource = Dictionary(observed.get("data", Dictionary())).get("state", Dictionary());
 
 	expected_resource["sha256"] = String("0000000000000000000000000000000000000000000000000000000000000000");
 	Dictionary properties;
@@ -1208,7 +1204,7 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 	const String failure_path = "res://.solers_operation_failure.tres";
 	cleanup.add(failure_path);
 	create_args.erase("class_name");
-	create_args["expected_state"] = Dictionary({ { "resources", Array() } });
+	create_args["expected_state"] = Dictionary({ { "resources", Array({ Dictionary({ { "path", failure_path }, { "exists", false } }) }) } });
 	create_args["path"] = failure_path;
 	context.call_id = "resource_failure";
 	const Dictionary failed = registry.call_tool_with_context(SNAME("resource.edit"), create_args, context);
@@ -1297,7 +1293,7 @@ TEST_CASE("[SolersToolRegistry] model surface keeps stable script authorities di
 		}
 	}
 	model_tools.sort();
-	CHECK(model_tools == PackedStringArray({ "asset.script", "engine.describe", "object.inspect", "project.read_file", "project.search", "render.capture", "resource.inspect", "runtime.observe", "runtime.script", "scene.inspect", "scene.script", "script.validate", "skill.read", "spatial.inspect" }));
+	CHECK(model_tools == PackedStringArray({ "asset.script", "engine.describe", "object.inspect", "project.read_file", "project.search", "render.capture", "resource.inspect", "runtime.observe", "runtime.script", "scene.inspect", "scene.script", "script.validate", "skill.read", "spatial.inspect", "tool.search" }));
 	const Dictionary project_path = solers_test_find_dictionary(catalog, SNAME("name"), "project.path");
 	CHECK(project_path.get("exposure", String()) == "deferred");
 	const Dictionary action = Dictionary(Dictionary(project_path.get("input_schema", Dictionary())).get("properties", Dictionary())).get("action", Dictionary());

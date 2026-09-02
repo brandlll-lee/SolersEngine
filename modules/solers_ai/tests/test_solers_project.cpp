@@ -357,6 +357,27 @@ TEST_CASE("[SolersProjectObservation] observe_path digests any selection by engi
 	CHECK((int)page.get("next_line", 0) == 3);
 }
 
+TEST_CASE("[SolersProjectObservation] PackedScene reads return a native digest or explicit source") {
+	const String path = "res://.solers_read_scene_contract.tscn";
+	SolersTestPaths cleanup;
+	cleanup.add(path);
+	Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
+	REQUIRE(file.is_valid());
+	file->store_string("[gd_scene format=3]\n\n[node name=\"Root\" type=\"Node\"]\n");
+	file.unref();
+
+	SolersProjectObservation observation;
+	const Dictionary digest = observation.read_project_file(path, 1, 200, false);
+	REQUIRE((bool)digest.get("ok", false));
+	CHECK(digest.get("content_kind", String()) == "packed_scene_digest");
+	CHECK(Dictionary(digest.get("digest", Dictionary())).get("kind", String()) == "PackedScene");
+	CHECK_FALSE(digest.has("content"));
+
+	const Dictionary source = observation.read_project_file(path, 1, 200, true);
+	REQUIRE((bool)source.get("ok", false));
+	CHECK(String(source.get("content", String())).contains("[gd_scene format=3]"));
+}
+
 TEST_CASE("[SolersRuntimeObservation] runtime views require native debugger authority") {
 	SolersRuntimeObservation observation_service;
 	Dictionary observe_args;

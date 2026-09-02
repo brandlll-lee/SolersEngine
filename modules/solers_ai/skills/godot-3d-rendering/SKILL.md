@@ -1,44 +1,44 @@
 ---
 name: godot-3d-rendering
-description: Godot 4 3D layout, PBR, lighting, single GI path, Environment tonemap (ACES/AgX), physical light units, fog, lightmaps, and photoreal verification. Prefer this over a separate photorealism skill.
+description: Godot 4 renderers, lights, materials, environments, global illumination, shadows, and post-processing.
 ---
 
-# 3D Scenes, Materials, Lighting, and Photoreal Look
+# Godot 3D Rendering
 
-## When to use
-Use for 3D layout, imported models, PBR materials, lights, Environment/GI, shadows, fog, baking, or “photorealistic / cinematic / like a photo” look. Camera **motion** → `godot-camera-cinematography`. Custom `.gdshader` → `godot-shaders`. Terrain meshes → `godot-procedural-terrain` / addons via Contract.
+## Scope
+Use when working with Godot's 3D rendering pipeline, lighting, materials, environments, global illumination, shadows,
+reflections, fog, exposure, or post-processing.
 
-## Facts
-| Piece | Role |
-|-------|------|
-| Renderer | Project setting: Forward+ / Mobile / Compatibility — features differ (SDFGI/volumetrics mainly Forward+) |
-| Scale | 1 unit ≈ 1 meter; measure bounds before placing |
-| `WorldEnvironment` + `Environment` | Tonemap, background/sky, ambient, SDFGI/SSAO/SSIL/SSR, fog, glow |
-| Lights | `DirectionalLight3D` / `OmniLight3D` / `SpotLight3D`; physical lux/lumen when `physical_light_units` on |
-| GI (pick **one** final) | SDFGI (dynamic/large) **or** `LightmapGI` (static) **or** `VoxelGI` — not two finals |
-| Materials | One PBR map family (albedo/normal/roughness); `StandardMaterial3D` / `ORMMaterial3D` |
-| Decals | Directional box projection, not arc-length-preserving surface wrapping |
-| CSG | Whitebox through ClassDB; keep the source editable and use Godot's native editor conversion for final mesh/collision assets |
-| UV2 / lightmaps | Use Godot's importer/editor workflow after topology is stable; inspect the resulting native resources |
-| Exposure | `CameraAttributesPhysical` / `Practical` on `Camera3D` when using physical units |
+## Native model
+- Forward+, Mobile, and Compatibility are distinct rendering methods with different feature and hardware support.
+- A rendered surface combines geometry and normals, material/shader state, direct lights, environment and sky, reflection
+  data, global illumination, camera attributes, and post-processing.
+- DirectionalLight3D, OmniLight3D, and SpotLight3D provide direct light. Their cull masks select VisualInstance3D layers;
+  shadow casting remains a separate GeometryInstance3D property.
+- WorldEnvironment supplies the default Environment and CameraAttributes. Camera3D resources override corresponding
+  world defaults for that camera.
+- LightmapGI stores editor-baked static indirect light. Contributing meshes need static GI mode and valid UV2 data;
+  dynamic geometry can receive indirect light from probes.
+- VoxelGI is a baked-volume, real-time GI technique for Forward+ and small or medium scenes. SDFGI is a Forward+,
+  camera-following GI technique for larger or procedurally generated worlds; it supports dynamic lights but not dynamic
+  occluders or dynamic emissive surfaces.
+- Physical light units are enabled project-wide and are interpreted together with CameraAttributes exposure.
 
-## Laws
-- One authoritative final GI path; seal leaks before blaming lights.
-- Treat the live edited scene as the authority; construct visible editor state through the applicable scene/resource tools, not script-driven editor rebuilds.
-- Create or edit scene roots and Resources through the applicable scene/resource tools using ClassDB property metadata and the state/hash returned by the matching query.
-- With `use_physical_light_units`: Directional intensity is `light_intensity_lux` (`PARAM_INTENSITY`); `light_energy` is a dimensionless multiplier. Never put lux-scale numbers into `light_energy`.
-- Before claiming an image ratio, query the exact `Texture2D` resource's native width and height; never reuse dimensions from another asset.
-- A `Decal` can project onto a curved receiver, but a wide projection does not preserve artwork arc length. Use a narrower projection or an explicitly UV-mapped curved mesh when the distinction matters.
-- When appearance is part of the task, use a fresh capture when pixel evidence is needed; framing facts prove only where native bounds land in the image, so judge appearance from the pixels.
-- `spatial.inspect` measures explicit world-AABB relations. A capture is not a geometry measurement, and node cardinality is not a lighting verdict.
-- The agent chooses the next native observation from the current evidence; this guidance is not a fixed action sequence.
-- Use fresh captures when visual claims need pixel evidence, and re-query native state when the cause remains uncertain.
-- Never invent model size from thumbnails — measure geometry.
-- With physical units: raise lux/lumens or camera attributes — not `ambient_light_energy` / emissive fill as “brightness”.
-- CSG is not final art; importers own `.import` — do not hand-edit import caches or claim mipmap/import quality without observing their native state.
-- Protective checkpoints are not rollbacks; Solers mid-turn persists scene mutations (`persisted` on tool results).
+## Compatibility and prerequisites
+- Renderer support is defined by the current renderer feature table. Compatibility can display LightmapGI, but default
+  lightmap baking requires RenderingDevice support; VoxelGI and SDFGI require Forward+.
+- GI output depends on mesh GI mode, imported light-baking settings, UV2 availability, light bake mode, and current baked
+  resources. Changes to bake inputs require new baked data where the selected technique is baked.
 
-## Verify
-1. For visual claims, choose the native state and pixel evidence needed to test the current hypothesis.
-2. If causality is unclear, use `engine.describe` to select a native debug draw or another authoritative observation; do not infer renderer state from pixel statistics.
-3. Compare the relevant native receipt and image evidence after a change when the claim depends on appearance. Use runtime observation only for gameplay lifecycle, and relations only for geometry.
+## Authoritative state
+The project renderer, live World3D, active camera and overrides, native mesh/light/material properties, GI resources,
+render diagnostics, and captured pixels are authoritative. A scene file or screenshot alone is not the complete state.
+
+## Official references
+- https://docs.godotengine.org/en/latest/tutorials/rendering/renderers.html
+- https://docs.godotengine.org/en/latest/tutorials/3d/lights_and_shadows.html
+- https://docs.godotengine.org/en/latest/tutorials/3d/environment_and_post_processing.html
+- https://docs.godotengine.org/en/latest/tutorials/3d/global_illumination/introduction_to_global_illumination.html
+- https://docs.godotengine.org/en/latest/tutorials/3d/global_illumination/using_lightmap_gi.html
+- https://docs.godotengine.org/en/latest/tutorials/3d/global_illumination/using_voxel_gi.html
+- https://docs.godotengine.org/en/latest/tutorials/3d/global_illumination/using_sdfgi.html

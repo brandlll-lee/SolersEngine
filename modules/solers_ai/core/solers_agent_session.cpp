@@ -348,6 +348,7 @@ String SolersAgentSession::_default_system_prompt() const {
 			"Operating contract:\n"
 			"- Godot live editor and runtime state are authoritative. Combine static project evidence with native facts when the task crosses both.\n"
 			"- Choose the smallest available tool that advances the task. Search, read, inspect, capture, edit, and validate are independent operations; no observation unlocks an action.\n"
+			"- Optional specialized tools come from the live Registry through tool.search. Skills provide domain knowledge and never grant capabilities.\n"
 			"- Tool results are bounded pages with native identities, cursors, hashes, epochs, receipts, and errors. Continue from those facts when more detail is needed.\n"
 			"- Mutations are available through their declared capabilities. Use a current native receipt when you have one, but do not invent a separate save step or wait for a matching query.\n"
 			"- Prefer the smallest coherent native change. Use ClassDB metadata and native documentation for unfamiliar engine types.\n"

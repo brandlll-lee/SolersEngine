@@ -458,7 +458,7 @@ void SolersToolRegistry::_register_observation_tools() {
 					return _error("INVALID_ARGUMENT", "query is required for text and symbol search.");
 				}
 				return _ok(project->search_project(a, ctx.result_token_budget)); }, {}, {}, {}, SolersToolUiKind::SEARCH, SolersToolExecution::WORKER_THREAD, {}, SolersOperationDomain::EDITOR, SolersOperationMode::QUERY, PackedStringArray({ "/query", "/type" }));
-		_add_observe_exposed("project.read_file", "Read a bounded line range from a project text file. Continue from next_line; PackedScene defaults to a native digest unless raw=true is required for source editing.", R"({"type":"object","properties":{"path":{"type":"string","description":"res:// path of the file to read."},"line_start":{"type":"integer","minimum":1},"line_count":{"type":"integer","minimum":1},"raw":{"type":"boolean","description":"Only for PackedScene source editing. Default false."}},"required":["path"],"additionalProperties":false})", SolersToolExposure::MODEL, [this, project](const SolersToolContext &ctx, const Dictionary &a) {
+		_add_observe_exposed("project.read_file", "Read a bounded line range from one exact res:// path. Text returns content and next_line; PackedScene returns a native digest unless raw=true explicitly requests serialized source.", R"({"type":"object","properties":{"path":{"type":"string","pattern":"^res://","description":"Exact path returned by project.search."},"line_start":{"type":"integer","minimum":1},"line_count":{"type":"integer","minimum":1},"raw":{"type":"boolean","description":"Request serialized PackedScene source instead of its native digest. Default false."}},"required":["path"],"additionalProperties":false})", SolersToolExposure::MODEL, [this, project](const SolersToolContext &ctx, const Dictionary &a) {
 				const Dictionary file = project->read_project_file(a.get("path", String()), (int)a.get("line_start", 1), (int)a.get("line_count", 200), (bool)a.get("raw", false), ctx.result_token_budget);
 				if (!(bool)file.get("ok", false)) {
 					Dictionary error;
@@ -468,12 +468,6 @@ void SolersToolRegistry::_register_observation_tools() {
 					Dictionary result;
 					result["ok"] = false;
 					result["error"] = error;
-					if (file.has("digest")) {
-						Dictionary data;
-						data["digest"] = file["digest"];
-						data["path"] = file.get("path", String());
-						result["data"] = data;
-					}
 					return result;
 				}
 				return _ok(file); }, _access_by_arg("read", "project:", "path"), {}, {}, SolersToolUiKind::READ, SolersToolExecution::MAIN_THREAD, {}, SolersOperationDomain::EDITOR, SolersOperationMode::QUERY);
@@ -535,7 +529,7 @@ void SolersToolRegistry::_register_reflection_tools() {
 	}
 	SolersReflectionService *ref = reflection_service;
 	const SolersPermissionManager::Permission edit_scene = SolersPermissionManager::PERMISSION_EDIT_SCENE;
-	_add_observe_exposed("scene.inspect", "Inspect the live edited scene tree and typed native node facts. Use node filters for discovery and node_paths for exact inspection; results carry a scene receipt and cursors.", R"({"type":"object","properties":{"include_selection":{"type":"boolean"},"node_paths":{"type":"array","items":{"type":"string"},"uniqueItems":true,"minItems":1,"maxItems":64},"path_prefix":{"type":"string"},"name_contains":{"type":"string"},"class_name":{"type":"string"},"script_path":{"type":"string","pattern":"^res://"},"cursor":{"type":"integer","minimum":0},"max_results":{"type":"integer","minimum":1},"include_connections":{"type":"boolean"},"properties":{"type":"array","items":{"type":"string"},"uniqueItems":true,"maxItems":128}},"additionalProperties":false})", SolersToolExposure::MODEL, [this, ref](const SolersToolContext &ctx, const Dictionary &a) {
+	_add_observe_exposed("scene.inspect", "Inspect the live edited scene tree and typed native node facts. Discovery filters and exact paths share edited-root-relative identities; root is '.'. Results carry a scene receipt and cursors.", R"({"type":"object","properties":{"include_selection":{"type":"boolean"},"node_paths":{"type":"array","items":{"type":"string","description":"Edited-root-relative node_path returned by scene.inspect; root is '.'."},"uniqueItems":true,"minItems":1,"maxItems":64},"path_prefix":{"type":"string","description":"Edited-root-relative prefix; root is '.'."},"name_contains":{"type":"string"},"class_name":{"type":"string"},"script_path":{"type":"string","pattern":"^res://"},"cursor":{"type":"integer","minimum":0},"max_results":{"type":"integer","minimum":1},"include_connections":{"type":"boolean"},"properties":{"type":"array","items":{"type":"string"},"uniqueItems":true,"maxItems":128}},"additionalProperties":false})", SolersToolExposure::MODEL, [this, ref](const SolersToolContext &ctx, const Dictionary &a) {
 				Node *edited_root = SceneTree::get_singleton()->get_edited_scene_root();
 				if (!edited_root) {
 					return _error("NO_EDITED_SCENE", "Open a scene before inspecting its live nodes.", true);
@@ -591,7 +585,7 @@ void SolersToolRegistry::_register_reflection_tools() {
 					result["data"] = data;
 				}
 				return result; }, _access_by_arg("read", "project:", "path"), {}, {}, SolersToolUiKind::READ, SolersToolExecution::MAIN_THREAD, {}, SolersOperationDomain::EDITOR, SolersOperationMode::QUERY, PackedStringArray({ "/path" }));
-	_add_observe_exposed("object.inspect", "Inspect one known live Godot ObjectID through native properties and explicitly requested method calls. Use ObjectID values returned by engine or scene facts.", R"({"type":"object","properties":{"object_id":{"type":"string","pattern":"^-?[0-9]+$"},"properties":{"type":"array","items":{"type":"string"},"uniqueItems":true,"maxItems":128},"method_calls":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string","minLength":1},"arguments":{"type":"array","maxItems":32}},"required":["name"],"additionalProperties":false},"maxItems":32}},"required":["object_id"],"additionalProperties":false})", SolersToolExposure::MODEL, [this](const SolersToolContext &, const Dictionary &a) {
+	_add_observe_exposed("object.inspect", "Inspect one known ObjectID in the editor process through native properties and const method calls. Copy IDs from scene.inspect, resource.inspect, or engine.describe; remote runtime IDs belong to runtime.observe.", R"({"type":"object","properties":{"object_id":{"type":"string","pattern":"^-?[0-9]+$","description":"Editor-process ObjectID from current native evidence."},"properties":{"type":"array","items":{"type":"string"},"uniqueItems":true,"maxItems":128},"method_calls":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string","minLength":1},"arguments":{"type":"array","maxItems":32}},"required":["name"],"additionalProperties":false},"maxItems":32}},"required":["object_id"],"additionalProperties":false})", SolersToolExposure::MODEL, [this](const SolersToolContext &, const Dictionary &a) {
 				if (!resource_service) {
 					return _error("OBJECT_INSPECTION_UNAVAILABLE", "Object inspection is unavailable.", false);
 				}
@@ -641,7 +635,7 @@ void SolersToolRegistry::_register_reflection_tools() {
 					data["method_results"] = method_results;
 				}
 				return _ok(data); }, _access_by_arg("read", "engine-object:", "object_id"), {}, {}, SolersToolUiKind::READ, SolersToolExecution::MAIN_THREAD, {}, SolersOperationDomain::EDITOR, SolersOperationMode::QUERY, PackedStringArray({ "/object_id" }));
-	_add_observe_exposed("spatial.inspect", "Measure native spatial relations between known scene node paths. Results are geometry facts, not a visibility or correctness verdict.", R"({"type":"object","properties":{"relations":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a","b"],"additionalProperties":false}}},"required":["relations"],"additionalProperties":false})", SolersToolExposure::MODEL, [ref](const SolersToolContext &, const Dictionary &a) { return ref->measure_spatial_relations(a); }, [](const Dictionary &) {
+	_add_observe_exposed("spatial.inspect", "Measure native spatial relations between known edited-scene nodes. Copy edited-root-relative paths from scene.inspect; results are geometry facts, not a visibility verdict.", R"({"type":"object","properties":{"relations":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"object","properties":{"a":{"type":"string","description":"Edited-root-relative node_path from scene.inspect."},"b":{"type":"string","description":"Edited-root-relative node_path from scene.inspect."}},"required":["a","b"],"additionalProperties":false}}},"required":["relations"],"additionalProperties":false})", SolersToolExposure::MODEL, [ref](const SolersToolContext &, const Dictionary &a) { return ref->measure_spatial_relations(a); }, [](const Dictionary &) {
 				Array accesses;
 			Dictionary access;
 			access["mode"] = "read";

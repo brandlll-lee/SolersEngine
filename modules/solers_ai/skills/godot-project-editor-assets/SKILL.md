@@ -1,49 +1,41 @@
 ---
 name: godot-project-editor-assets
-description: Godot project settings, res:// ownership, .import/.uid sidecar hygiene, addon Contract via addon.inspect, and asset.generate/acquire without vendor skill dumps.
-tools: project.settings, project.path, script.edit, script.validate, asset.catalog.search, asset.catalog.inspect, asset.catalog.acquire, asset.generate, asset.capabilities, asset.run_operation, asset.status, job.wait, addon.search, addon.inspect, addon.ensure, addon.list
+description: Godot 4 project settings, paths, resources, scenes, imports, UIDs, editor filesystem, and addons.
 ---
 
-# Project, Editor, and Assets
+# Godot Project, Editor, and Assets
 
-## When to use
-Use for project settings, folder layout, imports, resources, editor state, addons, or generated/catalog assets.
+## Scope
+Use when working with project structure, settings, resource paths, scenes, imports, UIDs, editor state, addons, or exports.
 
-## Facts
-| Piece | Role |
-|-------|------|
-| `res://` | Project resources; exported games treat as packed/read-only |
-| `user://` | Writable saves/cache |
-| `.import` | Importer sidecar — engine-owned; change via importer settings / reimport |
-| `.uid` | Stable resource identity files — keep with the resource; do not invent UIDs |
-| `plugin.cfg` / addons | Enable only after inspect; executable code is a trust boundary |
-| `asset.generate` / `asset.catalog.acquire` | Provider → stage → import into `target_dir`; options come from **plugin Contract** (`asset.capabilities`), not from this skill |
-| Provenance | Project-local `.solers.json` after verified import |
+## Native model
+- `res://` identifies files in the project resource root. `user://` identifies the writable per-user data directory.
+- ProjectSettings loads project-wide configuration from `project.godot`; InputMap and enabled plugins are part of that
+  configuration.
+- ResourceLoader and ResourceSaver use registered format loaders and savers. A saved scene is a PackedScene resource that
+  instantiates a node hierarchy.
+- Scene ownership determines which nodes are serialized into a PackedScene. Referenced resources may be built in,
+  external, shared by several owners, or local to a scene.
+- Imported source assets are transformed by a ResourceImporter. Import settings and source identity determine generated
+  data under `.godot/imported`; generated import output is not the editable source asset.
+- Resource UIDs provide stable resource identity independent of path where supported. EditorFileSystem exposes the
+  editor's current scan, type, and import view of project files.
+- An editor addon is project code loaded by EditorPlugin and may register docks, importers, inspectors, and other editor
+  behavior.
 
-## Laws
-- Author in source scenes/scripts/resources; never treat `.import` caches as editable art.
-- Addon APIs come from `addon.inspect` / ClassDB — never invent `terrain.*` / vendor tool families.
-- Provider quality knobs live in the plugin's generation_options Contract — read capabilities before setting `provider_options`.
-- Triangle budgets: honor `solers/import/max_source_triangles` and remediation from job errors.
+## Compatibility and prerequisites
+- Resource formats, import options, class names, UIDs, and addon APIs depend on the current engine and addon versions.
+- Reimport and filesystem scans are asynchronous editor operations; export includes resources according to its preset.
 
-## Recipes
-**Import four-pack (mental model):** source file + `.import` + `.uid` + (optional) imported companion — move/rename with Godot/`project` tools so sidecars stay coherent.
-**Generate/acquire:** set final `target_dir`, `import_profile` (`runtime` default; `baked_static` only if lightmaps), optional `max_triangles` / `map_types` → call generate/acquire → let the job reach terminal import (do not busy-poll status).
-**Addon:** `addon.inspect` → read Contract/entry classes → install/enable only if pinned and trusted → restart if the Contract says so.
-**CSG:** whitebox from ClassDB -> keep the source editable; use Godot's native editor conversion when a final mesh/collision asset is required.
+## Authoritative state
+ProjectSettings, native resource type and UID, ResourceLoader results, PackedScene state, importer configuration,
+EditorFileSystem scan/import state, editor diagnostics, and exported resource contents are authoritative.
 
-## Traps
-| Wrong | Correct |
-|-------|---------|
-| Hand-editing `.import` | Importer UI / reimport |
-| Hardcoding vendor model tier names in generic advice | `asset.capabilities` → `provider_options` schema |
-| Guessing addon method names | `addon.inspect` + `engine.describe` |
-| `import_profile: baked_static` “just in case” | Only when UV2/lightmap bake is real |
-| Treating download bytes as a Godot resource without import | Wait for verified import paths |
-
-## Verify
-1. `project.search` / `resource.inspect` paths resolve; sidecars present after moves.
-2. After generate/acquire: imported `res://` paths load; provenance exists.
-3. Reopen scene/project; `runtime.observe` for import errors.
-4. Addon path: inspect Contract, then validate ClassDB types exist post-enable.
-5. `project.delivery_report`; resolve blockers and report duplicate/unreferenced assets as advisories, never automatic deletions.
+## Official references
+- https://docs.godotengine.org/en/latest/tutorials/io/data_paths.html
+- https://docs.godotengine.org/en/latest/tutorials/scripting/resources.html
+- https://docs.godotengine.org/en/latest/tutorials/assets_pipeline/import_process.html
+- https://docs.godotengine.org/en/latest/tutorials/assets_pipeline/importing_3d_scenes/index.html
+- https://docs.godotengine.org/en/latest/classes/class_resourceuid.html
+- https://docs.godotengine.org/en/latest/classes/class_editorfilesystem.html
+- https://docs.godotengine.org/en/latest/tutorials/plugins/editor/making_plugins.html

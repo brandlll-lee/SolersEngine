@@ -1,47 +1,39 @@
 ---
 name: godot-shaders
-description: Godot 4 shading language for Spatial/CanvasItem/Particles/Sky, uniforms, varyings, render modes, light/fragment hooks, and verification without inventing built-ins.
+description: Godot 4 shading language, shader types, stages, render modes, uniforms, materials, and renderer support.
 ---
 
-# Shaders
+# Godot Shaders
 
-## When to use
-Use for `.gdshader` / ShaderMaterial work: custom lighting response, dissolve, outlines, water, toon, fullscreen post via backbuffer, particle shaders, or sky. Prefer `StandardMaterial3D` until a shader is actually required.
+## Scope
+Use when working with Godot shader source, ShaderMaterial, visual shaders, custom rendering, or shader-driven simulation.
 
-## Facts
-| Piece | Role |
-|-------|------|
-| Types | `shader_type spatial;` / `canvas_item;` / `particles;` / `sky;` |
-| Pipeline | `vertex()` → `fragment()`; optional `light()` in spatial |
-| Uniforms | `uniform` with hints (`source_color`, `hint_range`, `hint_normal`, …) |
-| Varyings | Pass vertex → fragment; precision matters on mobile |
-| Render modes | `unshaded`, `cull_disabled`, `depth_draw_*`, `blend_*`, `diffuse_*`, `specular_*` |
-| Built-ins | `VERTEX`, `NORMAL`, `UV`, `COLOR`, `ALBEDO`, `ROUGHNESS`, `METALLIC`, `ALPHA`, `TIME`, … — **ClassDB/docs only**, never invent |
-| Convert | `StandardMaterial3D` → convert to shader code as a starting point when stuck |
+## Native model
+- Godot's shading language is GPU-oriented. Every shader declares a type; supported processor functions, built-ins, and
+  render modes are defined by that type.
+- Vertex, fragment, and light processors handle different stages of spatial and canvas rendering. Particle shaders update
+  particle state before another material draws the particle geometry.
+- Render modes alter pipeline behavior such as blending, depth, culling, lighting, transforms, and world coordinates.
+- Uniforms are material inputs. Global uniforms are project-wide; instance uniforms vary selected GeometryInstance3D
+  values without duplicating the material.
+- ShaderMaterial binds a Shader and its uniform values. Mesh surfaces and CanvasItems determine where that material is used.
+- Reading or writing `ALPHA` in a spatial shader selects the transparent pipeline, which has different depth, shadow,
+  sorting, and screen-texture behavior from opaque rendering.
+- Screen, depth, and normal-roughness textures use explicit sampler hints and have renderer-specific availability.
 
-## Laws
-- Do not invent shader built-ins or render_mode tokens — verify against engine docs/`engine.describe` materials.
-- Keep one concern per shader; stack materials sparingly.
-- Mobile/XR: minimize dependent texture reads and overdraw; test on target renderer.
-- Drive gameplay knobs via `set_shader_parameter` — not by rewriting shader text each frame.
+## Compatibility and prerequisites
+- Shader built-ins, render modes, texture hints, precision, compute support, and limits depend on shader type, renderer,
+  graphics API, and target hardware.
+- Generated normals, tangents, UV channels, material ownership, and draw geometry are inputs to shader execution.
 
-## Recipes
-**Dissolve:** noise sample → `ALPHA` cut with uniform threshold; optional edge emission near cut.
-**Fresnel highlight:** `fresnel = pow(1.0 - dot(NORMAL, VIEW), exp)` → mix into ALBEDO/EMISSION.
-**Canvas flash:** `canvas_item` fragment modulates `COLOR` with uniform pulse on `TIME`.
-**Damage blend (3D):** mix base albedo with crack albedo by uniform `damage` and mask texture.
+## Authoritative state
+The active renderer, compiled Shader resource, compiler diagnostics, material and instance uniforms, mesh attributes,
+render modes, RenderingServer state, and rendered output are authoritative.
 
-## Traps
-| Wrong | Correct |
-|-------|---------|
-| Copying Unity/Unreal HLSL as-is | Godot shading language + Godot built-ins |
-| Inventing `TEXTURE_PIXEL_SIZE`-like names | Check current built-in list for the shader_type |
-| Ignoring `render_mode` cull/depth | Match transparency and sorting needs |
-| Huge shader when ORM material suffices | Stay on Standard/ORM until forced |
-| Editing imported material internals | ShaderMaterial on a wrapper mesh/surface |
-
-## Verify
-1. Assign ShaderMaterial; `resource.inspect` for uniforms.
-2. Static look: `render.capture target=camera|editor` + `source_state`; use runtime only for gameplay lighting.
-3. `runtime.observe` only when Play is needed for compile/runtime errors.
-4. Toggle parameters via script once to prove the contract.
+## Official references
+- https://docs.godotengine.org/en/latest/tutorials/shaders/introduction_to_shaders.html
+- https://docs.godotengine.org/en/latest/tutorials/shaders/shader_reference/shading_language.html
+- https://docs.godotengine.org/en/latest/tutorials/shaders/shader_reference/spatial_shader.html
+- https://docs.godotengine.org/en/latest/tutorials/shaders/shader_reference/canvas_item_shader.html
+- https://docs.godotengine.org/en/latest/tutorials/shaders/shader_reference/particle_shader.html
+- https://docs.godotengine.org/en/latest/tutorials/shaders/screen-reading_shaders.html

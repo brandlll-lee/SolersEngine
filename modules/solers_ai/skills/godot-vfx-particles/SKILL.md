@@ -1,48 +1,39 @@
 ---
 name: godot-vfx-particles
-description: Godot 4 GPUParticles/CPUParticles, decals, trails, one-shot bursts, material billboards, and a worked destruction example (cracks → shatter → dust).
+description: Godot 4 particle simulation, process materials, particle shaders, draw passes, trails, decals, and bounds.
 ---
 
-# VFX and Particles
+# Godot VFX and Particles
 
-## When to use
-Use for impacts, trails, weather, fire/smoke, magics, decals, debris bursts, or destruction staging. Look/lighting → `godot-3d-rendering`. Custom particle shaders → `godot-shaders`.
+## Scope
+Use when working with 2D or 3D particles, particle shaders, process materials, trails, decals, or effect rendering.
 
-## Facts
-| Piece | Role |
-|-------|------|
-| `GPUParticles3D`/`2D` | Default high-count path; `CPUParticles*` when GPU particles unavailable |
-| `ParticleProcessMaterial` | Velocity, gravity, color/scale ramps, emission shapes |
-| `one_shot` + `explosiveness` | Bursts; `restart()` to retrigger |
-| `Decal` | Cheap projected surface detail (cracks/blood) |
-| Draw | Particle material billboard modes; soft alpha; keep overdraw in budget |
-| Sub-emitters | Cascades (spark → smoke) when supported |
+## Native model
+- GPU particle nodes simulate on the GPU; CPU particle nodes simulate on the CPU while their visual material is still
+  rendered by the graphics pipeline.
+- ParticleProcessMaterial provides standard emission shape, velocity, acceleration, damping, scale, color, animation, and
+  collision behavior. A particle ShaderMaterial provides lower-level `start()` and `process()` control.
+- A particle emitter's amount, lifetime, one-shot state, explosiveness, randomness, fixed FPS, interpolation, preprocess,
+  local coordinates, and seed define simulation timing and reproducibility.
+- 3D draw passes provide the Mesh resources rendered for particles; their materials determine spatial shading,
+  transparency, and trail support.
+- Visibility AABB defines the 3D GPU particle simulation and rendering bounds used for culling and particle interaction.
+- Particle trails require trail simulation plus a supported trail mesh and material. Particle collision uses configured
+  collision bases and renderer-supported collision nodes.
+- Decal projects material channels onto eligible GeometryInstance3D layers without changing the underlying mesh material.
 
-## Laws
-- Prefer restarting pooled emitters over spawning unbounded node trees.
-- Match local vs global coordinates to the attachment point.
-- Compressed textures must be `decompress()` once before CPU `get_pixel` (never per frame).
-- Destruction debris: freeze → impulse → sleep/free; watch collision layers.
+## Compatibility and prerequisites
+- GPU particle features, emission APIs, collision, decals, trails, and limits depend on renderer and target hardware.
+- Transparency, overdraw, light interaction, simulation rate, particle count, and bounds contribute independently to cost.
 
-## Recipes
-**One-shot burst:** `one_shot=true`, `explosiveness=1`, amount 32–128, lifetime 1–2.5s; process material direction = hit normal, spread 35–60°, velocity 2–6.
-**Looping ambience:** low amount, soft gravity, large emission AABB; disable when off-camera if costly.
-**Worked example — destruction:**
-1. Surface: stack `Decal` cracks at impact (`size` ~0.6×0.2×0.6, distance fade).
-2. Structure: swap to pre-fractured `RigidBody3D` pieces with `freeze=true`.
-3. Collapse: unfreeze + `apply_impulse`; dust `GPUParticles3D` `restart()` at point; sleep pieces after ~4s.
-4. Optional continuous damage: shader uniform `damage` mixing crack mask into albedo/AO.
+## Authoritative state
+Emitter and process properties, active ParticleProcessMaterial or shader, draw meshes and materials, visibility bounds,
+renderer support, runtime simulation state, render diagnostics, profiler data, and captured frames are authoritative.
 
-## Traps
-| Wrong | Correct |
-|-------|---------|
-| `get_pixel` on compressed import every frame | Decompress once; cache `Image` |
-| New particles node every bullet | Pool + `restart()` |
-| Debris colliding with camera forever | Dedicated layer/mask; downgrade after impact |
-| Unlimited alpha overdraw | Cap amount; shorten lifetime; use soft particles carefully |
-| CPU particles “because habit” on desktop | GPU path first |
-
-## Verify
-1. `scene.inspect` for particle amount, material, decals, debris layers.
-2. `runtime.control` trigger → `render.capture`; watch settle.
-3. `runtime.observe` — zero compressed-texture spam; stable timing during bursts.
+## Official references
+- https://docs.godotengine.org/en/latest/tutorials/3d/particles/index.html
+- https://docs.godotengine.org/en/latest/tutorials/3d/particles/properties.html
+- https://docs.godotengine.org/en/latest/classes/class_gpuparticles3d.html
+- https://docs.godotengine.org/en/latest/classes/class_cpuparticles3d.html
+- https://docs.godotengine.org/en/latest/tutorials/shaders/shader_reference/particle_shader.html
+- https://docs.godotengine.org/en/latest/classes/class_decal.html

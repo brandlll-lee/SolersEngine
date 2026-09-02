@@ -325,14 +325,18 @@ TEST_CASE("[SolersContextManager] completed tool evidence is outside tool-call s
 	CHECK(String(Dictionary(projected[5]).get("content", String())) == "exact image receipt");
 }
 
-TEST_CASE("[SolersContextManager] consumed tool evidence keeps a compact requery receipt") {
+TEST_CASE("[SolersContextManager] consumed tool evidence shares one newest-first budget") {
 	Array history;
-	history.push_back(SolersLLMMessage::assistant("Inspecting.", make_tool_calls("compact", "scene.inspect")));
-	history.push_back(SolersLLMMessage::tool_result("compact", "scene.inspect", String("large scene payload ").repeat(2000)));
+	history.push_back(SolersLLMMessage::assistant("Inspecting old state.", make_tool_calls("old", "scene.inspect")));
+	history.push_back(SolersLLMMessage::tool_result("old", "scene.inspect", String("old scene evidence ").repeat(3000)));
+	history.push_back(SolersLLMMessage::assistant("Inspecting current state.", make_tool_calls("current", "scene.inspect")));
+	history.push_back(SolersLLMMessage::tool_result("current", "scene.inspect", String("current scene evidence ").repeat(3000)));
 	history.push_back(SolersLLMMessage::assistant("Continue.", Array()));
 	const Array projected = SolersContextManager::project_tool_evidence(history);
 	const String wire = JSON::stringify(projected);
-	CHECK(wire.contains("large scene payload"));
+	CHECK(wire.contains("current scene evidence"));
+	CHECK_FALSE(wire.contains("old scene evidence"));
+	CHECK(SolersContextManager::estimate_messages_tokens(projected) < SolersContextManager::estimate_messages_tokens(history));
 }
 
 TEST_CASE("[SolersContextManager] envelope clamp keeps head and tail under the token budget") {

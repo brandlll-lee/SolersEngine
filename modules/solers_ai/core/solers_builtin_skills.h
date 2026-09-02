@@ -37,7 +37,6 @@
 struct SolersBuiltinSkillView {
 	String name;
 	String description;
-	PackedStringArray tools;
 	String content;
 };
 

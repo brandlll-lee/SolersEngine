@@ -1,46 +1,36 @@
 ---
 name: godot-debugging-performance-export
-description: Reproduce Godot failures with runtime.observe, profile one bottleneck, apply native fixes, validate export presets, and smoke-test packaged builds.
-tools: runtime.observe, runtime.control, export.list_presets, export.validate_presets, export.run_preset, project.delivery_report, history.revert
+description: Godot 4 diagnostics, debugger, profiling, performance monitors, command line, and export.
 ---
 
-# Debugging, Performance, and Export
+# Godot Debugging, Performance, and Export
 
-## When to use
-Use for runtime errors, profiling, optimization, export presets, packaging, or release smoke tests.
+## Scope
+Use when working with Godot diagnostics, debugger sessions, profiling, engine monitors, command-line runs, or exports.
 
-## Facts
-| Piece | Role |
-|-------|------|
-| Reproduce | Same `runtime.control` scenario every time |
-| Observe | `runtime.observe` errors, output, optional performance samples |
-| Profiler | Godot profiler / Debugger — measure before changing |
-| Bottleneck classes | CPU script, draw calls, GPU fill, physics, loading spikes |
-| Export | Editor export presets + platform features; editor play ≠ device proof |
-| Native levers | LOD, occlusion, pooling, baked lighting, fewer materials, thread imports |
+## Native model
+- Parser, script, shader, import, engine, and platform diagnostics are produced by different subsystems and retain their
+  own source locations, severity, and runtime context.
+- The debugger receives errors, breakpoints, stack frames, inspectors, profilers, and monitors from a running debug game.
+- The profiler samples frame categories and script functions while enabled. Performance exposes engine counters such as
+  frame rate, memory, object counts, draw calls, and physics activity.
+- Performance monitors have subsystem-specific update rates and availability; some return no data in release builds.
+- ExportPreset defines platform and feature configuration plus resource inclusion. Export templates provide the target
+  runtime binaries; `export_presets.cfg` and export credentials have different persistence and secrecy requirements.
+- Godot's command line can run projects or scenes, execute tests and scripts, and perform debug or release exports.
 
-## Laws
-- One reproducible scenario; fix the owner of the failure first.
-- Performance: baseline → change **one** measured bottleneck → remeasure.
-- Do not claim platform readiness from editor FPS alone.
-- Export only with an explicit preset that matches the target renderer/features.
+## Compatibility and prerequisites
+- Profiling, debugging, rendering counters, and export options depend on build type, language, platform, and renderer.
+- An exported project uses packaged resources and platform lifecycle rules that differ from an editor debug run.
 
-## Recipes
-**Crash/error loop:** reproduce → read observe stack → fix owner → same scenario green.
-**Perf loop:** capture time/draw stats → identify top cost → apply one native mitigation → compare.
-**Export loop:** validate preset → export → run artifact on target → smoke input/render/audio.
+## Authoritative state
+Complete diagnostics, stack frames, profiler captures, Performance monitor values, active export preset, exporter result,
+produced artifact, and target-platform runtime output are authoritative.
 
-## Traps
-| Wrong | Correct |
-|-------|---------|
-| Optimizing from FPS folklore | Instrument + single change |
-| Changing five systems at once | Isolate variables |
-| “Works in editor” as shipping proof | Packaged build on target |
-| Ignoring first-load stutters | Measure load/import/compile separately |
-| Disabling features randomly | Tie change to measured cost |
-
-## Verify
-1. Same scenario before/after via `runtime.control` + `runtime.observe`.
-2. Optional `render.capture` if visual regression risk.
-3. `project.delivery_report`, then export preset validation and artifact launch checklist.
-4. Stop when scenario passes and metrics meet the stated budget (or report the remaining gap truthfully).
+## Official references
+- https://docs.godotengine.org/en/latest/tutorials/scripting/debug/index.html
+- https://docs.godotengine.org/en/latest/tutorials/scripting/debug/the_profiler.html
+- https://docs.godotengine.org/en/latest/tutorials/performance/index.html
+- https://docs.godotengine.org/en/latest/classes/class_performance.html
+- https://docs.godotengine.org/en/latest/tutorials/export/exporting_projects.html
+- https://docs.godotengine.org/en/latest/tutorials/editor/command_line_tutorial.html

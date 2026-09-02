@@ -144,7 +144,7 @@ class SolersToolRegistry : public Object {
 	void _register_asset_tools();
 	void _register_addon_tools();
 	void _register_reflection_tools();
-	void _register_skill_tools();
+	void _register_builtin_tools();
 	Dictionary _inspect_engine(const Dictionary &p_args);
 	Dictionary _with_added_tools(const Dictionary &p_result, const Array &p_tools) const;
 	Dictionary _validate_expected_state(const SolersTool *p_tool, const Dictionary &p_args) const;

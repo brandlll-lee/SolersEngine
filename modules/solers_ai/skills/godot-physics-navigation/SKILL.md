@@ -1,62 +1,39 @@
 ---
 name: godot-physics-navigation
-description: Godot 4 body types, CharacterBody move_and_slide, layers/masks, RigidBody rules, Area triggers, NavigationServer sync, and NavigationAgent wiring.
+description: Godot 4 physics bodies, collision, space queries, navigation maps, pathfinding, and avoidance.
 ---
 
-# Physics, Collision, and Navigation
+# Godot Physics and Navigation
 
-## When to use
-Use for movement, contacts, triggers, shape queries, joints, navmesh bake, agents, links, or avoidance.
+## Scope
+Use when working with 2D or 3D bodies, collision, physics queries, character motion, navigation, pathfinding, or avoidance.
 
-## Facts
-| Type | Use when |
-|------|----------|
-| `StaticBody2D/3D` | Immovable world |
-| `AnimatableBody2D/3D` | Kinematic moving platforms (engine-moved) |
-| `CharacterBody2D/3D` | Player/AI directly controlled motion |
-| `RigidBody2D/3D` | Simulated forces/impulses |
-| `Area2D/3D` | Detection / triggers / gravity wells — not solid blocking |
-| Shapes | Prefer simple `Box`/`Sphere`/`Capsule` scaled uniformly; convex for complex static |
-| Layers | **layer** = what I am; **mask** = what I collide/detect with |
-| Navigation | `NavigationRegion3D/2D` bake → map on `NavigationServer*` → `NavigationAgent*` |
+## Native model
+- Physics advances at fixed ticks. PhysicsBody, Area, CollisionObject, CollisionShape, and PhysicsServer state define the
+  simulated world independently of visual geometry.
+- Collision layers describe membership; collision masks select layers considered by a body, area, or query.
+- CharacterBody movement is user-controlled through motion methods such as `move_and_slide()`. RigidBody motion is owned
+  by the physics simulation and is influenced through forces, impulses, or integration callbacks.
+- World direct-space state exposes ray, point, shape, and motion queries against the synchronized physics space.
+- NavigationServer owns maps identified by RID. Maps contain regions, links, and avoidance agents; queued changes become
+  effective when the navigation server synchronizes.
+- NavigationAgent computes path-following information but does not move its parent. Avoidance computes a safe velocity
+  and is separate from pathfinding and physics collision.
 
-## Laws
-- Do **not** move `RigidBody*` by writing `global_transform` each frame — use forces/velocity/`integrate_forces`.
-- Character motion: one velocity authority; usually `move_and_slide` in `_physics_process`.
-- Direct space queries belong in the physics frame (not arbitrary `_process` guessing).
-- Synchronize / wait for the navigation map before the first `get_next_path_position` (first-frame empty path is common).
-- Bake navmesh from **agent radius/height**, not eyeballed margins alone.
+## Compatibility and prerequisites
+- Physics and navigation have separate 2D and 3D servers, resources, layers, and world membership.
+- Navigation results depend on map assignment, synchronized region data, compatible navigation layers, and baked or
+  generated navigation geometry.
 
-## Recipes
-**CharacterBody3D floor move:**
-```gdscript
-func _physics_process(delta: float) -> void:
-    if not is_on_floor():
-        velocity.y -= gravity * delta
-    var input := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
-    var dir := (transform.basis * Vector3(input.x, 0, input.y)).normalized()
-    velocity.x = dir.x * speed
-    velocity.z = dir.z * speed
-    move_and_slide()
-```
-**Rigid impulse:** `apply_impulse(direction * strength)` at contact; enable `contact_monitor` / `max_contacts_reported` only where needed.
-**Agent loop (outline):** bake region → `await get_tree().physics_frame` (or map-changed) → `agent.target_position = goal` → each physics frame steer using `get_next_path_position()`.
+## Authoritative state
+PhysicsServer and NavigationServer state, body and shape transforms, layers and masks, direct query results, contacts,
+map RIDs and synchronization, path data, safe velocity, and runtime physics frames are authoritative.
 
-**move_and_slide vs move_and_collide:** slide for characters walking on floors; collide when you need precise hit info / custom response.
-
-## Traps
-| Wrong | Correct |
-|-------|---------|
-| `RigidBody.global_position = …` every frame | Forces / `linear_velocity` / joints |
-| Non-uniform scale on collision shapes | Uniform scale or fix mesh; re-bake shape |
-| Mask/layer all bits on | Explicit roles (world/player/projectile…) |
-| Query path same frame as bake | Wait for map sync |
-| Resetting `target_position` every frame unnecessarily | Set when goal changes |
-| Two scripts both writing `velocity` | Single locomotion owner |
-| Godot 3 `KinematicBody` / `move_and_slide()` old signature | `CharacterBody3D` + velocity property API |
-
-## Verify
-1. `scene.inspect` for bodies, shapes, layers/masks, region/agent setup.
-2. `runtime.control` → slopes, edges, triggers, reachable/unreachable goals.
-3. `runtime.observe` for physics errors; confirm no transform-fighting rigid bodies.
-4. Optional: `render.capture` for contact/debug shapes if using debug draw.
+## Official references
+- https://docs.godotengine.org/en/latest/tutorials/physics/physics_introduction.html
+- https://docs.godotengine.org/en/latest/tutorials/physics/ray-casting.html
+- https://docs.godotengine.org/en/latest/classes/class_characterbody3d.html
+- https://docs.godotengine.org/en/latest/classes/class_rigidbody3d.html
+- https://docs.godotengine.org/en/latest/tutorials/navigation/navigation_introduction_3d.html
+- https://docs.godotengine.org/en/latest/tutorials/navigation/navigation_using_navigationmaps.html
+- https://docs.godotengine.org/en/latest/tutorials/navigation/navigation_using_navigationagents.html

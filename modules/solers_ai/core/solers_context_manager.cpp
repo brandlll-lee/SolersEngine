@@ -199,15 +199,6 @@ Array SolersContextManager::project_completed_turns(const Array &p_messages) {
 			continue;
 		}
 		failures.erase(tool);
-		const Dictionary data = result.get("data", Dictionary());
-		if (!data.is_empty()) {
-			Dictionary evidence;
-			evidence["tool"] = tool;
-			evidence["content"] = clamp_to_tokens(JSON::stringify(data, "", false, true), TOOL_RESULT_MAX_TOKENS / 4);
-			Array observations = facts.get("observations", Array());
-			observations.push_back(evidence);
-			facts["observations"] = observations;
-		}
 		const Dictionary receipt = Dictionary(Dictionary(result.get("data", Dictionary())).get("mutation", Dictionary())).get("receipt", Dictionary());
 		const Dictionary scene = receipt.get("scene_after", Dictionary());
 		if (!scene.is_empty()) {
@@ -235,6 +226,8 @@ Array SolersContextManager::project_completed_turns(const Array &p_messages) {
 
 Array SolersContextManager::project_tool_evidence(const Array &p_messages) {
 	HashSet<String> completed_calls;
+	HashMap<String, String> retained_evidence;
+	int remaining_evidence_tokens = TOOL_RESULT_MAX_TOKENS;
 	bool has_later_assistant = false;
 	for (int i = p_messages.size() - 1; i >= 0; i--) {
 		const Dictionary message = p_messages[i];
@@ -245,6 +238,11 @@ Array SolersContextManager::project_tool_evidence(const Array &p_messages) {
 			const String call_id = message.get("tool_call_id", String());
 			if (!call_id.is_empty()) {
 				completed_calls.insert(call_id);
+				if (remaining_evidence_tokens > 0) {
+					const String content = clamp_to_tokens(message.get("content", String()), remaining_evidence_tokens);
+					retained_evidence[call_id] = content;
+					remaining_evidence_tokens -= estimate_tokens(content);
+				}
 			}
 		}
 	}
@@ -269,7 +267,12 @@ Array SolersContextManager::project_tool_evidence(const Array &p_messages) {
 			}
 		} else if (role == String(SolersLLMRole::TOOL)) {
 			if (completed_calls.has(message.get("tool_call_id", String()))) {
-				message["content"] = clamp_to_tokens(message.get("content", String()), TOOL_RESULT_MAX_TOKENS / 4);
+				const String call_id = message.get("tool_call_id", String());
+				const String *content = retained_evidence.getptr(call_id);
+				if (!content) {
+					continue;
+				}
+				message["content"] = *content;
 				message["role"] = MODEL_CONTEXT_ROLE;
 				message["origin"] = "tool_evidence";
 				message.erase("tool_call_id");

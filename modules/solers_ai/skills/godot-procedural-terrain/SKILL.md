@@ -1,47 +1,40 @@
 ---
 name: godot-procedural-terrain
-description: Procedural heightfields, Noise/Mesh/MultiMesh terrain, collision and navigation bake, LOD, and third-party terrain addons only through addon.inspect Contracts.
-tools: addon.search, addon.inspect, addon.ensure, addon.list
+description: Godot 4 procedural geometry, terrain composition, instancing, collision, navigation, and level of detail.
 ---
 
-# Procedural Terrain and Large Landscapes
+# Godot Procedural Terrain
 
-## When to use
-Use for heightmaps, procedural ground meshes, vegetation instancing, terrain collision/navigation, LOD, or installing a terrain **addon**. Do not invent engine `terrain.*` tools.
+## Scope
+Use when working with generated geometry, height fields, terrain systems, foliage instancing, collision, navigation, or LOD.
 
-## Facts
-| Piece | Role |
-|-------|------|
-| Built-in path | `Noise`/`FastNoiseLite` → `Image` height → `ArrayMesh`/`SurfaceTool` or `HeightMapShape3D` |
-| Instancing | `MultiMeshInstance3D` for rocks/grass; density by slope/height masks |
-| Collision | Separate simplified collision from visual mesh when needed |
-| Navigation | Bake `NavigationRegion3D` from walkable surfaces after geometry stable |
-| LOD | Distance swap / clipmap-style sections; measure far views |
-| Addons | Any terrain plugin: `addon.inspect` → Contract → ClassDB — pin version |
+## Native model
+- Godot core provides geometry, rendering, physics, navigation, and streaming primitives rather than one universal 3D
+  terrain node or terrain storage format.
+- Mesh resources contain surfaces. MeshInstance3D places a Mesh in a scene and can override its materials.
+- ArrayMesh constructs surfaces from typed arrays. SurfaceTool builds vertex data sequentially; MeshDataTool exposes
+  vertices, edges, and faces; ImmediateMesh is intended for frequently rebuilt simple geometry.
+- HeightMapShape3D represents grid height data for physics. Visual mesh density and collision-map resolution are separate.
+- MultiMesh batches many instances of one mesh with per-instance transforms, colors, and custom data. The MultiMesh is
+  culled as one object rather than per instance.
+- Navigation consumes selected source geometry into NavigationMesh data. Visibility ranges and mesh LOD control visual
+  detail independently of collision and navigation.
+- Terrain addons define their own nodes, resources, storage, and editor workflows on top of these engine primitives.
 
-## Laws
-- Prefer Godot primitives until an addon Contract is required and trusted.
-- Never guess addon method names; never invent Solers `terrain.*` APIs.
-- Establish world scale (1 unit ≈ 1 m) and height range before sculpting density.
-- Visual foliage is not collision — author collision deliberately.
-- Persist whatever the Contract says is authoritative (regions/data_directory/etc.).
+## Compatibility and prerequisites
+- Geometry format, renderer limits, collision backend, navigation baking, floating-point scale, and addon version constrain
+  a terrain implementation.
+- Generated data needs an explicit owner and persistence path if it must survive scene reload or export.
 
-## Recipes
-**Native height mesh:** noise image → displace plane grid → create collision shape → sample material by slope.
-**Vegetation:** mask steep slopes out → MultiMesh with random yaw/scale → LOD cull far.
-**Addon path:** `addon.inspect` → follow Contract workflow/validation steps → save owning resources → reopen scene.
+## Authoritative state
+The owning source data, generated Mesh resources, scene transforms, MultiMesh bounds, physics shapes, navigation maps,
+saved resources, addon API observed in the project, rendered output, and runtime performance are authoritative.
 
-## Traps
-| Wrong | Correct |
-|-------|---------|
-| Hardcoding a vendor terrain class in generic plans | Contract from `addon.inspect` |
-| Inventing `terrain.sculpt` tools | `scene.node.update` / addon ClassDB / native mesh |
-| Height scale mismatch (cm vs m) | Measure extents; fix noise amplitude |
-| Navmesh before holes/collision final | Bake after walkable surface settles |
-| No far-camera perf check | Capture near + far; watch draw cost |
-
-## Verify
-1. `scene.inspect` and `resource.inspect` for bounds, materials, collision, and navigation.
-2. `runtime.control` traversal; near/far `render.capture`.
-3. `runtime.observe` for shader/addon errors after reload.
-4. If addon: Contract validation checklist must pass (regions present, data reloads).
+## Official references
+- https://docs.godotengine.org/en/latest/tutorials/3d/procedural_geometry/index.html
+- https://docs.godotengine.org/en/latest/tutorials/3d/procedural_geometry/arraymesh.html
+- https://docs.godotengine.org/en/latest/tutorials/3d/procedural_geometry/surfacetool.html
+- https://docs.godotengine.org/en/latest/classes/class_heightmapshape3d.html
+- https://docs.godotengine.org/en/latest/classes/class_multimesh.html
+- https://docs.godotengine.org/en/latest/tutorials/3d/visibility_ranges.html
+- https://docs.godotengine.org/en/latest/tutorials/navigation/navigation_using_navigationmeshes.html

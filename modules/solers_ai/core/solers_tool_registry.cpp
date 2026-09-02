@@ -872,7 +872,7 @@ Dictionary SolersToolRegistry::_model_input_schema(const SolersTool *p_tool) con
 		return schema;
 	}
 	Dictionary properties = schema.get("properties", Dictionary());
-	properties["expected_state"] = _schema(R"({"type":"object","description":"Optional native state receipt from an earlier inspection."})");
+	properties["expected_state"] = _schema(R"({"type":"object","description":"Optional native precondition copied from scene state and resource state receipts. Include every file the operation will write.","properties":{"has_root":{"type":"boolean"},"root_object_id":{"type":"string","pattern":"^-?[0-9]+$"},"scene_path":{"type":"string"},"history_id":{"type":"integer"},"version":{"type":"integer","minimum":0},"resource_uid":{"type":"string"},"saved_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"resources":{"type":"array","uniqueItems":true,"items":{"type":"object","properties":{"path":{"type":"string","pattern":"^res://"},"exists":{"type":"boolean"},"sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"directory":{"type":"boolean"},"resource_uid":{"type":"string"}},"required":["path","exists"],"additionalProperties":false}}},"additionalProperties":false})");
 	schema["properties"] = properties;
 	return schema;
 }

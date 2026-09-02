@@ -1,46 +1,41 @@
 ---
 name: godot-xr-mobile-platforms
-description: Godot 4 OpenXR/mobile/web constraints - renderer choice, lifecycle, permissions, XR interfaces, touch/tracked input, and on-device verification.
-tools: project.settings, runtime.observe, runtime.control, export.list_presets, export.validate_presets, export.run_preset
+description: Godot 4 OpenXR, mobile and web platforms, rendering constraints, lifecycle, input, permissions, and export.
 ---
 
-# XR, Mobile, and Platforms
+# Godot XR, Mobile, and Platforms
 
-## When to use
-Use for OpenXR/WebXR, headsets, tracked controllers, Android/iOS/Web export, sensors, touch, permissions, or platform plugins.
+## Scope
+Use when working with OpenXR, Android, iOS, Web, touch and sensor input, platform lifecycle, permissions, or device export.
 
-## Facts
-| Piece | Role |
-|-------|------|
-| Renderer | Mobile/Compatibility often required; Forward+ features may be unavailable |
-| XR | `XRServer` / OpenXR interface / `XROrigin3D` / `XRCamera3D` / controllers |
-| Lifecycle | `NOTIFICATION_APPLICATION_FOCUS_*` / pause — mobile and XR both interrupt |
-| Input | Touch, joypad, XR poses — map through InputMap where possible |
-| Permissions | Export preset / platform config owns them — not scene scripts alone |
-| UI scale | DPI / stretch; headset overlay vs flat mobile differ |
+## Native model
+- XRServer owns XR interfaces and trackers. OpenXRInterface connects Godot to an OpenXR runtime and must be initialized
+  with project and startup configuration compatible with the selected graphics backend.
+- XROrigin3D maps tracking space into the game world. XRCamera3D and XRController3D consume tracked poses and are children
+  of that origin.
+- The OpenXR action map binds logical actions and poses to interaction profiles. Runtime trackers provide current pose,
+  confidence, and input state for supported devices.
+- Reference space defines how the tracking origin relates to the user and how recentering is interpreted.
+- Forward+, Mobile, and Compatibility have different platform, XR, post-processing, and rendering costs. XR uses
+  stereoscopic Viewports and runtime-controlled frame timing.
+- Mobile and Web exports have platform-specific application lifecycle, window, storage, permission, input, graphics API,
+  and packaging rules.
+- ExportPreset, enabled plugins or extensions, architecture, renderer, and permissions define the deployed application.
 
-## Laws
-- Query capabilities before enabling optional XR extensions; provide fallbacks.
-- Keep core gameplay platform-neutral; isolate platform code behind interfaces.
-- Editor play is not device proof — validate exported builds on hardware.
-- Never invent platform plugin APIs — inspect ClassDB / addon Contract.
+## Compatibility and prerequisites
+- Runtime, headset or device, graphics backend, OpenXR extensions, vendor plugin, browser, and export template determine
+  available capabilities.
+- Editor execution does not reproduce every permission, lifecycle, performance, or packaging property of a deployed build.
 
-## Recipes
-**XR minimum:** enable OpenXR in project → `XROrigin3D` + camera + controllers → start interface → test tracking lost.
-**Mobile:** Mobile renderer, touch UI targets ≥ ~48dp, handle focus loss pausing games.
-**Web:** Compatibility renderer expectations; async load; user-gesture audio.
+## Authoritative state
+Project and export settings, initialized XRInterface, runtime trackers and poses, action map, platform capability reports,
+permission results, lifecycle events, device diagnostics, frame timing, and deployed-build output are authoritative.
 
-## Traps
-| Wrong | Correct |
-|-------|---------|
-| Desktop-only lighting features on mobile XR | Match renderer feature matrix |
-| Unguarded OpenXR calls | Check interface init / session state |
-| Permissions assumed from GDScript | Export preset + OS permission APIs |
-| Tiny UI for finger/controller | Platform-sized hit targets |
-| Skipping resume after interrupt | Test background/resume explicitly |
-
-## Verify
-1. Inspect project renderer, XR settings, export preset, permissions.
-2. Prefer exported build on target device/headset.
-3. `runtime.observe` (where available) for interface/init errors.
-4. Exercise pause/resume, tracking loss, and input fallbacks.
+## Official references
+- https://docs.godotengine.org/en/latest/tutorials/xr/setting_up_xr.html
+- https://docs.godotengine.org/en/latest/tutorials/xr/openxr_settings.html
+- https://docs.godotengine.org/en/latest/tutorials/platform/android/index.html
+- https://docs.godotengine.org/en/latest/tutorials/platform/ios/index.html
+- https://docs.godotengine.org/en/latest/tutorials/platform/web/index.html
+- https://docs.godotengine.org/en/latest/tutorials/rendering/renderers.html
+- https://docs.godotengine.org/en/latest/tutorials/export/index.html
