@@ -41,9 +41,11 @@
 class SolersActionTimeline;
 class SolersAssetService;
 class SolersFileCheckpoint;
-class SolersObservationService;
+class SolersProjectObservation;
 class SolersReflectionService;
 class SolersResourceService;
+class SolersRuntimeObservation;
+class SolersSceneObservation;
 class SolersScriptService;
 
 struct SolersPreparedToolCall {
@@ -69,7 +71,9 @@ class SolersToolRegistry : public Object {
 	HashMap<String, Vector<Dictionary>> reversals_by_session;
 	HashSet<String> delivered_addon_contracts;
 
-	SolersObservationService *observation_service = nullptr;
+	SolersProjectObservation *project_observation = nullptr;
+	SolersRuntimeObservation *runtime_observation = nullptr;
+	SolersSceneObservation *scene_observation = nullptr;
 	SolersAssetService *asset_service = nullptr;
 	SolersFileCheckpoint *file_checkpoint = nullptr;
 	SolersReflectionService *reflection_service = nullptr;
@@ -80,6 +84,12 @@ class SolersToolRegistry : public Object {
 
 	static String _make_model_tool_name(const StringName &p_name);
 	static Dictionary _schema(const char *p_json);
+	static PackedStringArray _mutation_domain_names(SolersToolMutationDomain p_domains);
+	static Dictionary _tool_result_envelope(const Dictionary &p_result, const String &p_call_id);
+	static bool _mutation_record_has_domain(const Dictionary &p_record, const String &p_domain);
+	static Dictionary _scene_state_receipt();
+	static Dictionary _resource_state_receipt(const SolersFileCheckpoint *p_service, const String &p_path);
+	static std::function<Array(const Dictionary &)> _access_by_arg(const char *p_mode, const char *p_prefix, const char *p_arg);
 
 	void _clear_tools();
 	void _register(SolersTool *p_tool);
@@ -136,7 +146,6 @@ class SolersToolRegistry : public Object {
 	void _register_reflection_tools();
 	void _register_skill_tools();
 	Dictionary _inspect_engine(const Dictionary &p_args);
-	Array _applicable_tools(SolersOperationDomain p_domain, SolersOperationMode p_mode, const StringName &p_class = StringName(), const StringName &p_kind = StringName()) const;
 	Dictionary _with_added_tools(const Dictionary &p_result, const Array &p_tools) const;
 	Dictionary _validate_expected_state(const SolersTool *p_tool, const Dictionary &p_args) const;
 	Dictionary _model_input_schema(const SolersTool *p_tool) const;
@@ -165,7 +174,9 @@ protected:
 
 public:
 	friend class SolersAgentSession;
-	void set_observation_service(SolersObservationService *p_observation_service);
+	void set_project_observation(SolersProjectObservation *p_project_observation);
+	void set_runtime_observation(SolersRuntimeObservation *p_runtime_observation);
+	void set_scene_observation(SolersSceneObservation *p_scene_observation);
 	void set_asset_service(SolersAssetService *p_asset_service);
 	void set_file_checkpoint(SolersFileCheckpoint *p_file_checkpoint);
 	void set_reflection_service(SolersReflectionService *p_reflection_service);

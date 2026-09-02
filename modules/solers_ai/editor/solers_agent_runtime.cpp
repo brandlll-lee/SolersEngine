@@ -30,15 +30,19 @@
 
 #include "solers_agent_runtime.h"
 
+#include "editor/editor_interface.h"
+
 #include "modules/solers_ai/core/solers_action_timeline.h"
 #include "modules/solers_ai/core/solers_agent_session.h"
 #include "modules/solers_ai/core/solers_asset_service.h"
 #include "modules/solers_ai/core/solers_file_checkpoint.h"
-#include "modules/solers_ai/core/solers_observation_service.h"
 #include "modules/solers_ai/core/solers_permission_manager.h"
+#include "modules/solers_ai/core/solers_project_observation.h"
 #include "modules/solers_ai/core/solers_provider_registry.h"
 #include "modules/solers_ai/core/solers_reflection_service.h"
 #include "modules/solers_ai/core/solers_resource_service.h"
+#include "modules/solers_ai/core/solers_runtime_observation.h"
+#include "modules/solers_ai/core/solers_scene_observation.h"
 #include "modules/solers_ai/core/solers_script_service.h"
 #include "modules/solers_ai/core/solers_settings_service.h"
 #include "modules/solers_ai/core/solers_tool_registry.h"
@@ -53,12 +57,14 @@ SolersAgentRuntime::SolersAgentRuntime() {
 	agent_session = memnew(SolersAgentSession);
 	file_checkpoint = memnew(SolersFileCheckpoint);
 	mcp_adapter = memnew(SolersMCPAdapter);
-	observation_service = memnew(SolersObservationService);
 	permission_manager = memnew(SolersPermissionManager);
+	project_observation = memnew(SolersProjectObservation);
 	provider_registry = memnew(SolersProviderRegistry);
 	reflection_service = memnew(SolersReflectionService);
 	resource_service = memnew(SolersResourceService);
 	rpc_server = memnew(SolersRpcServer);
+	runtime_observation = memnew(SolersRuntimeObservation);
+	scene_observation = memnew(SolersSceneObservation);
 	script_service = memnew(SolersScriptService);
 	settings_service = memnew(SolersSettingsService);
 	tool_registry = memnew(SolersToolRegistry);
@@ -72,7 +78,9 @@ SolersAgentRuntime::SolersAgentRuntime() {
 	tool_registry->set_action_timeline(action_timeline);
 	tool_registry->set_asset_service(asset_service);
 	tool_registry->set_file_checkpoint(file_checkpoint);
-	tool_registry->set_observation_service(observation_service);
+	tool_registry->set_project_observation(project_observation);
+	tool_registry->set_runtime_observation(runtime_observation);
+	tool_registry->set_scene_observation(scene_observation);
 	tool_registry->set_reflection_service(reflection_service);
 	tool_registry->set_permission_manager(permission_manager);
 	tool_registry->set_resource_service(resource_service);
@@ -83,9 +91,24 @@ SolersAgentRuntime::SolersAgentRuntime() {
 	agent_session->set_settings_service(settings_service);
 	agent_session->set_tool_registry(tool_registry);
 	agent_session->set_permission_manager(permission_manager);
+	agent_session->set_observations(project_observation, scene_observation, runtime_observation);
+	agent_session->set_background_asset_delivery_handler([this](const String &p_asset_id, const String &p_session_id) {
+		if (asset_service) {
+			asset_service->mark_terminal_delivered(p_asset_id, p_session_id);
+		}
+	});
+	agent_session->set_runtime_stop_handler([]() {
+		EditorInterface *editor = EditorInterface::get_singleton();
+		if (!editor || !editor->is_playing_scene()) {
+			return false;
+		}
+		editor->stop_playing_scene();
+		return true;
+	});
 
 	mcp_adapter->set_action_timeline(action_timeline);
-	mcp_adapter->set_observation_service(observation_service);
+	scene_observation->set_runtime_observation(runtime_observation);
+	mcp_adapter->set_observations(project_observation, scene_observation, runtime_observation);
 	mcp_adapter->set_tool_registry(tool_registry);
 
 	rpc_server->set_mcp_adapter(mcp_adapter);
@@ -95,7 +118,7 @@ void SolersAgentRuntime::bind_dock(SolersDock *p_dock) {
 	if (!p_dock) {
 		return;
 	}
-	p_dock->set_services(observation_service, tool_registry, action_timeline, permission_manager, settings_service);
+	p_dock->set_services(scene_observation, tool_registry, action_timeline, permission_manager, settings_service);
 	p_dock->set_agent_session(agent_session);
 }
 
@@ -112,8 +135,8 @@ void SolersAgentRuntime::poll() {
 		return;
 	}
 	in_poll = true;
-	if (observation_service) {
-		observation_service->poll();
+	if (runtime_observation) {
+		runtime_observation->poll();
 	}
 	if (settings_service) {
 		settings_service->poll_auth();
@@ -236,8 +259,14 @@ SolersAgentRuntime::~SolersAgentRuntime() {
 	if (permission_manager) {
 		memdelete(permission_manager);
 	}
-	if (observation_service) {
-		memdelete(observation_service);
+	if (scene_observation) {
+		memdelete(scene_observation);
+	}
+	if (runtime_observation) {
+		memdelete(runtime_observation);
+	}
+	if (project_observation) {
+		memdelete(project_observation);
 	}
 	if (file_checkpoint) {
 		memdelete(file_checkpoint);

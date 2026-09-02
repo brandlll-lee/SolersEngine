@@ -34,12 +34,13 @@
 #include "core/object/class_db.h"
 
 #include "modules/solers_ai/core/solers_action_timeline.h"
-#include "modules/solers_ai/core/solers_observation_service.h"
+#include "modules/solers_ai/core/solers_project_observation.h"
+#include "modules/solers_ai/core/solers_runtime_observation.h"
+#include "modules/solers_ai/core/solers_scene_observation.h"
 #include "modules/solers_ai/core/solers_tool_registry.h"
 
 void SolersMCPAdapter::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_tool_registry", "tool_registry"), &SolersMCPAdapter::set_tool_registry);
-	ClassDB::bind_method(D_METHOD("set_observation_service", "observation_service"), &SolersMCPAdapter::set_observation_service);
 	ClassDB::bind_method(D_METHOD("set_action_timeline", "action_timeline"), &SolersMCPAdapter::set_action_timeline);
 	ClassDB::bind_method(D_METHOD("handle_request", "request"), &SolersMCPAdapter::handle_request);
 	ClassDB::bind_method(D_METHOD("initialize", "params"), &SolersMCPAdapter::initialize);
@@ -124,8 +125,10 @@ void SolersMCPAdapter::set_tool_registry(SolersToolRegistry *p_tool_registry) {
 	tool_registry = p_tool_registry;
 }
 
-void SolersMCPAdapter::set_observation_service(SolersObservationService *p_observation_service) {
-	observation_service = p_observation_service;
+void SolersMCPAdapter::set_observations(SolersProjectObservation *p_project, SolersSceneObservation *p_scene, SolersRuntimeObservation *p_runtime) {
+	project_observation = p_project;
+	scene_observation = p_scene;
+	runtime_observation = p_runtime;
 }
 
 void SolersMCPAdapter::set_action_timeline(SolersActionTimeline *p_action_timeline) {
@@ -229,12 +232,16 @@ Dictionary SolersMCPAdapter::read_resource(const Dictionary &p_params) const {
 	Variant data;
 	if (uri == "solers://editor/snapshot") {
 		Dictionary snapshot;
-		if (observation_service) {
-			snapshot["project"] = observation_service->get_project_info();
-			snapshot["project_settings"] = observation_service->get_project_settings_summary();
-			snapshot["open_scenes"] = observation_service->get_open_scenes();
-			snapshot["selection"] = observation_service->get_selection();
-			snapshot["runtime"] = observation_service->get_runtime_status();
+		if (project_observation) {
+			snapshot["project"] = project_observation->get_project_info();
+			snapshot["project_settings"] = project_observation->get_project_settings_summary();
+		}
+		if (scene_observation) {
+			snapshot["open_scenes"] = scene_observation->get_open_scenes();
+			snapshot["selection"] = scene_observation->get_selection();
+		}
+		if (runtime_observation) {
+			snapshot["runtime"] = runtime_observation->get_runtime_status();
 		}
 		data = snapshot;
 	} else if (uri == "solers://timeline/actions") {

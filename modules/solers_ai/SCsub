@@ -11,6 +11,18 @@ import terrain3d_bundle_builder
 
 env_solers_ai = env_modules.Clone()
 
+for source in (
+    Glob("#modules/solers_ai/core/*.[ch]pp")
+    + Glob("#modules/solers_ai/core/*.h")
+    + Glob("#modules/solers_ai/llm/*.[ch]pp")
+    + Glob("#modules/solers_ai/llm/*.h")
+):
+    with open(source.abspath, encoding="utf-8") as source_file:
+        text = source_file.read()
+    for forbidden in ('#include "editor/', '#include "scene/gui/', '#include "modules/solers_ai/editor/'):
+        if forbidden in text:
+            raise RuntimeError(f"Solers layer violation in {source}: {forbidden}")
+
 module_obj = []
 
 generated_terrain3d_lock = "#modules/solers_ai/generated/terrain3d_lock.gen.h"
@@ -41,6 +53,7 @@ env_solers_ai.add_source_files(module_obj, "core/*.cpp")
 env_solers_ai.add_source_files(module_obj, "llm/*.cpp")
 env_solers_ai.add_source_files(module_obj, "plugins/*.cpp")
 env_solers_ai.add_source_files(module_obj, "protocol/*.cpp")
+env_solers_ai.add_source_files(module_obj, "tools/*.cpp")
 env_solers_ai.Depends(module_obj, generated_skills_header)
 env_solers_ai.Depends(module_obj, generated_svg_header)
 env_solers_ai.Depends(module_obj, generated_terrain3d_lock)

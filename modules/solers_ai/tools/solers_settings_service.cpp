@@ -28,7 +28,7 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#include "solers_settings_service.h"
+#include "modules/solers_ai/core/solers_settings_service.h"
 
 #include "core/io/json.h"
 #include "core/object/class_db.h"

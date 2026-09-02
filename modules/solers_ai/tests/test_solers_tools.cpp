@@ -37,6 +37,8 @@
 #include "core/io/json.h"
 #include "core/io/resource_loader.h"
 #include "core/io/resource_saver.h"
+#include "core/object/script_language.h"
+#include "core/os/os.h"
 #include "editor/editor_node.h"
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/file_system/editor_file_system.h"
@@ -58,6 +60,9 @@
 #include "tests/test_utils.h"
 
 #include "modules/modules_enabled.gen.h"
+#ifdef MODULE_GDSCRIPT_ENABLED
+#include "modules/gdscript/gdscript.h"
+#endif
 #ifdef MODULE_CSG_ENABLED
 #include "modules/csg/csg_shape.h"
 #endif
@@ -65,11 +70,14 @@
 #include "modules/solers_ai/core/solers_builtin_skills.h"
 #include "modules/solers_ai/core/solers_file_checkpoint.h"
 #include "modules/solers_ai/core/solers_geometry_facts.h"
-#include "modules/solers_ai/core/solers_observation_service.h"
 #include "modules/solers_ai/core/solers_path_utils.h"
 #include "modules/solers_ai/core/solers_permission_manager.h"
+#include "modules/solers_ai/core/solers_project_observation.h"
 #include "modules/solers_ai/core/solers_reflection_service.h"
 #include "modules/solers_ai/core/solers_resource_service.h"
+#include "modules/solers_ai/core/solers_runtime_observation.h"
+#include "modules/solers_ai/core/solers_scene_observation.h"
+#include "modules/solers_ai/core/solers_script_context.h"
 #include "modules/solers_ai/core/solers_script_service.h"
 #include "modules/solers_ai/core/solers_tool.h"
 #include "modules/solers_ai/core/solers_tool_registry.h"
@@ -557,10 +565,7 @@ TEST_CASE("[SolersToolRegistry] skill.read serves compiled builtin skills") {
 	CHECK(data.get("name", String()) == "godot-3d-rendering");
 	CHECK(!String(data.get("content", String())).is_empty());
 	CHECK(String(data.get("content", String())).contains("physical_light_units"));
-	const Array added_tools = result.get("added_tools", Array());
-	CHECK(added_tools.has("scene.csg.bake"));
-	CHECK(added_tools.has("scene.lightmap.bake"));
-	CHECK(added_tools.has("mesh.unwrap_uv2"));
+	CHECK_FALSE(result.has("added_tools"));
 }
 
 TEST_CASE("[SolersToolRegistry] skill.read rejects unknown builtin skills") {
@@ -580,17 +585,21 @@ TEST_CASE("[SolersToolRegistry] skill.read rejects unknown builtin skills") {
 
 TEST_CASE("[SolersToolRegistry] default tools keep one portable ABI across provider protocols") {
 	SolersAssetService asset_service;
-	SolersObservationService observation_service;
 	SolersPermissionManager permissions;
+	SolersProjectObservation project_observation;
 	SolersReflectionService reflection_service;
 	SolersResourceService resource_service;
+	SolersRuntimeObservation runtime_observation;
+	SolersSceneObservation scene_observation;
 	SolersScriptService script_service;
 	SolersToolRegistry registry;
 	registry.set_asset_service(&asset_service);
-	registry.set_observation_service(&observation_service);
 	registry.set_permission_manager(&permissions);
+	registry.set_project_observation(&project_observation);
 	registry.set_reflection_service(&reflection_service);
 	registry.set_resource_service(&resource_service);
+	registry.set_runtime_observation(&runtime_observation);
+	registry.set_scene_observation(&scene_observation);
 	registry.set_script_service(&script_service);
 	registry.register_default_tools();
 
@@ -625,12 +634,12 @@ TEST_CASE("[SolersToolRegistry] default tools keep one portable ABI across provi
 		check_portable_tool_schema(response_tool.get("parameters", Dictionary()));
 		CHECK_FALSE(response_tool.get("strict", true));
 	}
-	const Dictionary query = solers_test_find_dictionary(tools, SNAME("name"), "object.query");
+	const Dictionary query = solers_test_find_dictionary(tools, SNAME("name"), "scene.inspect");
 	REQUIRE_FALSE(query.is_empty());
 	CHECK_FALSE(Dictionary(Dictionary(query.get("input_schema", Dictionary())).get("properties", Dictionary())).has("expected_state"));
-	const Dictionary resource_update = solers_test_find_dictionary(tools, SNAME("name"), "resource.update");
-	REQUIRE_FALSE(resource_update.is_empty());
-	CHECK(Array(Dictionary(resource_update.get("input_schema", Dictionary())).get("required", Array())).has("expected_state"));
+	const Dictionary resource_edit = solers_test_find_dictionary(tools, SNAME("name"), "resource.edit");
+	REQUIRE_FALSE(resource_edit.is_empty());
+	CHECK_FALSE(Array(Dictionary(resource_edit.get("input_schema", Dictionary())).get("required", Array())).has("expected_state"));
 	const Dictionary script_edit = solers_test_find_dictionary(tools, SNAME("name"), "script.edit");
 	const Dictionary script_properties = Dictionary(script_edit.get("input_schema", Dictionary())).get("properties", Dictionary());
 	CHECK(script_properties.has("expected_sha256"));
@@ -649,11 +658,11 @@ TEST_CASE("[SolersToolRegistry] ClassDB member queries match whitespace-separate
 	SolersPermissionManager permissions;
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
 	SolersReflectionService reflection_service;
-	SolersObservationService observation_service;
+	SolersSceneObservation observation_service;
 	SolersToolRegistry registry;
 	registry.set_permission_manager(&permissions);
 	registry.set_reflection_service(&reflection_service);
-	registry.set_observation_service(&observation_service);
+	registry.set_scene_observation(&observation_service);
 	registry.register_default_tools();
 	const Dictionary tool = solers_test_find_dictionary(registry.list_tools(), SNAME("name"), "engine.describe");
 	const Dictionary engine_properties = Dictionary(tool.get("input_schema", Dictionary())).get("properties", Dictionary());
@@ -728,12 +737,11 @@ TEST_CASE("[SolersToolRegistry] ClassDB member queries match whitespace-separate
 }
 
 TEST_CASE("[SolersToolRegistry] project.search gives empty queries one explicit meaning") {
-	SolersObservationService observation;
-	observation.poll();
+	SolersProjectObservation observation;
 	SolersPermissionManager permissions;
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
 	SolersToolRegistry registry;
-	registry.set_observation_service(&observation);
+	registry.set_project_observation(&observation);
 	registry.set_permission_manager(&permissions);
 	registry.register_default_tools();
 
@@ -784,9 +792,8 @@ TEST_CASE("[SolersTool] ObjectID wire values are lossless decimal strings") {
 	registry.set_resource_service(&resources);
 	registry.register_default_tools();
 	Dictionary args;
-	args["target"] = "object";
 	args["object_id"] = 42;
-	const Dictionary rejected = registry.call_tool(SNAME("object.query"), args);
+	const Dictionary rejected = registry.call_tool(SNAME("object.inspect"), args);
 	CHECK_FALSE((bool)rejected.get("ok", true));
 	CHECK(Dictionary(rejected.get("error", Dictionary())).get("code", String()) == "TOOL_ARGUMENT_INVALID");
 }
@@ -893,7 +900,7 @@ TEST_CASE("[SolersToolRegistry] a registered deferred tool needs no dispatcher b
 
 	const Dictionary definition = registry.get_tool_definition(SNAME("synthetic.operation"));
 	REQUIRE_FALSE(definition.is_empty());
-	CHECK(Array(Dictionary(definition.get("input_schema", Dictionary())).get("required", Array())).has("expected_state"));
+	CHECK_FALSE(Array(Dictionary(definition.get("input_schema", Dictionary())).get("required", Array())).has("expected_state"));
 
 	SolersToolContext context;
 	context.call_id = "synthetic-operation";
@@ -914,7 +921,7 @@ TEST_CASE("[SolersToolRegistry] a registered deferred tool needs no dispatcher b
 	CHECK_FALSE(FileAccess::exists(path));
 }
 
-TEST_CASE("[SolersToolRegistry] object query invokes typed ClassDB const methods") {
+TEST_CASE("[SolersToolRegistry] object inspection invokes typed ClassDB const methods") {
 	Ref<Animation> animation;
 	animation.instantiate();
 	const int track = animation->add_track(Animation::TYPE_VALUE);
@@ -929,7 +936,6 @@ TEST_CASE("[SolersToolRegistry] object query invokes typed ClassDB const methods
 	registry.set_resource_service(&resources);
 	registry.register_default_tools();
 	Dictionary args;
-	args["target"] = "object";
 	args["object_id"] = solers_object_id_to_string(animation->get_instance_id());
 	args["method_calls"] = Array({
 			Dictionary({ { "name", "track_get_path" }, { "arguments", Array({ track }) } }),
@@ -937,7 +943,7 @@ TEST_CASE("[SolersToolRegistry] object query invokes typed ClassDB const methods
 			Dictionary({ { "name", "track_set_path" }, { "arguments", Array({ track, "Other:value" }) } }),
 			Dictionary({ { "name", "track_get_path" } }),
 	});
-	const Dictionary result = registry.call_tool("object.query", args);
+	const Dictionary result = registry.call_tool("object.inspect", args);
 	REQUIRE((bool)result.get("ok", false));
 	const Dictionary data = result.get("data", Dictionary());
 	const Array method_results = data.get("method_results", Array());
@@ -967,7 +973,7 @@ TEST_CASE("[SolersToolRegistry] object query invokes typed ClassDB const methods
 	}
 }
 
-TEST_CASE("[SolersToolRegistry] resource query uses the same native read contract") {
+TEST_CASE("[SolersToolRegistry] resource inspection uses the native read contract") {
 	const String path = "res://.solers_resource_method_contract.tres";
 	SolersTestPaths cleanup;
 	cleanup.add(path);
@@ -987,7 +993,7 @@ TEST_CASE("[SolersToolRegistry] resource query uses the same native read contrac
 	registry.set_resource_service(&resources);
 	registry.register_default_tools();
 	const Array method_calls = Array({ Dictionary({ { "name", "get_width" } }), Dictionary({ { "name", "get_height" } }) });
-	const Dictionary result = registry.call_tool("object.query", Dictionary({ { "target", "resource" }, { "path", path }, { "method_calls", method_calls } }));
+	const Dictionary result = registry.call_tool("resource.inspect", Dictionary({ { "path", path }, { "method_calls", method_calls } }));
 	REQUIRE((bool)result.get("ok", false));
 	const Dictionary data = result.get("data", Dictionary());
 	const Array method_results = data.get("method_results", Array());
@@ -995,13 +1001,9 @@ TEST_CASE("[SolersToolRegistry] resource query uses the same native read contrac
 	CHECK((int)Dictionary(method_results[0]).get("value", 0) == 8);
 	CHECK((int)Dictionary(method_results[1]).get("value", 0) == 4);
 	const Dictionary state = data.get("state", Dictionary());
-	const Array expected_resources = Dictionary(data.get("expected_state", Dictionary())).get("resources", Array());
-	REQUIRE(expected_resources.size() == 1);
-	CHECK(Dictionary(expected_resources[0]).get("path", String()) == path);
-	CHECK(Dictionary(expected_resources[0]).get("sha256", String()) == state.get("sha256", String()));
-	const Array capabilities = result.get("added_tools", Array());
-	CHECK(capabilities.has("resource.update"));
-	CHECK_FALSE(capabilities.has("scene.node.create"));
+	CHECK(Dictionary(state).get("path", String()) == path);
+	CHECK(String(Dictionary(state).get("sha256", String())).length() == 64);
+	CHECK_FALSE(result.has("added_tools"));
 }
 
 TEST_CASE("[SolersFileCheckpoint] directory state restores the exact recursive digest") {
@@ -1107,7 +1109,7 @@ TEST_CASE("[SolersGeometryFacts][SceneTree] native bounds and framing cover arbi
 	MessageQueue::get_singleton()->flush();
 }
 
-TEST_CASE("[SolersToolRegistry] ClassDB inheritance filters deferred tools") {
+TEST_CASE("[SolersToolRegistry] ClassDB inheritance exposes native object facts") {
 	SolersPermissionManager permissions;
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
 	SolersReflectionService reflection;
@@ -1118,14 +1120,14 @@ TEST_CASE("[SolersToolRegistry] ClassDB inheritance filters deferred tools") {
 	registry.set_resource_service(&resources);
 	registry.register_default_tools();
 	auto describe = [&registry](Object *p_object) {
-		const Dictionary result = registry.call_tool("object.query", Dictionary({ { "target", "object" }, { "object_id", solers_object_id_to_string(p_object->get_instance_id()) } }));
+		const Dictionary result = registry.call_tool("object.inspect", Dictionary({ { "object_id", solers_object_id_to_string(p_object->get_instance_id()) } }));
 		CHECK((bool)result.get("ok", false));
-		return Array(result.get("added_tools", Array())); };
+		return Dictionary(result.get("data", Dictionary())); };
 	LightmapGI *lightmap = memnew(LightmapGI);
 	Decal *decal = memnew(Decal);
-	const Array lightmap_capabilities = describe(lightmap);
-	CHECK(lightmap_capabilities.has("scene.lightmap.bake"));
-	CHECK_FALSE(describe(decal).has("scene.lightmap.bake"));
+	const Dictionary lightmap_facts = describe(lightmap);
+	CHECK(lightmap_facts.has("object"));
+	CHECK(Dictionary(describe(decal)).has("object"));
 	memdelete(lightmap);
 	memdelete(decal);
 }
@@ -1155,18 +1157,17 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 	create_args["expected_state"] = Dictionary({ { "resources", Array() } });
 	create_args["class_name"] = "StandardMaterial3D";
 	create_args["path"] = path;
-	const Dictionary created = registry.call_tool_with_context(SNAME("resource.create"), create_args, context);
+	const Dictionary created = registry.call_tool_with_context(SNAME("resource.edit"), create_args, context);
 	REQUIRE((bool)created.get("ok", false));
 	const String sha = FileAccess::get_sha256(path);
 	REQUIRE(sha.length() == 64);
 	Dictionary query;
-	query["target"] = "resource";
 	query["path"] = path;
 	Array queried_properties;
 	queried_properties.push_back("albedo_color");
 	query["properties"] = queried_properties;
 	context.call_id = "query_resource";
-	const Dictionary observed = registry.call_tool_with_context(SNAME("object.query"), query, context);
+	const Dictionary observed = registry.call_tool_with_context(SNAME("resource.inspect"), query, context);
 	REQUIRE((bool)observed.get("ok", false));
 	Dictionary expected_resource = observed.get("data", Dictionary());
 
@@ -1179,7 +1180,7 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 	update_args["path"] = path;
 	update_args["properties"] = properties;
 	context.call_id = "stale_resource";
-	const Dictionary stale = registry.call_tool_with_context(SNAME("resource.update"), update_args, context);
+	const Dictionary stale = registry.call_tool_with_context(SNAME("resource.edit"), update_args, context);
 	CHECK_FALSE((bool)stale.get("ok", true));
 	CHECK(Dictionary(stale.get("error", Dictionary())).get("code", String()) == "RESOURCE_STATE_CONFLICT");
 	CHECK(FileAccess::get_sha256(path) == sha);
@@ -1187,7 +1188,7 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 	expected_resource["sha256"] = sha;
 	update_args["expected_state"] = Dictionary({ { "resources", Array({ expected_resource }) } });
 	context.call_id = "update_resource";
-	const Dictionary updated = registry.call_tool_with_context(SNAME("resource.update"), update_args, context);
+	const Dictionary updated = registry.call_tool_with_context(SNAME("resource.edit"), update_args, context);
 	REQUIRE((bool)updated.get("ok", false));
 	const Dictionary mutation = Dictionary(updated.get("data", Dictionary())).get("mutation", Dictionary());
 	CHECK(mutation.has("session_revision"));
@@ -1199,7 +1200,7 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 	const String updated_sha = Dictionary(Array(receipt.get("resources_after", Array()))[0]).get("sha256", String());
 	CHECK(updated_sha.length() == 64);
 	context.call_id = "verify_resource";
-	const Dictionary verified = registry.call_tool_with_context(SNAME("object.query"), query, context);
+	const Dictionary verified = registry.call_tool_with_context(SNAME("resource.inspect"), query, context);
 	const Dictionary color = Dictionary(Dictionary(Dictionary(verified.get("data", Dictionary())).get("properties", Dictionary())).get("albedo_color", Dictionary())).get("value", Dictionary());
 	CHECK(Math::is_equal_approx((double)color.get("r", 0.0), (double)Color("#4080bfff").r));
 	CHECK(Math::is_equal_approx((double)color.get("b", 0.0), (double)Color("#4080bfff").b));
@@ -1210,7 +1211,7 @@ TEST_CASE("[SolersToolRegistry] Resource facts round-trip through state-checked 
 	create_args["expected_state"] = Dictionary({ { "resources", Array() } });
 	create_args["path"] = failure_path;
 	context.call_id = "resource_failure";
-	const Dictionary failed = registry.call_tool_with_context(SNAME("resource.create"), create_args, context);
+	const Dictionary failed = registry.call_tool_with_context(SNAME("resource.edit"), create_args, context);
 	CHECK_FALSE((bool)failed.get("ok", true));
 	CHECK(String(Dictionary(failed.get("error", Dictionary())).get("message", String())).contains("class_name is required"));
 	CHECK_FALSE(FileAccess::exists(failure_path));
@@ -1270,17 +1271,21 @@ TEST_CASE("[SolersToolRegistry] session rewind stops at the recorded irreversibl
 	CHECK((int)Dictionary(after_boundary.get("data", Dictionary())).get("action_count", -1) == 0);
 }
 
-TEST_CASE("[SolersToolRegistry] model surface keeps observations direct and mutations deferred") {
+TEST_CASE("[SolersToolRegistry] model surface keeps stable script authorities direct and narrow mutations deferred") {
 	SolersFileCheckpoint checkpoints;
-	SolersObservationService observation_service;
+	SolersProjectObservation project_observation;
 	SolersReflectionService reflection_service;
 	SolersResourceService resource_service;
+	SolersRuntimeObservation runtime_observation;
+	SolersSceneObservation scene_observation;
 	SolersScriptService script_service;
 	SolersToolRegistry registry;
 	registry.set_file_checkpoint(&checkpoints);
-	registry.set_observation_service(&observation_service);
+	registry.set_project_observation(&project_observation);
 	registry.set_reflection_service(&reflection_service);
 	registry.set_resource_service(&resource_service);
+	registry.set_runtime_observation(&runtime_observation);
+	registry.set_scene_observation(&scene_observation);
 	registry.set_script_service(&script_service);
 	registry.register_default_tools();
 	const Array catalog = registry.list_tools();
@@ -1292,13 +1297,44 @@ TEST_CASE("[SolersToolRegistry] model surface keeps observations direct and muta
 		}
 	}
 	model_tools.sort();
-	CHECK(model_tools == PackedStringArray({ "engine.describe", "object.query", "project.read_file", "project.search", "render.capture", "skill.read" }));
+	CHECK(model_tools == PackedStringArray({ "asset.script", "engine.describe", "object.inspect", "project.read_file", "project.search", "render.capture", "resource.inspect", "runtime.observe", "runtime.script", "scene.inspect", "scene.script", "script.validate", "skill.read", "spatial.inspect" }));
 	const Dictionary project_path = solers_test_find_dictionary(catalog, SNAME("name"), "project.path");
 	CHECK(project_path.get("exposure", String()) == "deferred");
 	const Dictionary action = Dictionary(Dictionary(project_path.get("input_schema", Dictionary())).get("properties", Dictionary())).get("action", Dictionary());
 	CHECK(Array(action.get("enum", Array())).has("remove"));
 	CHECK(registry.get_model_tool_name(SNAME("project.path")) == "project_path");
 	CHECK(registry.resolve_model_tool_name("project_path") == "project.path");
+	for (const String &name : PackedStringArray({ "scene.script", "asset.script", "runtime.script" })) {
+		const Dictionary tool = solers_test_find_dictionary(catalog, SNAME("name"), name);
+		CHECK(tool.get("exposure", String()) == "model");
+		CHECK(Dictionary(tool.get("input_schema", Dictionary())).has("properties"));
+		CHECK(registry.redact_tool_args_for_audit(name, Dictionary({ { "source", "secret source" } })).get("source", String()) == "<redacted>");
+	}
+	const Array scene_access = registry.resolve_resource_access(SNAME("scene.script"), Dictionary({ { "scene_path", "res://level.tscn" }, { "outputs", Array({ "res://level.lmbake" }) } }));
+	CHECK(scene_access.has(Dictionary({ { "mode", "write" }, { "key", "project:res://level.tscn" } })));
+	CHECK(scene_access.has(Dictionary({ { "mode", "write" }, { "key", "project:res://level.lmbake" } })));
+	const Array asset_access = registry.resolve_resource_access(SNAME("asset.script"), Dictionary({ { "asset_path", "res://model.glb" } }));
+	CHECK(asset_access.has(Dictionary({ { "mode", "write" }, { "key", "project:res://model.glb.import" } })));
+}
+
+TEST_CASE("[SolersScriptContext] native jobs are discovered by authority and target class") {
+	Node *scene = memnew(Node);
+	LightmapGI *lightmap = memnew(LightmapGI);
+	scene->add_child(lightmap);
+	Ref<SolersScriptContext> scene_context;
+	scene_context.instantiate();
+	scene_context->initialize(SNAME("scene"), scene, "res://level.tscn", Dictionary(), false, PackedStringArray({ "res://level.lmbake" }), String(), String(), 0);
+	const Array jobs = scene_context->list_native_jobs(lightmap);
+	REQUIRE(jobs.size() == 1);
+	const Dictionary job = jobs[0];
+	CHECK(StringName(job.get("id", StringName())) == SNAME("lightmap.bake"));
+	CHECK(Array(Dictionary(job.get("input_schema", Dictionary())).get("required", Array())).has("output_path"));
+
+	Ref<SolersScriptContext> runtime_context;
+	runtime_context.instantiate();
+	runtime_context->initialize(SNAME("runtime"), scene, String(), Dictionary(), false, PackedStringArray(), String(), String(), 0);
+	CHECK(runtime_context->list_native_jobs(lightmap).is_empty());
+	memdelete(scene);
 }
 
 TEST_CASE("[SolersToolRegistry] registered deferred tools execute through direct lookup") {
@@ -1505,7 +1541,7 @@ TEST_CASE("[SolersToolRegistry] audit redaction normalizes payload fields") {
 }
 
 #ifdef MODULE_GLTF_ENABLED
-TEST_CASE("[SolersToolRegistry][SceneTree][GLTF] object.query returns native mesh handles and partial failures") {
+TEST_CASE("[SolersToolRegistry][SceneTree][GLTF] scene.inspect returns native mesh handles and partial failures") {
 	Ref<GLTFDocumentExtensionConvertImporterMesh> conversion;
 	conversion.instantiate();
 	GLTFDocument::register_gltf_document_extension(conversion);
@@ -1521,12 +1557,12 @@ TEST_CASE("[SolersToolRegistry][SceneTree][GLTF] object.query returns native mes
 	REQUIRE(mesh_instance != nullptr);
 
 	SolersReflectionService service;
-	SolersObservationService observation;
+	SolersSceneObservation observation;
 	SolersPermissionManager permissions;
 	SolersToolRegistry registry;
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
 	registry.set_reflection_service(&service);
-	registry.set_observation_service(&observation);
+	registry.set_scene_observation(&observation);
 	registry.set_permission_manager(&permissions);
 	registry.register_default_tools();
 	SceneTree *tree = SceneTree::get_singleton();
@@ -1534,8 +1570,8 @@ TEST_CASE("[SolersToolRegistry][SceneTree][GLTF] object.query returns native mes
 	{
 		ScopedEditedSceneRoot edited_scene(tree, root);
 		SolersToolContext context;
-		Dictionary args({ { "target", "scene" }, { "node_paths", Array({ "Suzanne", "Missing" }) }, { "properties", Array({ "mesh", "missing_property" }) } });
-		const Dictionary result = registry.call_tool_with_context(SNAME("object.query"), args, context);
+		Dictionary args({ { "node_paths", Array({ "Suzanne", "Missing" }) }, { "properties", Array({ "mesh", "missing_property" }) } });
+		const Dictionary result = registry.call_tool_with_context(SNAME("scene.inspect"), args, context);
 		const Dictionary data = result.get("data", Dictionary());
 		const Array nodes = data.get("nodes", Array());
 		REQUIRE(nodes.size() == 1);
@@ -1551,14 +1587,14 @@ TEST_CASE("[SolersToolRegistry][SceneTree][GLTF] object.query returns native mes
 		CHECK(Ref<Mesh>(coerced) == mesh_instance->get_mesh());
 		args.erase("node_paths");
 		args["name_contains"] = "zann";
-		const Array filtered = Array(Dictionary(registry.call_tool_with_context(SNAME("object.query"), args, context).get("data", Dictionary())).get("nodes", Array()));
+		const Array filtered = Array(Dictionary(registry.call_tool_with_context(SNAME("scene.inspect"), args, context).get("data", Dictionary())).get("nodes", Array()));
 		REQUIRE_FALSE(filtered.is_empty());
 		for (int i = 0; i < filtered.size(); i++) {
 			CHECK(String(Dictionary(filtered[i]).get("name", String())).findn("zann") >= 0);
 		}
 		args["node_paths"] = Array({ "Missing" });
 		args.erase("name_contains");
-		missing = registry.call_tool_with_context(SNAME("object.query"), args, context);
+		missing = registry.call_tool_with_context(SNAME("scene.inspect"), args, context);
 	}
 	memdelete(root);
 	CHECK(Dictionary(missing.get("error", Dictionary())).get("code", String()) == "NODE_QUERY_FAILED");
@@ -1566,7 +1602,7 @@ TEST_CASE("[SolersToolRegistry][SceneTree][GLTF] object.query returns native mes
 #endif
 
 #ifdef MODULE_CSG_ENABLED
-TEST_CASE("[SolersToolRegistry][SceneTree][CSG] object.query returns native material mapping facts") {
+TEST_CASE("[SolersToolRegistry][SceneTree][CSG] scene.inspect returns native material mapping facts") {
 	Node3D *root = memnew(Node3D);
 	CSGBox3D *box = memnew(CSGBox3D);
 	box->set_name("MappingContract");
@@ -1582,18 +1618,18 @@ TEST_CASE("[SolersToolRegistry][SceneTree][CSG] object.query returns native mate
 	box->set_material(material);
 
 	SolersReflectionService reflection;
-	SolersObservationService observation;
+	SolersSceneObservation observation;
 	SolersPermissionManager permissions;
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_OBSERVE, true);
 	SolersToolRegistry registry;
 	registry.set_reflection_service(&reflection);
-	registry.set_observation_service(&observation);
+	registry.set_scene_observation(&observation);
 	registry.set_permission_manager(&permissions);
 	registry.register_default_tools();
 	{
 		ScopedEditedSceneRoot edited_scene(SceneTree::get_singleton(), root);
-		const Dictionary args({ { "target", "scene" }, { "node_paths", Array({ "MappingContract" }) } });
-		const Array nodes = Dictionary(registry.call_tool(SNAME("object.query"), args).get("data", Dictionary())).get("nodes", Array());
+		const Dictionary args({ { "node_paths", Array({ "MappingContract" }) } });
+		const Array nodes = Dictionary(registry.call_tool(SNAME("scene.inspect"), args).get("data", Dictionary())).get("nodes", Array());
 		REQUIRE(nodes.size() == 1);
 		const Dictionary facts = Dictionary(nodes[0]).get("material", Dictionary());
 		CHECK(facts.get("source", String()) == "csg_material");
@@ -1690,7 +1726,7 @@ TEST_CASE("[SolersToolRegistry][SceneTree][Editor] node updates are atomic nativ
 	}
 }
 
-TEST_CASE("[SolersToolRegistry][Editor] editor tools require observed state before execution") {
+TEST_CASE("[SolersToolRegistry][Editor] editor tools do not require observed state before execution") {
 	SolersPermissionManager permissions;
 	permissions.set_auto_approve_permission(SolersPermissionManager::PERMISSION_EDIT_SCENE, true);
 	SolersToolRegistry registry;
@@ -1702,7 +1738,7 @@ TEST_CASE("[SolersToolRegistry][Editor] editor tools require observed state befo
 			[](const SolersToolContext &, const Dictionary &) { return Dictionary({ { "ok", true }, { "data", Dictionary() } }); })));
 	const Dictionary result = registry.call_tool(SNAME("synthetic.editor"), Dictionary());
 	CHECK_FALSE((bool)result.get("ok", true));
-	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "TOOL_ARGUMENT_INVALID");
+	CHECK(Dictionary(result.get("error", Dictionary())).get("code", String()) == "UNDO_HISTORY_UNAVAILABLE");
 }
 
 TEST_CASE("[SolersToolRegistry][SceneTree][Editor] scene.open follows EditorNode scene state") {
@@ -1897,9 +1933,9 @@ TEST_CASE("[SolersRuntimeInput][SceneTree] complete action states validate befor
 	input_map->erase_action(first);
 	input_map->erase_action(second);
 
-	SolersObservationService observation;
+	SolersRuntimeObservation observation;
 	SolersToolRegistry registry;
-	registry.set_observation_service(&observation);
+	registry.set_runtime_observation(&observation);
 	registry.register_default_tools();
 	const Dictionary tool = solers_test_find_dictionary(registry.list_tools(), SNAME("name"), "runtime.control");
 	const Dictionary properties = Dictionary(tool.get("input_schema", Dictionary())).get("properties", Dictionary());
@@ -1932,6 +1968,29 @@ TEST_CASE("[SolersRuntimeBridge][SceneTree] exact object observations use native
 	CHECK(malformed_captured);
 	CHECK(debugger.last_message == "solers:frame_result");
 	CHECK_FALSE((bool)Dictionary(debugger.last_data[0]).get("ok", true));
+
+#ifdef MODULE_GDSCRIPT_ENABLED
+	const bool languages_initialized = ScriptServer::are_languages_initialized();
+	if (!languages_initialized) {
+		ScriptServer::init_languages();
+	}
+	debugger.last_message.clear();
+	debugger.last_data.clear();
+	const String runtime_source = "extends RefCounted\nfunc run(ctx):\n    return {\"authority\": String(ctx.authority), \"root\": ctx.subject.name}\n";
+	bool script_captured = false;
+	CHECK(debugger.capture_parse(SNAME("solers"), "run_script", { "script-contract", 11, runtime_source, (int64_t)(OS::get_singleton()->get_ticks_msec() + 1000) }, script_captured) == OK);
+	CHECK(script_captured);
+	CHECK(debugger.last_message == "solers:script_result");
+	REQUIRE(debugger.last_data.size() == 1);
+	const Dictionary script_result = debugger.last_data[0];
+	CHECK((bool)script_result.get("ok", false));
+	const Dictionary script_value = Dictionary(script_result.get("data", Dictionary())).get("result", Dictionary());
+	CHECK(script_value.get("authority", String()) == "runtime");
+	CHECK_FALSE(String(script_value.get("root", String())).is_empty());
+	if (!languages_initialized) {
+		ScriptServer::finish_languages();
+	}
+#endif
 
 	Node *scene = memnew(Node);
 	scene->set_name("SolersRuntimeContract");

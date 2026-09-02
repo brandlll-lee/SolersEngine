@@ -220,7 +220,7 @@ public:
 
 	// Result of executing a tool call, fed back to the model next turn.
 	static Dictionary tool_result(const String &p_tool_call_id, const String &p_name, const String &p_content,
-			const Array &p_attachments = Array(), const Array &p_added_tool_names = Array(), const String &p_model_context = String()) {
+			const Array &p_attachments = Array(), const Array &p_added_tool_names = Array()) {
 		Dictionary m;
 		m["role"] = SolersLLMRole::TOOL;
 		m["tool_call_id"] = p_tool_call_id;
@@ -231,9 +231,6 @@ public:
 		}
 		if (!p_added_tool_names.is_empty()) {
 			m["added_tool_names"] = p_added_tool_names.duplicate();
-		}
-		if (!p_model_context.is_empty()) {
-			m["model_context"] = p_model_context;
 		}
 		return m;
 	}

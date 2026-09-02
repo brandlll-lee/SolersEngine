@@ -31,25 +31,59 @@
 #pragma once
 
 #include "core/object/object.h"
+#include "core/os/process_id.h"
+#include "core/templates/hash_map.h"
 #include "core/variant/dictionary.h"
 
+#include <functional>
+
 class SolersActionTimeline;
+class SolersScriptContext;
+
+struct SolersScriptAuthority {
+	StringName target_argument;
+	std::function<Dictionary(const String &)> validate;
+	std::function<Dictionary(const String &)> prepare;
+	std::function<Dictionary(const Ref<SolersScriptContext> &)> commit;
+	std::function<void(const Ref<SolersScriptContext> &)> release;
+	std::function<void(const String &, const Dictionary &)> publish;
+};
 
 class SolersScriptService : public Object {
 	GDCLASS(SolersScriptService, Object);
 
+	struct ScriptTask {
+		ProcessID process_id = 0;
+		uint64_t deadline_msec = 0;
+		String call_id;
+		String directory;
+		String result_path;
+		String progress_path;
+		String cancel_path;
+		String source_path;
+		StringName authority;
+	};
+
+	static HashMap<StringName, SolersScriptAuthority> authorities;
 	SolersActionTimeline *action_timeline = nullptr;
 	Error project_settings_save_error = OK;
+	HashMap<String, ScriptTask> script_tasks;
 
 	Dictionary _ok(const Variant &p_data) const;
 	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
 	Dictionary _validate_source(const String &p_path, const String &p_source) const;
+	Dictionary _read_json_file(const String &p_path) const;
+	void _write_task_result(const Dictionary &p_request, const Dictionary &p_result) const;
+	void _remove_task_files(const ScriptTask &p_task) const;
 	void _apply_project_settings(const Dictionary &p_values, const PackedStringArray &p_erase);
+	static const SolersScriptAuthority *_get_authority(const StringName &p_name);
 
 protected:
 	static void _bind_methods();
 
 public:
+	static void register_authority(const StringName &p_name, const SolersScriptAuthority &p_authority);
+	static void clear_authorities();
 	void set_action_timeline(SolersActionTimeline *p_action_timeline);
 
 	Dictionary write_file(const Dictionary &p_args);
@@ -57,4 +91,15 @@ public:
 	Dictionary edit_project(const Dictionary &p_args);
 	Dictionary edit_script(const Dictionary &p_args);
 	Dictionary validate_script(const Dictionary &p_args) const;
+	Dictionary start_authority_script(const StringName &p_authority, const Dictionary &p_args, const String &p_call_id);
+	Dictionary poll_authority_script(const Dictionary &p_args);
+	bool is_authority_script_ready(const Dictionary &p_args) const;
+	void complete_authority_script(const Dictionary &p_args);
+	Dictionary prepare_script_task(const String &p_request_path);
+	Dictionary finish_script_task(const Ref<SolersScriptContext> &p_context, const String &p_request_path);
+
+	~SolersScriptService();
 };
+
+void solers_script_authorities_initialize();
+void solers_script_authorities_uninitialize();

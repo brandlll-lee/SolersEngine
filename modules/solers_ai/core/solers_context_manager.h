@@ -63,6 +63,7 @@ public:
 	static int estimate_tokens(const String &p_text);
 	static int estimate_messages_tokens(const Array &p_messages);
 	static String clamp_to_tokens(const String &p_text, int p_token_budget);
+	static bool append_bounded(Array &r_results, const Dictionary &p_entry, int p_max_results, int p_token_budget, int &r_tokens);
 	void record_usage(int p_input_tokens, int p_covered_message_count, int p_transient_tokens = 0);
 	int get_token_count_with_pending(const Array &p_messages, const String &p_system_prompt, int p_tool_tokens, int p_transient_tokens = 0);
 	// Reserve the provider's declared output capacity. Unknown windows never compact.

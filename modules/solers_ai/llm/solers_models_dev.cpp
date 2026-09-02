@@ -36,9 +36,6 @@
 #include "core/io/http_client.h"
 #include "core/io/json.h"
 #include "core/os/os.h"
-#ifdef TOOLS_ENABLED
-#include "editor/file_system/editor_paths.h"
-#endif
 
 static constexpr uint64_t SOLERS_MODELS_DEV_FETCH_BUDGET_MSEC = 30000;
 static constexpr uint64_t SOLERS_MODELS_DEV_REFRESH_TTL_MSEC = 10 * 60 * 1000;
@@ -62,11 +59,6 @@ static Dictionary _seed_model(const String &p_id, const String &p_name, int p_co
 }
 
 String SolersModelsDev::_resolve_cache_path() {
-#ifdef TOOLS_ENABLED
-	if (EditorPaths::get_singleton() && EditorPaths::get_singleton()->are_paths_valid()) {
-		return EditorPaths::get_singleton()->get_cache_dir().path_join("solers_ai/models_dev.json");
-	}
-#endif
 	return "user://solers_ai/models_dev.json";
 }
 

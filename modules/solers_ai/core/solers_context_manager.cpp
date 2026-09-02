@@ -97,6 +97,16 @@ String SolersContextManager::clamp_to_tokens(const String &p_text, int p_token_b
 	return p_text.substr(0, head) + marker + p_text.substr(p_text.length() - tail);
 }
 
+bool SolersContextManager::append_bounded(Array &r_results, const Dictionary &p_entry, int p_max_results, int p_token_budget, int &r_tokens) {
+	const int tokens = estimate_tokens(JSON::stringify(p_entry));
+	if (r_results.size() >= p_max_results || (!r_results.is_empty() && r_tokens + tokens > MAX(1, p_token_budget))) {
+		return false;
+	}
+	r_results.push_back(p_entry);
+	r_tokens += tokens;
+	return true;
+}
+
 Array SolersContextManager::repair_tool_pairing(const Array &p_messages) {
 	Array repaired;
 	HashMap<String, String> open_calls;
@@ -189,6 +199,15 @@ Array SolersContextManager::project_completed_turns(const Array &p_messages) {
 			continue;
 		}
 		failures.erase(tool);
+		const Dictionary data = result.get("data", Dictionary());
+		if (!data.is_empty()) {
+			Dictionary evidence;
+			evidence["tool"] = tool;
+			evidence["content"] = clamp_to_tokens(JSON::stringify(data, "", false, true), TOOL_RESULT_MAX_TOKENS / 4);
+			Array observations = facts.get("observations", Array());
+			observations.push_back(evidence);
+			facts["observations"] = observations;
+		}
 		const Dictionary receipt = Dictionary(Dictionary(result.get("data", Dictionary())).get("mutation", Dictionary())).get("receipt", Dictionary());
 		const Dictionary scene = receipt.get("scene_after", Dictionary());
 		if (!scene.is_empty()) {
@@ -250,16 +269,12 @@ Array SolersContextManager::project_tool_evidence(const Array &p_messages) {
 			}
 		} else if (role == String(SolersLLMRole::TOOL)) {
 			if (completed_calls.has(message.get("tool_call_id", String()))) {
-				const String model_context = message.get("model_context", String());
-				if (!model_context.is_empty()) {
-					message["content"] = model_context;
-				}
+				message["content"] = clamp_to_tokens(message.get("content", String()), TOOL_RESULT_MAX_TOKENS / 4);
 				message["role"] = MODEL_CONTEXT_ROLE;
 				message["origin"] = "tool_evidence";
 				message.erase("tool_call_id");
 				message.erase("name");
 			}
-			message.erase("model_context");
 		}
 		projected.push_back(message);
 	}

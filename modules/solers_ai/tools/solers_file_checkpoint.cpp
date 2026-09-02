@@ -28,7 +28,7 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#include "solers_file_checkpoint.h"
+#include "modules/solers_ai/core/solers_file_checkpoint.h"
 
 #include "core/config/project_settings.h"
 #include "core/io/dir_access.h"
@@ -38,6 +38,8 @@
 #include "core/object/class_db.h"
 #include "core/os/os.h"
 #include "core/os/time.h"
+#include "editor/editor_interface.h"
+#include "editor/editor_node.h"
 #include "editor/file_system/editor_file_system.h"
 #include "editor/settings/editor_settings.h"
 
@@ -388,12 +390,22 @@ Dictionary SolersFileCheckpoint::restore_checkpoint_state(const Dictionary &p_ch
 	if (filesystem && filesystem->get_filesystem() && !filesystem->is_scanning()) {
 		if ((bool)p_checkpoint.get("directory", false)) {
 			filesystem->scan_changes();
+		} else if (normalized_path.ends_with(".import")) {
+			filesystem->reimport_files({ normalized_path.trim_suffix(".import") });
 		} else {
 			filesystem->update_file(normalized_path);
 		}
 	}
 	if (FileAccess::exists(normalized_path)) {
 		ResourceLoader::load(normalized_path, String(), ResourceFormatLoader::CACHE_MODE_REPLACE);
+	}
+	if (EditorNode::get_singleton() && ResourceLoader::get_resource_type(normalized_path) == "PackedScene") {
+		for (int i = 0; i < EditorNode::get_editor_data().get_edited_scene_count(); i++) {
+			if (EditorNode::get_editor_data().get_scene_path(i) == normalized_path) {
+				EditorInterface::get_singleton()->reload_scene_from_path(normalized_path);
+				break;
+			}
+		}
 	}
 	if (action_timeline) {
 		action_timeline->record_event("file_checkpoint_restored", result.get("data", Dictionary()));

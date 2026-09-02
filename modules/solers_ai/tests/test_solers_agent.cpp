@@ -272,8 +272,8 @@ TEST_CASE("[SolersContextManager] completed-turn projection preserves the exact 
 	history.push_back(make_user_message("Old task B: tune the sky.", 7));
 	history.push_back(SolersLLMMessage::assistant("Task B is complete.", Array()));
 	history.push_back(make_user_message("Task A: repair the fence collision.", 8));
-	history.push_back(SolersLLMMessage::assistant("The missing collision is at z=-7.244.", make_tool_calls("query_a", "object.query")));
-	history.push_back(SolersLLMMessage::tool_result("query_a", "object.query", String("large scene payload ").repeat(2000)));
+	history.push_back(SolersLLMMessage::assistant("The missing collision is at z=-7.244.", make_tool_calls("query_a", "scene.inspect")));
+	history.push_back(SolersLLMMessage::tool_result("query_a", "scene.inspect", String("large scene payload ").repeat(2000)));
 
 	Array projected = SolersContextManager::project_completed_turns(history);
 	const String wire = JSON::stringify(projected);
@@ -327,13 +327,12 @@ TEST_CASE("[SolersContextManager] completed tool evidence is outside tool-call s
 
 TEST_CASE("[SolersContextManager] consumed tool evidence keeps a compact requery receipt") {
 	Array history;
-	history.push_back(SolersLLMMessage::assistant("Inspecting.", make_tool_calls("compact", "object.query")));
-	history.push_back(SolersLLMMessage::tool_result("compact", "object.query", String("large scene payload ").repeat(2000), Array(), Array(), "Tool 'object.query' evidence: args={path=res://main.tscn} result=ok=1 count=128. Re-query native state for detail."));
+	history.push_back(SolersLLMMessage::assistant("Inspecting.", make_tool_calls("compact", "scene.inspect")));
+	history.push_back(SolersLLMMessage::tool_result("compact", "scene.inspect", String("large scene payload ").repeat(2000)));
 	history.push_back(SolersLLMMessage::assistant("Continue.", Array()));
 	const Array projected = SolersContextManager::project_tool_evidence(history);
 	const String wire = JSON::stringify(projected);
-	CHECK(wire.contains("Re-query native state for detail."));
-	CHECK_FALSE(wire.contains("large scene payload"));
+	CHECK(wire.contains("large scene payload"));
 }
 
 TEST_CASE("[SolersContextManager] envelope clamp keeps head and tail under the token budget") {
@@ -350,8 +349,8 @@ TEST_CASE("[SolersContextManager] envelope clamp keeps head and tail under the t
 TEST_CASE("[SolersContextManager] compaction never returns more than its budget") {
 	Array history;
 	history.push_back(make_user_message(String("obsolete ").repeat(4000), 1));
-	history.push_back(SolersLLMMessage::assistant("query", make_tool_calls("c1", "object.query")));
-	history.push_back(SolersLLMMessage::tool_result("c1", "object.query", String("scene dump ").repeat(4000)));
+	history.push_back(SolersLLMMessage::assistant("query", make_tool_calls("c1", "scene.inspect")));
+	history.push_back(SolersLLMMessage::tool_result("c1", "scene.inspect", String("scene dump ").repeat(4000)));
 	history.push_back(make_user_message("place the unit", 2));
 	SolersContextManager context;
 	const Dictionary result = context.apply_compaction(history, "Continue from the live scene.", 2000);

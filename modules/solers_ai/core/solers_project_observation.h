@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  solers_mcp_adapter.h                                                  */
+/*  solers_project_observation.h                                          */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -31,43 +31,29 @@
 #pragma once
 
 #include "core/object/object.h"
+#include "core/os/mutex.h"
 #include "core/variant/dictionary.h"
 
-class SolersActionTimeline;
-class SolersProjectObservation;
-class SolersRuntimeObservation;
-class SolersSceneObservation;
-class SolersToolRegistry;
+class SolersProjectObservation : public Object {
+	GDCLASS(SolersProjectObservation, Object);
 
-class SolersMCPAdapter : public Object {
-	GDCLASS(SolersMCPAdapter, Object);
+	mutable Mutex project_files_mutex;
+	PackedStringArray project_files;
+	bool project_files_ready = false;
 
-	SolersToolRegistry *tool_registry = nullptr;
-	SolersProjectObservation *project_observation = nullptr;
-	SolersRuntimeObservation *runtime_observation = nullptr;
-	SolersSceneObservation *scene_observation = nullptr;
-	SolersActionTimeline *action_timeline = nullptr;
-
-	Dictionary _jsonrpc_result(const Variant &p_id, const Variant &p_result) const;
-	Dictionary _jsonrpc_error(const Variant &p_id, int p_code, const String &p_message, const Variant &p_data = Variant()) const;
-	Dictionary _content_text(const String &p_text) const;
-	Array _tool_definitions_for_mcp() const;
-	Dictionary _resource(const String &p_uri, const String &p_name, const String &p_description, const String &p_mime_type = "application/json") const;
+	void _refresh_project_files();
 
 protected:
 	static void _bind_methods();
 
 public:
-	void set_tool_registry(SolersToolRegistry *p_tool_registry);
-	void set_observations(SolersProjectObservation *p_project, SolersSceneObservation *p_scene, SolersRuntimeObservation *p_runtime);
-	void set_action_timeline(SolersActionTimeline *p_action_timeline);
+	Dictionary get_project_info() const;
+	Dictionary get_project_settings_summary() const;
+	Dictionary inspect_project_delivery(const Dictionary &p_args, int p_token_budget = INT32_MAX) const;
+	Dictionary search_project(const Dictionary &p_args, int p_token_budget = INT32_MAX) const;
+	Dictionary observe_path(const String &p_path) const;
+	Dictionary digest_packed_scene(const String &p_path, int p_max_nodes = 96) const;
+	Dictionary read_project_file(const String &p_path, int p_line_start = 1, int p_line_count = 200, bool p_raw = false, int p_token_budget = INT32_MAX) const;
 
-	Dictionary handle_request(const Dictionary &p_request);
-	Dictionary initialize(const Dictionary &p_params) const;
-	Dictionary list_tools() const;
-	Dictionary call_tool(const Dictionary &p_params);
-	Dictionary list_resources() const;
-	Dictionary read_resource(const Dictionary &p_params) const;
-	Dictionary list_prompts() const;
-	Dictionary get_status() const;
+	SolersProjectObservation();
 };

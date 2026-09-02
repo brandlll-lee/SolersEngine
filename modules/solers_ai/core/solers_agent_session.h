@@ -40,9 +40,14 @@
 #include "core/variant/array.h"
 #include "core/variant/dictionary.h"
 
+#include <functional>
+
 class SolersToolRegistry;
 struct SolersPreparedToolCall;
 class SolersActionTimeline;
+class SolersProjectObservation;
+class SolersRuntimeObservation;
+class SolersSceneObservation;
 class SolersSettingsService;
 class SolersPermissionManager;
 class SolersContextManager;
@@ -70,6 +75,11 @@ class SolersAgentSession : public Object {
 	SolersSettingsService *settings_service = nullptr;
 	SolersActionTimeline *action_timeline = nullptr;
 	SolersPermissionManager *permission_manager = nullptr;
+	SolersProjectObservation *project_observation = nullptr;
+	SolersRuntimeObservation *runtime_observation = nullptr;
+	SolersSceneObservation *scene_observation = nullptr;
+	std::function<bool()> runtime_stop_handler;
+	std::function<void(const String &, const String &)> background_asset_delivery_handler;
 
 	SolersLLMProtocolRegistry *protocol_registry = nullptr; // owned
 	SolersLLMClient *client = nullptr; // owned
@@ -260,6 +270,9 @@ public:
 	void set_models_dev(SolersModelsDev *p_models_dev, bool p_owned = false);
 	void set_action_timeline(SolersActionTimeline *p_action_timeline) { action_timeline = p_action_timeline; }
 	void set_permission_manager(SolersPermissionManager *p_permission_manager) { permission_manager = p_permission_manager; }
+	void set_observations(SolersProjectObservation *p_project, SolersSceneObservation *p_scene, SolersRuntimeObservation *p_runtime);
+	void set_runtime_stop_handler(std::function<bool()> p_handler) { runtime_stop_handler = std::move(p_handler); }
+	void set_background_asset_delivery_handler(std::function<void(const String &, const String &)> p_handler) { background_asset_delivery_handler = std::move(p_handler); }
 
 	static Dictionary validate_plan(const Dictionary &p_args);
 	Dictionary start_turn(const Dictionary &p_args); // { prompt: String }

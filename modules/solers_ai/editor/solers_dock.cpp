@@ -76,9 +76,9 @@
 #include "modules/solers_ai/core/solers_action_timeline.h"
 #include "modules/solers_ai/core/solers_agent_session.h"
 #include "modules/solers_ai/core/solers_mention.h"
-#include "modules/solers_ai/core/solers_observation_service.h"
 #include "modules/solers_ai/core/solers_permission_manager.h"
 #include "modules/solers_ai/core/solers_provider_registry.h"
+#include "modules/solers_ai/core/solers_scene_observation.h"
 #include "modules/solers_ai/core/solers_settings_service.h"
 #include "modules/solers_ai/core/solers_tool_registry.h"
 #include "modules/solers_ai/core/solers_trace.h"
@@ -2069,9 +2069,9 @@ void SolersDock::_refresh_mention_popup() {
 	Array entries;
 
 	if (!mention_section.is_empty()) {
-		entries = SolersMention::collect_section_items(mention_section, observation_service, filter);
+		entries = SolersMention::collect_section_items(mention_section, scene_observation, filter);
 	} else if (!filter.is_empty()) {
-		entries = SolersMention::collect_section_items(String(), observation_service, filter, SolersMention::COLLECT_LIMIT);
+		entries = SolersMention::collect_section_items(String(), scene_observation, filter, SolersMention::COLLECT_LIMIT);
 	} else {
 		entries = SolersMention::collect_root_sections();
 	}
@@ -2419,8 +2419,8 @@ void SolersDock::_notification(int p_what) {
 	}
 }
 
-void SolersDock::set_services(SolersObservationService *p_observation_service, SolersToolRegistry *p_tool_registry, SolersActionTimeline *p_action_timeline, SolersPermissionManager *p_permission_manager, SolersSettingsService *p_settings_service) {
-	observation_service = p_observation_service;
+void SolersDock::set_services(SolersSceneObservation *p_scene_observation, SolersToolRegistry *p_tool_registry, SolersActionTimeline *p_action_timeline, SolersPermissionManager *p_permission_manager, SolersSettingsService *p_settings_service) {
+	scene_observation = p_scene_observation;
 	tool_registry = p_tool_registry;
 	action_timeline = p_action_timeline;
 	permission_manager = p_permission_manager;

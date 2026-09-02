@@ -45,7 +45,7 @@
 
 #include "modules/solers_ai/core/solers_asset_service.h"
 #include "modules/solers_ai/core/solers_mention.h"
-#include "modules/solers_ai/core/solers_observation_service.h"
+#include "modules/solers_ai/core/solers_project_observation.h"
 #include "modules/solers_ai/core/solers_resource_service.h"
 #include "modules/solers_ai/core/solers_tool_registry.h"
 #include "modules/solers_ai/generated/terrain3d_lock.gen.h"
@@ -840,12 +840,11 @@ TEST_CASE("[SolersAssetService] asset listing uses the bounded in-memory project
 	}
 
 	if (filesystem != nullptr) {
-		SolersObservationService observation;
-		observation.poll();
+		SolersProjectObservation observation;
 		SolersResourceService resources;
 		SolersToolRegistry registry;
 		registry.set_asset_service(&assets);
-		registry.set_observation_service(&observation);
+		registry.set_project_observation(&observation);
 		registry.set_resource_service(&resources);
 		const Dictionary report = registry.build_delivery_report(Dictionary({ { "_session_id", "projection-session" } }));
 		CHECK_FALSE(solers_test_find_dictionary(report.get("blockers", Array()), SNAME("code"), "UNCONSUMED_AGENT_ARTIFACTS").is_empty());

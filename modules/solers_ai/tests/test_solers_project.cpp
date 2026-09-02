@@ -69,9 +69,11 @@
 
 #include "modules/modules_enabled.gen.h"
 #include "modules/solers_ai/core/solers_geometry_facts.h"
-#include "modules/solers_ai/core/solers_observation_service.h"
+#include "modules/solers_ai/core/solers_project_observation.h"
 #include "modules/solers_ai/core/solers_reflection_service.h"
 #include "modules/solers_ai/core/solers_resource_service.h"
+#include "modules/solers_ai/core/solers_runtime_observation.h"
+#include "modules/solers_ai/core/solers_scene_observation.h"
 #include "modules/solers_ai/core/solers_script_service.h"
 #include "modules/solers_ai/core/solers_tool_registry.h"
 #include "modules/solers_ai/tests/support/solers_test_state.h"
@@ -323,7 +325,7 @@ TEST_CASE("[SceneTree][SolersCSG] native boolean output exposes mesh and collisi
 }
 #endif
 
-TEST_CASE("[SolersObservationService] observe_path digests any selection by engine authority") {
+TEST_CASE("[SolersProjectObservation] observe_path digests any selection by engine authority") {
 	// Contract: directory and ordinary file both get a digest.kind — not only PackedScene.
 	const String dir_path = "res://solers_observe_path_contract";
 	const String file_path = dir_path.path_join("note.txt");
@@ -337,7 +339,7 @@ TEST_CASE("[SolersObservationService] observe_path digests any selection by engi
 		REQUIRE(file.is_valid());
 		file->store_string("first\nsecond\nthird\n");
 	}
-	SolersObservationService observation_service;
+	SolersProjectObservation observation_service;
 	const Dictionary dir_observed = observation_service.observe_path(dir_path + "/");
 	REQUIRE((bool)dir_observed.get("ok", false));
 	const Dictionary dir_digest = dir_observed.get("digest", Dictionary());
@@ -355,8 +357,8 @@ TEST_CASE("[SolersObservationService] observe_path digests any selection by engi
 	CHECK((int)page.get("next_line", 0) == 3);
 }
 
-TEST_CASE("[SolersObservationService] runtime views require native debugger authority") {
-	SolersObservationService observation_service;
+TEST_CASE("[SolersRuntimeObservation] runtime views require native debugger authority") {
+	SolersRuntimeObservation observation_service;
 	Dictionary observe_args;
 	const Dictionary runtime = observation_service.observe_runtime(observe_args);
 	CHECK(runtime.has("error_digest"));
@@ -377,8 +379,8 @@ TEST_CASE("[SolersObservationService] runtime views require native debugger auth
 	CHECK_FALSE(observation_service.get_runtime_property(0, NodePath("/root/Player"), object_id, SNAME("position"), value, info, observation_id));
 }
 
-TEST_CASE("[SolersObservationService] delivery inspection reports native project facts without deleting advisories") {
-	SolersObservationService observation;
+TEST_CASE("[SolersProjectObservation] delivery inspection reports native project facts without deleting advisories") {
+	SolersProjectObservation observation;
 	const Dictionary report = observation.inspect_project_delivery(Dictionary({ { "roots", Array({ "res://missing_delivery_root.tscn" }) } }), 4096);
 	CHECK(report.get("status", String()) == "complete");
 	CHECK(report.has("input_actions"));
@@ -392,7 +394,7 @@ TEST_CASE("[SolersObservationService] delivery inspection reports native project
 }
 
 #ifdef DEBUG_ENABLED
-TEST_CASE("[SolersObservationService] remote tree projects one canonical runtime identity") {
+TEST_CASE("[SolersRuntimeObservation] remote tree projects one canonical runtime identity") {
 	Node3D *root = memnew(Node3D);
 	root->set_name("root");
 	Node3D *player = memnew(Node3D);
@@ -416,7 +418,7 @@ TEST_CASE("[SolersObservationService] remote tree projects one canonical runtime
 	root->add_child(hud);
 	SceneDebuggerTree tree(root);
 
-	const Array nodes = SolersObservationService::project_runtime_tree(tree, 17);
+	const Array nodes = SolersRuntimeObservation::project_runtime_tree(tree, 17);
 	REQUIRE(nodes.size() == 6);
 	CHECK(Dictionary(nodes[0]).get("node_path", String()) == "/root");
 	CHECK(Dictionary(nodes[2]).get("class_name", String()) == "Skeleton3D");
@@ -452,7 +454,7 @@ TEST_CASE("[SolersScriptService] script.edit reports persisted file identity") {
 	CHECK_FALSE(data.has("affects_edited_scene_root_script"));
 }
 
-TEST_CASE("[SceneTree][SolersObservationService] RenderState follows native World3D authority") {
+TEST_CASE("[SceneTree][SolersSceneObservation] RenderState follows native World3D authority") {
 	SubViewport *viewport = memnew(SubViewport);
 	viewport->set_use_own_world_3d(true);
 	Node3D *root = memnew(Node3D);
@@ -481,7 +483,7 @@ TEST_CASE("[SceneTree][SolersObservationService] RenderState follows native Worl
 	Ref<CameraAttributesPhysical> attributes;
 	attributes.instantiate();
 	viewport->find_world_3d()->set_camera_attributes(attributes);
-	SolersObservationService observation;
+	SolersSceneObservation observation;
 	Dictionary state = observation.describe_render_state(viewport, camera, root);
 	CHECK(state.get("environment_source", String()) == "world");
 	CHECK(state.get("camera_attributes_source", String()) == "world");
@@ -489,17 +491,17 @@ TEST_CASE("[SceneTree][SolersObservationService] RenderState follows native Worl
 	CHECK(Array(state.get("lights", Array())).size() == 1);
 	Dictionary parameters = Dictionary(Dictionary(Dictionary(state.get("environment", Dictionary())).get("sky_material", Dictionary())).get("parameters", Dictionary()));
 	CHECK(Dictionary(parameters.get("strength", Dictionary())).get("source", String()) == "shader_default");
-	const String before = SolersObservationService::render_state_fingerprint(state);
+	const String before = SolersSceneObservation::render_state_fingerprint(state);
 	material->set_shader_parameter("strength", 3.0);
 	state = observation.describe_render_state(viewport, camera, root);
 	parameters = Dictionary(Dictionary(Dictionary(state.get("environment", Dictionary())).get("sky_material", Dictionary())).get("parameters", Dictionary()));
 	CHECK(Dictionary(parameters.get("strength", Dictionary())).get("source", String()) == "material_override");
-	CHECK(SolersObservationService::render_state_fingerprint(state) != before);
+	CHECK(SolersSceneObservation::render_state_fingerprint(state) != before);
 	viewport->queue_free();
 	MessageQueue::get_singleton()->flush();
 }
 
-TEST_CASE("[SolersResourceService] create initializes properties and accepts listed Resource types") {
+TEST_CASE("[SolersResourceService] edit creates absent resources with typed properties") {
 	const String texture_path = "res://.solers_texture_array_contract.tres";
 	const String node_path = "res://.solers_visual_shader_node_contract.tres";
 	const String invalid_path = "res://.solers_invalid_object_contract.tres";
@@ -512,7 +514,7 @@ TEST_CASE("[SolersResourceService] create initializes properties and accepts lis
 	Dictionary create_texture;
 	create_texture["class_name"] = "CompressedTexture2DArray";
 	create_texture["path"] = texture_path;
-	REQUIRE(resource_service.create_resource(create_texture).get("ok", false));
+	REQUIRE(resource_service.edit_resource(create_texture).get("ok", false));
 
 	Dictionary node_properties;
 	node_properties["texture_array"] = texture_path;
@@ -520,7 +522,7 @@ TEST_CASE("[SolersResourceService] create initializes properties and accepts lis
 	create_node["class_name"] = "VisualShaderNodeTexture2DArray";
 	create_node["path"] = node_path;
 	create_node["properties"] = node_properties;
-	const Dictionary created_node = resource_service.create_resource(create_node);
+	const Dictionary created_node = resource_service.edit_resource(create_node);
 	REQUIRE(created_node.get("ok", false));
 	CHECK((int)Dictionary(created_node.get("data", Dictionary())).get("initialized_property_count", 0) == 1);
 
@@ -534,7 +536,7 @@ TEST_CASE("[SolersResourceService] create initializes properties and accepts lis
 	invalid_properties["texture_array"] = Dictionary();
 	create_node["path"] = invalid_path;
 	create_node["properties"] = invalid_properties;
-	const Dictionary invalid = resource_service.create_resource(create_node);
+	const Dictionary invalid = resource_service.edit_resource(create_node);
 	CHECK_FALSE((bool)invalid.get("ok", true));
 	CHECK(Dictionary(invalid.get("error", Dictionary())).get("code", String()) == "INVALID_PROPERTY_VALUE");
 	CHECK_FALSE(FileAccess::exists(invalid_path));

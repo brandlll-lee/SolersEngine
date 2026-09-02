@@ -34,7 +34,7 @@
 #include "core/variant/array.h"
 #include "core/variant/dictionary.h"
 
-class SolersObservationService;
+class SolersSceneObservation;
 
 // Context mentions pinned via @ in the chat composer.
 // Solers connectors: SolersPluginRegistry. Godot project addons: plugin.cfg scan
@@ -62,6 +62,6 @@ Dictionary resolve_project_path_at(const String &p_text, int p_offset, int &r_le
 Array collect_root_sections();
 // Items for one section (or all sources when p_section_id is empty): mention dicts.
 // p_max_items <= 0 keeps the complete indexed section; quick find uses COLLECT_LIMIT.
-Array collect_section_items(const String &p_section_id, SolersObservationService *p_observation, const String &p_query = String(), int p_max_items = 0);
+Array collect_section_items(const String &p_section_id, SolersSceneObservation *p_observation, const String &p_query = String(), int p_max_items = 0);
 
 } // namespace SolersMention

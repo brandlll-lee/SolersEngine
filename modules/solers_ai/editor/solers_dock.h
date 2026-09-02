@@ -60,7 +60,7 @@ class SolersContextRing;
 class SolersPermissionManager;
 class SolersPMAIView;
 class SolersPlanCapsule;
-class SolersObservationService;
+class SolersSceneObservation;
 class SolersSelectChip;
 class SolersSettingsService;
 class SolersStatusCell;
@@ -149,7 +149,7 @@ class SolersDock : public PanelContainer {
 	Array timeline_messages;
 	bool timeline_window_updating = false;
 
-	SolersObservationService *observation_service = nullptr;
+	SolersSceneObservation *scene_observation = nullptr;
 	SolersToolRegistry *tool_registry = nullptr;
 	SolersActionTimeline *action_timeline = nullptr;
 	SolersPermissionManager *permission_manager = nullptr;
@@ -254,7 +254,7 @@ protected:
 	void _notification(int p_what);
 
 public:
-	void set_services(SolersObservationService *p_observation_service, SolersToolRegistry *p_tool_registry, SolersActionTimeline *p_action_timeline, SolersPermissionManager *p_permission_manager, SolersSettingsService *p_settings_service);
+	void set_services(SolersSceneObservation *p_scene_observation, SolersToolRegistry *p_tool_registry, SolersActionTimeline *p_action_timeline, SolersPermissionManager *p_permission_manager, SolersSettingsService *p_settings_service);
 	void make_visible();
 	void set_agent_session(SolersAgentSession *p_agent_session);
 	void start_new_chat();

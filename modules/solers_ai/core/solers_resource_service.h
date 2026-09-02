@@ -55,6 +55,8 @@ class SolersResourceService : public Object {
 	String _export_filter_to_string(int p_filter) const;
 	String _script_export_mode_to_string(int p_mode) const;
 	String _export_message_type_to_string(int p_type) const;
+	Dictionary _create_resource(const Dictionary &p_args) const;
+	Dictionary _set_resource_properties(const Dictionary &p_args) const;
 
 protected:
 	static void _bind_methods();
@@ -62,8 +64,7 @@ protected:
 public:
 	Dictionary get_resource_info(const Dictionary &p_args) const;
 	Dictionary inspect_resource(const Dictionary &p_args) const;
-	Dictionary create_resource(const Dictionary &p_args) const;
-	Dictionary set_resource_property(const Dictionary &p_args) const;
+	Dictionary edit_resource(const Dictionary &p_args) const;
 	Dictionary native_list_properties(const Dictionary &p_args) const;
 	Dictionary native_get(const Dictionary &p_args) const;
 	Dictionary list_export_presets(const Dictionary &p_args) const;

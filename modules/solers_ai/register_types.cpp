@@ -45,11 +45,14 @@
 #include "core/solers_agent_session.h"
 #include "core/solers_asset_service.h"
 #include "core/solers_file_checkpoint.h"
-#include "core/solers_observation_service.h"
 #include "core/solers_permission_manager.h"
+#include "core/solers_project_observation.h"
 #include "core/solers_provider_registry.h"
 #include "core/solers_reflection_service.h"
 #include "core/solers_resource_service.h"
+#include "core/solers_runtime_observation.h"
+#include "core/solers_scene_observation.h"
+#include "core/solers_script_context.h"
 #include "core/solers_script_service.h"
 #include "core/solers_settings_service.h"
 #include "core/solers_tool_registry.h"
@@ -68,6 +71,8 @@ void solers_runtime_bridge_uninitialize();
 void initialize_solers_ai_module(ModuleInitializationLevel p_level) {
 #ifdef TOOLS_ENABLED
 	if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
+		GDREGISTER_CLASS(SolersScriptContext);
+		solers_script_jobs_initialize();
 		solers_runtime_bridge_initialize();
 	}
 	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
@@ -75,12 +80,15 @@ void initialize_solers_ai_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(SolersAgentSession);
 		GDREGISTER_CLASS(SolersAssetService);
 		GDREGISTER_CLASS(SolersFileCheckpoint);
-		GDREGISTER_CLASS(SolersObservationService);
+		GDREGISTER_CLASS(SolersProjectObservation);
+		GDREGISTER_CLASS(SolersRuntimeObservation);
+		GDREGISTER_CLASS(SolersSceneObservation);
 		GDREGISTER_CLASS(SolersPermissionManager);
 		GDREGISTER_CLASS(SolersProviderRegistry);
 		GDREGISTER_CLASS(SolersReflectionService);
 		GDREGISTER_CLASS(SolersResourceService);
 		GDREGISTER_CLASS(SolersScriptService);
+		solers_script_authorities_initialize();
 		GDREGISTER_CLASS(SolersSettingsService);
 		GDREGISTER_CLASS(SolersToolRegistry);
 		GDREGISTER_CLASS(SolersPluginJob);
@@ -111,10 +119,12 @@ void uninitialize_solers_ai_module(ModuleInitializationLevel p_level) {
 #ifdef TOOLS_ENABLED
 	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
 		SolersPluginRegistry::unregister_builtins();
+		solers_script_authorities_uninitialize();
 		solers_transcript_close();
 	}
 	if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
 		solers_runtime_bridge_uninitialize();
+		solers_script_jobs_uninitialize();
 	}
 #endif // TOOLS_ENABLED
 }

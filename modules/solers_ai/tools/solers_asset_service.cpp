@@ -28,7 +28,7 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#include "solers_asset_service.h"
+#include "modules/solers_ai/core/solers_asset_service.h"
 
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"

@@ -36,6 +36,7 @@
 #include "core/io/resource.h"
 #include "core/math/math_funcs.h"
 #include "core/object/callable_mp.h"
+#include "core/os/os.h"
 #include "core/templates/hash_set.h"
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/physics/collision_shape_3d.h"
@@ -48,7 +49,13 @@
 #include "servers/rendering/rendering_server.h"
 
 #include "modules/solers_ai/core/solers_geometry_facts.h"
+#include "modules/solers_ai/core/solers_script_context.h"
 #include "modules/solers_ai/core/solers_tool.h"
+
+#ifdef MODULE_GDSCRIPT_ENABLED
+#include "modules/gdscript/gdscript.h"
+#include "modules/gdscript/gdscript_function.h"
+#endif
 
 static HashSet<StringName> solers_owned_input_actions;
 
@@ -197,7 +204,131 @@ class SolersRuntimeBridge : public Object {
 	Array pending_inputs;
 	bool frame_callback_requested = false;
 
+#ifdef MODULE_GDSCRIPT_ENABLED
+	struct RuntimeScriptTask {
+		int64_t runtime_epoch = 0;
+		uint64_t deadline_msec = 0;
+		Ref<GDScript> script;
+		Ref<RefCounted> instance;
+		Ref<GDScriptFunctionState> state;
+		Ref<SolersScriptContext> context;
+	};
+	HashMap<String, RuntimeScriptTask> runtime_scripts;
+
+	void _send_script_error(const String &p_call_id, int64_t p_runtime_epoch, const String &p_code, const String &p_message) {
+		Dictionary result({ { "call_id", p_call_id }, { "runtime_epoch", p_runtime_epoch }, { "ok",
+							   false } });
+		result["error"] = Dictionary({ { "code", p_code }, { "message", p_message }, { "recoverable",
+										  true } });
+		_solers_send_runtime_result("solers:script_result", result);
+	}
+
+	void _finish_script(const String &p_call_id, const Variant &p_value) {
+		RuntimeScriptTask *task = runtime_scripts.getptr(p_call_id);
+		if (!task) {
+			return;
+		}
+		Dictionary result({ { "call_id", p_call_id }, { "runtime_epoch",
+							   task->runtime_epoch } });
+		if (task->context->has_failed()) {
+			result["ok"] = false;
+			result["error"] = task->context->get_failure();
+		} else {
+			result["ok"] = true;
+			result["data"] = Dictionary({ { "result", JSON::to_native(JSON::from_native(p_value)) }, { "logs", JSON::to_native(JSON::from_native(task->context->get_logs())) }, { "runtime_only",
+											 true } });
+		}
+		runtime_scripts.erase(p_call_id);
+		_solers_send_runtime_result("solers:script_result", result);
+	}
+
+	void script_completed(const Variant &p_value, const String &p_call_id) {
+		_finish_script(p_call_id, p_value);
+	}
+
+	void script_frame() {
+		Vector<String> expired;
+		const uint64_t now = OS::get_singleton()->get_ticks_msec();
+		for (const KeyValue<String, RuntimeScriptTask> &task : runtime_scripts) {
+			if (now >= task.value.deadline_msec || task.value.context->is_cancelled()) {
+				expired.push_back(task.key);
+			}
+		}
+		for (const String &call_id : expired) {
+			const int64_t epoch = runtime_scripts[call_id].runtime_epoch;
+			runtime_scripts.erase(call_id);
+			_send_script_error(call_id, epoch, "SCRIPT_TIMEOUT", "runtime.script exceeded its declared timeout.");
+		}
+		SceneTree *tree = SceneTree::get_singleton();
+		if (runtime_scripts.is_empty() && tree && tree->is_connected(SNAME("process_frame"), callable_mp(this, &SolersRuntimeBridge::script_frame))) {
+			tree->disconnect(SNAME("process_frame"), callable_mp(this, &SolersRuntimeBridge::script_frame));
+		}
+	}
+#endif
+
 public:
+	void request_script(const String &p_call_id, int64_t p_runtime_epoch, const String &p_source, uint64_t p_deadline_msec) {
+#ifdef MODULE_GDSCRIPT_ENABLED
+		if (runtime_scripts.has(p_call_id)) {
+			_send_script_error(p_call_id, p_runtime_epoch, "RUNTIME_SCRIPT_BUSY", "This runtime script call is already active.");
+			return;
+		}
+		SceneTree *tree = SceneTree::get_singleton();
+		Window *root = tree ? tree->get_root() : nullptr;
+		if (!root) {
+			_send_script_error(p_call_id, p_runtime_epoch, "RUNTIME_UNAVAILABLE", "The running game has no SceneTree root.");
+			return;
+		}
+		RuntimeScriptTask task;
+		task.runtime_epoch = p_runtime_epoch;
+		task.deadline_msec = p_deadline_msec;
+		task.script.instantiate();
+		task.script->set_source_code(p_source);
+		if (task.script->reload() != OK) {
+			_send_script_error(p_call_id, p_runtime_epoch, "SCRIPT_VALIDATION_FAILED", "The game process could not compile runtime.script source.");
+			return;
+		}
+		task.context.instantiate();
+		task.context->initialize(SNAME("runtime"), root, root->get_scene_file_path(), Dictionary(), false, PackedStringArray(), String(), String(), p_deadline_msec);
+		task.instance.instantiate();
+		task.instance->set_script(task.script);
+		if (!task.instance->has_method(SNAME("run"))) {
+			_send_script_error(p_call_id, p_runtime_epoch, "SCRIPT_ENTRYPOINT_MISSING", "Runtime scripts must define func run(ctx).");
+			return;
+		}
+		Variant context = task.context;
+		const Variant *arguments[] = { &context };
+		Callable::CallError call_error;
+		const Variant value = task.instance->callp(SNAME("run"), arguments, 1, call_error);
+		if (call_error.error != Callable::CallError::CALL_OK) {
+			_send_script_error(p_call_id, p_runtime_epoch, "SCRIPT_CALL_FAILED", "Godot could not call runtime.script run(ctx).");
+			return;
+		}
+		Ref<GDScriptFunctionState> state = value;
+		if (state.is_null()) {
+			runtime_scripts[p_call_id] = task;
+			_finish_script(p_call_id, value);
+			return;
+		}
+		task.state = state;
+		runtime_scripts[p_call_id] = task;
+		state->connect(SNAME("completed"), callable_mp(this, &SolersRuntimeBridge::script_completed).bind(p_call_id), CONNECT_ONE_SHOT);
+		if (!tree->is_connected(SNAME("process_frame"), callable_mp(this, &SolersRuntimeBridge::script_frame))) {
+			tree->connect(SNAME("process_frame"), callable_mp(this, &SolersRuntimeBridge::script_frame));
+		}
+#else
+		Dictionary result({ { "call_id", p_call_id }, { "runtime_epoch", p_runtime_epoch }, { "ok", false } });
+		result["error"] = Dictionary({ { "code", "GDSCRIPT_UNAVAILABLE" }, { "message", "runtime.script requires the GDScript module." }, { "recoverable", false } });
+		_solers_send_runtime_result("solers:script_result", result);
+#endif
+	}
+
+	void cancel_script(const String &p_call_id) {
+#ifdef MODULE_GDSCRIPT_ENABLED
+		runtime_scripts.erase(p_call_id);
+#endif
+	}
+
 	void request_frame(const String &p_call_id, int64_t p_runtime_epoch, const Array &p_focus_paths) {
 		RenderingServer *rendering = RenderingServer::get_singleton();
 		if (!rendering) {
@@ -385,12 +516,27 @@ static void _solers_send_input_error(const String &p_call_id, int64_t p_runtime_
 }
 
 static Error _solers_capture_runtime(void *, const String &p_message, const Array &p_args, bool &r_captured) {
-	r_captured = p_message == "set_input_actions" || p_message == "observe_frame" || p_message == "observe_objects";
+	r_captured = p_message == "set_input_actions" || p_message == "observe_frame" || p_message == "observe_objects" || p_message == "run_script" || p_message == "cancel_script";
 	if (!r_captured) {
 		return OK;
 	}
 	const String call_id = p_args.size() > 0 ? String(p_args[0]) : String();
 	const int64_t runtime_epoch = p_args.size() > 1 ? (int64_t)p_args[1] : 0;
+	if (p_message == "run_script") {
+		if (p_args.size() != 4 || call_id.is_empty() || runtime_epoch <= 0 || p_args[2].get_type() != Variant::STRING || p_args[3].get_type() != Variant::INT || !solers_runtime_bridge) {
+			Dictionary result({ { "call_id", call_id }, { "runtime_epoch", runtime_epoch }, { "ok", false }, { "error", Dictionary({ { "code", "INVALID_SCRIPT_REQUEST" }, { "message", "runtime.script requires call_id, runtime_epoch, source, and deadline." }, { "recoverable", true } }) } });
+			_solers_send_runtime_result("solers:script_result", result);
+			return OK;
+		}
+		solers_runtime_bridge->request_script(call_id, runtime_epoch, p_args[2], (int64_t)p_args[3]);
+		return OK;
+	}
+	if (p_message == "cancel_script") {
+		if (solers_runtime_bridge) {
+			solers_runtime_bridge->cancel_script(call_id);
+		}
+		return OK;
+	}
 	if (p_message == "observe_frame" || p_message == "observe_objects") {
 		if (p_args.size() != 3 || call_id.is_empty() || runtime_epoch <= 0 || p_args[2].get_type() != Variant::ARRAY || !solers_runtime_bridge) {
 			Dictionary result({ { "call_id", call_id }, { "runtime_epoch", runtime_epoch }, { "ok", false }, { "code", "INVALID_OBSERVATION_REQUEST" }, { "message", "Runtime observations require call_id, runtime_epoch, and an array payload." } });

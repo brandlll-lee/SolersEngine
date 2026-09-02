@@ -876,18 +876,12 @@ Dictionary SolersResourceService::_read_method(Object *p_object, const StringNam
 	return _ok(Dictionary({ { "method", p_method }, { "arguments", p_arguments }, { "type", Variant::get_type_name(value.get_type()) }, { "value", solers_summarize_display_value(value) } }));
 }
 
-Dictionary SolersResourceService::create_resource(const Dictionary &p_args) const {
+Dictionary SolersResourceService::_create_resource(const Dictionary &p_args) const {
 	const String class_name = String(p_args.get("class_name", String())).strip_edges();
-	const String path_arg = p_args.get("path", String());
 	if (class_name.is_empty()) {
 		return _error("INVALID_ARGUMENT", "class_name is required.");
 	}
-
-	const SolersPath::NormalizedPath normalized_path = SolersPath::normalize_project_path(path_arg);
-	if (!normalized_path.valid) {
-		return _error("INVALID_PATH", normalized_path.error);
-	}
-	const String path = normalized_path.value;
+	const String path = p_args.get("path", String());
 
 	const StringName class_sn = StringName(class_name);
 	if (!ClassDB::class_exists(class_sn) || !ClassDB::can_instantiate(class_sn) || !ClassDB::is_parent_class(class_sn, SNAME("Resource"))) {
@@ -936,19 +930,13 @@ Dictionary SolersResourceService::create_resource(const Dictionary &p_args) cons
 	return _ok(data);
 }
 
-Dictionary SolersResourceService::set_resource_property(const Dictionary &p_args) const {
-	const String path_arg = p_args.get("path", String());
+Dictionary SolersResourceService::_set_resource_properties(const Dictionary &p_args) const {
+	const String path = p_args.get("path", String());
 	const String type_hint = p_args.get("type_hint", String());
 	if (p_args.get("properties", Variant()).get_type() != Variant::DICTIONARY || Dictionary(p_args["properties"]).is_empty()) {
 		return _error("INVALID_ARGUMENT", "properties must be a non-empty object.");
 	}
 	const Dictionary properties = p_args["properties"];
-
-	const SolersPath::NormalizedPath normalized_path = SolersPath::normalize_project_path(path_arg);
-	if (!normalized_path.valid) {
-		return _error("INVALID_PATH", normalized_path.error);
-	}
-	const String path = normalized_path.value;
 	Error load_error = OK;
 	Ref<Resource> resource = ResourceLoader::load(path, type_hint, ResourceFormatLoader::CACHE_MODE_REUSE, &load_error);
 	if (resource.is_null() || load_error != OK) {
@@ -999,6 +987,16 @@ Dictionary SolersResourceService::set_resource_property(const Dictionary &p_args
 	data["properties"] = updated;
 	data["updated_property_count"] = names.size();
 	return _ok(data);
+}
+
+Dictionary SolersResourceService::edit_resource(const Dictionary &p_args) const {
+	const SolersPath::NormalizedPath path = SolersPath::normalize_project_path(p_args.get("path", String()));
+	if (!path.valid) {
+		return _error("INVALID_PATH", path.error);
+	}
+	Dictionary args = p_args;
+	args["path"] = path.value;
+	return FileAccess::exists(path.value) || ResourceLoader::exists(path.value) ? _set_resource_properties(args) : _create_resource(args);
 }
 
 Dictionary SolersResourceService::native_list_properties(const Dictionary &p_args) const {

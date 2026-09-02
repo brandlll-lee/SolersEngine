@@ -32,11 +32,8 @@
 
 #include "core/math/aabb.h"
 #include "core/object/object.h"
-#include "core/os/thread.h"
-#include "core/templates/hash_map.h"
 #include "core/templates/vector.h"
 #include "core/variant/dictionary.h"
-#include "scene/resources/mesh.h"
 
 class Node;
 class Node3D;
@@ -47,25 +44,6 @@ class SolersReflectionService : public Object {
 	GDCLASS(SolersReflectionService, Object);
 
 	SolersActionTimeline *action_timeline = nullptr;
-
-	struct UV2UnwrapTask {
-		String operation_id;
-		Array node_paths;
-		Vector<ObjectID> node_ids;
-		Vector<Ref<Mesh>> original_meshes;
-		Vector<Ref<Mesh>> replacement_meshes;
-		int next_index = 0;
-		int current_index = -1;
-		int already_valid_count = 0;
-		Ref<ArrayMesh> current_mesh;
-		Transform3D current_transform;
-		Error worker_error = OK;
-		Thread worker;
-		SafeFlag worker_done;
-		SafeFlag cancelled;
-		bool worker_active = false;
-	};
-	HashMap<String, UV2UnwrapTask *> uv2_unwrap_tasks;
 
 	Dictionary _ok(const Variant &p_data) const;
 	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
@@ -87,12 +65,6 @@ class SolersReflectionService : public Object {
 	String _instance_scene_path(Node *p_node) const;
 
 	Dictionary _list_signal_connections(const Dictionary &p_args);
-	static void _uv2_unwrap_thread(void *p_userdata);
-	Dictionary _advance_uv2_unwrap(UV2UnwrapTask *p_task);
-	Dictionary _fail_uv2_unwrap(UV2UnwrapTask *p_task, const String &p_code, const String &p_message);
-	Dictionary _pending_uv2_unwrap(const UV2UnwrapTask *p_task, const String &p_stage) const;
-	void _free_uv2_unwrap(UV2UnwrapTask *p_task, bool p_wait);
-	void _sweep_uv2_unwrap_tasks();
 
 protected:
 	static void _bind_methods();
@@ -112,16 +84,6 @@ public:
 	Dictionary connect_signal(const Dictionary &p_args);
 	Dictionary attach_script(const Dictionary &p_args);
 	Dictionary remove_node(const Dictionary &p_args);
-	Dictionary bake_csg(const Dictionary &p_args);
-	Dictionary bake_lightmap(const Dictionary &p_args);
 	Dictionary measure_spatial_relations(const Dictionary &p_args) const;
 	Dictionary open_scene(const Dictionary &p_args);
-	Dictionary unwrap_uv2(const Dictionary &p_args, const String &p_operation_id = String());
-	Dictionary poll_uv2_unwrap(const Dictionary &p_args);
-	bool is_uv2_unwrap_ready(const Dictionary &p_args) const;
-	void cancel_uv2_unwrap(const String &p_operation_id);
-	uint64_t get_lightmap_input_digest() const;
-
-	SolersReflectionService();
-	~SolersReflectionService();
 };

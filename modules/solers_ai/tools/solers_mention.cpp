@@ -28,7 +28,7 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#include "solers_mention.h"
+#include "modules/solers_ai/core/solers_mention.h"
 
 #include "core/config/project_settings.h"
 #include "core/io/config_file.h"
@@ -39,7 +39,7 @@
 #include "editor/plugins/editor_plugin_settings.h"
 #include "scene/main/node.h"
 
-#include "modules/solers_ai/core/solers_observation_service.h"
+#include "modules/solers_ai/core/solers_scene_observation.h"
 #include "modules/solers_ai/plugins/solers_plugin.h"
 
 namespace SolersMention {
@@ -273,7 +273,7 @@ Dictionary resolve_project_path_at(const String &p_text, int p_offset, int &r_le
 	return resolved;
 }
 
-static Array _collect_scenes(SolersObservationService *p_observation, const String &p_query) {
+static Array _collect_scenes(SolersSceneObservation *p_observation, const String &p_query) {
 	Array items;
 	HashSet<String> seen;
 	if (p_observation) {
@@ -324,7 +324,7 @@ static String _node_mention_path(const Dictionary &p_node) {
 	return path;
 }
 
-static Array _collect_selection(SolersObservationService *p_observation, const String &p_query) {
+static Array _collect_selection(SolersSceneObservation *p_observation, const String &p_query) {
 	Array items;
 	if (!p_observation) {
 		return items;
@@ -544,7 +544,7 @@ Array scan_line_spans(const String &p_line) {
 	return spans;
 }
 
-Array collect_section_items(const String &p_section_id, SolersObservationService *p_observation, const String &p_query, int p_max_items) {
+Array collect_section_items(const String &p_section_id, SolersSceneObservation *p_observation, const String &p_query, int p_max_items) {
 	const String section = p_section_id.strip_edges().to_lower();
 	const int limit = p_max_items;
 	if (section.is_empty()) {
