@@ -41,7 +41,7 @@ Use for `.gdshader` / ShaderMaterial work: custom lighting response, dissolve, o
 | Editing imported material internals | ShaderMaterial on a wrapper mesh/surface |
 
 ## Verify
-1. Assign ShaderMaterial; `object.query target=resource` for uniforms.
+1. Assign ShaderMaterial; `resource.inspect` for uniforms.
 2. Static look: `render.capture target=camera|editor` + `source_state`; use runtime only for gameplay lighting.
 3. `runtime.observe` only when Play is needed for compile/runtime errors.
 4. Toggle parameters via script once to prove the contract.

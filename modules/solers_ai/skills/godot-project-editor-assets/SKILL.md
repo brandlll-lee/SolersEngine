@@ -30,7 +30,7 @@ Use for project settings, folder layout, imports, resources, editor state, addon
 **Import four-pack (mental model):** source file + `.import` + `.uid` + (optional) imported companion — move/rename with Godot/`project` tools so sidecars stay coherent.
 **Generate/acquire:** set final `target_dir`, `import_profile` (`runtime` default; `baked_static` only if lightmaps), optional `max_triangles` / `map_types` → call generate/acquire → let the job reach terminal import (do not busy-poll status).
 **Addon:** `addon.inspect` → read Contract/entry classes → install/enable only if pinned and trusted → restart if the Contract says so.
-**CSG:** whitebox from ClassDB -> bake native mesh/collision artifacts with `scene.csg.bake` after topology is verified.
+**CSG:** whitebox from ClassDB -> keep the source editable; use Godot's native editor conversion when a final mesh/collision asset is required.
 
 ## Traps
 | Wrong | Correct |
@@ -42,7 +42,7 @@ Use for project settings, folder layout, imports, resources, editor state, addon
 | Treating download bytes as a Godot resource without import | Wait for verified import paths |
 
 ## Verify
-1. `project.search` / `object.query target=resource` paths resolve; sidecars present after moves.
+1. `project.search` / `resource.inspect` paths resolve; sidecars present after moves.
 2. After generate/acquire: imported `res://` paths load; provenance exists.
 3. Reopen scene/project; `runtime.observe` for import errors.
 4. Addon path: inspect Contract, then validate ClassDB types exist post-enable.

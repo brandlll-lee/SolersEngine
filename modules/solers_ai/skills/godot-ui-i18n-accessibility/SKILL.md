@@ -40,7 +40,7 @@ Use for menus, HUDs, forms, themes, localization, keyboard/controller focus, RTL
 | Putting HUD in world `Node2D` without CanvasLayer | Separate UI CanvasLayer |
 
 ## Verify
-1. `object.query target=scene` for the Control tree, Theme paths, stretch settings.
+1. `scene.inspect` for the Control tree, Theme paths, stretch settings.
 2. `runtime.control` at 16:9 and tall mobile sizes; tab/gamepad through focus.
 3. `render.capture` for clipping/contrast; swap locale and re-capture.
 4. `runtime.observe` for missing translations / layout errors.

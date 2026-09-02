@@ -39,7 +39,7 @@ Use for music, SFX, voice, 2D/3D positional audio, buses, effects, streaming, or
 | Ignoring pause (`process_mode` / tree pause) | Decide which buses continue when paused |
 
 ## Verify
-1. `object.query target=scene` for players, buses, stream paths.
+1. `scene.inspect` for players, buses, stream paths.
 2. `runtime.control` — trigger SFX/music; move listener for 3D falloff.
 3. `runtime.observe` for missing streams / decode errors.
 4. Confirm pause and scene-change do not leak looping players.

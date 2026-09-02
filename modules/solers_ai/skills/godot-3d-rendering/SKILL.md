@@ -1,7 +1,6 @@
 ---
 name: godot-3d-rendering
 description: Godot 4 3D layout, PBR, lighting, single GI path, Environment tonemap (ACES/AgX), physical light units, fog, lightmaps, and photoreal verification. Prefer this over a separate photorealism skill.
-tools: scene.csg.bake, scene.lightmap.bake, mesh.unwrap_uv2
 ---
 
 # 3D Scenes, Materials, Lighting, and Photoreal Look
@@ -19,8 +18,8 @@ Use for 3D layout, imported models, PBR materials, lights, Environment/GI, shado
 | GI (pick **one** final) | SDFGI (dynamic/large) **or** `LightmapGI` (static) **or** `VoxelGI` — not two finals |
 | Materials | One PBR map family (albedo/normal/roughness); `StandardMaterial3D` / `ORMMaterial3D` |
 | Decals | Directional box projection, not arc-length-preserving surface wrapping |
-| CSG | Whitebox through ClassDB; bake mesh or collision artifacts with `scene.csg.bake` |
-| UV2 / lightmaps | Discover the applicable native capability with `engine.describe`; transact only after topology is stable |
+| CSG | Whitebox through ClassDB; keep the source editable and use Godot's native editor conversion for final mesh/collision assets |
+| UV2 / lightmaps | Use Godot's importer/editor workflow after topology is stable; inspect the resulting native resources |
 | Exposure | `CameraAttributesPhysical` / `Practical` on `Camera3D` when using physical units |
 
 ## Laws
@@ -31,7 +30,7 @@ Use for 3D layout, imported models, PBR materials, lights, Environment/GI, shado
 - Before claiming an image ratio, query the exact `Texture2D` resource's native width and height; never reuse dimensions from another asset.
 - A `Decal` can project onto a curved receiver, but a wide projection does not preserve artwork arc length. Use a narrower projection or an explicitly UV-mapped curved mesh when the distinction matters.
 - When appearance is part of the task, use a fresh capture when pixel evidence is needed; framing facts prove only where native bounds land in the image, so judge appearance from the pixels.
-- `object.query target=relations` measures explicit world-AABB relations. A capture is not a geometry measurement, and node cardinality is not a lighting verdict.
+- `spatial.inspect` measures explicit world-AABB relations. A capture is not a geometry measurement, and node cardinality is not a lighting verdict.
 - The agent chooses the next native observation from the current evidence; this guidance is not a fixed action sequence.
 - Use fresh captures when visual claims need pixel evidence, and re-query native state when the cause remains uncertain.
 - Never invent model size from thumbnails — measure geometry.

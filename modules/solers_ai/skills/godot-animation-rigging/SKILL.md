@@ -44,7 +44,7 @@ Use for clips, skeletons, retargeting, AnimationTree graphs, IK, one-shots, or r
 | Mapping every state to the first available clip | Report missing clips; do not fabricate a state machine |
 
 ## Verify
-1. `object.query target=resource|scene` for skeleton, libraries, and Tree parameters.
+1. `resource.inspect` and `scene.inspect` for skeleton, libraries, and Tree parameters.
 2. `runtime.control` — each clip, interrupt, blend; watch feet/hands.
 3. For locomotion transitions: `runtime.control set_input_actions` → independently observe spatial facts and capture while moving → release all actions.
    Correlate both receipts by `runtime_epoch`; a missing spatial receipt must not suppress valid pixels.

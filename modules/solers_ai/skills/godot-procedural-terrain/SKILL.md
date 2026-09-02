@@ -1,7 +1,7 @@
 ---
 name: godot-procedural-terrain
 description: Procedural heightfields, Noise/Mesh/MultiMesh terrain, collision and navigation bake, LOD, and third-party terrain addons only through addon.inspect Contracts.
-tools: scene.csg.bake, mesh.unwrap_uv2, addon.search, addon.inspect, addon.ensure, addon.list
+tools: addon.search, addon.inspect, addon.ensure, addon.list
 ---
 
 # Procedural Terrain and Large Landscapes
@@ -41,7 +41,7 @@ Use for heightmaps, procedural ground meshes, vegetation instancing, terrain col
 | No far-camera perf check | Capture near + far; watch draw cost |
 
 ## Verify
-1. `object.query target=scene|resource` for bounds, materials, collision, and navigation.
+1. `scene.inspect` and `resource.inspect` for bounds, materials, collision, and navigation.
 2. `runtime.control` traversal; near/far `render.capture`.
 3. `runtime.observe` for shader/addon errors after reload.
 4. If addon: Contract validation checklist must pass (regions present, data reloads).
