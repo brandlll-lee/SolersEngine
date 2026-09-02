@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  solers_tool_registry.cpp                                              */
+/*  solers_builtin_tools.cpp                                              */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -27,6 +27,7 @@
 /* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
+
 #include "modules/solers_ai/core/solers_builtin_skills.h"
 #include "modules/solers_ai/core/solers_tool_registry.h"
 
