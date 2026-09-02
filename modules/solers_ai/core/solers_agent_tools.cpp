@@ -678,6 +678,7 @@ void SolersAgentSession::_poll_awaiting_approval() {
 		const int approval_id = awaiting_approval_id;
 		awaiting_call.clear();
 		awaiting_approval_id = 0;
+		tool_started_msec = OS::get_singleton()->get_ticks_msec();
 		SOLERS_TRACE("session.approval_granted", vformat("%s approval_id=%d -> deferred execute", canonical_name, approval_id));
 		_schedule_tool_execution(queue_index, id, model_name, canonical_name, args, true);
 		return;

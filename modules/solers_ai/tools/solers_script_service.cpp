@@ -58,6 +58,10 @@
 #include "servers/rendering/shader_preprocessor.h"
 #include "servers/rendering/shader_types.h"
 
+#include "modules/modules_enabled.gen.h"
+#ifdef MODULE_GDSCRIPT_ENABLED
+#include "modules/gdscript/gdscript_parser.h"
+#endif
 #include "modules/solers_ai/core/solers_action_timeline.h"
 #include "modules/solers_ai/core/solers_path_utils.h"
 #include "modules/solers_ai/core/solers_resource_service.h"
@@ -87,6 +91,7 @@ void SolersScriptService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("edit_script", "args"), &SolersScriptService::edit_script);
 	ClassDB::bind_method(D_METHOD("validate_script", "args"), &SolersScriptService::validate_script);
 	ClassDB::bind_method(D_METHOD("prepare_script_task", "request_path"), &SolersScriptService::prepare_script_task);
+	ClassDB::bind_method(D_METHOD("call_script_task", "instance", "context"), &SolersScriptService::call_script_task);
 	ClassDB::bind_method(D_METHOD("finish_script_task", "context", "request_path"), &SolersScriptService::finish_script_task);
 	ClassDB::bind_method(D_METHOD("_apply_project_settings", "values", "erase"), &SolersScriptService::_apply_project_settings);
 }
@@ -686,12 +691,29 @@ Dictionary SolersScriptService::start_authority_script(const StringName &p_autho
 	} else {
 		source = p_args.get("source", String());
 	}
-	const Dictionary validation = _validate_source("res://solers_authority_script.gd", source);
+	const String validation_path = "res://solers_authority_script.gd";
+	const Dictionary validation = _validate_source(validation_path, source);
 	if (!(bool)validation.get("valid", false)) {
 		Dictionary failure = _error("SCRIPT_VALIDATION_FAILED", "The authority script did not pass Godot's GDScript parser.");
 		failure["data"] = validation;
 		return failure;
 	}
+	if (!(bool)validation.get("supported", false)) {
+		return _error("GDSCRIPT_UNAVAILABLE", "Authority scripts require the GDScript module.", false);
+	}
+#ifdef MODULE_GDSCRIPT_ENABLED
+	GDScriptParser parser;
+	if (parser.parse(source, validation_path, false) != OK) {
+		Dictionary failure = _error("SCRIPT_VALIDATION_FAILED", "The authority script did not pass Godot's GDScript parser.");
+		failure["data"] = validation;
+		return failure;
+	}
+	if (!parser.is_tool()) {
+		return _error("SCRIPT_TOOL_MODE_REQUIRED", "Authority scripts must declare @tool so Godot can execute them in the isolated editor process.");
+	}
+#else
+	return _error("GDSCRIPT_UNAVAILABLE", "Authority scripts require the GDScript module.", false);
+#endif
 
 	PackedStringArray outputs;
 	for (const Variant &output_value : Array(p_args.get("outputs", Array()))) {
@@ -734,7 +756,7 @@ Dictionary SolersScriptService::start_authority_script(const StringName &p_autho
 	request["cancel_path"] = task.cancel_path;
 	request["deadline_msec"] = (int64_t)task.deadline_msec;
 	request["outputs"] = outputs;
-	const String runner = "extends SceneTree\n\nconst REQUEST_PATH = " + JSON::stringify(request_path) + "\n\nfunc _initialize():\n    call_deferred(\"_run\")\n\nfunc _run():\n    var service = SolersScriptService.new()\n    var prepared = service.prepare_script_task(REQUEST_PATH)\n    if not prepared.get(\"ok\", false):\n        quit(1)\n        return\n    var context = prepared.data.context\n    var script = load(prepared.data.script_path)\n    if script == null:\n        context.fail(\"SCRIPT_LOAD_FAILED\", \"Godot could not load the authority script.\")\n    else:\n        var instance = RefCounted.new()\n        instance.set_script(script)\n        if not instance.has_method(\"run\"):\n            context.fail(\"SCRIPT_ENTRYPOINT_MISSING\", \"Authority scripts must define func run(ctx).\")\n        else:\n            context.set_result(await instance.call(\"run\", context))\n    service.finish_script_task(context, REQUEST_PATH)\n    quit()\n";
+	const String runner = "extends SceneTree\n\nconst REQUEST_PATH = " + JSON::stringify(request_path) + "\n\nfunc _initialize():\n    call_deferred(\"_run\")\n\nfunc _run():\n    var service = SolersScriptService.new()\n    var prepared = service.prepare_script_task(REQUEST_PATH)\n    if not prepared.get(\"ok\", false):\n        quit(1)\n        return\n    var context = prepared.data.context\n    var script = load(prepared.data.script_path)\n    if script == null:\n        context.fail(\"SCRIPT_LOAD_FAILED\", \"Godot could not load the authority script.\")\n    else:\n        var instance = RefCounted.new()\n        instance.set_script(script)\n        if not instance.has_method(\"run\"):\n            context.fail(\"SCRIPT_ENTRYPOINT_MISSING\", \"Authority scripts must define func run(ctx).\")\n        else:\n            var called = service.call_script_task(instance, context)\n            if not called.get(\"ok\", false):\n                context.fail(called.error.code, called.error.message)\n            else:\n                context.set_result(await called.data)\n    service.finish_script_task(context, REQUEST_PATH)\n    quit()\n";
 	if (_solers_write_script_task_file(script_path, source) != OK ||
 			_solers_write_script_task_file(runner_path, runner) != OK ||
 			_solers_write_script_task_file(request_path, JSON::stringify(JSON::from_native(request))) != OK) {
@@ -746,7 +768,8 @@ Dictionary SolersScriptService::start_authority_script(const StringName &p_autho
 	arguments.push_back("--headless");
 	arguments.push_back("--editor");
 	arguments.push_back("--path");
-	arguments.push_back(ProjectSettings::get_singleton()->globalize_path("res://"));
+	const String project_path = ProjectSettings::get_singleton()->globalize_path("res://");
+	arguments.push_back(project_path.is_empty() ? "." : project_path);
 	arguments.push_back("--script");
 	arguments.push_back(runner_path);
 	const Error launch_error = OS::get_singleton()->create_instance(arguments, &task.process_id);
@@ -764,13 +787,21 @@ bool SolersScriptService::is_authority_script_ready(const Dictionary &p_args) co
 		return true;
 	}
 	const bool running = OS::get_singleton()->is_process_running(task->process_id);
-	return !running || OS::get_singleton()->get_ticks_msec() >= task->deadline_msec;
+	return FileAccess::exists(task->result_path) || !running || OS::get_singleton()->get_ticks_msec() >= task->deadline_msec;
 }
 
 Dictionary SolersScriptService::poll_authority_script(const Dictionary &p_args) {
 	ScriptTask *task = script_tasks.getptr(p_args.get("task_id", String()));
 	if (!task) {
 		return _error("SCRIPT_TASK_NOT_FOUND", "The authority script task is no longer available.", false);
+	}
+	const Dictionary result = _read_json_file(task->result_path);
+	if (!result.is_empty()) {
+		const SolersScriptAuthority *authority = _get_authority(task->authority);
+		if ((bool)result.get("ok", false) && authority && authority->publish) {
+			authority->publish(task->source_path, result);
+		}
+		return result;
 	}
 	const bool running = OS::get_singleton()->is_process_running(task->process_id);
 	if (running && OS::get_singleton()->get_ticks_msec() >= task->deadline_msec) {
@@ -786,15 +817,7 @@ Dictionary SolersScriptService::poll_authority_script(const Dictionary &p_args) 
 		}
 		return _ok(data);
 	}
-	const Dictionary result = _read_json_file(task->result_path);
-	if (result.is_empty()) {
-		return _error("SCRIPT_PROCESS_FAILED", vformat("The isolated Godot process exited with code %d without a result.", OS::get_singleton()->get_process_exit_code(task->process_id)));
-	}
-	const SolersScriptAuthority *authority = _get_authority(task->authority);
-	if ((bool)result.get("ok", false) && authority && authority->publish) {
-		authority->publish(task->source_path, result);
-	}
-	return result;
+	return _error("SCRIPT_PROCESS_FAILED", vformat("The isolated Godot process exited with code %d without a result.", OS::get_singleton()->get_process_exit_code(task->process_id)));
 }
 
 void SolersScriptService::complete_authority_script(const Dictionary &p_args) {
@@ -850,6 +873,20 @@ Dictionary SolersScriptService::prepare_script_task(const String &p_request_path
 			prepared_data.get("import_controls", false), outputs, request.get("progress_path", String()), request.get("cancel_path", String()),
 			(uint64_t)(int64_t)request.get("deadline_msec", 0));
 	return _ok(Dictionary({ { "context", context }, { "script_path", request.get("script_path", String()) } }));
+}
+
+Dictionary SolersScriptService::call_script_task(Object *p_instance, const Ref<SolersScriptContext> &p_context) const {
+	if (!p_instance || p_context.is_null()) {
+		return _error("SCRIPT_CALL_FAILED", "The authority script instance or context is unavailable.", false);
+	}
+	Variant context = p_context;
+	const Variant *arguments[] = { &context };
+	Callable::CallError call_error;
+	const Variant value = p_instance->callp(SNAME("run"), arguments, 1, call_error);
+	if (call_error.error != Callable::CallError::CALL_OK) {
+		return _error("SCRIPT_CALL_FAILED", Variant::get_call_error_text(p_instance, SNAME("run"), arguments, 1, call_error));
+	}
+	return _ok(value);
 }
 
 Dictionary SolersScriptService::finish_script_task(const Ref<SolersScriptContext> &p_context, const String &p_request_path) {

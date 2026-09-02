@@ -96,6 +96,7 @@ public:
 	bool is_authority_script_ready(const Dictionary &p_args) const;
 	void complete_authority_script(const Dictionary &p_args);
 	Dictionary prepare_script_task(const String &p_request_path);
+	Dictionary call_script_task(Object *p_instance, const Ref<SolersScriptContext> &p_context) const;
 	Dictionary finish_script_task(const Ref<SolersScriptContext> &p_context, const String &p_request_path);
 
 	~SolersScriptService();

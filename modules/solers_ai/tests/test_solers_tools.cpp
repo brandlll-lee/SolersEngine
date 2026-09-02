@@ -98,6 +98,28 @@ void solers_runtime_bridge_initialize();
 
 namespace TestSolersTools {
 
+#ifdef MODULE_GDSCRIPT_ENABLED
+static Dictionary run_authority_script(SolersScriptService &p_service, const StringName &p_authority, const Dictionary &p_args, const String &p_call_id) {
+	const Dictionary started = p_service.start_authority_script(p_authority, p_args, p_call_id);
+	if (!(bool)started.get("ok", false)) {
+		return started;
+	}
+	const Dictionary poll_args = Dictionary(started.get("data", Dictionary())).get("poll_args", Dictionary());
+	const uint64_t deadline_msec = OS::get_singleton()->get_ticks_msec() + 20000;
+	while (!p_service.is_authority_script_ready(poll_args) && OS::get_singleton()->get_ticks_msec() < deadline_msec) {
+		OS::get_singleton()->delay_usec(1000);
+	}
+	Dictionary result;
+	if (p_service.is_authority_script_ready(poll_args)) {
+		result = p_service.poll_authority_script(poll_args);
+	} else {
+		result = Dictionary({ { "ok", false }, { "error", Dictionary({ { "code", "TEST_SCRIPT_TIMEOUT" } }) } });
+	}
+	p_service.complete_authority_script(poll_args);
+	return result;
+}
+#endif
+
 TEST_CASE("[SolersPath] project paths share one native boundary") {
 	const SolersPath::NormalizedPath relative = SolersPath::normalize_project_path(" folder\\note..txt ");
 	REQUIRE(relative.valid);
@@ -917,6 +939,33 @@ TEST_CASE("[SolersToolRegistry] a registered deferred tool needs no dispatcher b
 	CHECK_FALSE(FileAccess::exists(path));
 }
 
+TEST_CASE("[SolersToolRegistry] a saved scene receipt covers the same file authority") {
+	const String path = "res://.solers_scene_receipt_contract.tscn";
+	SolersTestPaths cleanup;
+	cleanup.add(path);
+	Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
+	REQUIRE(file.is_valid());
+	file->store_string("[gd_scene format=3]\n\n[node name=\"ReceiptRoot\" type=\"Node\"]\n");
+	file.unref();
+
+	SolersFileCheckpoint checkpoints;
+	SolersScriptService scripts;
+	SolersToolRegistry registry;
+	registry.set_file_checkpoint(&checkpoints);
+	registry.set_script_service(&scripts);
+	registry.register_default_tools();
+	Dictionary args({ { "scene_path", path }, { "source", "@tool\nextends RefCounted\nfunc run(ctx):\n\treturn ctx.subject\n" } });
+	args["expected_state"] = Dictionary({ { "resources", Array() } });
+	const Dictionary missing = registry.call_tool(SNAME("scene.script"), args);
+	CHECK_FALSE((bool)missing.get("ok", true));
+	CHECK(Dictionary(missing.get("error", Dictionary())).get("code", String()) == "RESOURCE_STATE_INVALID");
+
+	args["expected_state"] = Dictionary({ { "scene_path", path }, { "saved_sha256", FileAccess::get_sha256(path) } });
+	const Dictionary accepted = registry.call_tool(SNAME("scene.script"), args);
+	CHECK_FALSE((bool)accepted.get("ok", true));
+	CHECK(Dictionary(accepted.get("error", Dictionary())).get("code", String()) == "PERMISSION_MANAGER_UNAVAILABLE");
+}
+
 TEST_CASE("[SolersToolRegistry] object inspection invokes typed ClassDB const methods") {
 	Ref<Animation> animation;
 	animation.instantiate();
@@ -1268,6 +1317,16 @@ TEST_CASE("[SolersToolRegistry] session rewind stops at the recorded irreversibl
 }
 
 TEST_CASE("[SolersToolRegistry] model surface keeps stable script authorities direct and narrow mutations deferred") {
+	const String imported_asset = "res://.solers_imported_asset.data";
+	const String native_asset = "res://.solers_native_asset.tres";
+	SolersTestPaths cleanup;
+	cleanup.add(imported_asset + ".import");
+	cleanup.add(native_asset + ".import");
+	Ref<FileAccess> sidecar = FileAccess::open(imported_asset + ".import", FileAccess::WRITE);
+	REQUIRE(sidecar.is_valid());
+	sidecar->store_string("[remap]\nimporter=\"synthetic\"\n");
+	sidecar.unref();
+
 	SolersFileCheckpoint checkpoints;
 	SolersProjectObservation project_observation;
 	SolersReflectionService reflection_service;
@@ -1305,13 +1364,48 @@ TEST_CASE("[SolersToolRegistry] model surface keeps stable script authorities di
 		CHECK(tool.get("exposure", String()) == "model");
 		CHECK(Dictionary(tool.get("input_schema", Dictionary())).has("properties"));
 		CHECK(registry.redact_tool_args_for_audit(name, Dictionary({ { "source", "secret source" } })).get("source", String()) == "<redacted>");
+		if (name != "runtime.script") {
+			CHECK(String(tool.get("description", String())).contains("@tool"));
+		}
 	}
 	const Array scene_access = registry.resolve_resource_access(SNAME("scene.script"), Dictionary({ { "scene_path", "res://level.tscn" }, { "outputs", Array({ "res://level.lmbake" }) } }));
 	CHECK(scene_access.has(Dictionary({ { "mode", "write" }, { "key", "project:res://level.tscn" } })));
 	CHECK(scene_access.has(Dictionary({ { "mode", "write" }, { "key", "project:res://level.lmbake" } })));
-	const Array asset_access = registry.resolve_resource_access(SNAME("asset.script"), Dictionary({ { "asset_path", "res://model.glb" } }));
-	CHECK(asset_access.has(Dictionary({ { "mode", "write" }, { "key", "project:res://model.glb.import" } })));
+	const Array native_asset_access = registry.resolve_resource_access(SNAME("asset.script"), Dictionary({ { "asset_path", native_asset } }));
+	CHECK_FALSE(native_asset_access.has(Dictionary({ { "mode", "write" }, { "key", "project:" + native_asset + ".import" } })));
+	const Array imported_asset_access = registry.resolve_resource_access(SNAME("asset.script"), Dictionary({ { "asset_path", imported_asset } }));
+	CHECK(imported_asset_access.has(Dictionary({ { "mode", "write" }, { "key", "project:" + imported_asset + ".import" } })));
 }
+
+#ifdef MODULE_GDSCRIPT_ENABLED
+TEST_CASE("[SolersScriptService] authority scripts terminate through the isolated editor contract") {
+	const String asset_path = "res://.solers_authority_contract.tres";
+	SolersTestPaths cleanup;
+	cleanup.add(asset_path);
+	Ref<Animation> asset;
+	asset.instantiate();
+	REQUIRE(ResourceSaver::save(asset, asset_path) == OK);
+
+	SolersScriptService scripts;
+	Dictionary args({ { "asset_path", asset_path }, { "timeout_msec", 10000 } });
+	args["source"] = "# @tool in a comment is not tool mode.\nextends RefCounted\nfunc run(ctx):\n\treturn ctx.subject.get_class()\n";
+	const Dictionary missing_tool_mode = scripts.start_authority_script(SNAME("asset"), args, "authority-missing-tool-mode");
+	CHECK_FALSE((bool)missing_tool_mode.get("ok", true));
+	CHECK(Dictionary(missing_tool_mode.get("error", Dictionary())).get("code", String()) == "SCRIPT_TOOL_MODE_REQUIRED");
+
+	args["source"] = "@tool\nextends RefCounted\nfunc run(ctx):\n\treturn ctx.subject.get_class()\n";
+	const Dictionary succeeded = run_authority_script(scripts, SNAME("asset"), args, "authority-success");
+	INFO(JSON::stringify(succeeded));
+	REQUIRE((bool)succeeded.get("ok", false));
+	CHECK(Dictionary(succeeded.get("data", Dictionary())).get("result", String()) == "Animation");
+
+	args["source"] = "@tool\nextends RefCounted\nfunc run():\n\treturn null\n";
+	const Dictionary call_failed = run_authority_script(scripts, SNAME("asset"), args, "authority-call-error");
+	INFO(JSON::stringify(call_failed));
+	CHECK_FALSE((bool)call_failed.get("ok", true));
+	CHECK(Dictionary(call_failed.get("error", Dictionary())).get("code", String()) == "SCRIPT_CALL_FAILED");
+}
+#endif
 
 TEST_CASE("[SolersScriptContext] native jobs are discovered by authority and target class") {
 	Node *scene = memnew(Node);

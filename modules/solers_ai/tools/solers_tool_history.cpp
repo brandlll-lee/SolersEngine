@@ -483,7 +483,10 @@ Dictionary SolersToolRegistry::_validate_expected_state(const SolersTool *p_tool
 	if (!solers_has_mutation_domain(domains, SolersToolMutationDomain::FILES)) {
 		return Dictionary();
 	}
-	if (!expected.has("resources")) {
+	const String scene_path = expected.get("scene_path", String());
+	const String saved_sha256 = expected.get("saved_sha256", String());
+	const bool has_scene_file_receipt = !scene_path.is_empty() && !saved_sha256.is_empty();
+	if (!expected.has("resources") && !has_scene_file_receipt) {
 		return _error("RESOURCE_STATE_INVALID", "expected_state.resources must contain native file receipts.");
 	}
 	Dictionary expected_resources;
@@ -494,6 +497,9 @@ Dictionary SolersToolRegistry::_validate_expected_state(const SolersTool *p_tool
 			return _error("RESOURCE_STATE_INVALID", "expected_state.resources must contain unique resource paths.");
 		}
 		expected_resources[path] = receipt;
+	}
+	if (has_scene_file_receipt && !expected_resources.has(scene_path)) {
+		expected_resources[scene_path] = Dictionary({ { "path", scene_path }, { "exists", true }, { "sha256", saved_sha256 } });
 	}
 	for (const Variant &item : resolve_resource_access(p_tool->name(), p_args)) {
 		const Dictionary access = item;

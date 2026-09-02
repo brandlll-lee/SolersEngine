@@ -63,6 +63,8 @@
 #include "modules/solers_ai/llm/solers_llm_message.h"
 #include "modules/solers_ai/tests/support/solers_test_state.h"
 
+#include <functional>
+
 TEST_FORCE_LINK(test_solers_agent)
 
 namespace TestSolersAgent {
@@ -185,7 +187,7 @@ bool read_http_request(const Ref<StreamPeerTCP> &p_connection, PackedByteArray &
 	return true;
 }
 
-int serve_agent_responses(SolersAgentSession &p_session, const Ref<TCPServer> &p_server, const Array &p_responses, Array *r_request_bodies = nullptr) {
+int serve_agent_responses(SolersAgentSession &p_session, const Ref<TCPServer> &p_server, const Array &p_responses, Array *r_request_bodies = nullptr, const std::function<void()> &p_poll_hook = {}) {
 	int served = 0;
 	Ref<StreamPeerTCP> connection;
 	PackedByteArray request_buffer;
@@ -193,6 +195,9 @@ int serve_agent_responses(SolersAgentSession &p_session, const Ref<TCPServer> &p
 	const uint64_t deadline = OS::get_singleton()->get_ticks_msec() + 5000;
 	while (p_session.is_running() && OS::get_singleton()->get_ticks_msec() < deadline) {
 		p_session.poll();
+		if (p_poll_hook) {
+			p_poll_hook();
+		}
 		if (connection.is_null() && served < p_responses.size() && p_server->is_connection_available()) {
 			connection = p_server->take_connection();
 		}
@@ -674,6 +679,87 @@ TEST_CASE("[SolersAgentSession][Editor] repeated read observations remain execut
 	SIGNAL_CHECK("tool_call_started", Array({ Array({ "call_first", "synthetic.stable_observation", "{}" }), Array({ "call_second", "synthetic.stable_observation", "{}" }) }));
 	SIGNAL_UNWATCH(&session, "tool_call_started");
 	CHECK_MESSAGE(JSON::stringify(session.get_messages()).count("fact") == 2, JSON::stringify(session.get_messages()));
+	session.reset_conversation();
+	session.shutdown();
+}
+
+TEST_CASE("[SolersAgentSession][Editor] approval wait is recorded as queue time") {
+	Ref<TCPServer> server;
+	server.instantiate();
+	REQUIRE(server->listen(0, IPAddress("127.0.0.1")) == OK);
+	EditorSettings *editor_settings = EditorSettings::get_singleton();
+	REQUIRE(editor_settings != nullptr);
+	SolersProviderRegistry providers;
+	SolersSettingsService settings;
+	settings.set_provider_registry(&providers);
+	const String prefix = "solers/ai/";
+	const String provider_prefix = prefix + "providers/custom_openai_compatible/";
+	ScopedAgentSettings restore(editor_settings, Array({ prefix + "provider", prefix + "local_models_only", provider_prefix + "configured", provider_prefix + "model", provider_prefix + "reasoning_effort", provider_prefix + "base_url", provider_prefix + "context_window", provider_prefix + "max_tokens", provider_prefix + "api_key" }));
+	Dictionary config({ { "provider", "custom_openai_compatible" }, { "model", "synthetic-model" }, { "base_url", vformat("http://127.0.0.1:%d/v1", server->get_local_port()) }, { "api_key", "synthetic-key" } });
+	REQUIRE((bool)settings.set_provider_config(config).get("ok", false));
+
+	SolersPermissionManager permissions;
+	SolersToolRegistry registry;
+	registry.set_permission_manager(&permissions);
+	int executions = 0;
+	SolersToolCapability capability;
+	capability.permission = SolersPermissionManager::PERMISSION_EDIT_FILES;
+	capability.mutation_domains = SolersToolMutationDomain::IRREVERSIBLE;
+	registry.register_tool(memnew(SolersFunctionTool("synthetic.approval_timing", "Run one approved synthetic operation.", Dictionary({ { "type", "object" }, { "properties", Dictionary() }, { "additionalProperties", false } }), SolersToolExposure::MODEL, capability,
+			[&executions](const SolersToolContext &, const Dictionary &) {
+				executions++;
+				return Dictionary({ { "ok", true }, { "data", Dictionary() } });
+			})));
+
+	const String session_id = "approval-timing-" + String::num_uint64(OS::get_singleton()->get_ticks_usec());
+	SolersAgentSession session;
+	session.set_models_dev(nullptr);
+	session.set_tool_registry(&registry);
+	session.set_settings_service(&settings);
+	session.set_permission_manager(&permissions);
+	session.set_session("test://" + session_id, session_id);
+	REQUIRE((bool)session.start_turn(Dictionary({ { "prompt", "Run the approved operation." } })).get("ok", false));
+
+	uint64_t approval_observed_msec = 0;
+	bool approved = false;
+	auto approve_after_wait = [&]() {
+		if (approved || permissions.get_pending_request_count() == 0) {
+			return;
+		}
+		const uint64_t now = OS::get_singleton()->get_ticks_msec();
+		if (approval_observed_msec == 0) {
+			approval_observed_msec = now;
+			return;
+		}
+		if (now - approval_observed_msec < 150) {
+			return;
+		}
+		const Array pending = permissions.list_pending_requests();
+		approved = !pending.is_empty() && permissions.approve_request(Dictionary(pending[0]).get("id", 0));
+	};
+	const String completed_response = make_event_stream_response("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"Complete.\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n");
+	const Array responses({ make_chat_tool_response("call_approval_timing", registry.get_model_tool_name("synthetic.approval_timing")), completed_response });
+	const int served = serve_agent_responses(session, server, responses, nullptr, approve_after_wait);
+	server->stop();
+	CHECK(served == 2);
+	CHECK(approved);
+	CHECK(executions == 1);
+	solers_transcript_flush(session_id);
+	Ref<FileAccess> transcript = FileAccess::open(solers_session_dir().path_join("sessions").path_join(session_id.sha256_text() + ".jsonl"), FileAccess::READ);
+	REQUIRE(transcript.is_valid());
+	Dictionary tool_event;
+	while (!transcript->eof_reached()) {
+		Dictionary event;
+		if (solers_transcript_parse_record(transcript->get_line(), event) && event.get("event_type", String()) == "tool_result" && event.get("call_id", String()) == "call_approval_timing") {
+			tool_event = event;
+			break;
+		}
+	}
+	REQUIRE_FALSE(tool_event.is_empty());
+	const int64_t queue_msec = tool_event.get("queue_msec", 0);
+	const int64_t run_msec = tool_event.get("run_msec", 0);
+	CHECK(queue_msec >= 100);
+	CHECK(run_msec < queue_msec);
 	session.reset_conversation();
 	session.shutdown();
 }
