@@ -75,8 +75,6 @@ static const Color SOLERS_SYN_COMMENT = Color(0.80, 0.84, 0.96, 0.36f);
 static const Color SOLERS_SYN_FUNCTION = Color::hex(0x57b3ffff);
 static const Color SOLERS_SYN_DEFAULT = Color(0.863, 0.890, 0.933);
 
-static const char32_t SOLERS_MD_CARET = 0x258D; // "▍" stream write head.
-
 /* ------------------------------------------------------------------ */
 /* Lightweight syntax highlighting for code blocks                     */
 /* ------------------------------------------------------------------ */
@@ -676,6 +674,7 @@ static int solers_md_text(MD_TEXTTYPE p_type, const MD_CHAR *p_text, MD_SIZE p_s
 			s.rtl->add_newline();
 		} break;
 		case MD_TEXT_SOFTBR:
+			s.rtl->add_text(" ");
 			break;
 		case MD_TEXT_ENTITY: {
 			s.rtl->add_text(solers_md_entity(solers_md_str(p_text, p_size)));
@@ -778,14 +777,14 @@ SolersCodeBlock::SolersCodeBlock() {
 	add_child(copy_button);
 }
 
-void SolersCodeBlock::set_code(const String &p_language, const String &p_code, bool p_caret) {
+void SolersCodeBlock::set_code(const String &p_language, const String &p_code, bool p_streaming) {
 	language = p_language;
 	String normalized = p_code;
 	while (normalized.ends_with("\n")) {
 		normalized = normalized.substr(0, normalized.length() - 1);
 	}
 	code = normalized;
-	caret = p_caret;
+	streaming = p_streaming;
 	layout_width = -1.0f; // Force re-measure on next layout pass.
 	if (get_size().x > 0.0f) {
 		measure(get_size().x);
@@ -794,23 +793,24 @@ void SolersCodeBlock::set_code(const String &p_language, const String &p_code, b
 }
 
 void SolersCodeBlock::_render_body() {
-	if (rendered_code == code && rendered_caret == caret) {
+	if (rendered_code == code && rendered_streaming == streaming) {
+		return;
+	}
+	if (streaming && rendered_streaming && code.begins_with(rendered_code)) {
+		body->add_text(code.substr(rendered_code.length()));
+		rendered_code = code;
 		return;
 	}
 	rendered_code = code;
-	rendered_caret = caret;
+	rendered_streaming = streaming;
 
 	const float ed = EDSCALE;
 	body->add_theme_font_size_override("normal_font_size", int(12 * ed));
 
 	body->clear();
-	// While the fence is still open, skip the highlighter — every delta would
-	// otherwise re-tokenize the whole buffer and jitter height. Highlight once
-	// when the stream settles (caret=false).
-	if (caret) {
+	if (streaming) {
 		body->push_color(SOLERS_SYN_DEFAULT);
 		body->add_text(code);
-		body->add_text(String::chr(SOLERS_MD_CARET));
 		body->pop();
 	} else {
 		solers_highlight_code(body, language, code);
@@ -865,6 +865,7 @@ void SolersCodeBlock::_notification(int p_what) {
 		} break;
 		case NOTIFICATION_THEME_CHANGED: {
 			rendered_code = String(); // Fonts may have changed; re-render.
+			rendered_streaming = !streaming;
 			layout_width = -1.0f;
 			queue_redraw();
 		} break;
@@ -961,12 +962,8 @@ Vector<SolersMarkdownView::Segment> SolersMarkdownView::_split_segments(const St
 					continue;
 				}
 			}
-			if (line.strip_edges().is_empty()) {
-				flush_prose();
-			} else {
-				current += line;
-				current += "\n";
-			}
+			current += line;
+			current += "\n";
 		} else {
 			const String trimmed = line.strip_edges();
 			bool closing = false;
@@ -1006,39 +1003,12 @@ Vector<SolersMarkdownView::Segment> SolersMarkdownView::_split_segments(const St
 	return out;
 }
 
-// Closes unbalanced inline markers in the trailing open segment so partially
-// streamed `code` / **bold** never flashes as raw asterisks and backticks.
-static String solers_heal_open_markdown(const String &p_text) {
-	String healed = p_text;
-
-	int bold_marks = 0;
-	int search = 0;
-	while ((search = healed.find("**", search)) != -1) {
-		bold_marks++;
-		search += 2;
-	}
-
-	int ticks = 0;
-	for (int i = 0; i < healed.length(); i++) {
-		if (healed[i] == '`') {
-			ticks++;
-		}
-	}
-
-	if (ticks % 2 == 1) {
-		healed += "`";
-	}
-	if (bold_marks % 2 == 1) {
-		healed += "**";
-	}
-	return healed;
-}
-
 RichTextLabel *SolersMarkdownView::_make_paragraph_label() {
 	const float ed = EDSCALE;
 	RichTextLabel *rtl = memnew(RichTextLabel);
 	rtl->set_use_bbcode(false);
 	rtl->set_fit_content(true);
+	rtl->set_threaded(true);
 	rtl->set_scroll_active(false);
 	rtl->set_selection_enabled(true);
 	rtl->set_context_menu_enabled(true);
@@ -1060,18 +1030,19 @@ RichTextLabel *SolersMarkdownView::_make_paragraph_label() {
 	rtl->add_theme_font_size_override("bold_italics_font_size", int(14 * ed));
 	rtl->add_theme_font_size_override("mono_font_size", int(13 * ed));
 	rtl->connect(SNAME("meta_clicked"), callable_mp(this, &SolersMarkdownView::_on_meta_clicked));
+	rtl->connect(SceneStringName(finished), callable_mp(this, &SolersMarkdownView::_render_target), CONNECT_DEFERRED);
 	add_child(rtl);
 	return rtl;
 }
 
-void SolersMarkdownView::_render_segment(int p_index, const Segment &p_segment, bool p_open) {
+void SolersMarkdownView::_render_segment(int p_index, const Segment &p_segment, bool p_streaming) {
 	while (int(blocks.size()) <= p_index) {
 		blocks.push_back(Block());
 	}
 
 	Block &block = blocks[p_index];
 	const bool unchanged = block.is_code == p_segment.is_code && block.source == p_segment.text &&
-			block.lang == p_segment.lang && block.rendered_caret == p_open;
+			block.lang == p_segment.lang && (!p_segment.is_code || block.rendered_streaming == p_streaming);
 	if (unchanged) {
 		return;
 	}
@@ -1083,7 +1054,7 @@ void SolersMarkdownView::_render_segment(int p_index, const Segment &p_segment, 
 	block.is_code = p_segment.is_code;
 	block.lang = p_segment.lang;
 	block.source = p_segment.text;
-	block.rendered_caret = p_open;
+	block.rendered_streaming = p_segment.is_code && p_streaming;
 
 	if (p_segment.is_code) {
 		SolersCodeBlock *code_block = Object::cast_to<SolersCodeBlock>(block.control);
@@ -1093,7 +1064,7 @@ void SolersMarkdownView::_render_segment(int p_index, const Segment &p_segment, 
 			move_child(code_block, p_index);
 			block.control = code_block;
 		}
-		code_block->set_code(p_segment.lang, p_segment.text, p_open);
+		code_block->set_code(p_segment.lang, p_segment.text, p_streaming);
 		code_block->measure(MAX(get_size().x, 60.0f * EDSCALE));
 	} else {
 		RichTextLabel *rtl = Object::cast_to<RichTextLabel>(block.control);
@@ -1102,33 +1073,42 @@ void SolersMarkdownView::_render_segment(int p_index, const Segment &p_segment, 
 			move_child(rtl, p_index);
 			block.control = rtl;
 		}
-		_render_paragraph(rtl, p_segment.text, p_open);
+		_render_paragraph(rtl, p_segment.text);
 	}
 }
 
-void SolersMarkdownView::_render_paragraph(RichTextLabel *p_label, const String &p_source, bool p_caret) {
-	String source = p_source;
-	if (p_caret) {
-		source = solers_heal_open_markdown(source);
-	}
+void SolersMarkdownView::_render_paragraph(RichTextLabel *p_label, const String &p_source) {
 	p_label->clear();
-	if (!solers_md_render(p_label, source, int(14 * EDSCALE))) {
-		p_label->add_text(source); // Parser failure: degrade to plain text.
+	if (!solers_md_render(p_label, p_source, int(14 * EDSCALE))) {
+		p_label->add_text(p_source);
 	}
 }
 
 void SolersMarkdownView::set_markdown(const String &p_markdown, bool p_streaming) {
-	if (rendered_md_valid && p_streaming == rendered_streaming && p_markdown == rendered_md) {
+	target_md = p_markdown;
+	target_streaming = p_streaming;
+	_render_target();
+}
+
+void SolersMarkdownView::_render_target() {
+	if (rendered_md_valid && target_streaming == rendered_streaming && target_md == rendered_md) {
 		return;
 	}
-	rendered_md = p_markdown;
-	rendered_streaming = p_streaming;
+	if (!blocks.is_empty()) {
+		RichTextLabel *tail = Object::cast_to<RichTextLabel>(blocks[blocks.size() - 1].control);
+		if (tail && tail->is_updating()) {
+			return;
+		}
+	}
+
+	rendered_md = target_md;
+	rendered_streaming = target_streaming;
 	rendered_md_valid = true;
 
-	const Vector<Segment> segments = _split_segments(p_markdown);
+	const Vector<Segment> segments = _split_segments(rendered_md);
 
 	for (int i = 0; i < segments.size(); i++) {
-		_render_segment(i, segments[i], p_streaming && i == segments.size() - 1);
+		_render_segment(i, segments[i], rendered_streaming && i == segments.size() - 1);
 	}
 
 	while (int(blocks.size()) > segments.size()) {
@@ -1138,65 +1118,6 @@ void SolersMarkdownView::set_markdown(const String &p_markdown, bool p_streaming
 		}
 		blocks.resize(blocks.size() - 1);
 	}
-}
-
-void SolersMarkdownView::append_markdown_delta(const String &p_delta, bool p_streaming) {
-	if (p_delta.is_empty()) {
-		if (!rendered_md_valid || rendered_streaming == p_streaming) {
-			return;
-		}
-		rendered_streaming = p_streaming;
-		if (!blocks.is_empty()) {
-			const int last_index = int(blocks.size()) - 1;
-			Block &last = blocks[last_index];
-			if (!last.is_code && solers_heal_open_markdown(last.source) == last.source) {
-				last.rendered_caret = p_streaming;
-				return;
-			}
-			Segment segment;
-			segment.is_code = last.is_code;
-			segment.lang = last.lang;
-			segment.text = last.source;
-			_render_segment(last_index, segment, p_streaming);
-		}
-		return;
-	}
-	const String markdown = rendered_md + p_delta;
-	const bool starts_new_block = (rendered_md.ends_with("\n") && p_delta.begins_with("\n")) || p_delta.find("\n\n") >= 0;
-	const bool touches_fence = p_delta.find("```") >= 0 || p_delta.find("~~~") >= 0;
-	if (blocks.is_empty()) {
-		set_markdown(markdown, p_streaming);
-		return;
-	}
-	Block &last = blocks[blocks.size() - 1];
-
-	// Open fenced code: append into the live SolersCodeBlock. Falling back to
-	// set_markdown here was the main stream flicker (full re-split + re-highlight).
-	if (rendered_md_valid && rendered_streaming && p_streaming && last.is_code && !starts_new_block && !touches_fence) {
-		last.source += p_delta;
-		last.rendered_caret = true;
-		rendered_md = markdown;
-		rendered_streaming = true;
-		rendered_md_valid = true;
-		if (SolersCodeBlock *code_block = Object::cast_to<SolersCodeBlock>(last.control)) {
-			code_block->set_code(last.lang, last.source, true);
-			return;
-		}
-	}
-
-	if (!rendered_md_valid || !rendered_streaming || !p_streaming || starts_new_block || touches_fence || last.is_code) {
-		set_markdown(markdown, p_streaming);
-		return;
-	}
-
-	Segment segment;
-	segment.is_code = last.is_code;
-	segment.lang = last.lang;
-	segment.text = last.source + p_delta;
-	rendered_md = markdown;
-	rendered_streaming = p_streaming;
-	rendered_md_valid = true;
-	_render_segment(int(blocks.size()) - 1, segment, p_streaming);
 }
 
 void SolersMarkdownView::_on_meta_clicked(const Variant &p_meta) {

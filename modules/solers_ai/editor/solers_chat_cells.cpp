@@ -521,7 +521,6 @@ void SolersAssistantCell::finalize(const String &p_full_text) {
 	set_process_internal(false);
 	if (!p_full_text.is_empty() && p_full_text != full_text) {
 		full_text = p_full_text;
-		rendered_chars = -1;
 	}
 	stream_done = true;
 	_update_markdown();
@@ -532,32 +531,17 @@ void SolersAssistantCell::set_full_text_immediate(const String &p_text) {
 	set_process_internal(false);
 	full_text = p_text;
 	stream_done = true;
-	rendered_chars = -1;
 	_update_markdown();
 }
 
 void SolersAssistantCell::_update_markdown() {
-	if (!markdown_view) {
-		return;
+	if (markdown_view) {
+		markdown_view->set_markdown(full_text, !stream_done);
 	}
-	const int len = full_text.length();
-	const bool caret = !stream_done; // caret only while the stream is open
-	if (rendered_chars == len && rendered_caret == caret) {
-		return;
-	}
-	const int previous_rendered_chars = rendered_chars;
-	const bool can_append = !stream_done && previous_rendered_chars >= 0 && len > previous_rendered_chars && rendered_caret;
-	rendered_chars = len;
-	rendered_caret = caret;
+}
 
-	if (can_append) {
-		markdown_view->append_markdown_delta(full_text.substr(previous_rendered_chars), caret);
-	} else {
-		markdown_view->set_markdown(full_text, caret);
-	}
-	if (content_changed.is_valid()) {
-		content_changed.call();
-	}
+void SolersAssistantCell::set_content_changed_callback(const Callable &p_cb) {
+	markdown_view->connect(SceneStringName(minimum_size_changed), p_cb, CONNECT_DEFERRED);
 }
 
 void SolersAssistantCell::_notification(int p_what) {
@@ -567,7 +551,7 @@ void SolersAssistantCell::_notification(int p_what) {
 		} break;
 		case NOTIFICATION_INTERNAL_PROCESS: {
 			_flush_pending_delta();
-			if (pending_delta.is_empty() && rendered_chars == full_text.length()) {
+			if (pending_delta.is_empty()) {
 				set_process_internal(false);
 			}
 		} break;

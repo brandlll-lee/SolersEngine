@@ -43,13 +43,13 @@ class SolersCodeBlock : public Control {
 
 	String language;
 	String code;
-	bool caret = false;
+	bool streaming = false;
 
 	RichTextLabel *body = nullptr;
 	Button *copy_button = nullptr;
 
 	String rendered_code;
-	bool rendered_caret = false;
+	bool rendered_streaming = false;
 	float layout_width = -1.0f;
 	float block_height = 0.0f;
 	uint64_t copied_until_msec = 0;
@@ -65,7 +65,7 @@ protected:
 public:
 	virtual Size2 get_minimum_size() const override;
 
-	void set_code(const String &p_language, const String &p_code, bool p_caret);
+	void set_code(const String &p_language, const String &p_code, bool p_streaming);
 	// Lays the panel out for `p_width` and returns the resulting height.
 	float measure(float p_width);
 
@@ -87,33 +87,29 @@ class SolersMarkdownView : public VBoxContainer {
 		bool is_code = false;
 		String lang;
 		String source;
-		bool rendered_caret = false;
+		bool rendered_streaming = false;
 		Control *control = nullptr;
 	};
 
 	LocalVector<Block> blocks;
-	// Render cache: skip the segment split + reconcile when nothing that affects
-	// output changed. This drops redundant work when the dock receives the same
-	// committed text after streaming it.
+	String target_md;
+	bool target_streaming = false;
 	String rendered_md;
 	bool rendered_streaming = false;
 	bool rendered_md_valid = false;
 
 	static Vector<Segment> _split_segments(const String &p_markdown);
 	RichTextLabel *_make_paragraph_label();
-	void _render_segment(int p_index, const Segment &p_segment, bool p_open);
-	void _render_paragraph(RichTextLabel *p_label, const String &p_source, bool p_caret);
+	void _render_target();
+	void _render_segment(int p_index, const Segment &p_segment, bool p_streaming);
+	void _render_paragraph(RichTextLabel *p_label, const String &p_source);
 	void _on_meta_clicked(const Variant &p_meta);
 
 protected:
 	static void _bind_methods() {}
 
 public:
-	// Full current message text. While `p_streaming` the trailing segment is
-	// considered open: it gets a caret glyph and unbalanced inline markers
-	// are healed before parsing so the stream never flashes raw syntax.
 	void set_markdown(const String &p_markdown, bool p_streaming);
-	void append_markdown_delta(const String &p_delta, bool p_streaming);
 
 	SolersMarkdownView();
 };

@@ -50,6 +50,7 @@
 #include "scene/gui/menu_button.h"
 #include "scene/gui/panel_container.h"
 #include "scene/gui/popup_menu.h"
+#include "scene/gui/rich_text_label.h"
 #include "scene/gui/scroll_container.h"
 #include "scene/gui/split_container.h"
 #include "scene/gui/texture_rect.h"
@@ -72,6 +73,7 @@
 #include "modules/solers_ai/editor/solers_chat_cells.h"
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
 #include "modules/solers_ai/editor/solers_editor_plugin.h"
+#include "modules/solers_ai/editor/solers_markdown_view.h"
 #include "modules/solers_ai/editor/solers_model_preview.h"
 #include "modules/solers_ai/editor/solers_popup_list.h"
 #include "modules/solers_ai/editor/solers_schema_form.h"
@@ -575,5 +577,53 @@ TEST_CASE("[SolersUI][SceneTree] user messages preserve the bubble, hover footer
 	cell->queue_free();
 	MessageQueue::get_singleton()->flush();
 	SolersIcons::clear_cache();
+}
+
+TEST_CASE("[SolersMarkdown][SceneTree] streaming preserves current CommonMark structure") {
+	SolersMarkdownView *view = memnew(SolersMarkdownView);
+	SceneTree::get_singleton()->get_root()->add_child(view);
+	view->set_size(Size2(480, 640));
+	view->set_markdown("alpha\nbeta\n\n- first\n\n  continuation\n\n> before\n>\n> after", true);
+	MessageQueue::get_singleton()->flush();
+
+	TypedArray<Node> labels = view->find_children("*", "RichTextLabel", true, false);
+	REQUIRE(labels.size() == 1);
+	RichTextLabel *prose = Object::cast_to<RichTextLabel>(labels[0].operator Object *());
+	REQUIRE(prose != nullptr);
+	CHECK(prose->is_threaded());
+	prose->get_content_height();
+	prose->wait_until_finished();
+	const String parsed = prose->get_parsed_text();
+	CHECK(parsed.contains("alpha beta"));
+	CHECK(parsed.contains("first"));
+	CHECK(parsed.contains("continuation"));
+	CHECK(parsed.contains("before"));
+	CHECK(parsed.contains("after"));
+
+	view->queue_free();
+	MessageQueue::get_singleton()->flush();
+}
+
+TEST_CASE("[SolersMarkdown][SceneTree] final text replaces pending stream text") {
+	SolersAssistantCell *cell = memnew(SolersAssistantCell);
+	SceneTree::get_singleton()->get_root()->add_child(cell);
+	cell->set_size(Size2(480, 640));
+	cell->append_delta("stale ");
+	cell->append_delta("stream");
+	cell->notification(Node::NOTIFICATION_INTERNAL_PROCESS);
+	cell->finalize("authoritative final");
+	MessageQueue::get_singleton()->flush();
+
+	TypedArray<Node> labels = cell->find_children("*", "RichTextLabel", true, false);
+	REQUIRE(labels.size() == 1);
+	RichTextLabel *prose = Object::cast_to<RichTextLabel>(labels[0].operator Object *());
+	REQUIRE(prose != nullptr);
+	prose->get_content_height();
+	prose->wait_until_finished();
+	CHECK(prose->get_parsed_text().contains("authoritative final"));
+	CHECK_FALSE(prose->get_parsed_text().contains("stale stream"));
+
+	cell->queue_free();
+	MessageQueue::get_singleton()->flush();
 }
 } // namespace TestSolersEditor

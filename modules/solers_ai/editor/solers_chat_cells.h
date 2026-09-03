@@ -119,11 +119,7 @@ class SolersAssistantCell : public VBoxContainer {
 	String full_text;
 	bool stream_done = false;
 	SolersMarkdownView *markdown_view = nullptr;
-	int rendered_chars = -1; // length of full_text at the last render
-	bool rendered_caret = false;
 	String pending_delta;
-
-	Callable content_changed;
 
 	void _flush_pending_delta();
 	void _update_markdown();
@@ -134,13 +130,12 @@ protected:
 
 public:
 	void append_delta(const String &p_text);
-	// Authoritative full text at the end of the model step; renders it whole,
-	// drops the caret, and settles.
+	// Authoritative full text at the end of the model step.
 	void finalize(const String &p_full_text);
 	// Immediate, non-streamed content (errors, providers without streaming).
 	void set_full_text_immediate(const String &p_text);
 
-	void set_content_changed_callback(const Callable &p_cb) { content_changed = p_cb; }
+	void set_content_changed_callback(const Callable &p_cb);
 
 	SolersAssistantCell();
 };
