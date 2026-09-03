@@ -103,8 +103,6 @@ private:
 	int stream_text_bytes = 0;
 	bool stream_saw_finish = false;
 	bool stream_has_content = false;
-	// Wire authority for empty-stream classification: zero response bytes means
-	// the identical request will not help (not a truncated mid-stream).
 	int response_bytes = 0;
 	String response_prefix;
 

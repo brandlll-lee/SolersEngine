@@ -644,7 +644,7 @@ void SolersLLMClient::_complete_stream(Array &r_batch) {
 	if (!media_type.is_empty() && media_type != "text/event-stream" && media_type != "application/json" && !media_type.ends_with("+json")) {
 		_fail("UNEXPECTED_RESPONSE_MEDIA_TYPE", vformat("Provider returned '%s' instead of a streaming protocol response.", media_type), false);
 	} else {
-		_fail("STREAM_ENDED_WITHOUT_FINISH", "Provider stream ended without a terminal protocol event.", false);
+		_fail("STREAM_ENDED_WITHOUT_FINISH", "Provider stream ended without a terminal protocol event.", true);
 	}
 	last_error["response_bytes"] = response_bytes;
 }

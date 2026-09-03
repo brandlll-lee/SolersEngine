@@ -157,14 +157,14 @@ TEST_CASE("[SolersLLMClient] an error after streamed content is an interrupted r
 	CHECK(SolersLLMRetry::is_retryable(error));
 }
 
-TEST_CASE("[SolersLLMClient] empty HTTP 200 stream fails without retry") {
+TEST_CASE("[SolersLLMClient] empty HTTP 200 stream without finish is retryable") {
 	Array events;
 	const Dictionary error = run_openai_failure_response("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n0\r\n\r\n", events);
 	REQUIRE_FALSE(error.is_empty());
 	CHECK(String(error.get("code", String())) == "STREAM_ENDED_WITHOUT_FINISH");
-	CHECK_FALSE((bool)error.get("retryable", true));
+	CHECK((bool)error.get("retryable", false));
 	CHECK((int)error.get("response_bytes", -1) == 0);
-	CHECK_FALSE(SolersLLMRetry::is_retryable(error));
+	CHECK(SolersLLMRetry::is_retryable(error));
 }
 
 TEST_CASE("[SolersLLMClient] JSON error body on HTTP 200 is terminal") {

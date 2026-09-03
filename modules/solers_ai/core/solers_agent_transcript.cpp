@@ -145,9 +145,9 @@ static void _solers_project_timeline_event(const Dictionary &p_event, Array &r_e
 		r_open_tools.clear();
 		if (p_event.get("outcome", String()) != "completed") {
 			r_entries.push_back(Dictionary({
-				{ "event_id", p_event.get("event_id", 0) },
-				{ "role", "turn_outcome" },
-				{ "content", p_event.get("message", String()) },
+					{ "event_id", p_event.get("event_id", 0) },
+					{ "role", "turn_outcome" },
+					{ "content", p_event.get("message", String()) },
 			}));
 		}
 	}
@@ -249,7 +249,6 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 		}
 		if (type == "turn_outcome") {
 			*scan.outcome = event.get("outcome", String());
-			*scan.messages = SolersContextManager::project_completed_turns(*scan.messages);
 			return true;
 		}
 

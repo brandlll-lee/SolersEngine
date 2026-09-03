@@ -860,7 +860,6 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 	if (!turn_mentions.is_empty()) {
 		user_message["mentions"] = turn_mentions.duplicate(true);
 	}
-	messages = SolersContextManager::project_completed_turns(messages);
 	if (context_manager) {
 		context_manager->reset();
 	}
