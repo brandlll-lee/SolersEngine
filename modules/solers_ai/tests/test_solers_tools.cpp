@@ -1,12 +1,37 @@
 /**************************************************************************/
 /*  test_solers_tools.cpp                                                 */
 /**************************************************************************/
+/*                         This file is part of:                          */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
 
 #include "core/variant/dictionary.h"
 #include "tests/test_macros.h"
 
 #include "modules/solers_ai/core/solers_permission_manager.h"
-#include "modules/solers_ai/protocol/solers_mcp_adapter.h"
 #include "modules/solers_ai/core/solers_project_observation.h"
 #include "modules/solers_ai/core/solers_reflection_service.h"
 #include "modules/solers_ai/core/solers_resource_service.h"
@@ -16,6 +41,7 @@
 #include "modules/solers_ai/core/solers_tool.h"
 #include "modules/solers_ai/core/solers_tool_executor.h"
 #include "modules/solers_ai/core/solers_tool_registry.h"
+#include "modules/solers_ai/protocol/solers_mcp_adapter.h"
 
 TEST_FORCE_LINK(test_solers_tools)
 
@@ -67,12 +93,7 @@ TEST_CASE("[SolersToolRegistry] schema validation and writeOnly audit redaction 
 	SolersPermissionManager permissions;
 	SolersToolRegistry registry;
 	registry.set_permission_manager(&permissions);
-	registry.register_tool(memnew(SolersFunctionTool("synthetic.secret", "Secret input", Dictionary({
-		{ "type", "object" },
-		{ "properties", Dictionary({ { "secret", Dictionary({ { "type", "string" }, { "writeOnly", true } }) } }) },
-		{ "required", Array({ "secret" }) },
-		{ "additionalProperties", false }
-	}), [](const SolersToolContext &, const Dictionary &) {
+	registry.register_tool(memnew(SolersFunctionTool("synthetic.secret", "Secret input", Dictionary({ { "type", "object" }, { "properties", Dictionary({ { "secret", Dictionary({ { "type", "string" }, { "writeOnly", true } }) } }) }, { "required", Array({ "secret" }) }, { "additionalProperties", false } }), [](const SolersToolContext &, const Dictionary &) {
 		return Dictionary({ { "ok", true }, { "data", Dictionary({ { "accepted", true } }) } });
 	})));
 
@@ -90,15 +111,11 @@ TEST_CASE("[SolersToolExecutor] owns one serial slot and reaches a terminal cont
 	int executions = 0;
 	int polls = 0;
 	const Dictionary schema({ { "type", "object" }, { "properties", Dictionary() }, { "additionalProperties", false } });
-	registry.register_tool(memnew(SolersFunctionTool("synthetic.pending", "Pending test tool", schema,
-			[&executions](const SolersToolContext &, const Dictionary &) {
+	registry.register_tool(memnew(SolersFunctionTool("synthetic.pending", "Pending test tool", schema, [&executions](const SolersToolContext &, const Dictionary &) {
 				executions++;
-				return Dictionary({ { "ok", true }, { "data", Dictionary({ { "status", "pending" }, { "poll_args", Dictionary({ { "cursor", 1 } }) } }) } });
-			},
-			[&polls](const SolersToolContext &, const Dictionary &) {
+				return Dictionary({ { "ok", true }, { "data", Dictionary({ { "status", "pending" }, { "poll_args", Dictionary({ { "cursor", 1 } }) } }) } }); }, [&polls](const SolersToolContext &, const Dictionary &) {
 				polls++;
-				return Dictionary({ { "ok", true }, { "data", Dictionary({ { "done", true } }) } });
-			})));
+				return Dictionary({ { "ok", true }, { "data", Dictionary({ { "done", true } }) } }); })));
 
 	SolersToolExecutor executor;
 	executor.configure(&registry, &permissions);
@@ -174,10 +191,8 @@ TEST_CASE("[SolersMCPAdapter] tools/call is deferred until the shared executor r
 	adapter.set_tool_registry(&registry);
 	adapter.set_tool_executor(&executor);
 
-	const Dictionary accepted = adapter.begin_request(Dictionary({
-			{ "jsonrpc", "2.0" }, { "id", 7 }, { "method", "tools/call" },
-			{ "params", Dictionary({ { "name", "synthetic.mcp" }, { "arguments", Dictionary() } }) }
-	}));
+	const Dictionary accepted = adapter.begin_request(Dictionary({ { "jsonrpc", "2.0" }, { "id", 7 }, { "method", "tools/call" },
+			{ "params", Dictionary({ { "name", "synthetic.mcp" }, { "arguments", Dictionary() } }) } }));
 	CHECK((bool)accepted.get("deferred", false));
 	const int64_t token = accepted.get("request_token", 0);
 	REQUIRE(token > 0);

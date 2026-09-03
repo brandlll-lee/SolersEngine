@@ -34,6 +34,7 @@
 #include "core/io/json.h"
 #include "core/object/class_db.h"
 #include "core/os/os.h"
+
 #include "modules/solers_ai/protocol/solers_mcp_adapter.h"
 
 void SolersRpcServer::_bind_methods() {

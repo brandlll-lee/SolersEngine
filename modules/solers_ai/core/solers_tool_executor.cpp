@@ -148,8 +148,10 @@ void SolersToolExecutor::poll() {
 			return;
 		}
 		if (decision != SolersPermissionManager::DECISION_APPROVED) {
-			const String code = !permission_manager ? "APPROVAL_UNAVAILABLE" : decision == SolersPermissionManager::DECISION_REJECTED ? "USER_REJECTED" : "APPROVAL_EXPIRED";
-			const String message = !permission_manager ? "No permission manager is available to resolve the approval." : decision == SolersPermissionManager::DECISION_REJECTED ? "The user denied this tool call." : "The approval request is no longer available.";
+			const String code = !permission_manager ? "APPROVAL_UNAVAILABLE" : decision == SolersPermissionManager::DECISION_REJECTED ? "USER_REJECTED"
+																																	  : "APPROVAL_EXPIRED";
+			const String message = !permission_manager ? "No permission manager is available to resolve the approval." : decision == SolersPermissionManager::DECISION_REJECTED ? "The user denied this tool call."
+																																												: "The approval request is no longer available.";
 			_finish(_error(code, message));
 			return;
 		}
