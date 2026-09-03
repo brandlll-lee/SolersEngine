@@ -34,11 +34,9 @@
 #include "core/variant/array.h"
 #include "core/variant/dictionary.h"
 
-class SolersActionTimeline;
 class SolersAgentSession;
 class SolersAssetService;
 class SolersDock;
-class SolersFileCheckpoint;
 class SolersMCPAdapter;
 class SolersPermissionManager;
 class SolersProjectObservation;
@@ -53,10 +51,8 @@ class SolersSettingsService;
 class SolersToolRegistry;
 
 class SolersAgentRuntime {
-	SolersActionTimeline *action_timeline = nullptr;
 	SolersAssetService *asset_service = nullptr;
 	SolersAgentSession *agent_session = nullptr;
-	SolersFileCheckpoint *file_checkpoint = nullptr;
 	SolersMCPAdapter *mcp_adapter = nullptr;
 	SolersPermissionManager *permission_manager = nullptr;
 	SolersProjectObservation *project_observation = nullptr;
@@ -74,6 +70,9 @@ class SolersAgentRuntime {
 
 public:
 	void bind_dock(SolersDock *p_dock);
+	Dictionary start_rpc(const Dictionary &p_args = Dictionary());
+	Dictionary stop_rpc();
+	Dictionary get_rpc_status() const;
 	void poll();
 	void shutdown();
 	bool is_running() const;

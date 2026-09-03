@@ -44,10 +44,12 @@
 #include "core/object/class_db.h"
 #include "core/object/script_language.h"
 #include "core/os/os.h"
+#include "core/templates/hash_set.h"
 #include "editor/editor_interface.h"
 #include "editor/editor_node.h"
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/file_system/editor_file_system.h"
+#include "editor/settings/editor_settings.h"
 #include "scene/main/node.h"
 #include "scene/main/scene_tree.h"
 #include "scene/main/window.h"
@@ -62,10 +64,11 @@
 #ifdef MODULE_GDSCRIPT_ENABLED
 #include "modules/gdscript/gdscript_parser.h"
 #endif
-#include "modules/solers_ai/core/solers_action_timeline.h"
 #include "modules/solers_ai/core/solers_path_utils.h"
 #include "modules/solers_ai/core/solers_resource_service.h"
 #include "modules/solers_ai/core/solers_script_context.h"
+#include "modules/solers_ai/core/solers_tool.h"
+#include "modules/solers_ai/core/solers_permission_manager.h"
 
 HashMap<StringName, SolersScriptAuthority> SolersScriptService::authorities;
 
@@ -84,9 +87,10 @@ const SolersScriptAuthority *SolersScriptService::_get_authority(const StringNam
 }
 
 void SolersScriptService::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("set_action_timeline", "action_timeline"), &SolersScriptService::set_action_timeline);
 	ClassDB::bind_method(D_METHOD("write_file", "args"), &SolersScriptService::write_file);
 	ClassDB::bind_method(D_METHOD("patch_file", "args"), &SolersScriptService::patch_file);
+	ClassDB::bind_method(D_METHOD("remove_project_path", "args"), &SolersScriptService::remove_project_path);
+	ClassDB::bind_method(D_METHOD("edit_path", "args"), &SolersScriptService::edit_path);
 	ClassDB::bind_method(D_METHOD("edit_project", "args"), &SolersScriptService::edit_project);
 	ClassDB::bind_method(D_METHOD("edit_script", "args"), &SolersScriptService::edit_script);
 	ClassDB::bind_method(D_METHOD("validate_script", "args"), &SolersScriptService::validate_script);
@@ -228,10 +232,6 @@ Dictionary SolersScriptService::_validate_source(const String &p_path, const Str
 	return data;
 }
 
-void SolersScriptService::set_action_timeline(SolersActionTimeline *p_action_timeline) {
-	action_timeline = p_action_timeline;
-}
-
 static bool _solers_is_native_serialized_resource_path(const String &p_path) {
 	List<String> extensions;
 	if (ResourceFormatLoaderText::singleton) {
@@ -258,7 +258,7 @@ static bool _solers_is_project_settings_path(const String &p_path) {
 	return normalized.valid && normalized.value == "res://project.godot";
 }
 
-Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
+Dictionary SolersScriptService::_write_file(const Dictionary &p_args, const SolersToolContext *p_context) {
 	const String path_arg = p_args.get("path", String());
 	const String content = p_args.get("content", String());
 	const String content_base64 = p_args.get("content_base64", String());
@@ -315,6 +315,19 @@ Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
 			return _error("INVALID_BASE64", "content_base64 is not valid base64.");
 		}
 	}
+	if (p_context) {
+		const Dictionary denied = p_context->require_permission(SolersPermissionManager::PERMISSION_EDIT_FILES, p_args);
+		if (!denied.is_empty()) {
+			return denied;
+		}
+		const bool exists_now = FileAccess::exists(res_path);
+		const String actual_now = exists_now ? FileAccess::get_sha256(res_path) : String();
+		if (exists_now != existed_before || (existed_before && actual_now != expected_sha256 && !expected_sha256.is_empty())) {
+			Dictionary failure = _error("STATE_CONFLICT", vformat("File '%s' changed while the edit was waiting for approval.", res_path));
+			failure["data"] = Dictionary({ { "path", res_path }, { "expected_sha256", expected_sha256 }, { "actual_sha256", actual_now } });
+			return failure;
+		}
+	}
 
 	Error dir_err = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(res_path.get_base_dir()));
 	if (dir_err != OK) {
@@ -366,13 +379,17 @@ Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
 		data["validation"] = validation_data;
 	}
 
-	if (action_timeline) {
-		action_timeline->record_event("file_written", data);
-	}
-
 	return _ok(data);
 }
-Dictionary SolersScriptService::patch_file(const Dictionary &p_args) {
+Dictionary SolersScriptService::write_file(const Dictionary &p_args) {
+	return _write_file(p_args, nullptr);
+}
+
+Dictionary SolersScriptService::write_file_with_context(const Dictionary &p_args, const SolersToolContext &p_context) {
+	return _write_file(p_args, &p_context);
+}
+
+Dictionary SolersScriptService::_patch_file(const Dictionary &p_args, const SolersToolContext *p_context) {
 	const String path_arg = p_args.get("path", String());
 	const String old_text = p_args.get("old_text", String());
 	const String new_text = p_args.get("new_text", String());
@@ -422,7 +439,7 @@ Dictionary SolersScriptService::patch_file(const Dictionary &p_args) {
 	write_args["create"] = false;
 	write_args["overwrite"] = true;
 	write_args["expected_sha256"] = expected_sha256;
-	Dictionary write_result = write_file(write_args);
+	Dictionary write_result = _write_file(write_args, p_context);
 	if (!(bool)write_result.get("ok", false)) {
 		return write_result;
 	}
@@ -430,6 +447,205 @@ Dictionary SolersScriptService::patch_file(const Dictionary &p_args) {
 	Dictionary data = write_result.get("data", Dictionary());
 	data["patched_offset"] = offset;
 	return _ok(data);
+}
+
+Dictionary SolersScriptService::patch_file(const Dictionary &p_args) {
+	return _patch_file(p_args, nullptr);
+}
+
+Dictionary SolersScriptService::patch_file_with_context(const Dictionary &p_args, const SolersToolContext &p_context) {
+	return _patch_file(p_args, &p_context);
+}
+
+static void _solers_collect_indexed_files(EditorFileSystemDirectory *p_directory, HashSet<String> &r_files) {
+	if (!p_directory) {
+		return;
+	}
+	for (int i = 0; i < p_directory->get_subdir_count(); i++) {
+		_solers_collect_indexed_files(p_directory->get_subdir(i), r_files);
+	}
+	for (int i = 0; i < p_directory->get_file_count(); i++) {
+		r_files.insert(p_directory->get_file_path(i));
+	}
+}
+
+static void _solers_collect_external_owners(EditorFileSystemDirectory *p_directory, const HashSet<String> &p_removed, Array &r_owners) {
+	if (!p_directory) {
+		return;
+	}
+	for (int i = 0; i < p_directory->get_subdir_count(); i++) {
+		_solers_collect_external_owners(p_directory->get_subdir(i), p_removed, r_owners);
+	}
+	for (int i = 0; i < p_directory->get_file_count(); i++) {
+		const String owner = p_directory->get_file_path(i);
+		if (p_removed.has(owner)) {
+			continue;
+		}
+		for (const String &dependency : p_directory->get_file_deps(i)) {
+			if (p_removed.has(dependency)) {
+				r_owners.push_back(Dictionary({ { "path", owner }, { "type", p_directory->get_file_type(i) }, { "dependency", dependency } }));
+			}
+		}
+	}
+}
+
+static String _solers_project_setting_path(const PropertyInfo &p_property, const Variant &p_value) {
+	if (p_property.type != Variant::STRING || (p_property.hint != PROPERTY_HINT_FILE && p_property.hint != PROPERTY_HINT_DIR && p_property.hint != PROPERTY_HINT_FILE_PATH)) {
+		return String();
+	}
+	return ResourceUID::ensure_path(p_value);
+}
+
+Dictionary SolersScriptService::_remove_project_path(const Dictionary &p_args, const SolersToolContext *p_context) {
+	const SolersPath::NormalizedPath normalized = SolersPath::normalize_project_path(p_args.get("path", String()));
+	if (!normalized.valid) {
+		return _error("INVALID_PATH", normalized.error);
+	}
+	const String path = normalized.value;
+	const bool directory = DirAccess::exists(path);
+	const bool file = FileAccess::exists(path);
+	if ((!directory && !file) || path == "res://") {
+		return _error("PATH_NOT_FOUND", vformat("Project path does not exist or cannot be removed: %s", path));
+	}
+	if (file) {
+		const String expected_sha256 = p_args.get("expected_sha256", String());
+		const String actual_sha256 = FileAccess::get_sha256(path);
+		if (expected_sha256.is_empty()) {
+			return _error("STATE_RECEIPT_REQUIRED", "Removing a file requires expected_sha256 from read.");
+		}
+		if (expected_sha256 != actual_sha256) {
+			Dictionary failure = _error("STATE_CONFLICT", vformat("File '%s' changed since it was inspected.", path));
+			failure["data"] = Dictionary({ { "path", path }, { "expected_sha256", expected_sha256 }, { "actual_sha256", actual_sha256 } });
+			return failure;
+		}
+	}
+
+	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
+	if (!filesystem || !filesystem->get_filesystem() || filesystem->is_scanning()) {
+		return _error("EDITOR_FILESYSTEM_UNAVAILABLE", "EditorFileSystem is not ready.");
+	}
+	HashSet<String> removed_files;
+	const String prefix = path.ends_with("/") ? path : path + "/";
+	if (directory) {
+		_solers_collect_indexed_files(filesystem->get_filesystem_path(path), removed_files);
+	} else {
+		removed_files.insert(path);
+	}
+	Array owners;
+	_solers_collect_external_owners(filesystem->get_filesystem(), removed_files, owners);
+	if (!owners.is_empty()) {
+		Dictionary result = _error("PATH_HAS_OWNERS", vformat("Project path is referenced by %d resource(s) outside the removal set.", owners.size()));
+		result["data"] = Dictionary({ { "path", path }, { "owners", owners } });
+		return result;
+	}
+
+	if (p_context) {
+		const Dictionary denied = p_context->require_permission(SolersPermissionManager::PERMISSION_EDIT_FILES, p_args);
+		if (!denied.is_empty()) {
+			return denied;
+		}
+		if (file && FileAccess::get_sha256(path) != String(p_args.get("expected_sha256", String()))) {
+			return _error("STATE_CONFLICT", vformat("File '%s' changed while removal was waiting for approval.", path));
+		}
+	}
+	const Error remove_error = OS::get_singleton()->move_to_trash(ProjectSettings::get_singleton()->globalize_path(path));
+	if (remove_error != OK || FileAccess::exists(path) || DirAccess::exists(path)) {
+		Dictionary result = _error("PATH_REMOVE_FAILED", vformat("Godot could not move '%s' to the system trash (error %d).", path, remove_error));
+		result["data"] = Dictionary({ { "path", path }, { "native_error", remove_error } });
+		return result;
+	}
+	for (const String &removed_file : removed_files) {
+		if (ResourceCache::has(removed_file)) {
+			Ref<Resource> resource = ResourceCache::get_ref(removed_file);
+			if (resource.is_valid()) {
+				resource->set_path("");
+			}
+		}
+	}
+
+	ProjectSettings *settings = ProjectSettings::get_singleton();
+	bool settings_changed = false;
+	List<PropertyInfo> properties;
+	settings->get_property_list(&properties);
+	for (const PropertyInfo &property : properties) {
+		const String value = _solers_project_setting_path(property, settings->get(property.name));
+		if (!value.is_empty() && (removed_files.has(value) || (directory && value.begins_with(prefix)))) {
+			settings->set(property.name, "");
+			settings_changed = true;
+		}
+	}
+	if (settings_changed) {
+		settings->save();
+	}
+	EditorSettings *editor_settings = EditorSettings::get_singleton();
+	if (editor_settings) {
+		const Vector<String> previous = editor_settings->get_favorites();
+		Vector<String> favorites;
+		for (const String &favorite : previous) {
+			if (favorite != path && (!directory || !favorite.begins_with(prefix))) {
+				favorites.push_back(favorite);
+			}
+		}
+		if (favorites.size() != previous.size()) {
+			editor_settings->set_favorites(favorites);
+		}
+	}
+	if (directory) {
+		filesystem->scan_changes();
+	} else {
+		filesystem->update_file(path);
+	}
+	return _ok(Dictionary({ { "path", path }, { "directory", directory }, { "removed_files", removed_files.size() }, { "owners", owners } }));
+}
+
+Dictionary SolersScriptService::remove_project_path(const Dictionary &p_args) {
+	return _remove_project_path(p_args, nullptr);
+}
+
+Dictionary SolersScriptService::remove_project_path_with_context(const Dictionary &p_args, const SolersToolContext &p_context) {
+	return _remove_project_path(p_args, &p_context);
+}
+
+Dictionary SolersScriptService::_edit_path(const Dictionary &p_args, const SolersToolContext *p_context) {
+	const String operation = p_args.get("operation", String());
+	if (operation == "remove") {
+		return _remove_project_path(p_args, p_context);
+	}
+	if (operation == "create_directory") {
+		Dictionary args = p_args.duplicate(true);
+		args["operation"] = "create_directory";
+		return _edit_project(args, p_context);
+	}
+	if (operation == "replace") {
+		return _patch_file(p_args, p_context);
+	}
+	if (operation == "create" || operation == "write") {
+		const SolersPath::NormalizedPath normalized = SolersPath::normalize_project_path(p_args.get("path", String()));
+		if (!normalized.valid) {
+			return _error("INVALID_PATH", normalized.error);
+		}
+		const bool exists = FileAccess::exists(normalized.value);
+		if (operation == "write" && exists && String(p_args.get("expected_sha256", String())).is_empty()) {
+			return _error("STATE_RECEIPT_REQUIRED", "Overwriting a file requires expected_sha256 from read.");
+		}
+		Dictionary args = p_args.duplicate(true);
+		args["path"] = normalized.value;
+		args["create"] = true;
+		args["overwrite"] = operation == "write";
+		args.erase("operation");
+		args.erase("old_text");
+		args.erase("new_text");
+		return _write_file(args, p_context);
+	}
+	return _error("INVALID_ARGUMENT", "edit operation must be create, replace, write, create_directory, or remove.");
+}
+
+Dictionary SolersScriptService::edit_path(const Dictionary &p_args) {
+	return _edit_path(p_args, nullptr);
+}
+
+Dictionary SolersScriptService::edit_path_with_context(const Dictionary &p_args, const SolersToolContext &p_context) {
+	return _edit_path(p_args, &p_context);
 }
 
 void SolersScriptService::_apply_project_settings(const Dictionary &p_values, const PackedStringArray &p_erase) {
@@ -447,7 +663,7 @@ void SolersScriptService::_apply_project_settings(const Dictionary &p_values, co
 	project_settings_save_error = settings->save();
 }
 
-Dictionary SolersScriptService::edit_project(const Dictionary &p_args) {
+Dictionary SolersScriptService::_edit_project(const Dictionary &p_args, const SolersToolContext *p_context) {
 	const String operation = String(p_args.get("operation", String())).strip_edges();
 	if (operation == "settings") {
 		const Dictionary wire_values = p_args.get("values", Dictionary());
@@ -489,6 +705,19 @@ Dictionary SolersScriptService::edit_project(const Dictionary &p_args) {
 			}
 		}
 
+		const String expected_sha256 = p_args.get("expected_sha256", String());
+		if (!expected_sha256.is_empty() && (!FileAccess::exists("res://project.godot") || FileAccess::get_sha256("res://project.godot") != expected_sha256)) {
+			return _error("STATE_CONFLICT", "project.godot changed since it was inspected.");
+		}
+		if (p_context) {
+			const Dictionary denied = p_context->require_permission(SolersPermissionManager::PERMISSION_EDIT_FILES, p_args);
+			if (!denied.is_empty()) {
+				return denied;
+			}
+			if (!expected_sha256.is_empty() && FileAccess::get_sha256("res://project.godot") != expected_sha256) {
+				return _error("STATE_CONFLICT", "project.godot changed while the edit was waiting for approval.");
+			}
+		}
 		const int history_id = EditorNode::get_singleton() && EditorNode::get_editor_data().get_edited_scene_count() > 0 ? EditorNode::get_editor_data().get_current_edited_scene_history_id() : EditorUndoRedoManager::GLOBAL_HISTORY;
 		undo_redo->create_action_for_history("Solers: Edit Project Settings", history_id, UndoRedo::MERGE_DISABLE, true);
 		undo_redo->add_do_method(this, "_apply_project_settings", values, erase);
@@ -515,6 +744,15 @@ Dictionary SolersScriptService::edit_project(const Dictionary &p_args) {
 		const String res_dir = normalized_dir.value;
 		const String global_dir = ProjectSettings::get_singleton()->globalize_path(res_dir);
 		const bool existed = DirAccess::dir_exists_absolute(global_dir);
+		if (!existed && p_context) {
+			const Dictionary denied = p_context->require_permission(SolersPermissionManager::PERMISSION_EDIT_FILES, p_args);
+			if (!denied.is_empty()) {
+				return denied;
+			}
+			if (DirAccess::dir_exists_absolute(global_dir)) {
+				return _error("STATE_CONFLICT", "The directory appeared while creation was waiting for approval.");
+			}
+		}
 		if (!existed) {
 			const Error dir_err = DirAccess::make_dir_recursive_absolute(global_dir);
 			if (dir_err != OK) {
@@ -530,9 +768,6 @@ Dictionary SolersScriptService::edit_project(const Dictionary &p_args) {
 		data["path"] = res_dir;
 		data["created"] = !existed;
 		data["existed"] = existed;
-		if (action_timeline && !existed) {
-			action_timeline->record_event("directory_created", data);
-		}
 		return _ok(data);
 	}
 	if (operation != "write_file") {
@@ -562,7 +797,15 @@ Dictionary SolersScriptService::edit_project(const Dictionary &p_args) {
 	write_args["content"] = p_args.get("content", String());
 	write_args["create"] = true;
 	write_args["overwrite"] = exists;
-	return write_file(write_args);
+	return _write_file(write_args, p_context);
+}
+
+Dictionary SolersScriptService::edit_project(const Dictionary &p_args) {
+	return _edit_project(p_args, nullptr);
+}
+
+Dictionary SolersScriptService::edit_project_with_context(const Dictionary &p_args, const SolersToolContext &p_context) {
+	return _edit_project(p_args, &p_context);
 }
 
 Dictionary SolersScriptService::edit_script(const Dictionary &p_args) {
@@ -656,7 +899,7 @@ void SolersScriptService::_remove_task_files(const ScriptTask &p_task) const {
 	DirAccess::remove_absolute(global_directory);
 }
 
-Dictionary SolersScriptService::start_authority_script(const StringName &p_authority, const Dictionary &p_args, const String &p_call_id) {
+Dictionary SolersScriptService::start_authority_script(const StringName &p_authority, const Dictionary &p_args, const String &p_call_id, const SolersToolContext *p_context) {
 	const SolersScriptAuthority *authority = _get_authority(p_authority);
 	if (!authority) {
 		return _error("INVALID_AUTHORITY", vformat("Unknown editor script authority: %s", p_authority), false);
@@ -723,6 +966,16 @@ Dictionary SolersScriptService::start_authority_script(const StringName &p_autho
 		}
 		if (!outputs.has(output.value)) {
 			outputs.push_back(output.value);
+		}
+	}
+	if (p_context) {
+		const Dictionary denied = p_context->require_permission(SolersPermissionManager::PERMISSION_EDIT_FILES, p_args);
+		if (!denied.is_empty()) {
+			return denied;
+		}
+		const SolersPath::NormalizedPath current_target = SolersPath::normalize_project_path(p_args.get(authority->target_argument, String()));
+		if (!current_target.valid || !FileAccess::exists(current_target.value)) {
+			return _error("STATE_CONFLICT", "The authority target changed while the script was waiting for approval.");
 		}
 	}
 	const int timeout_msec = CLAMP((int)p_args.get("timeout_msec", 30000), 1000, 600000);

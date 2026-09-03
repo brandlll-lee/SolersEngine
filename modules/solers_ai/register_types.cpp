@@ -41,10 +41,8 @@
 #include "protocol/solers_mcp_adapter.h"
 #include "protocol/solers_rpc_server.h"
 
-#include "core/solers_action_timeline.h"
 #include "core/solers_agent_session.h"
 #include "core/solers_asset_service.h"
-#include "core/solers_file_checkpoint.h"
 #include "core/solers_permission_manager.h"
 #include "core/solers_project_observation.h"
 #include "core/solers_provider_registry.h"
@@ -76,10 +74,8 @@ void initialize_solers_ai_module(ModuleInitializationLevel p_level) {
 		solers_runtime_bridge_initialize();
 	}
 	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
-		GDREGISTER_CLASS(SolersActionTimeline);
 		GDREGISTER_CLASS(SolersAgentSession);
 		GDREGISTER_CLASS(SolersAssetService);
-		GDREGISTER_CLASS(SolersFileCheckpoint);
 		GDREGISTER_CLASS(SolersProjectObservation);
 		GDREGISTER_CLASS(SolersRuntimeObservation);
 		GDREGISTER_CLASS(SolersSceneObservation);
@@ -102,7 +98,6 @@ void initialize_solers_ai_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(SolersDock);
 		GDREGISTER_CLASS(SolersGlyphButton);
 		GDREGISTER_CLASS(SolersSelectChip);
-		GDREGISTER_CLASS(SolersPlanCapsule);
 		GDREGISTER_CLASS(SolersSurface);
 		GDREGISTER_CLASS(SolersUserBubble);
 		GDREGISTER_CLASS(SolersAssistantCell);

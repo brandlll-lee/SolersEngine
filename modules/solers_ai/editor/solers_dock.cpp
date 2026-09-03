@@ -73,7 +73,6 @@
 #include "servers/display/display_server.h"
 #include "servers/rendering/rendering_server.h"
 
-#include "modules/solers_ai/core/solers_action_timeline.h"
 #include "modules/solers_ai/core/solers_agent_session.h"
 #include "modules/solers_ai/core/solers_mention.h"
 #include "modules/solers_ai/core/solers_permission_manager.h"
@@ -396,18 +395,24 @@ public:
 	}
 };
 
+static String solers_tool_subject(const SolersToolRegistry *p_registry, const StringName &p_name, const Dictionary &p_args) {
+	if (!p_registry || p_name.is_empty() || p_args.is_empty()) {
+		return String();
+	}
+	const Dictionary normalized = p_registry->normalize_tool_args(p_name, p_args);
+	return JSON::stringify(p_registry->redact_tool_args_for_audit(p_name, normalized), "", false, true);
+}
+
 static Dictionary solers_tool_ui_for_call(const SolersToolRegistry *p_registry, const String &p_name, const String &p_arguments) {
 	Dictionary state;
 	if (!p_registry || p_name.is_empty()) {
 		return state;
 	}
-	const Dictionary tool = p_registry->get_tool_definition(StringName(p_name));
-	state["presentation"] = tool.get("ui", Dictionary());
 	Ref<JSON> json;
 	json.instantiate();
 	const Variant parsed = json->parse(p_arguments) == OK ? json->get_data() : Variant();
 	if (parsed.get_type() == Variant::DICTIONARY) {
-		state["subject"] = p_registry->summarize_tool_args_for_ui(StringName(p_name), parsed);
+		state["subject"] = solers_tool_subject(p_registry, StringName(p_name), parsed);
 	}
 	return state;
 }
@@ -754,9 +759,6 @@ void SolersDock::_clear_chat_view(bool p_show_empty) {
 	tool_cells_by_id.clear();
 	last_started_tool_cell = nullptr;
 	timeline_messages.clear();
-	if (plan_capsule) {
-		plan_capsule->clear_plan();
-	}
 	if (message_list) {
 		while (message_list->get_child_count() > 0) {
 			Node *child = message_list->get_child(0);
@@ -2354,7 +2356,7 @@ void SolersDock::_sync_approval_panel() {
 	const Dictionary request = pending[0];
 	permission_prompt_inset->set_visible(true);
 	permission_tool_label->set_text(request.get("tool", String()));
-	const String tool_subject = tool_registry ? tool_registry->summarize_tool_args_for_ui(StringName(request.get("tool", String())), request.get("args", Dictionary())) : String();
+	const String tool_subject = solers_tool_subject(tool_registry, StringName(request.get("tool", String())), request.get("args", Dictionary()));
 	permission_detail_label->set_text(String(request.get("permission", String())).replace("_", " ") + (tool_subject.is_empty() ? String() : "\n" + tool_subject));
 	_update_send_enabled();
 }
@@ -2419,10 +2421,9 @@ void SolersDock::_notification(int p_what) {
 	}
 }
 
-void SolersDock::set_services(SolersSceneObservation *p_scene_observation, SolersToolRegistry *p_tool_registry, SolersActionTimeline *p_action_timeline, SolersPermissionManager *p_permission_manager, SolersSettingsService *p_settings_service) {
+void SolersDock::set_services(SolersSceneObservation *p_scene_observation, SolersToolRegistry *p_tool_registry, SolersPermissionManager *p_permission_manager, SolersSettingsService *p_settings_service) {
 	scene_observation = p_scene_observation;
 	tool_registry = p_tool_registry;
-	action_timeline = p_action_timeline;
 	permission_manager = p_permission_manager;
 	settings_service = p_settings_service;
 	if (provider_settings_view && p_settings_service) {
@@ -2639,9 +2640,6 @@ SolersDock::SolersDock() {
 	composer_stack->set_alignment(BoxContainer::ALIGNMENT_CENTER);
 	composer_stack->add_theme_constant_override("separation", 8 * EDSCALE);
 	composer_inset->add_child(composer_stack);
-
-	plan_capsule = memnew(SolersPlanCapsule);
-	composer_stack->add_child(plan_capsule);
 
 	SolersSurface *composer_card = memnew(SolersSurface);
 	solers_configure_prompt_surface(composer_card);
@@ -2876,8 +2874,6 @@ void SolersDock::set_agent_session(SolersAgentSession *p_agent_session) {
 	agent_session->connect(SNAME("turn_completed"), callable_mp(this, &SolersDock::_on_agent_turn_completed));
 	agent_session->connect(SNAME("turn_failed"), callable_mp(this, &SolersDock::_on_agent_turn_failed));
 	agent_session->connect(SNAME("turn_retrying"), callable_mp(this, &SolersDock::_on_agent_turn_retrying));
-	agent_session->connect(SNAME("turn_waiting"), callable_mp(this, &SolersDock::_on_agent_turn_waiting));
-	agent_session->connect(SNAME("plan_updated"), callable_mp(this, &SolersDock::_on_agent_plan_updated));
 	_refresh_status();
 }
 
@@ -3067,26 +3063,4 @@ void SolersDock::_on_agent_turn_retrying(int p_attempt, const String &p_message)
 		_ensure_status_cell(vformat(TTR("Reconnecting (attempt %d): %s"), p_attempt, detail));
 	}
 	_update_send_enabled();
-}
-
-void SolersDock::_on_agent_turn_waiting(const Dictionary &p_waiting) {
-	_settle_thinking_cell();
-	const Array pending_ids = p_waiting.get("pending_ids", Array());
-	if (pending_ids.size() <= 1) {
-		_ensure_status_cell(TTR("Waiting for background job..."));
-	} else {
-		_ensure_status_cell(vformat(TTR("Waiting for %d background jobs..."), pending_ids.size()));
-	}
-	_update_send_enabled();
-}
-
-void SolersDock::_on_agent_plan_updated(const String &p_explanation, const Array &p_plan) {
-	if (!plan_capsule) {
-		return;
-	}
-	if (p_plan.is_empty()) {
-		plan_capsule->clear_plan();
-		return;
-	}
-	plan_capsule->set_plan(p_explanation, p_plan);
 }

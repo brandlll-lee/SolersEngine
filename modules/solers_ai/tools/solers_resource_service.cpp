@@ -876,7 +876,7 @@ Dictionary SolersResourceService::_read_method(Object *p_object, const StringNam
 	return _ok(Dictionary({ { "method", p_method }, { "arguments", p_arguments }, { "type", Variant::get_type_name(value.get_type()) }, { "value", solers_summarize_display_value(value) } }));
 }
 
-Dictionary SolersResourceService::_create_resource(const Dictionary &p_args) const {
+Dictionary SolersResourceService::_create_resource(const Dictionary &p_args, const SolersToolContext *p_context) const {
 	const String class_name = String(p_args.get("class_name", String())).strip_edges();
 	if (class_name.is_empty()) {
 		return _error("INVALID_ARGUMENT", "class_name is required.");
@@ -912,6 +912,16 @@ Dictionary SolersResourceService::_create_resource(const Dictionary &p_args) con
 			return _error("PROPERTY_SET_FAILED", vformat("Setting property '%s' failed on %s.", String(property), resource->get_class()));
 		}
 	}
+	if (p_context) {
+		const Dictionary denied = p_context->require_permission(SolersPermissionManager::PERMISSION_EDIT_FILES, p_args);
+		if (!denied.is_empty()) {
+			return denied;
+		}
+		const Dictionary current = get_resource_info(Dictionary({ { "path", path }, { "include_dependencies", false } }));
+		if (!(bool)current.get("ok", false) || (bool)Dictionary(current.get("data", Dictionary())).get("exists", false)) {
+			return _error("RESOURCE_STATE_CONFLICT", "The resource appeared while the edit was waiting for approval.");
+		}
+	}
 
 	Error dir_err = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(path.get_base_dir()));
 	if (dir_err != OK) {
@@ -930,7 +940,7 @@ Dictionary SolersResourceService::_create_resource(const Dictionary &p_args) con
 	return _ok(data);
 }
 
-Dictionary SolersResourceService::_set_resource_properties(const Dictionary &p_args) const {
+Dictionary SolersResourceService::_set_resource_properties(const Dictionary &p_args, const SolersToolContext *p_context) const {
 	const String path = p_args.get("path", String());
 	const String type_hint = p_args.get("type_hint", String());
 	if (p_args.get("properties", Variant()).get_type() != Variant::DICTIONARY || Dictionary(p_args["properties"]).is_empty()) {
@@ -955,6 +965,20 @@ Dictionary SolersResourceService::_set_resource_properties(const Dictionary &p_a
 		}
 		values.push_back(value);
 		old_values.push_back(resource->get(property));
+	}
+	if (p_context) {
+		const Dictionary denied = p_context->require_permission(SolersPermissionManager::PERMISSION_EDIT_FILES, p_args);
+		if (!denied.is_empty()) {
+			return denied;
+		}
+		const Dictionary current = get_resource_info(Dictionary({ { "path", path }, { "include_dependencies", false } }));
+		const Dictionary expected = p_args.get("expected_state", Dictionary());
+		const Dictionary actual = current.get("data", Dictionary());
+		for (const char *field : { "exists", "sha256", "uid" }) {
+			if (expected.has(field) && expected[field] != actual.get(field, Variant())) {
+				return _error("RESOURCE_STATE_CONFLICT", vformat("The resource %s changed while the edit was waiting for approval.", field));
+			}
+		}
 	}
 	for (int i = 0; i < names.size(); i++) {
 		const StringName property = StringName(names[i]);
@@ -989,14 +1013,38 @@ Dictionary SolersResourceService::_set_resource_properties(const Dictionary &p_a
 	return _ok(data);
 }
 
-Dictionary SolersResourceService::edit_resource(const Dictionary &p_args) const {
+Dictionary SolersResourceService::edit_resource(const Dictionary &p_args, const SolersToolContext *p_context) const {
 	const SolersPath::NormalizedPath path = SolersPath::normalize_project_path(p_args.get("path", String()));
 	if (!path.valid) {
 		return _error("INVALID_PATH", path.error);
 	}
 	Dictionary args = p_args;
 	args["path"] = path.value;
-	return FileAccess::exists(path.value) || ResourceLoader::exists(path.value) ? _set_resource_properties(args) : _create_resource(args);
+	const Dictionary expected = p_args.get("expected_state", Dictionary());
+	const Dictionary current_result = get_resource_info(Dictionary({ { "path", path.value }, { "include_dependencies", false } }));
+	if (!(bool)current_result.get("ok", false)) {
+		return current_result;
+	}
+	const Dictionary current = current_result.get("data", Dictionary());
+	for (const char *field : { "exists", "sha256", "uid" }) {
+		if (expected.has(field) && expected[field] != current.get(field, Variant())) {
+			Dictionary result = _error("STALE_RESOURCE_STATE", vformat("The resource %s changed; inspect it again before editing.", field));
+			result["data"] = Dictionary({ { "expected", expected }, { "actual", current } });
+			return result;
+		}
+	}
+
+	Dictionary result = (bool)current.get("exists", false) ? _set_resource_properties(args, p_context) : _create_resource(args, p_context);
+	if (!(bool)result.get("ok", false)) {
+		return result;
+	}
+	Dictionary data = result.get("data", Dictionary());
+	const Dictionary receipt = get_resource_info(Dictionary({ { "path", path.value }, { "include_dependencies", false } }));
+	if ((bool)receipt.get("ok", false)) {
+		data["state"] = receipt.get("data", Dictionary());
+	}
+	result["data"] = data;
+	return result;
 }
 
 Dictionary SolersResourceService::native_list_properties(const Dictionary &p_args) const {

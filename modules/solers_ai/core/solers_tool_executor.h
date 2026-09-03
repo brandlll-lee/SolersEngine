@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  solers_action_timeline.h                                              */
+/*  solers_tool_executor.h                                                */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -30,22 +30,58 @@
 
 #pragma once
 
-#include "core/object/object.h"
-#include "core/templates/vector.h"
-#include "core/variant/dictionary.h"
+#include "modules/solers_ai/core/solers_tool_registry.h"
 
-class SolersActionTimeline : public Object {
-	GDCLASS(SolersActionTimeline, Object);
+class SolersPermissionManager;
 
-	Vector<Dictionary> events;
-	int64_t next_event_id = 1;
+// Drives one tool call from validated input to one terminal receipt. Hosts
+// retain ordering policy; this object owns only the lifecycle of its slot.
+class SolersToolExecutor {
+public:
+	enum State {
+		STATE_IDLE,
+		STATE_EXECUTING,
+		STATE_AWAITING_APPROVAL,
+		STATE_CONTINUING,
+		STATE_TERMINAL,
+	};
 
-protected:
-	static void _bind_methods();
+private:
+	SolersToolRegistry *registry = nullptr;
+	SolersPermissionManager *permission_manager = nullptr;
+	State state = STATE_IDLE;
+	StringName tool_name;
+	Dictionary arguments;
+	Dictionary continuation_arguments;
+	SolersToolContext context;
+	SolersPreparedToolCall prepared_call;
+	bool has_prepared_call = false;
+	int approval_id = 0;
+	uint64_t deadline_msec = 0;
+	SafeFlag cancel_requested;
+	Dictionary terminal_result;
+
+	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
+	bool _prepare(const Dictionary &p_arguments);
+	void _accept_result(const Dictionary &p_result);
+	void _finish(const Dictionary &p_result);
+	void _reset();
 
 public:
-	int64_t record_event(const String &p_type, const Dictionary &p_payload);
-	Array list_actions(int p_limit = 100) const;
-	void clear();
-	int get_action_count() const;
+	void configure(SolersToolRegistry *p_registry, SolersPermissionManager *p_permission_manager);
+	Dictionary start(const StringName &p_name, const Dictionary &p_arguments, const SolersToolContext &p_context, uint64_t p_timeout_msec);
+	void poll();
+	void cancel(const String &p_code = "TOOL_CANCELLED", const String &p_message = "The tool call was cancelled.");
+
+	State get_state() const { return state; }
+	bool is_idle() const { return state == STATE_IDLE; }
+	bool is_active() const { return state != STATE_IDLE && state != STATE_TERMINAL; }
+	bool is_terminal() const { return state == STATE_TERMINAL; }
+	bool is_awaiting_approval() const { return state == STATE_AWAITING_APPROVAL; }
+	int get_approval_id() const { return approval_id; }
+	String get_call_id() const { return context.call_id; }
+	StringName get_tool_name() const { return tool_name; }
+	Dictionary take_result();
+
+	~SolersToolExecutor();
 };

@@ -33,120 +33,85 @@
 #include "core/error/error_macros.h"
 #include "core/object/object.h"
 #include "core/os/mutex.h"
-#include "core/os/thread.h"
 #include "core/templates/hash_map.h"
-#include "core/templates/hash_set.h"
-#include "core/templates/safe_refcount.h"
 #include "core/variant/array.h"
 #include "core/variant/dictionary.h"
 
 #include <functional>
 
-class SolersToolRegistry;
-struct SolersPreparedToolCall;
-class SolersActionTimeline;
+class SolersContextManager;
+class SolersLLMClient;
+class SolersLLMProtocolRegistry;
+class SolersModelsDev;
+class SolersPermissionManager;
 class SolersProjectObservation;
 class SolersRuntimeObservation;
 class SolersSceneObservation;
 class SolersSettingsService;
-class SolersPermissionManager;
-class SolersContextManager;
-class SolersModelsDev;
-class SolersLLMProtocolRegistry;
-class SolersLLMClient;
+class SolersToolExecutor;
+class SolersToolRegistry;
 
 class SolersAgentSession : public Object {
 	GDCLASS(SolersAgentSession, Object);
-	struct ToolThreadState;
-	struct PendingToolExecution;
 
 	enum Phase {
 		PHASE_STREAMING,
 		PHASE_COMPACTING,
 		PHASE_TOOLS,
-		PHASE_AWAITING_APPROVAL,
-		PHASE_TOOL_EXECUTING,
-		PHASE_WAITING,
 	};
 
 	static constexpr int MAX_LLM_RETRY_ATTEMPTS = 3;
+	static constexpr uint64_t TOOL_EXECUTION_TIMEOUT_MSEC = 600000;
 
 	SolersToolRegistry *tool_registry = nullptr;
 	SolersSettingsService *settings_service = nullptr;
-	SolersActionTimeline *action_timeline = nullptr;
 	SolersPermissionManager *permission_manager = nullptr;
 	SolersProjectObservation *project_observation = nullptr;
 	SolersRuntimeObservation *runtime_observation = nullptr;
 	SolersSceneObservation *scene_observation = nullptr;
 	std::function<bool()> runtime_stop_handler;
-	std::function<void(const String &, const String &)> background_asset_delivery_handler;
 
-	SolersLLMProtocolRegistry *protocol_registry = nullptr; // owned
-	SolersLLMClient *client = nullptr; // owned
-	SolersContextManager *context_manager = nullptr; // owned
-	SolersModelsDev *models_dev = nullptr; // data-driven model registry
+	SolersLLMProtocolRegistry *protocol_registry = nullptr;
+	SolersLLMClient *client = nullptr;
+	SolersContextManager *context_manager = nullptr;
+	SolersModelsDev *models_dev = nullptr;
 	bool owns_models_dev = true;
 
-	int context_window = 0; // Unknown until provider/model metadata says otherwise.
+	int context_window = 0;
 	int max_output_tokens = 8192;
-	Array messages; // active model projection; transcript is the full audit history
+	int cached_request_tool_tokens = 0;
+	Array messages;
 	mutable Array timeline_entries;
 	mutable HashMap<String, Dictionary> open_timeline_tools;
 	mutable int64_t transcript_event_sequence = 0;
 	String system_prompt;
-	String current_text; // assistant text accumulated this model turn
-	String current_reasoning; // reasoning/thinking text accumulated this model turn
-	Dictionary current_provider_metadata; // opaque wire state for provider continuation
-	Array pending_tool_calls; // tool calls collected this model turn
-	Dictionary streamed_tool_calls; // call id -> surfaced tool call state for this model step
+	String current_text;
+	String current_reasoning;
+	Dictionary current_provider_metadata;
+	Array pending_tool_calls;
+	Dictionary streamed_tool_calls;
 	String last_stop_reason;
 	Dictionary last_usage;
 	Dictionary last_request_usage;
-	Dictionary current_plan;
 	String last_outcome;
-	Dictionary active_provider; // { provider, model, base_url, api_key, features }
+	Dictionary active_provider;
 	bool running = false;
 	Phase phase = PHASE_STREAMING;
-	Array tool_queue; // provider-ordered tool calls for this step (MAIN_THREAD tools run serially)
-	Array failed_resource_accesses;
-	HashSet<StringName> active_tool_names;
-	HashSet<StringName> activated_model_tool_names;
-	uint64_t active_tool_revision = 0;
-	Array cached_request_tools;
-	int cached_request_tool_tokens = 0;
-	uint64_t cached_tool_catalog_revision = 0;
-	uint64_t cached_active_tool_revision = 0;
-	Array turn_attachments;
-	Array turn_mentions;
-	int tool_queue_index = 0; // next provider-ordered call to start
-	int tool_delivery_index = 0; // next provider-ordered terminal result to deliver
-	HashMap<int, Dictionary> completed_tool_results;
-	Vector<PendingToolExecution *> pending_tool_executions;
-	bool tool_started_announced = false;
+
+	Array tool_queue;
+	int tool_queue_index = 0;
+	String active_tool_call_id;
+	String active_tool_model_name;
+	String active_tool_canonical_name;
+	Dictionary active_tool_args;
+	SolersToolExecutor *tool_executor = nullptr;
 	uint64_t tool_queued_msec = 0;
 	uint64_t tool_started_msec = 0;
 	uint64_t tool_completed_msec = 0;
-	int deferred_queue_index = -1;
-	String deferred_call_id;
-	String deferred_model_name;
-	String deferred_canonical_name;
-	Dictionary deferred_args;
-	Dictionary deferred_initial_args;
-	Array deferred_resource_accesses;
-	Dictionary deferred_result;
-	SolersPreparedToolCall *deferred_prepared_call = nullptr;
-	bool deferred_done = false;
-	bool deferred_polling = false;
-	bool deferred_is_resume = false;
-	uint64_t tool_exec_token = 0;
-	bool tool_exec_requested = false;
+	bool approval_announced = false;
 	String last_progress_call_id;
 	uint64_t last_progress_msec = 0;
-	Thread tool_thread;
-	ToolThreadState *tool_thread_state = nullptr;
-	SafeFlag tool_cancel_requested;
-	Dictionary awaiting_call; // tool call parked on the approval gate
-	int awaiting_approval_id = 0; // pending request id we are waiting on
+
 	int turn_id = 0;
 	int retry_attempt = 0;
 	int model_request_index = 0;
@@ -156,7 +121,6 @@ class SolersAgentSession : public Object {
 	int64_t turn_output_tokens = 0;
 	int64_t turn_reasoning_tokens = 0;
 	int64_t turn_wire_body_bytes = 0;
-	int turn_successful_mutations = 0;
 	int request_transient_tokens = 0;
 	uint64_t retry_resume_msec = 0;
 	int text_delta_count = 0;
@@ -168,50 +132,38 @@ class SolersAgentSession : public Object {
 	Dictionary retry_profile;
 	int overflow_compaction_attempts = 0;
 	bool turn_runtime_owned = false;
-	SolersToolRegistry *session_tools_registry = nullptr;
 	String project_path;
 	String session_id;
-	Array pending_steering_messages; // user input queued mid-turn, injected before the next model dispatch
-	Array pending_background_assets;
-	HashSet<String> delivered_background_assets;
-	HashSet<String> waiting_background_asset_ids;
+	Array turn_attachments;
+	Array turn_mentions;
+	Array pending_steering_messages;
+
 	bool godot_log_audit_installed = false;
 	ErrorHandlerList godot_error_handler;
 	bool godot_log_turn_active = false;
 	mutable Mutex godot_log_mutex;
 	int godot_log_error_count = 0;
 	int godot_log_warning_count = 0;
-	uint64_t authored_revision = 0; // Session-local ordering only; native receipts carry authority.
 	uint64_t runtime_observation_cursor = 0;
-	// Aggregated by (severity, message) at ingestion: a repeated
-	// engine error is one entry with a count, so a per-frame error loop can
-	// never flood the transcript or the model boundary.
 	Array pending_godot_diagnostics;
-	HashMap<String, int> pending_godot_diagnostic_index; // group key -> index into pending_godot_diagnostics
+	HashMap<String, int> pending_godot_diagnostic_index;
 	int pending_godot_diagnostics_overflow = 0;
-	bool background_resume_suppressed = false;
 
 	void _reset_session_derived_state();
 	String _default_system_prompt() const;
-	// Fresh engine facts for one request, carried as the final projected user
-	// message (origin solers_state) so the system prompt stays byte-stable
-	// and provider prompt caching keeps its prefix hits.
 	Dictionary _environment_context_message();
 	String _make_session_id() const;
 	Dictionary _read_transcript_state(const String &p_project_path, const String &p_session_id) const;
 	void _stamp_transcript_event(Dictionary &r_event) const;
 	int64_t _write_transcript_event(const String &p_type, const Dictionary &p_payload = Dictionary()) const;
 	Error _write_transcript_event_durable(const String &p_type, const Dictionary &p_payload, int64_t &r_event_id) const;
-	void _write_prepared_journal_event(SolersPreparedToolCall *p_call) const;
 	void _ensure_godot_log_audit(bool p_turn_active);
 	void _release_godot_log_audit();
 	static void _godot_error_callback(void *p_self, const char *p_function, const char *p_file, int p_line, const char *p_error, const char *p_message, bool p_editor_notify, ErrorHandlerType p_type);
 	void _on_godot_error(const String &p_message, ErrorHandlerType p_type, int64_t p_source_thread, const String &p_function, const String &p_file, int p_line);
 	Dictionary _take_godot_diagnostics();
+
 	Array _collect_tools();
-	Array _activate_tools(const Array &p_names);
-	void _restore_active_tools();
-	void _load_active_tools(const Array &p_model_names);
 	bool _refresh_active_model_limits();
 	int _active_model_input_support(const String &p_modality) const;
 	Dictionary _build_request(const Array &p_messages, const String &p_request_system_prompt, const Array &p_tools) const;
@@ -231,32 +183,19 @@ class SolersAgentSession : public Object {
 	Array _attachments_for_ids(const Array &p_ids) const;
 	void _on_model_turn_complete();
 	void _finish_turn(const String &p_outcome, const String &p_message, const Dictionary &p_error = Dictionary());
+
 	void _poll_tool_queue();
-	void _poll_awaiting_approval();
 	void _poll_tool_executing();
-	void _schedule_tool_execution(int p_queue_index, const String &p_id, const String &p_model_name, const String &p_canonical_name, const Dictionary &p_args, bool p_is_resume);
-	void _park_pending_tool(const Dictionary &p_poll_args);
-	bool _resume_ready_pending_tool();
-	bool _conflicts_with_pending(const Array &p_accesses) const;
-	void _queue_tool_result(int p_queue_index, const String &p_id, const String &p_model_name, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result, uint64_t p_started_msec);
-	bool _flush_tool_results();
-	void _clear_pending_tools();
+	void _start_tool_execution(const Dictionary &p_call, const Dictionary &p_args);
+	void _finish_active_tool(const Dictionary &p_result);
 	void _cancel_undelivered_tools();
-	void _execute_deferred_tool(uint64_t p_token);
-	static void _tool_thread_func(void *p_userdata);
-	bool _collect_tool_thread_result(bool p_wait);
-	void _deliver_tool_result(const String &p_id, const String &p_model_name, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result);
-	bool _is_awaiting_approval_result(const Dictionary &p_result) const;
-	void _register_session_tools();
-	Dictionary _handle_update_plan(const Dictionary &p_args);
-	bool _flush_pending_steering();
-	bool _append_background_asset_deltas(bool p_waited_only);
-	void _resume_next_background_asset();
-	int64_t _write_transcript_message(const String &p_role, const String &p_content, const Array &p_mentions = Array(), const Array &p_tool_calls = Array(), const String &p_reasoning = String(), const Array &p_attachments = Array(), int64_t p_event_id = 0) const;
-	void _write_transcript_tool(const String &p_call_id, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result, const String &p_delivered_content, const Array &p_added_tool_names) const;
-	void _write_transcript_plan() const;
-	int64_t _write_transcript_compaction(const String &p_phase, const Dictionary &p_payload) const;
+	void _deliver_tool_result(const String &p_id, const String &p_model_name, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result, uint64_t p_started_msec);
 	Dictionary _tool_denied_result(const String &p_code, const String &p_message) const;
+	bool _flush_pending_steering();
+
+	int64_t _write_transcript_message(const String &p_role, const String &p_content, const Array &p_mentions = Array(), const Array &p_tool_calls = Array(), const String &p_reasoning = String(), const Array &p_attachments = Array(), int64_t p_event_id = 0) const;
+	void _write_transcript_tool(const String &p_call_id, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result, const String &p_delivered_content, const Array &p_added_tool_names = Array()) const;
+	int64_t _write_transcript_compaction(const String &p_phase, const Dictionary &p_payload) const;
 	void _record(const String &p_event, const Dictionary &p_payload) const;
 	Dictionary _ok(const Variant &p_data) const;
 	Dictionary _error(const String &p_code, const String &p_message) const;
@@ -266,21 +205,16 @@ protected:
 
 public:
 	void set_tool_registry(SolersToolRegistry *p_tool_registry);
+	SolersToolExecutor *get_tool_executor() const { return tool_executor; }
 	void set_settings_service(SolersSettingsService *p_settings_service) { settings_service = p_settings_service; }
 	void set_models_dev(SolersModelsDev *p_models_dev, bool p_owned = false);
-	void set_action_timeline(SolersActionTimeline *p_action_timeline) { action_timeline = p_action_timeline; }
-	void set_permission_manager(SolersPermissionManager *p_permission_manager) { permission_manager = p_permission_manager; }
+	void set_permission_manager(SolersPermissionManager *p_permission_manager);
 	void set_observations(SolersProjectObservation *p_project, SolersSceneObservation *p_scene, SolersRuntimeObservation *p_runtime);
 	void set_runtime_stop_handler(std::function<bool()> p_handler) { runtime_stop_handler = std::move(p_handler); }
-	void set_background_asset_delivery_handler(std::function<void(const String &, const String &)> p_handler) { background_asset_delivery_handler = std::move(p_handler); }
 
-	static Dictionary validate_plan(const Dictionary &p_args);
-	Dictionary start_turn(const Dictionary &p_args); // { prompt: String }
+	Dictionary start_turn(const Dictionary &p_args);
 	Dictionary preview_rewind_to_event(int64_t p_event_id) const;
 	Dictionary rewind_to_event(int64_t p_event_id);
-	// Steer the running turn: the message is queued and joins the
-	// conversation after the current tool batch, before the next model
-	// dispatch. Fails with AGENT_IDLE when no turn is running.
 	Dictionary queue_user_message(const Dictionary &p_args);
 	void poll();
 	void shutdown();
@@ -288,16 +222,11 @@ public:
 	void reset_conversation();
 	void set_project_path(const String &p_project_path);
 	void set_session(const String &p_project_path, const String &p_session_id);
-	bool enqueue_background_asset(const Dictionary &p_manifest);
-	void resume_background_assets();
-	bool is_waiting_for_background_assets() const { return running && phase == PHASE_WAITING && !waiting_background_asset_ids.is_empty(); }
 	Array get_messages() const;
 	Array get_timeline_entries() const { return timeline_entries; }
-	Dictionary get_plan() const { return current_plan.duplicate(true); }
 	Dictionary get_status() const;
 	bool is_running() const { return running; }
-	bool is_executing_tool() const { return running && phase == PHASE_TOOL_EXECUTING; }
-	bool is_admitting_tool_calls() const;
+	bool is_executing_tool() const;
 
 	SolersAgentSession();
 	~SolersAgentSession();

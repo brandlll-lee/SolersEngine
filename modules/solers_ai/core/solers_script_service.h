@@ -37,8 +37,8 @@
 
 #include <functional>
 
-class SolersActionTimeline;
 class SolersScriptContext;
+struct SolersToolContext;
 
 struct SolersScriptAuthority {
 	StringName target_argument;
@@ -65,12 +65,16 @@ class SolersScriptService : public Object {
 	};
 
 	static HashMap<StringName, SolersScriptAuthority> authorities;
-	SolersActionTimeline *action_timeline = nullptr;
 	Error project_settings_save_error = OK;
 	HashMap<String, ScriptTask> script_tasks;
 
 	Dictionary _ok(const Variant &p_data) const;
 	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
+	Dictionary _write_file(const Dictionary &p_args, const SolersToolContext *p_context);
+	Dictionary _patch_file(const Dictionary &p_args, const SolersToolContext *p_context);
+	Dictionary _remove_project_path(const Dictionary &p_args, const SolersToolContext *p_context);
+	Dictionary _edit_path(const Dictionary &p_args, const SolersToolContext *p_context);
+	Dictionary _edit_project(const Dictionary &p_args, const SolersToolContext *p_context);
 	Dictionary _validate_source(const String &p_path, const String &p_source) const;
 	Dictionary _read_json_file(const String &p_path) const;
 	void _write_task_result(const Dictionary &p_request, const Dictionary &p_result) const;
@@ -84,14 +88,20 @@ protected:
 public:
 	static void register_authority(const StringName &p_name, const SolersScriptAuthority &p_authority);
 	static void clear_authorities();
-	void set_action_timeline(SolersActionTimeline *p_action_timeline);
 
 	Dictionary write_file(const Dictionary &p_args);
+	Dictionary write_file_with_context(const Dictionary &p_args, const SolersToolContext &p_context);
 	Dictionary patch_file(const Dictionary &p_args);
+	Dictionary patch_file_with_context(const Dictionary &p_args, const SolersToolContext &p_context);
+	Dictionary remove_project_path(const Dictionary &p_args);
+	Dictionary remove_project_path_with_context(const Dictionary &p_args, const SolersToolContext &p_context);
+	Dictionary edit_path(const Dictionary &p_args);
+	Dictionary edit_path_with_context(const Dictionary &p_args, const SolersToolContext &p_context);
 	Dictionary edit_project(const Dictionary &p_args);
+	Dictionary edit_project_with_context(const Dictionary &p_args, const SolersToolContext &p_context);
 	Dictionary edit_script(const Dictionary &p_args);
 	Dictionary validate_script(const Dictionary &p_args) const;
-	Dictionary start_authority_script(const StringName &p_authority, const Dictionary &p_args, const String &p_call_id);
+	Dictionary start_authority_script(const StringName &p_authority, const Dictionary &p_args, const String &p_call_id, const SolersToolContext *p_context = nullptr);
 	Dictionary poll_authority_script(const Dictionary &p_args);
 	bool is_authority_script_ready(const Dictionary &p_args) const;
 	void complete_authority_script(const Dictionary &p_args);

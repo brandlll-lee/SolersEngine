@@ -45,6 +45,8 @@ String solers_property_suggestions(Object *p_object, const String &p_property);
 String solers_class_suggestions(const String &p_class_name);
 String solers_file_suggestions(const String &p_res_path);
 
+struct SolersToolContext;
+
 class SolersResourceService : public Object {
 	GDCLASS(SolersResourceService, Object);
 
@@ -55,8 +57,8 @@ class SolersResourceService : public Object {
 	String _export_filter_to_string(int p_filter) const;
 	String _script_export_mode_to_string(int p_mode) const;
 	String _export_message_type_to_string(int p_type) const;
-	Dictionary _create_resource(const Dictionary &p_args) const;
-	Dictionary _set_resource_properties(const Dictionary &p_args) const;
+	Dictionary _create_resource(const Dictionary &p_args, const SolersToolContext *p_context) const;
+	Dictionary _set_resource_properties(const Dictionary &p_args, const SolersToolContext *p_context) const;
 
 protected:
 	static void _bind_methods();
@@ -64,7 +66,7 @@ protected:
 public:
 	Dictionary get_resource_info(const Dictionary &p_args) const;
 	Dictionary inspect_resource(const Dictionary &p_args) const;
-	Dictionary edit_resource(const Dictionary &p_args) const;
+	Dictionary edit_resource(const Dictionary &p_args, const SolersToolContext *p_context = nullptr) const;
 	Dictionary native_list_properties(const Dictionary &p_args) const;
 	Dictionary native_get(const Dictionary &p_args) const;
 	Dictionary list_export_presets(const Dictionary &p_args) const;

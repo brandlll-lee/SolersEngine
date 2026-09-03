@@ -38,6 +38,7 @@
 
 class SceneDebuggerTree;
 class ScriptEditorDebugger;
+struct SolersToolContext;
 
 class SolersRuntimeObservation : public Object {
 	GDCLASS(SolersRuntimeObservation, Object);
@@ -86,7 +87,7 @@ public:
 	bool has_runtime_query() const { return !runtime_query.is_empty(); }
 	void clear_runtime_control_result();
 	Dictionary get_runtime_control_result(const String &p_call_id) const;
-	Dictionary start_runtime_script(const Dictionary &p_args, const String &p_call_id);
+	Dictionary start_runtime_script(const Dictionary &p_args, const String &p_call_id, const SolersToolContext *p_context = nullptr);
 	Dictionary poll_runtime_script(const Dictionary &p_args);
 	bool is_runtime_script_ready(const Dictionary &p_args) const;
 	void clear_runtime_script(const String &p_call_id);

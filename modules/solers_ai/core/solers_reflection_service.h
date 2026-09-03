@@ -37,13 +37,11 @@
 
 class Node;
 class Node3D;
-class SolersActionTimeline;
 struct MethodInfo;
+struct SolersToolContext;
 
 class SolersReflectionService : public Object {
 	GDCLASS(SolersReflectionService, Object);
-
-	SolersActionTimeline *action_timeline = nullptr;
 
 	Dictionary _ok(const Variant &p_data) const;
 	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
@@ -70,20 +68,21 @@ protected:
 	static void _bind_methods();
 
 public:
-	void set_action_timeline(SolersActionTimeline *p_action_timeline) { action_timeline = p_action_timeline; }
-
 	Dictionary search_classes(const Dictionary &p_args);
 
 	Dictionary introspect_class(const Dictionary &p_args);
 
+	Dictionary get_scene_state() const;
 	Dictionary inspect_nodes(const Dictionary &p_args);
-	Dictionary create_node(const Dictionary &p_args);
-	Dictionary instantiate_scene(const Dictionary &p_args);
-	Dictionary update_node(const Dictionary &p_args);
-	Dictionary reparent_node(const Dictionary &p_args);
-	Dictionary connect_signal(const Dictionary &p_args);
-	Dictionary attach_script(const Dictionary &p_args);
-	Dictionary remove_node(const Dictionary &p_args);
+	Dictionary edit_scene(const Dictionary &p_args, const SolersToolContext *p_context = nullptr);
+	Dictionary create_node(const Dictionary &p_args, bool p_commit = true);
+	Dictionary instantiate_scene(const Dictionary &p_args, bool p_commit = true);
+	Dictionary update_node(const Dictionary &p_args, bool p_commit = true);
+	Dictionary reparent_node(const Dictionary &p_args, bool p_commit = true);
+	Dictionary connect_signal(const Dictionary &p_args, bool p_commit = true);
+	Dictionary attach_script(const Dictionary &p_args, bool p_commit = true);
+	Dictionary remove_node(const Dictionary &p_args, bool p_commit = true);
 	Dictionary measure_spatial_relations(const Dictionary &p_args) const;
 	Dictionary open_scene(const Dictionary &p_args);
+	Dictionary open_scene_with_context(const Dictionary &p_args, const SolersToolContext *p_context);
 };

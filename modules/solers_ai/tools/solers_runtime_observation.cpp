@@ -29,6 +29,7 @@
 /**************************************************************************/
 
 #include "modules/solers_ai/core/solers_runtime_observation.h"
+#include "modules/solers_ai/core/solers_tool.h"
 
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
@@ -743,7 +744,7 @@ Dictionary SolersRuntimeObservation::get_runtime_control_result(const String &p_
 	return runtime_control_result.duplicate(true);
 }
 
-Dictionary SolersRuntimeObservation::start_runtime_script(const Dictionary &p_args, const String &p_call_id) {
+Dictionary SolersRuntimeObservation::start_runtime_script(const Dictionary &p_args, const String &p_call_id, const SolersToolContext *p_context) {
 	_bind_runtime_debugger();
 	EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
 	ScriptEditorDebugger *debugger = debugger_node ? debugger_node->get_current_debugger() : nullptr;
@@ -756,6 +757,15 @@ Dictionary SolersRuntimeObservation::start_runtime_script(const Dictionary &p_ar
 	}
 	if (!runtime_script.is_empty()) {
 		return Dictionary({ { "ok", false }, { "error", Dictionary({ { "code", "RUNTIME_SCRIPT_BUSY" }, { "message", "Wait for the active runtime script to finish." }, { "recoverable", true } }) } });
+	}
+	if (p_context) {
+		const Dictionary denied = p_context->require_permission(SolersPermissionManager::PERMISSION_RUN_PROJECT, p_args);
+		if (!denied.is_empty()) {
+			return denied;
+		}
+		if (epoch == 0 || epoch != runtime_epoch || !debugger->is_session_active()) {
+			return Dictionary({ { "ok", false }, { "error", Dictionary({ { "code", "STALE_RUNTIME_EPOCH" }, { "message", "The runtime changed while the script was waiting for approval." }, { "recoverable", true } }) } });
+		}
 	}
 	const int timeout_msec = CLAMP((int)p_args.get("timeout_msec", 30000), 1000, 600000);
 	runtime_script["call_id"] = p_call_id;

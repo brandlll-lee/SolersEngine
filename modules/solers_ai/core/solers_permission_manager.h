@@ -90,6 +90,7 @@ public:
 	int get_pending_request_count() const;
 	bool approve_request(int p_request_id);
 	bool reject_request(int p_request_id);
+	bool cancel_request(int p_request_id);
 	bool consume_approval(int p_request_id, const StringName &p_tool_name);
 	RequestDecision get_request_decision(int p_request_id) const;
 

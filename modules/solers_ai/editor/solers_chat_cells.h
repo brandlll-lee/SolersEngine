@@ -188,10 +188,6 @@ public:
 	SolersThinkingCell();
 };
 
-// Plan snapshots are rendered by SolersPlanCapsule above the composer, not as
-// chat timeline cells. Keep a pure formatter for tests / audit text.
-String solers_format_plan_text(const String &p_explanation, const Array &p_plan);
-
 // One tool invocation, updated in place across its lifecycle. Its tool
 // definition supplies the verb and subject; the cell only renders that data.
 class SolersToolCell : public Control {

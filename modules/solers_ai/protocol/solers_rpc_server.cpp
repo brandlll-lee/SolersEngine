@@ -97,7 +97,16 @@ void SolersRpcServer::_process_line(Client &r_client, const String &p_line) {
 
 	Dictionary request = json.get_data();
 	const Variant id = request.get("id", Variant());
-	Dictionary params = request.get("params", Dictionary());
+	const Variant params_value = request.get("params", Dictionary());
+	if (params_value.get_type() != Variant::DICTIONARY) {
+		Dictionary response;
+		response["jsonrpc"] = "2.0";
+		response["id"] = id;
+		response["error"] = Dictionary({ { "code", -32602 }, { "message", "JSON-RPC params must be an object." } });
+		_send_response(r_client.peer, response);
+		return;
+	}
+	Dictionary params = params_value;
 
 	if (!r_client.authenticated) {
 		const String token = params.get("sessionToken", String());
@@ -117,6 +126,10 @@ void SolersRpcServer::_process_line(Client &r_client, const String &p_line) {
 		}
 		r_client.authenticated = true;
 	}
+	request["params"] = params.duplicate(true);
+	Dictionary request_params = request["params"];
+	request_params.erase("sessionToken");
+	request["params"] = request_params;
 
 	if (!mcp_adapter) {
 		Dictionary response;
@@ -130,11 +143,19 @@ void SolersRpcServer::_process_line(Client &r_client, const String &p_line) {
 		return;
 	}
 
-	_send_response(r_client.peer, mcp_adapter->handle_request(request));
+	const Dictionary dispatch = mcp_adapter->begin_request(request);
+	if ((bool)dispatch.get("deferred", false)) {
+		r_client.pending_request_token = dispatch.get("request_token", 0);
+		return;
+	}
+	_send_response(r_client.peer, dispatch.get("response", Dictionary()));
 }
 
 void SolersRpcServer::_drop_client(int p_index) {
 	ERR_FAIL_INDEX(p_index, (int)clients.size());
+	if (mcp_adapter && clients[p_index].pending_request_token > 0) {
+		mcp_adapter->cancel_request(clients[p_index].pending_request_token);
+	}
 	if (clients[p_index].peer.is_valid()) {
 		clients[p_index].peer->disconnect_from_host();
 	}
@@ -195,6 +216,9 @@ void SolersRpcServer::poll() {
 	if (!running || server.is_null()) {
 		return;
 	}
+	if (mcp_adapter) {
+		mcp_adapter->poll();
+	}
 
 	while ((int)clients.size() < max_clients) {
 		Ref<StreamPeerTCP> peer = server->take_connection();
@@ -217,6 +241,28 @@ void SolersRpcServer::poll() {
 		client.peer->poll();
 		if (client.peer->get_status() != StreamPeerTCP::STATUS_CONNECTED) {
 			_drop_client(i);
+			continue;
+		}
+		if (client.pending_request_token > 0) {
+			const Dictionary response = mcp_adapter ? mcp_adapter->take_response(client.pending_request_token) : Dictionary();
+			if (response.is_empty()) {
+				continue;
+			}
+			_send_response(client.peer, response);
+			client.pending_request_token = 0;
+		}
+		while (client.pending_request_token == 0) {
+			const int newline = client.buffer.find("\n");
+			if (newline < 0) {
+				break;
+			}
+			const String line = client.buffer.substr(0, newline).strip_edges();
+			client.buffer = client.buffer.substr(newline + 1);
+			if (!line.is_empty()) {
+				_process_line(client, line);
+			}
+		}
+		if (client.pending_request_token > 0) {
 			continue;
 		}
 
@@ -248,7 +294,7 @@ void SolersRpcServer::poll() {
 			if (!line.is_empty()) {
 				_process_line(client, line);
 			}
-			if (client.peer.is_null() || client.peer->get_status() != StreamPeerTCP::STATUS_CONNECTED) {
+			if (client.pending_request_token > 0 || client.peer.is_null() || client.peer->get_status() != StreamPeerTCP::STATUS_CONNECTED) {
 				break;
 			}
 		}

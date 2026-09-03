@@ -28,87 +28,76 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
+#include "core/io/dir_access.h"
+#include "core/io/file_access.h"
+#include "core/io/json.h"
+
 #include "modules/solers_ai/core/solers_builtin_skills.h"
-#include "modules/solers_ai/core/solers_context_manager.h"
+#include "modules/solers_ai/core/solers_path_utils.h"
 #include "modules/solers_ai/core/solers_tool_registry.h"
 
 void SolersToolRegistry::_register_builtin_tools() {
-	_add_observe_exposed("skill.read", "Read one built-in Solers skill by exact name. Skills teach how to use existing native tools; they do not execute work.", R"({"type":"object","properties":{"name":{"type":"string","description":"Built-in skill name from the system skill catalog."}},"required":["name"]})", SolersToolExposure::MODEL, [this](const SolersToolContext &, const Dictionary &a) {
-				const String name = String(a.get("name", String())).strip_edges();
-				if (name.is_empty()) {
-					return _error("INVALID_ARGUMENT", "name is required.");
-				}
-				SolersBuiltinSkillView skill;
-				if (!SolersBuiltinSkills::find_by_name(name, skill)) {
-					return _error("UNKNOWN_SKILL", vformat("Unknown built-in skill: %s", name));
-				}
-				Dictionary data;
-				data["name"] = skill.name;
-				data["description"] = skill.description;
-				data["content"] = skill.content;
-				return _ok(data); }, {}, {}, {}, SolersToolUiKind::READ, SolersToolExecution::MAIN_THREAD, {}, SolersOperationDomain::EDITOR, SolersOperationMode::QUERY, PackedStringArray({ "/name" }));
-	_add_observe_exposed("tool.search", "Discover optional tools from the live Registry by capability. Returned tools become available on the next model request; universal model tools remain usable without discovery.", R"({"type":"object","properties":{"query":{"type":"string","minLength":1,"description":"Capability, operation, target, or tool-name text."},"authority":{"type":"string","enum":["editor","runtime","pipeline"]},"mode":{"type":"string","enum":["query","apply"]},"cursor":{"type":"integer","minimum":0}},"required":["query"],"additionalProperties":false})", SolersToolExposure::MODEL, [this](const SolersToolContext &ctx, const Dictionary &a) {
-				const String query = String(a.get("query", String())).strip_edges();
-				const String authority = a.get("authority", String());
-				const String mode = a.get("mode", String());
-				const int cursor = a.get("cursor", 0);
-				int matched = 0;
-				int result_tokens = 0;
-				Array matches;
-				Array added_tools;
-				bool truncated = false;
-				for (const Variant &value : tool_catalog) {
-					const Dictionary definition = value;
-					if (definition.get("exposure", String()) != "deferred" ||
-							(!authority.is_empty() && definition.get("authority", String()) != authority) ||
-							(!mode.is_empty() && definition.get("mode", String()) != mode)) {
-						continue;
-					}
-					const String text = vformat("%s %s %s %s %s", definition.get("name", String()), definition.get("description", String()),
-							definition.get("authority", String()), definition.get("mode", String()), definition.get("target_kind", String()));
-					if (text.findn(query) < 0 || matched++ < cursor) {
-						continue;
-					}
-					Dictionary item;
-					for (const char *key : { "name", "description", "authority", "mode", "target_kind" }) {
-						if (definition.has(key)) {
-							item[key] = definition[key];
-						}
-					}
-					if (!SolersContextManager::append_bounded(matches, item, INT32_MAX, ctx.result_token_budget, result_tokens)) {
-						truncated = true;
-						break;
-					}
-					added_tools.push_back(definition.get("name", String()));
-				}
-				Dictionary data;
-				data["tools"] = matches;
-				data["count"] = matches.size();
-				data["cursor"] = cursor;
-				data["truncated"] = truncated;
-				if (truncated) {
-					data["next_cursor"] = cursor + matches.size();
-				}
-				return _with_added_tools(_ok(data), added_tools); }, {}, {}, {}, SolersToolUiKind::SEARCH, SolersToolExecution::MAIN_THREAD, {}, SolersOperationDomain::EDITOR, SolersOperationMode::QUERY, PackedStringArray({ "/query" }));
+	_add("read", "Read one UTF-8 project file or a registered built-in skill. Use skill://<name> for skills.", R"({"type":"object","properties":{"path":{"type":"string","minLength":1},"line_start":{"type":"integer","minimum":1},"line_count":{"type":"integer","minimum":1,"maximum":2000}},"required":["path"],"additionalProperties":false})", [this](const SolersToolContext &ctx, const Dictionary &a) {
+		const String requested_path = String(a.get("path", String())).strip_edges();
+		String content;
+		String description;
+		String display_name;
+		if (requested_path.begins_with("skill://")) {
+			SolersBuiltinSkillView skill;
+			if (!SolersBuiltinSkills::find_by_name(requested_path.trim_prefix("skill://"), skill)) {
+				return _error("UNKNOWN_SKILL", vformat("Unknown built-in skill: %s", requested_path.trim_prefix("skill://")));
+			}
+			content = skill.content;
+			description = skill.description;
+			display_name = skill.name;
+		} else {
+			const SolersPath::NormalizedPath normalized = SolersPath::normalize_project_path(requested_path, true);
+			if (!normalized.valid) {
+				return _error("INVALID_PATH", normalized.error);
+			}
+			if (DirAccess::exists(normalized.value)) {
+				return _error("PATH_IS_DIRECTORY", vformat("Path is a directory: %s", normalized.value));
+			}
+			Error read_error = OK;
+			content = FileAccess::get_file_as_string(normalized.value, &read_error);
+			if (read_error != OK) {
+				return _error("FILE_READ_FAILED", vformat("Failed to read '%s' (error %d).", normalized.value, read_error));
+			}
+			display_name = normalized.value;
+		}
+
+		const PackedStringArray lines = content.split("\n", true);
+		const int first = MIN(MAX((int)a.get("line_start", 1) - 1, 0), lines.size());
+		const int line_count = MIN((int)a.get("line_count", 400), 2000);
+		String selected;
+		for (int i = first; i < MIN(first + line_count, lines.size()); i++) {
+			if (!selected.is_empty()) {
+				selected += "\n";
+			}
+			selected += lines[i];
+		}
+		selected = SolersContextManager::clamp_to_tokens(selected, ctx.result_token_budget);
+		Dictionary data;
+		data["path"] = requested_path;
+		data["name"] = display_name;
+		data["description"] = description;
+		data["content"] = selected;
+		data["line_start"] = first + 1;
+		data["line_end"] = MIN(first + line_count, lines.size());
+		data["eof"] = first + line_count >= lines.size();
+		if (!requested_path.begins_with("skill://")) {
+			data["sha256"] = FileAccess::get_sha256(SolersPath::normalize_project_path(requested_path, true).value);
+		}
+		return _ok(data);
+	});
 }
 
 void SolersToolRegistry::register_default_tools() {
 	_clear_tools();
-	_add("history.revert", "Revert the latest reversible Agent mutation when its native UndoRedo version or file hashes still match.", R"({"type":"object","properties":{"reversal_id":{"type":"string","minLength":1}},"required":["reversal_id"],"additionalProperties":false})", SolersPermissionManager::PERMISSION_EDIT_SCENE, SolersToolMutationDomain::IRREVERSIBLE, Vector<String>(), SolersToolExposure::DEFERRED, [this](const SolersToolContext &ctx, const Dictionary &a) { return _revert_latest(ctx, a); }, SolersToolExecution::MAIN_THREAD, [](const Dictionary &) {
-			Array accesses;
-			Dictionary access;
-			access["mode"] = "write";
-			access["key"] = "*";
-			accesses.push_back(access);
-			return accesses; }, {}, {}, {}, [this](const Dictionary &a) {
-			const Dictionary *record = _find_reversal(String(a.get("reversal_id", String())));
-			return record && _mutation_record_has_domain(*record, "files") ? SolersPermissionManager::PERMISSION_EDIT_FILES : SolersPermissionManager::PERMISSION_EDIT_SCENE; }, {}, SolersToolUiKind::DEFAULT, {}, StringName(), SolersOperationDomain::EDITOR, SolersOperationMode::APPLY);
 	_register_builtin_tools();
-	_register_reflection_tools();
 	_register_observation_tools();
+	_register_reflection_tools();
 	_register_script_tools();
 	_register_runtime_tools();
-	_register_asset_tools();
-	_register_addon_tools();
 	_rebuild_tool_catalog();
 }

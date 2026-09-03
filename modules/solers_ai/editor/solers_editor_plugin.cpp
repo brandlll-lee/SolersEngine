@@ -174,6 +174,24 @@ SolersEditorPlugin::SolersEditorPlugin() {
 	dock->set_session_select_callback(callable_mp(this, &SolersEditorPlugin::_select_session));
 	dock->set_new_session_callback(callable_mp(this, &SolersEditorPlugin::_new_session));
 	runtime->bind_dock(dock);
+	const String rpc_enabled = OS::get_singleton()->get_environment("SOLERS_RPC_ENABLE").strip_edges().to_lower();
+	if (rpc_enabled == "1" || rpc_enabled == "true") {
+		Dictionary rpc_args;
+		const String port = OS::get_singleton()->get_environment("SOLERS_RPC_PORT").strip_edges();
+		if (port.is_valid_int()) {
+			rpc_args["port"] = CLAMP(port.to_int(), 0, 65535);
+		}
+		const String token = OS::get_singleton()->get_environment("SOLERS_RPC_SESSION_TOKEN");
+		if (token.is_empty()) {
+			ERR_PRINT("SOLERS_RPC_ENABLE requires SOLERS_RPC_SESSION_TOKEN.");
+		} else {
+			rpc_args["session_token"] = token;
+			const Dictionary started = runtime->start_rpc(rpc_args);
+			if (!(bool)started.get("ok", false)) {
+				ERR_PRINT(vformat("Solers RPC was explicitly enabled but could not start: %s", String(Dictionary(started.get("error", Dictionary())).get("message", String()))));
+			}
+		}
+	}
 	add_control_to_container(CONTAINER_EDITOR_SIDE_LEFT, dock);
 	agent_toggle = memnew(Button);
 	agent_toggle->set_name("SolersAgentToggle");

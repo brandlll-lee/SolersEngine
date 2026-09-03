@@ -176,39 +176,6 @@ public:
 	SolersSelectChip();
 };
 
-// Composer-adjacent plan chip: "Step N / M" capsule; hover reveals the todo list.
-class SolersPlanCapsule : public Control {
-	GDCLASS(SolersPlanCapsule, Control);
-
-	String explanation;
-	Array plan;
-	bool hovering = false;
-	bool detail_hovering = false;
-	PanelContainer *detail_panel = nullptr;
-	VBoxContainer *detail_list = nullptr;
-
-	void _rebuild_detail();
-	void _sync_detail_visibility();
-	int _current_step_index() const;
-	bool _has_open_work() const;
-	Size2 _chip_size() const;
-	void _on_detail_mouse(bool p_entered);
-
-protected:
-	void _notification(int p_what);
-	static void _bind_methods() {}
-
-public:
-	virtual Size2 get_minimum_size() const override;
-
-	void set_plan(const String &p_explanation, const Array &p_plan);
-	void clear_plan();
-	bool is_visible_for_plan() const { return _has_open_work(); }
-	Array get_plan() const { return plan.duplicate(true); }
-
-	SolersPlanCapsule();
-};
-
 // Self-drawn rounded surface (background + crisp hairline border + optional
 // soft shadow). The border is rendered with the "two stacked fills" technique
 // (opaque outer fill, inset background fill) so the corners stay perfectly

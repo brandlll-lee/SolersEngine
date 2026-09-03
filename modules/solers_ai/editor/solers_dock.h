@@ -52,14 +52,12 @@ class ScrollContainer;
 class TextEdit;
 class Texture2D;
 class VBoxContainer;
-class SolersActionTimeline;
 class SolersAgentSession;
 class SolersAssistantCell;
 class SolersGlyphButton;
 class SolersContextRing;
 class SolersPermissionManager;
 class SolersPMAIView;
-class SolersPlanCapsule;
 class SolersSceneObservation;
 class SolersSelectChip;
 class SolersSettingsService;
@@ -86,7 +84,6 @@ class SolersDock : public PanelContainer {
 	VBoxContainer *session_list = nullptr;
 	Ref<ButtonGroup> session_button_group;
 	MarginContainer *composer_inset = nullptr;
-	SolersPlanCapsule *plan_capsule = nullptr;
 	TextEdit *chat_input = nullptr;
 	SolersGlyphButton *session_button = nullptr;
 	SolersGlyphButton *add_context_button = nullptr;
@@ -151,7 +148,6 @@ class SolersDock : public PanelContainer {
 
 	SolersSceneObservation *scene_observation = nullptr;
 	SolersToolRegistry *tool_registry = nullptr;
-	SolersActionTimeline *action_timeline = nullptr;
 	SolersPermissionManager *permission_manager = nullptr;
 	SolersAgentSession *agent_session = nullptr;
 	SolersSettingsService *settings_service = nullptr;
@@ -208,8 +204,6 @@ class SolersDock : public PanelContainer {
 	void _on_agent_turn_completed(const Dictionary &p_result);
 	void _on_agent_turn_failed(const Dictionary &p_error);
 	void _on_agent_turn_retrying(int p_attempt, const String &p_message);
-	void _on_agent_turn_waiting(const Dictionary &p_waiting);
-	void _on_agent_plan_updated(const String &p_explanation, const Array &p_plan);
 	void _sync_approval_panel();
 	void _resolve_current_approval(bool p_approve, bool p_remember);
 	void _on_chat_input_gui_input(const Ref<InputEvent> &p_event);
@@ -254,7 +248,7 @@ protected:
 	void _notification(int p_what);
 
 public:
-	void set_services(SolersSceneObservation *p_scene_observation, SolersToolRegistry *p_tool_registry, SolersActionTimeline *p_action_timeline, SolersPermissionManager *p_permission_manager, SolersSettingsService *p_settings_service);
+	void set_services(SolersSceneObservation *p_scene_observation, SolersToolRegistry *p_tool_registry, SolersPermissionManager *p_permission_manager, SolersSettingsService *p_settings_service);
 	void make_visible();
 	void set_agent_session(SolersAgentSession *p_agent_session);
 	void start_new_chat();

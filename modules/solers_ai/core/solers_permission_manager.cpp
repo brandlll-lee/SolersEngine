@@ -44,6 +44,7 @@ void SolersPermissionManager::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_pending_request_count"), &SolersPermissionManager::get_pending_request_count);
 	ClassDB::bind_method(D_METHOD("approve_request", "request_id"), &SolersPermissionManager::approve_request);
 	ClassDB::bind_method(D_METHOD("reject_request", "request_id"), &SolersPermissionManager::reject_request);
+	ClassDB::bind_method(D_METHOD("cancel_request", "request_id"), &SolersPermissionManager::cancel_request);
 	ClassDB::bind_method(D_METHOD("consume_approval", "request_id", "tool_name"), &SolersPermissionManager::consume_approval);
 	ClassDB::bind_method(D_METHOD("get_request_decision", "request_id"), &SolersPermissionManager::get_request_decision);
 
@@ -171,6 +172,17 @@ bool SolersPermissionManager::reject_request(int p_request_id) {
 	approved_once_requests.erase(p_request_id);
 	pending_requests.remove_at(index);
 	return true;
+}
+
+bool SolersPermissionManager::cancel_request(int p_request_id) {
+	const int index = _find_pending_request_index(p_request_id);
+	if (index >= 0) {
+		pending_requests.remove_at(index);
+	}
+	const bool existed = index >= 0 || approved_once_requests.has(p_request_id) || rejected_request_ids.has(p_request_id);
+	approved_once_requests.erase(p_request_id);
+	rejected_request_ids.erase(p_request_id);
+	return existed;
 }
 
 bool SolersPermissionManager::consume_approval(int p_request_id, const StringName &p_tool_name) {

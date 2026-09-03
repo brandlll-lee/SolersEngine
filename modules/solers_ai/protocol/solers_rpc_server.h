@@ -46,6 +46,7 @@ class SolersRpcServer : public Object {
 		String buffer;
 		bool authenticated = false;
 		uint64_t connected_at_msec = 0;
+		int64_t pending_request_token = 0;
 	};
 
 	Ref<TCPServer> server;

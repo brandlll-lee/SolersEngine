@@ -44,7 +44,6 @@
 #include "editor/editor_undo_redo_manager.h"
 
 #include "modules/modules_enabled.gen.h"
-#include "modules/solers_ai/core/solers_action_timeline.h"
 #include "modules/solers_ai/core/solers_geometry_facts.h"
 #include "modules/solers_ai/core/solers_path_utils.h"
 #include "modules/solers_ai/core/solers_resource_service.h"
@@ -643,7 +642,7 @@ Dictionary SolersReflectionService::introspect_class(const Dictionary &p_args) {
 	return _ok(data);
 }
 
-Dictionary SolersReflectionService::update_node(const Dictionary &p_args) {
+Dictionary SolersReflectionService::update_node(const Dictionary &p_args, bool p_commit) {
 	const String node_path = p_args.get("node_path", ".");
 	const Variant properties_value = p_args.get("properties", Variant());
 	if (properties_value.get_type() != Variant::DICTIONARY || Dictionary(properties_value).is_empty()) {
@@ -662,8 +661,6 @@ Dictionary SolersReflectionService::update_node(const Dictionary &p_args) {
 		result["data"] = data;
 		return result;
 	}
-	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
-	ERR_FAIL_NULL_V(undo_redo, _error("UNDO_REDO_UNAVAILABLE", "EditorUndoRedoManager is not available.", false));
 	const Dictionary properties = properties_value;
 	Array changes;
 	for (const Variant *key = properties.next(nullptr); key; key = properties.next(key)) {
@@ -682,6 +679,11 @@ Dictionary SolersReflectionService::update_node(const Dictionary &p_args) {
 	if (changes.is_empty()) {
 		return _error("STATE_ALREADY_SATISFIED", "All requested properties already have the authoritative values.");
 	}
+	if (!p_commit) {
+		return _ok(Dictionary());
+	}
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	ERR_FAIL_NULL_V(undo_redo, _error("UNDO_REDO_UNAVAILABLE", "EditorUndoRedoManager is not available.", false));
 
 	undo_redo->create_action(vformat("Solers: Update %s", node->get_name()), UndoRedo::MERGE_DISABLE, node);
 	for (const Variant &item : changes) {
@@ -818,7 +820,97 @@ Dictionary SolersReflectionService::inspect_nodes(const Dictionary &p_args) {
 	return _ok(data);
 }
 
-Dictionary SolersReflectionService::create_node(const Dictionary &p_args) {
+Dictionary SolersReflectionService::edit_scene(const Dictionary &p_args, const SolersToolContext *p_context) {
+	const Dictionary expected = p_args.get("expected_state", Dictionary());
+	const Dictionary before = get_scene_state();
+	for (const char *field : { "has_root", "root_object_id", "scene_path", "history_id", "version" }) {
+		if (expected.has(field) && expected[field] != before.get(field, Variant())) {
+			Dictionary result = _error("STALE_SCENE_STATE", vformat("The live scene %s changed; inspect the scene again before editing.", field));
+			result["data"] = Dictionary({ { "expected", expected }, { "actual", before } });
+			return result;
+		}
+	}
+	const Array operations = p_args.get("operations", Array());
+	if (operations.is_empty()) {
+		return _error("INVALID_ARGUMENT", "operations must contain at least one scene edit.");
+	}
+	EditorUndoRedoManager *manager = EditorUndoRedoManager::get_singleton();
+	const int history_id = before.get("history_id", EditorUndoRedoManager::INVALID_HISTORY);
+	if (!manager || history_id == EditorUndoRedoManager::INVALID_HISTORY) {
+		return _error("UNDO_REDO_UNAVAILABLE", "The current edited scene has no UndoRedo history.", false);
+	}
+
+	auto dispatch = [this](const Dictionary &p_operation, bool p_commit) {
+		const String type = p_operation.get("type", String());
+		if (type == "create") {
+			return create_node(p_operation, p_commit);
+		}
+		if (type == "instantiate") {
+			return instantiate_scene(p_operation, p_commit);
+		}
+		if (type == "update") {
+			return update_node(p_operation, p_commit);
+		}
+		if (type == "reparent") {
+			return reparent_node(p_operation, p_commit);
+		}
+		if (type == "remove") {
+			return remove_node(p_operation, p_commit);
+		}
+		if (type == "connect_signal") {
+			return connect_signal(p_operation, p_commit);
+		}
+		if (type == "attach_script") {
+			return attach_script(p_operation, p_commit);
+		}
+		return _error("SCENE_OPERATION_UNKNOWN", vformat("Unknown scene edit operation: %s", type));
+	};
+
+	for (int i = 0; i < operations.size(); i++) {
+		const Dictionary validation = dispatch(operations[i], false);
+		if (!(bool)validation.get("ok", false)) {
+			Dictionary failure = validation.duplicate(true);
+			Dictionary error = failure.get("error", Dictionary());
+			error["operation_index"] = i;
+			failure["error"] = error;
+			failure["data"] = Dictionary({ { "state", before } });
+			return failure;
+		}
+	}
+
+	if (p_context) {
+		const Dictionary denied = p_context->require_permission(SolersPermissionManager::PERMISSION_EDIT_SCENE, p_args);
+		if (!denied.is_empty()) {
+			return denied;
+		}
+	}
+
+	manager->create_action_for_history("Solers: Scene Edit", history_id, UndoRedo::MERGE_DISABLE, true);
+	Array results;
+	for (int i = 0; i < operations.size(); i++) {
+		const Dictionary result = dispatch(operations[i], true);
+		if (!(bool)result.get("ok", false)) {
+			Dictionary failure = result.duplicate(true);
+			Dictionary error = failure.get("error", Dictionary());
+			error["operation_index"] = i;
+			failure["error"] = error;
+			failure["data"] = Dictionary({ { "completed_operations", results }, { "state", get_scene_state() } });
+			return failure;
+		}
+		results.push_back(result.get("data", Dictionary()));
+	}
+	manager->commit_action();
+
+	Dictionary data;
+	data["operations"] = results;
+	data["operation_count"] = results.size();
+	data["state_before"] = before;
+	data["state"] = get_scene_state();
+	data["authored_state_changed"] = true;
+	return _ok(data);
+}
+
+Dictionary SolersReflectionService::create_node(const Dictionary &p_args, bool p_commit) {
 	String parent_path = p_args.get("parent_path", String());
 	if (parent_path.is_empty()) {
 		parent_path = p_args.get("parent", ".");
@@ -865,6 +957,10 @@ Dictionary SolersReflectionService::create_node(const Dictionary &p_args) {
 	if (!_apply_initial_properties(node, properties, applied_properties, error)) {
 		memdelete(node);
 		return _error("INVALID_PROPERTY_VALUE", error);
+	}
+	if (!p_commit) {
+		memdelete(node);
+		return _ok(Dictionary());
 	}
 
 	EditorUndoRedoManager *undo_redo = editor_interface->get_editor_undo_redo();
@@ -922,7 +1018,7 @@ static bool _solers_scene_contains_path(Node *p_node, const String &p_scene_path
 	return false;
 }
 
-Dictionary SolersReflectionService::instantiate_scene(const Dictionary &p_args) {
+Dictionary SolersReflectionService::instantiate_scene(const Dictionary &p_args, bool p_commit) {
 	const SolersPath::NormalizedPath normalized_source = SolersPath::normalize_project_path(p_args.get("source_path", String()));
 	if (!normalized_source.valid) {
 		return _error("INVALID_RESOURCE_PATH", normalized_source.error);
@@ -982,6 +1078,10 @@ Dictionary SolersReflectionService::instantiate_scene(const Dictionary &p_args) 
 	if (scene.is_valid()) {
 		instance->set_scene_file_path(ProjectSettings::get_singleton()->localize_path(source_path));
 	}
+	if (!p_commit) {
+		memdelete(instance);
+		return _ok(Dictionary());
+	}
 
 	EditorUndoRedoManager *undo_redo = editor_interface->get_editor_undo_redo();
 	if (!undo_redo) {
@@ -1009,7 +1109,7 @@ Dictionary SolersReflectionService::instantiate_scene(const Dictionary &p_args) 
 	return _ok(data);
 }
 
-Dictionary SolersReflectionService::reparent_node(const Dictionary &p_args) {
+Dictionary SolersReflectionService::reparent_node(const Dictionary &p_args, bool p_commit) {
 	const String node_path = p_args.get("node_path", String());
 	String new_parent_path = p_args.get("new_parent_path", String());
 	if (new_parent_path.is_empty()) {
@@ -1035,6 +1135,9 @@ Dictionary SolersReflectionService::reparent_node(const Dictionary &p_args) {
 	}
 	if (node == new_parent || node->is_ancestor_of(new_parent)) {
 		return _error("INVALID_ARGUMENT", "Cannot reparent a node to itself or to one of its descendants.");
+	}
+	if (!p_commit) {
+		return _ok(Dictionary());
 	}
 
 	EditorInterface *editor_interface = EditorInterface::get_singleton();
@@ -1071,7 +1174,7 @@ Dictionary SolersReflectionService::reparent_node(const Dictionary &p_args) {
 	return _ok(data);
 }
 
-Dictionary SolersReflectionService::connect_signal(const Dictionary &p_args) {
+Dictionary SolersReflectionService::connect_signal(const Dictionary &p_args, bool p_commit) {
 	const String source_path = p_args.get("source_path", ".");
 	const String signal_name = p_args.get("signal", String());
 	const String target_path = p_args.get("target_path", ".");
@@ -1095,6 +1198,9 @@ Dictionary SolersReflectionService::connect_signal(const Dictionary &p_args) {
 	const Callable callable(target, StringName(method_name));
 	if (source->is_connected(signal_sn, callable)) {
 		return _error("SIGNAL_ALREADY_CONNECTED", "The requested signal connection already exists.");
+	}
+	if (!p_commit) {
+		return _ok(Dictionary());
 	}
 
 	EditorInterface *editor_interface = EditorInterface::get_singleton();
@@ -1120,7 +1226,7 @@ Dictionary SolersReflectionService::connect_signal(const Dictionary &p_args) {
 	return _ok(data);
 }
 
-Dictionary SolersReflectionService::attach_script(const Dictionary &p_args) {
+Dictionary SolersReflectionService::attach_script(const Dictionary &p_args, bool p_commit) {
 	const String node_path = p_args.get("node_path", ".");
 	const String script_path = p_args.get("script_path", String());
 	if (script_path.is_empty()) {
@@ -1146,6 +1252,9 @@ Dictionary SolersReflectionService::attach_script(const Dictionary &p_args) {
 	if (script.is_null()) {
 		return _error("SCRIPT_LOAD_FAILED", vformat("Unable to load script: %s", normalized_script_path));
 	}
+	if (!p_commit) {
+		return _ok(Dictionary());
+	}
 
 	EditorInterface *editor_interface = EditorInterface::get_singleton();
 	ERR_FAIL_NULL_V(editor_interface, _error("EDITOR_INTERFACE_UNAVAILABLE", "EditorInterface is not available.", false));
@@ -1167,7 +1276,7 @@ Dictionary SolersReflectionService::attach_script(const Dictionary &p_args) {
 	return _ok(data);
 }
 
-Dictionary SolersReflectionService::remove_node(const Dictionary &p_args) {
+Dictionary SolersReflectionService::remove_node(const Dictionary &p_args, bool p_commit) {
 	const String node_path = p_args.get("node_path", String());
 	if (node_path.is_empty() || node_path == ".") {
 		return _error("INVALID_ARGUMENT", "Refusing to remove the edited scene root.");
@@ -1181,6 +1290,9 @@ Dictionary SolersReflectionService::remove_node(const Dictionary &p_args) {
 	Node *parent = node->get_parent();
 	if (!parent) {
 		return _error("INVALID_ARGUMENT", "Node has no parent and cannot be removed safely.");
+	}
+	if (!p_commit) {
+		return _ok(Dictionary());
 	}
 
 	EditorInterface *editor_interface = EditorInterface::get_singleton();
@@ -1348,24 +1460,28 @@ static Ref<Material> _solers_resolved_material(MeshInstance3D *p_mesh_instance, 
 	return material;
 }
 
-static Dictionary _solers_scene_state_receipt(const String &p_path) {
+Dictionary SolersReflectionService::get_scene_state() const {
 	Dictionary data;
-	data["path"] = p_path;
-	data["authored_state_changed"] = true;
-	const int history_id = EditorNode::get_editor_data().get_current_edited_scene_history_id();
+	EditorNode *editor = EditorNode::get_singleton();
+	const bool has_scene_tab = editor && EditorNode::get_editor_data().get_edited_scene_count() > 0;
+	Node *root = has_scene_tab ? editor->get_edited_scene() : nullptr;
+	const int history_id = has_scene_tab ? EditorNode::get_editor_data().get_current_edited_scene_history_id() : EditorUndoRedoManager::INVALID_HISTORY;
+	data["has_root"] = root != nullptr;
 	data["history_id"] = history_id;
-	if (Node *root = EditorNode::get_singleton() ? EditorNode::get_singleton()->get_edited_scene() : nullptr) {
+	data["scene_path"] = root ? root->get_scene_file_path() : String();
+	if (root) {
 		data["root_object_id"] = solers_object_id_to_string(root->get_instance_id());
-		data["scene_path"] = root->get_scene_file_path();
 	}
 	EditorUndoRedoManager *manager = EditorUndoRedoManager::get_singleton();
-	if (manager && history_id != EditorUndoRedoManager::INVALID_HISTORY) {
-		data["version"] = (int64_t)manager->get_or_create_history(history_id).undo_redo->get_version();
-	}
+	data["version"] = manager && history_id != EditorUndoRedoManager::INVALID_HISTORY ? (int64_t)manager->get_or_create_history(history_id).undo_redo->get_version() : 0;
 	return data;
 }
 
 Dictionary SolersReflectionService::open_scene(const Dictionary &p_args) {
+	return open_scene_with_context(p_args, nullptr);
+}
+
+Dictionary SolersReflectionService::open_scene_with_context(const Dictionary &p_args, const SolersToolContext *p_context) {
 	EditorNode *editor = EditorNode::get_singleton();
 	if (!editor) {
 		return _error("EDITOR_UNAVAILABLE", "Editor is not available.", false);
@@ -1386,6 +1502,12 @@ Dictionary SolersReflectionService::open_scene(const Dictionary &p_args) {
 	if (editor->is_changing_scene()) {
 		return _error("SCENE_BUSY", "Editor is already changing scenes; retry shortly.", true);
 	}
+	if (p_context) {
+		const Dictionary denied = p_context->require_permission(SolersPermissionManager::PERMISSION_OBSERVE, p_args);
+		if (!denied.is_empty()) {
+			return denied;
+		}
+	}
 	const Error err = editor->open_scene(path, false, false, false);
 	if (err != OK) {
 		return _error("SCENE_OPEN_FAILED", vformat("Godot could not open %s (Error %d).", path, err), true);
@@ -1395,7 +1517,9 @@ Dictionary SolersReflectionService::open_scene(const Dictionary &p_args) {
 	if (!opened) {
 		return _error("SCENE_OPEN_POSTCONDITION_FAILED", "Godot did not make the requested scene state current.", true);
 	}
-	return _ok(_solers_scene_state_receipt(path));
+	Dictionary state = get_scene_state();
+	state["path"] = path;
+	return _ok(state);
 }
 
 // Compact world-space digest of every 3D node a successful batch touched, so

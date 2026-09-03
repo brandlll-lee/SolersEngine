@@ -30,19 +30,24 @@
 
 #include "solers_mcp_adapter.h"
 
+#include "core/config/project_settings.h"
 #include "core/io/json.h"
 #include "core/object/class_db.h"
+#include "core/os/os.h"
 
-#include "modules/solers_ai/core/solers_action_timeline.h"
 #include "modules/solers_ai/core/solers_project_observation.h"
 #include "modules/solers_ai/core/solers_runtime_observation.h"
 #include "modules/solers_ai/core/solers_scene_observation.h"
+#include "modules/solers_ai/core/solers_tool_executor.h"
 #include "modules/solers_ai/core/solers_tool_registry.h"
 
 void SolersMCPAdapter::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_tool_registry", "tool_registry"), &SolersMCPAdapter::set_tool_registry);
-	ClassDB::bind_method(D_METHOD("set_action_timeline", "action_timeline"), &SolersMCPAdapter::set_action_timeline);
 	ClassDB::bind_method(D_METHOD("handle_request", "request"), &SolersMCPAdapter::handle_request);
+	ClassDB::bind_method(D_METHOD("begin_request", "request"), &SolersMCPAdapter::begin_request);
+	ClassDB::bind_method(D_METHOD("poll"), &SolersMCPAdapter::poll);
+	ClassDB::bind_method(D_METHOD("take_response", "request_token"), &SolersMCPAdapter::take_response);
+	ClassDB::bind_method(D_METHOD("cancel_request", "request_token"), &SolersMCPAdapter::cancel_request);
 	ClassDB::bind_method(D_METHOD("initialize", "params"), &SolersMCPAdapter::initialize);
 	ClassDB::bind_method(D_METHOD("list_tools"), &SolersMCPAdapter::list_tools);
 	ClassDB::bind_method(D_METHOD("call_tool", "params"), &SolersMCPAdapter::call_tool);
@@ -96,10 +101,6 @@ Array SolersMCPAdapter::_tool_definitions_for_mcp() const {
 	Array definitions = tool_registry ? tool_registry->list_tools() : Array();
 	for (int i = 0; i < definitions.size(); i++) {
 		Dictionary definition = definitions[i];
-		const String exposure = definition.get("exposure", "direct");
-		if (exposure == "deferred" || exposure == "hidden") {
-			continue;
-		}
 		Dictionary tool;
 		tool["name"] = definition.get("name", String());
 		tool["description"] = definition.get("description", String());
@@ -108,14 +109,6 @@ Array SolersMCPAdapter::_tool_definitions_for_mcp() const {
 			tool["outputSchema"] = definition["output_schema"];
 		}
 
-		Dictionary annotations;
-		annotations["title"] = definition.get("name", String());
-		annotations["modelName"] = definition.get("model_name", String());
-		const PackedStringArray mutation_domains = definition.get("mutation_domains", PackedStringArray());
-		annotations["readOnlyHint"] = mutation_domains.is_empty();
-		annotations["destructiveHint"] = mutation_domains.has("irreversible");
-		annotations["openWorldHint"] = false;
-		tool["annotations"] = annotations;
 		tools.push_back(tool);
 	}
 	return tools;
@@ -125,14 +118,118 @@ void SolersMCPAdapter::set_tool_registry(SolersToolRegistry *p_tool_registry) {
 	tool_registry = p_tool_registry;
 }
 
+void SolersMCPAdapter::set_tool_executor(SolersToolExecutor *p_tool_executor) {
+	tool_executor = p_tool_executor;
+}
+
 void SolersMCPAdapter::set_observations(SolersProjectObservation *p_project, SolersSceneObservation *p_scene, SolersRuntimeObservation *p_runtime) {
 	project_observation = p_project;
 	scene_observation = p_scene;
 	runtime_observation = p_runtime;
 }
 
-void SolersMCPAdapter::set_action_timeline(SolersActionTimeline *p_action_timeline) {
-	action_timeline = p_action_timeline;
+Dictionary SolersMCPAdapter::begin_request(const Dictionary &p_request) {
+	const String method = p_request.get("method", String());
+	if (method != "tools/call") {
+		return Dictionary({ { "deferred", false }, { "response", handle_request(p_request) } });
+	}
+	const Variant params_value = p_request.get("params", Variant());
+	if (params_value.get_type() != Variant::DICTIONARY) {
+		return Dictionary({ { "deferred", false }, { "response", _jsonrpc_error(p_request.get("id", Variant()), -32602, "tools/call params must be an object.") } });
+	}
+	const Dictionary params = params_value;
+	const Variant arguments_value = params.get("arguments", Dictionary());
+	if (String(params.get("name", String())).is_empty() || arguments_value.get_type() != Variant::DICTIONARY) {
+		return Dictionary({ { "deferred", false }, { "response", _jsonrpc_error(p_request.get("id", Variant()), -32602, "tools/call requires a non-empty name and object arguments.") } });
+	}
+	const int64_t request_token = next_request_token++;
+	Dictionary pending;
+	pending["request_token"] = request_token;
+	pending["rpc_id"] = p_request.get("id", Variant());
+	pending["name"] = params.get("name", String());
+	pending["arguments"] = Dictionary(arguments_value).duplicate(true);
+	pending["call_id"] = vformat("mcp-%d", request_token);
+	pending_tool_requests.push_back(pending);
+	return Dictionary({ { "deferred", true }, { "request_token", request_token } });
+}
+
+void SolersMCPAdapter::poll() {
+	if (!tool_executor) {
+		return;
+	}
+	if (active_tool_request.is_empty()) {
+		if (pending_tool_requests.is_empty() || !tool_executor->is_idle()) {
+			return;
+		}
+		active_tool_request = pending_tool_requests[0];
+		pending_tool_requests.remove_at(0);
+		SolersToolContext context;
+		context.call_id = active_tool_request.get("call_id", String());
+		context.session_id = "mcp";
+		context.project_path = ProjectSettings::get_singleton() ? ProjectSettings::get_singleton()->get_resource_path() : String();
+		const Dictionary arguments = active_tool_request.get("arguments", Dictionary());
+		const int requested_timeout = (int)arguments.get("timeout_msec", 600000);
+		const Dictionary start_error = tool_executor->start(StringName(active_tool_request.get("name", String())), arguments, context, MIN((uint64_t)MAX(requested_timeout, 1), (uint64_t)600000));
+		if (!start_error.is_empty()) {
+			Dictionary response;
+			response["structuredContent"] = start_error;
+			response["isError"] = true;
+			response["content"] = Array({ _content_text(JSON::stringify(start_error, "\t", false, true)) });
+			completed_responses[(int64_t)active_tool_request["request_token"]] = _jsonrpc_result(active_tool_request.get("rpc_id", Variant()), response);
+			active_tool_request.clear();
+			return;
+		}
+	}
+
+	const String call_id = active_tool_request.get("call_id", String());
+	if (tool_executor->get_call_id() != call_id) {
+		return;
+	}
+	tool_executor->poll();
+	if (!tool_executor->is_terminal()) {
+		return;
+	}
+	const Dictionary tool_result = tool_executor->take_result();
+	Dictionary response;
+	response["structuredContent"] = tool_result;
+	response["isError"] = !(bool)tool_result.get("ok", false);
+	response["content"] = Array({ _content_text(JSON::stringify(tool_result, "\t", false, true)) });
+	completed_responses[(int64_t)active_tool_request["request_token"]] = _jsonrpc_result(active_tool_request.get("rpc_id", Variant()), response);
+	active_tool_request.clear();
+}
+
+Dictionary SolersMCPAdapter::take_response(int64_t p_request_token) {
+	const Dictionary *response = completed_responses.getptr(p_request_token);
+	if (!response) {
+		return Dictionary();
+	}
+	const Dictionary result = *response;
+	completed_responses.erase(p_request_token);
+	return result;
+}
+
+bool SolersMCPAdapter::cancel_request(int64_t p_request_token) {
+	for (int i = 0; i < pending_tool_requests.size(); i++) {
+		if ((int64_t)Dictionary(pending_tool_requests[i]).get("request_token", 0) == p_request_token) {
+			pending_tool_requests.remove_at(i);
+			return true;
+		}
+	}
+	if (!active_tool_request.is_empty() && (int64_t)active_tool_request.get("request_token", 0) == p_request_token) {
+		if (tool_executor && tool_executor->get_call_id() == String(active_tool_request.get("call_id", String())) && tool_executor->is_active()) {
+			tool_executor->cancel("TOOL_CANCELLED", "The MCP client disconnected before the tool reached a terminal state.");
+		}
+		if (tool_executor && tool_executor->is_terminal() && tool_executor->get_call_id() == String(active_tool_request.get("call_id", String()))) {
+			tool_executor->take_result();
+		}
+		active_tool_request.clear();
+		return true;
+	}
+	if (completed_responses.has(p_request_token)) {
+		completed_responses.erase(p_request_token);
+		return true;
+	}
+	return false;
 }
 
 Dictionary SolersMCPAdapter::handle_request(const Dictionary &p_request) {
@@ -190,31 +287,16 @@ Dictionary SolersMCPAdapter::list_tools() const {
 }
 
 Dictionary SolersMCPAdapter::call_tool(const Dictionary &p_params) {
-	Dictionary result;
-	if (!tool_registry) {
-		result["isError"] = true;
-		Array content;
-		content.push_back(_content_text("SolersToolRegistry is unavailable."));
-		result["content"] = content;
-		return result;
+	const Dictionary dispatch = begin_request(Dictionary({ { "jsonrpc", "2.0" }, { "id", next_request_token }, { "method", "tools/call" }, { "params", p_params } }));
+	if (!(bool)dispatch.get("deferred", false)) {
+		return dispatch.get("response", Dictionary());
 	}
-
-	const StringName name = StringName(p_params.get("name", String()));
-	const Dictionary arguments = p_params.get("arguments", Dictionary());
-	Dictionary tool_result = tool_registry->call_tool(name, arguments);
-
-	result["structuredContent"] = tool_result;
-	result["isError"] = !(bool)tool_result.get("ok", false);
-	Array content;
-	content.push_back(_content_text(JSON::stringify(tool_result, "\t", false, true)));
-	result["content"] = content;
-	return result;
+	return Dictionary({ { "status", "accepted" }, { "request_token", dispatch.get("request_token", 0) } });
 }
 
 Dictionary SolersMCPAdapter::list_resources() const {
 	Array resources;
 	resources.push_back(_resource("solers://editor/snapshot", "Editor Snapshot", "Current project, scene, selection, and runtime snapshot."));
-	resources.push_back(_resource("solers://timeline/actions", "Action Timeline", "Recent Solers action timeline events."));
 
 	Dictionary result;
 	result["resources"] = resources;
@@ -244,8 +326,6 @@ Dictionary SolersMCPAdapter::read_resource(const Dictionary &p_params) const {
 			snapshot["runtime"] = runtime_observation->get_runtime_status();
 		}
 		data = snapshot;
-	} else if (uri == "solers://timeline/actions") {
-		data = action_timeline ? action_timeline->list_actions(100) : Array();
 	} else {
 		Dictionary error;
 		error["ok"] = false;
@@ -280,6 +360,5 @@ Dictionary SolersMCPAdapter::list_prompts() const {
 Dictionary SolersMCPAdapter::get_status() const {
 	Dictionary result;
 	result["tools_available"] = tool_registry ? tool_registry->get_tool_count() : 0;
-	result["timeline_events"] = action_timeline ? action_timeline->get_action_count() : 0;
 	return result;
 }

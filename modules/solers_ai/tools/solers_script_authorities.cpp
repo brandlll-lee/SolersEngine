@@ -154,7 +154,7 @@ static Dictionary _commit_asset_authority(const Ref<SolersScriptContext> &p_cont
 
 void solers_script_authorities_initialize() {
 	SolersScriptAuthority scene;
-	scene.target_argument = SNAME("scene_path");
+	scene.target_argument = SNAME("target_path");
 	scene.validate = _validate_scene_authority;
 	scene.prepare = _prepare_scene_authority;
 	scene.commit = _commit_scene_authority;
@@ -163,7 +163,7 @@ void solers_script_authorities_initialize() {
 	SolersScriptService::register_authority(SNAME("scene"), scene);
 
 	SolersScriptAuthority asset;
-	asset.target_argument = SNAME("asset_path");
+	asset.target_argument = SNAME("target_path");
 	asset.prepare = _prepare_asset_authority;
 	asset.commit = _commit_asset_authority;
 	asset.release = [](const Ref<SolersScriptContext> &) {};

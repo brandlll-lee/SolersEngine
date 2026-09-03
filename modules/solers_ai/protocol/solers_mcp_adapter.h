@@ -31,22 +31,27 @@
 #pragma once
 
 #include "core/object/object.h"
+#include "core/templates/hash_map.h"
 #include "core/variant/dictionary.h"
 
-class SolersActionTimeline;
 class SolersProjectObservation;
 class SolersRuntimeObservation;
 class SolersSceneObservation;
+class SolersToolExecutor;
 class SolersToolRegistry;
 
 class SolersMCPAdapter : public Object {
 	GDCLASS(SolersMCPAdapter, Object);
 
 	SolersToolRegistry *tool_registry = nullptr;
+	SolersToolExecutor *tool_executor = nullptr;
 	SolersProjectObservation *project_observation = nullptr;
 	SolersRuntimeObservation *runtime_observation = nullptr;
 	SolersSceneObservation *scene_observation = nullptr;
-	SolersActionTimeline *action_timeline = nullptr;
+	Array pending_tool_requests;
+	Dictionary active_tool_request;
+	HashMap<int64_t, Dictionary> completed_responses;
+	int64_t next_request_token = 1;
 
 	Dictionary _jsonrpc_result(const Variant &p_id, const Variant &p_result) const;
 	Dictionary _jsonrpc_error(const Variant &p_id, int p_code, const String &p_message, const Variant &p_data = Variant()) const;
@@ -59,10 +64,14 @@ protected:
 
 public:
 	void set_tool_registry(SolersToolRegistry *p_tool_registry);
+	void set_tool_executor(SolersToolExecutor *p_tool_executor);
 	void set_observations(SolersProjectObservation *p_project, SolersSceneObservation *p_scene, SolersRuntimeObservation *p_runtime);
-	void set_action_timeline(SolersActionTimeline *p_action_timeline);
 
 	Dictionary handle_request(const Dictionary &p_request);
+	Dictionary begin_request(const Dictionary &p_request);
+	void poll();
+	Dictionary take_response(int64_t p_request_token);
+	bool cancel_request(int64_t p_request_token);
 	Dictionary initialize(const Dictionary &p_params) const;
 	Dictionary list_tools() const;
 	Dictionary call_tool(const Dictionary &p_params);

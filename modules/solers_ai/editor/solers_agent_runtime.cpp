@@ -32,10 +32,8 @@
 
 #include "editor/editor_interface.h"
 
-#include "modules/solers_ai/core/solers_action_timeline.h"
 #include "modules/solers_ai/core/solers_agent_session.h"
 #include "modules/solers_ai/core/solers_asset_service.h"
-#include "modules/solers_ai/core/solers_file_checkpoint.h"
 #include "modules/solers_ai/core/solers_permission_manager.h"
 #include "modules/solers_ai/core/solers_project_observation.h"
 #include "modules/solers_ai/core/solers_provider_registry.h"
@@ -52,10 +50,8 @@
 #include "modules/solers_ai/protocol/solers_rpc_server.h"
 
 SolersAgentRuntime::SolersAgentRuntime() {
-	action_timeline = memnew(SolersActionTimeline);
 	asset_service = memnew(SolersAssetService);
 	agent_session = memnew(SolersAgentSession);
-	file_checkpoint = memnew(SolersFileCheckpoint);
 	mcp_adapter = memnew(SolersMCPAdapter);
 	permission_manager = memnew(SolersPermissionManager);
 	project_observation = memnew(SolersProjectObservation);
@@ -69,15 +65,8 @@ SolersAgentRuntime::SolersAgentRuntime() {
 	settings_service = memnew(SolersSettingsService);
 	tool_registry = memnew(SolersToolRegistry);
 
-	file_checkpoint->set_action_timeline(action_timeline);
-	script_service->set_action_timeline(action_timeline);
 	settings_service->set_provider_registry(provider_registry);
 	agent_session->set_models_dev(provider_registry->get_models_dev(), false);
-	reflection_service->set_action_timeline(action_timeline);
-
-	tool_registry->set_action_timeline(action_timeline);
-	tool_registry->set_asset_service(asset_service);
-	tool_registry->set_file_checkpoint(file_checkpoint);
 	tool_registry->set_project_observation(project_observation);
 	tool_registry->set_runtime_observation(runtime_observation);
 	tool_registry->set_scene_observation(scene_observation);
@@ -87,16 +76,10 @@ SolersAgentRuntime::SolersAgentRuntime() {
 	tool_registry->set_script_service(script_service);
 	tool_registry->register_default_tools();
 
-	agent_session->set_action_timeline(action_timeline);
 	agent_session->set_settings_service(settings_service);
 	agent_session->set_tool_registry(tool_registry);
 	agent_session->set_permission_manager(permission_manager);
 	agent_session->set_observations(project_observation, scene_observation, runtime_observation);
-	agent_session->set_background_asset_delivery_handler([this](const String &p_asset_id, const String &p_session_id) {
-		if (asset_service) {
-			asset_service->mark_terminal_delivered(p_asset_id, p_session_id);
-		}
-	});
 	agent_session->set_runtime_stop_handler([]() {
 		EditorInterface *editor = EditorInterface::get_singleton();
 		if (!editor || !editor->is_playing_scene()) {
@@ -106,19 +89,37 @@ SolersAgentRuntime::SolersAgentRuntime() {
 		return true;
 	});
 
-	mcp_adapter->set_action_timeline(action_timeline);
 	scene_observation->set_runtime_observation(runtime_observation);
 	mcp_adapter->set_observations(project_observation, scene_observation, runtime_observation);
 	mcp_adapter->set_tool_registry(tool_registry);
+	mcp_adapter->set_tool_executor(agent_session->get_tool_executor());
 
 	rpc_server->set_mcp_adapter(mcp_adapter);
+}
+
+Dictionary SolersAgentRuntime::start_rpc(const Dictionary &p_args) {
+	if (shutting_down || !rpc_server) {
+		Dictionary error;
+		error["code"] = "RUNTIME_SHUTTING_DOWN";
+		error["message"] = "Solers runtime is shutting down.";
+		return Dictionary({ { "ok", false }, { "error", error } });
+	}
+	return rpc_server->start(p_args);
+}
+
+Dictionary SolersAgentRuntime::stop_rpc() {
+	return rpc_server ? rpc_server->stop() : Dictionary({ { "ok", true }, { "data", Dictionary({ { "stopped", true } }) } });
+}
+
+Dictionary SolersAgentRuntime::get_rpc_status() const {
+	return rpc_server ? rpc_server->get_status() : Dictionary();
 }
 
 void SolersAgentRuntime::bind_dock(SolersDock *p_dock) {
 	if (!p_dock) {
 		return;
 	}
-	p_dock->set_services(scene_observation, tool_registry, action_timeline, permission_manager, settings_service);
+	p_dock->set_services(scene_observation, tool_registry, permission_manager, settings_service);
 	p_dock->set_agent_session(agent_session);
 }
 
@@ -144,27 +145,11 @@ void SolersAgentRuntime::poll() {
 	if (rpc_running) {
 		rpc_server->poll();
 	}
-	// The session admission pass runs first so every independent pending call
-	// from one model response can enter its service queue. Services then
-	// advance once, which gives the direct project import a native scan wave
-	// instead of starting a wave after the first call only.
 	if (agent_session && agent_session->is_running()) {
 		agent_session->poll();
 	}
 	if (asset_service) {
-		asset_service->poll(!agent_session || !agent_session->is_admitting_tool_calls());
-	}
-	if (asset_service && agent_session) {
-		const String session_id = agent_session->get_status().get("session_id", String());
-		const Array completed = asset_service->take_terminal_events(session_id);
-		for (int i = 0; i < completed.size(); i++) {
-			const Dictionary manifest = completed[i];
-			agent_session->enqueue_background_asset(manifest);
-			asset_service->mark_terminal_delivered(manifest.get("id", String()), session_id);
-		}
-		if (agent_session->is_waiting_for_background_assets()) {
-			agent_session->resume_background_assets();
-		}
+		asset_service->poll();
 	}
 	in_poll = false;
 }
@@ -182,18 +167,6 @@ void SolersAgentRuntime::set_project_path(const String &p_project_path) {
 void SolersAgentRuntime::set_session(const String &p_project_path, const String &p_session_id) {
 	if (!shutting_down && agent_session) {
 		agent_session->set_session(p_project_path, p_session_id);
-		if (asset_service) {
-			const String session_id = agent_session->get_status().get("session_id", String());
-			const Array completed = asset_service->pending_terminal_events(session_id);
-			for (int i = 0; i < completed.size(); i++) {
-				const Dictionary manifest = completed[i];
-				agent_session->enqueue_background_asset(manifest);
-				asset_service->mark_terminal_delivered(manifest.get("id", String()), session_id);
-			}
-			if (agent_session->is_waiting_for_background_assets()) {
-				agent_session->resume_background_assets();
-			}
-		}
 	}
 }
 
@@ -215,9 +188,6 @@ void SolersAgentRuntime::shutdown() {
 	}
 	if (agent_session) {
 		agent_session->shutdown();
-	}
-	if (tool_registry) {
-		tool_registry->set_asset_service(nullptr);
 	}
 	if (asset_service) {
 		memdelete(asset_service);
@@ -267,11 +237,5 @@ SolersAgentRuntime::~SolersAgentRuntime() {
 	}
 	if (project_observation) {
 		memdelete(project_observation);
-	}
-	if (file_checkpoint) {
-		memdelete(file_checkpoint);
-	}
-	if (action_timeline) {
-		memdelete(action_timeline);
 	}
 }

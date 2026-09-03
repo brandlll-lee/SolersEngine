@@ -38,7 +38,6 @@
 #include "core/os/time.h"
 #include "scene/main/node.h"
 
-#include "modules/solers_ai/core/solers_action_timeline.h"
 #include "modules/solers_ai/core/solers_context_manager.h"
 #include "modules/solers_ai/core/solers_mention.h"
 #include "modules/solers_ai/core/solers_permission_manager.h"
@@ -46,6 +45,7 @@
 #include "modules/solers_ai/core/solers_runtime_observation.h"
 #include "modules/solers_ai/core/solers_scene_observation.h"
 #include "modules/solers_ai/core/solers_settings_service.h"
+#include "modules/solers_ai/core/solers_tool_executor.h"
 #include "modules/solers_ai/core/solers_tool_registry.h"
 #include "modules/solers_ai/core/solers_trace.h"
 #include "modules/solers_ai/llm/solers_llm_client.h"
@@ -53,48 +53,6 @@
 #include "modules/solers_ai/llm/solers_llm_protocol.h"
 #include "modules/solers_ai/llm/solers_llm_retry.h"
 #include "modules/solers_ai/llm/solers_models_dev.h"
-
-static Dictionary _update_plan_schema() {
-	Dictionary status;
-	status["type"] = "string";
-	Array values;
-	values.push_back("pending");
-	values.push_back("in_progress");
-	values.push_back("completed");
-	status["enum"] = values;
-
-	Dictionary step_properties;
-	Dictionary step_text;
-	step_text["type"] = "string";
-	step_properties["step"] = step_text;
-	step_properties["status"] = status;
-	Dictionary step;
-	step["type"] = "object";
-	step["properties"] = step_properties;
-	Array step_required;
-	step_required.push_back("step");
-	step_required.push_back("status");
-	step["required"] = step_required;
-	step["additionalProperties"] = false;
-
-	Dictionary properties;
-	Dictionary explanation;
-	explanation["type"] = "string";
-	properties["explanation"] = explanation;
-	Dictionary plan;
-	plan["type"] = "array";
-	plan["items"] = step;
-	properties["plan"] = plan;
-
-	Dictionary schema;
-	schema["type"] = "object";
-	schema["properties"] = properties;
-	Array required;
-	required.push_back("plan");
-	schema["required"] = required;
-	schema["additionalProperties"] = false;
-	return schema;
-}
 
 void SolersAgentSession::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("start_turn", "args"), &SolersAgentSession::start_turn);
@@ -115,8 +73,6 @@ void SolersAgentSession::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("turn_completed", PropertyInfo(Variant::DICTIONARY, "result")));
 	ADD_SIGNAL(MethodInfo("turn_failed", PropertyInfo(Variant::DICTIONARY, "error")));
 	ADD_SIGNAL(MethodInfo("turn_retrying", PropertyInfo(Variant::INT, "attempt"), PropertyInfo(Variant::STRING, "message")));
-	ADD_SIGNAL(MethodInfo("turn_waiting", PropertyInfo(Variant::DICTIONARY, "waiting")));
-	ADD_SIGNAL(MethodInfo("plan_updated", PropertyInfo(Variant::STRING, "explanation"), PropertyInfo(Variant::ARRAY, "plan")));
 }
 
 Dictionary SolersAgentSession::_ok(const Variant &p_data) const {
@@ -137,82 +93,21 @@ Dictionary SolersAgentSession::_error(const String &p_code, const String &p_mess
 }
 
 void SolersAgentSession::_record(const String &p_event, const Dictionary &p_payload) const {
-	if (action_timeline) {
-		action_timeline->record_event(p_event, p_payload);
-	}
-}
-
-Dictionary SolersAgentSession::validate_plan(const Dictionary &p_args) {
-	Dictionary result;
-	Dictionary error;
-	for (const Variant *key = p_args.next(nullptr); key; key = p_args.next(key)) {
-		const String name = String(*key);
-		if (name != "explanation" && name != "plan") {
-			error["code"] = "INVALID_PLAN";
-			error["message"] = vformat("Unknown update_plan field: %s.", name);
-			result["ok"] = false;
-			result["error"] = error;
-			return result;
-		}
-	}
-	if (!p_args.has("plan") || p_args["plan"].get_type() != Variant::ARRAY) {
-		error["code"] = "INVALID_PLAN";
-		error["message"] = "update_plan requires a plan array.";
-		result["ok"] = false;
-		result["error"] = error;
-		return result;
-	}
-
-	const Array plan = p_args["plan"];
-	int in_progress_count = 0;
-	for (int i = 0; i < plan.size(); i++) {
-		if (plan[i].get_type() != Variant::DICTIONARY) {
-			error["code"] = "INVALID_PLAN";
-			error["message"] = "Each plan item must be an object.";
-			result["ok"] = false;
-			result["error"] = error;
-			return result;
-		}
-		const Dictionary item = plan[i];
-		for (const Variant *key = item.next(nullptr); key; key = item.next(key)) {
-			const String name = String(*key);
-			if (name != "step" && name != "status") {
-				error["code"] = "INVALID_PLAN";
-				error["message"] = vformat("Unknown plan item field: %s.", name);
-				result["ok"] = false;
-				result["error"] = error;
-				return result;
-			}
-		}
-		const String step = String(item.get("step", String())).strip_edges();
-		const String status = item.get("status", String());
-		if (step.is_empty() || (status != "pending" && status != "in_progress" && status != "completed")) {
-			error["code"] = "INVALID_PLAN";
-			error["message"] = "Each plan item needs a non-empty step and status pending, in_progress, or completed.";
-			result["ok"] = false;
-			result["error"] = error;
-			return result;
-		}
-		if (status == "in_progress") {
-			in_progress_count++;
-		}
-	}
-	if (in_progress_count > 1) {
-		error["code"] = "INVALID_PLAN";
-		error["message"] = "At most one plan item may be in_progress.";
-		result["ok"] = false;
-		result["error"] = error;
-		return result;
-	}
-	result["ok"] = true;
-	result["data"] = p_args.duplicate(true);
-	return result;
+	_write_transcript_event(p_event, p_payload);
 }
 
 void SolersAgentSession::set_tool_registry(SolersToolRegistry *p_tool_registry) {
 	tool_registry = p_tool_registry;
-	_register_session_tools();
-	_restore_active_tools();
+	if (tool_executor && tool_executor->is_idle()) {
+		tool_executor->configure(tool_registry, permission_manager);
+	}
+}
+
+void SolersAgentSession::set_permission_manager(SolersPermissionManager *p_permission_manager) {
+	permission_manager = p_permission_manager;
+	if (tool_executor && tool_executor->is_idle()) {
+		tool_executor->configure(tool_registry, permission_manager);
+	}
 }
 
 void SolersAgentSession::set_observations(SolersProjectObservation *p_project, SolersSceneObservation *p_scene, SolersRuntimeObservation *p_runtime) {
@@ -227,38 +122,6 @@ void SolersAgentSession::set_models_dev(SolersModelsDev *p_models_dev, bool p_ow
 	}
 	models_dev = p_models_dev;
 	owns_models_dev = p_owned && p_models_dev != nullptr;
-}
-
-void SolersAgentSession::_register_session_tools() {
-	if (!tool_registry || session_tools_registry == tool_registry) {
-		return;
-	}
-
-	SolersToolCapability capability;
-	capability.permission = SolersPermissionManager::PERMISSION_OBSERVE;
-	capability.mutation_domains = SolersToolMutationDomain::NONE;
-	capability.host.timeline_visible = false;
-	tool_registry->register_tool(memnew(SolersFunctionTool(
-			"update_plan",
-			"Optionally replace the concise UI progress plan. This does not control tool access or task completion.",
-			_update_plan_schema(),
-			SolersToolExposure::MODEL,
-			capability,
-			[this](const SolersToolContext &, const Dictionary &p_args) { return _handle_update_plan(p_args); })));
-	session_tools_registry = tool_registry;
-}
-
-Dictionary SolersAgentSession::_handle_update_plan(const Dictionary &p_args) {
-	const Dictionary validation = validate_plan(p_args);
-	if (!(bool)validation.get("ok", false)) {
-		return validation;
-	}
-	current_plan = p_args.duplicate(true);
-	_write_transcript_plan();
-	emit_signal(SNAME("plan_updated"), current_plan.get("explanation", String()), current_plan.get("plan", Array()));
-	Dictionary data;
-	data["message"] = "Plan updated";
-	return _ok(data);
 }
 
 static Array _solers_enrich_mentions(const Array &p_mentions, SolersProjectObservation *p_observation) {
@@ -348,17 +211,16 @@ String SolersAgentSession::_default_system_prompt() const {
 			"Operating contract:\n"
 			"- Godot live editor and runtime state are authoritative. Combine static project evidence with native facts when the task crosses both.\n"
 			"- Choose the smallest available tool that advances the task. Search, read, inspect, capture, edit, and validate are independent operations; no observation unlocks an action.\n"
-			"- Optional specialized tools come from the live Registry through tool.search. Skills provide domain knowledge and never grant capabilities.\n"
+			"- The live Registry is the complete current tool surface. Read built-in skills through read(skill://name); skills provide domain knowledge and never grant capabilities.\n"
 			"- Tool results are bounded pages with native identities, cursors, hashes, epochs, receipts, and errors. Continue from those facts when more detail is needed.\n"
-			"- Mutations are available through their declared capabilities. Use a current native receipt when you have one, but do not invent a separate save step or wait for a matching query.\n"
+			"- Mutations request permission from their concrete paths and side effects at execution time. Supply current native receipts; never invent state or a separate save step.\n"
 			"- Prefer the smallest coherent native change. Use ClassDB metadata and native documentation for unfamiliar engine types.\n"
 			"- Tool errors and Godot diagnostics are authoritative. Change the cause before retrying; never repeat an identical failed call.\n"
-			"- Background operations return stable job ids. Continue independent work, then use the advertised wait operation once when nothing else is runnable.\n"
 			"- For project-scale tasks, map relevant files, live objects, runtime state, and pixels as needed; "
 			"choose the next observation from the evidence.\n"
 			"- Before changing state, form a falsifiable hypothesis and compare native evidence after the change; "
 			"do not declare success from intent alone.\n"
-			"- Text without tool calls ends the turn. Use update_plan only for concise progress and finish with a clear summary.";
+			"- Tool calls execute strictly in model-returned order. Text without tool calls ends the turn; finish with a clear summary.";
 	if (tool_registry) {
 		const String skill_catalog = tool_registry->get_skill_catalog_prompt();
 		if (!skill_catalog.is_empty()) {
@@ -374,7 +236,6 @@ Dictionary SolersAgentSession::_environment_context_message() {
 	}
 	Dictionary context;
 	context["project"] = project_observation->get_project_info();
-	context["session_revision"] = (int64_t)authored_revision;
 	const Dictionary runtime_status = runtime_observation->get_runtime_status();
 	context["runtime"] = runtime_status;
 	context.merge(scene_observation->get_editor_state(), true);
@@ -415,98 +276,22 @@ Dictionary SolersAgentSession::_environment_context_message() {
 	return message;
 }
 
-Array SolersAgentSession::_activate_tools(const Array &p_names) {
-	Array model_names;
-	if (!tool_registry) {
-		return model_names;
-	}
-	for (const Variant &value : p_names) {
-		const StringName canonical = StringName(String(value));
-		const Dictionary definition = tool_registry->get_tool_definition(canonical);
-		if (definition.get("exposure", String()) != "deferred") {
-			continue;
-		}
-		if (!active_tool_names.has(canonical)) {
-			active_tool_names.insert(canonical);
-			active_tool_revision++;
-		}
-		const String model_name = definition.get("model_name", String());
-		if (!model_name.is_empty()) {
-			activated_model_tool_names.insert(StringName(model_name));
-			if (!model_names.has(model_name)) {
-				model_names.push_back(model_name);
-			}
-		}
-	}
-	return model_names;
-}
-
-void SolersAgentSession::_restore_active_tools() {
-	active_tool_names.clear();
-	active_tool_revision++;
-	if (!tool_registry) {
-		return;
-	}
-	for (const Variant &value : tool_registry->list_tools()) {
-		const Dictionary definition = value;
-		const String exposure = definition.get("exposure", String());
-		const String authority = definition.get("authority", String());
-		const String mode = definition.get("mode", String());
-		if (exposure == "model" || (exposure == "deferred" && mode == "apply" && (authority == "editor" || authority == "runtime"))) {
-			active_tool_names.insert(StringName(definition.get("name", String())));
-		}
-	}
-	for (const StringName &model_name : activated_model_tool_names) {
-		const StringName canonical = tool_registry->resolve_model_tool_name(String(model_name));
-		const Dictionary definition = tool_registry->get_tool_definition(canonical);
-		if (definition.get("exposure", String()) == "deferred") {
-			active_tool_names.insert(canonical);
-		}
-	}
-}
-
-void SolersAgentSession::_load_active_tools(const Array &p_model_names) {
-	activated_model_tool_names.clear();
-	for (const Variant &value : p_model_names) {
-		const String model_name = String(value).strip_edges();
-		if (!model_name.is_empty()) {
-			activated_model_tool_names.insert(StringName(model_name));
-		}
-	}
-	_restore_active_tools();
-}
-
 Array SolersAgentSession::_collect_tools() {
 	Array out;
 	if (!tool_registry) {
 		return out;
 	}
-	const uint64_t catalog_revision = tool_registry->get_tool_catalog_revision();
-	if (cached_tool_catalog_revision != catalog_revision) {
-		_restore_active_tools();
-	}
-	if (cached_tool_catalog_revision == catalog_revision && cached_active_tool_revision == active_tool_revision) {
-		return cached_request_tools;
-	}
-	const Array defs = tool_registry->list_tools();
-	for (int i = 0; i < defs.size(); i++) {
-		const Dictionary def = defs[i];
-		const String exposure = def.get("exposure", String());
-		if ((exposure != "model" && exposure != "deferred") || !active_tool_names.has(StringName(def.get("name", String())))) {
-			continue;
-		}
+	for (const Variant &value : tool_registry->list_tools()) {
+		const Dictionary definition = value;
 		Dictionary tool;
-		tool["name"] = def.get("model_name", def.get("name", String()));
-		tool["canonical_name"] = def.get("name", String());
-		tool["description"] = def.get("description", String());
-		tool["parameters"] = def.get("input_schema", Dictionary());
+		tool["name"] = definition.get("model_name", definition.get("name", String()));
+		tool["canonical_name"] = definition.get("name", String());
+		tool["description"] = definition.get("description", String());
+		tool["parameters"] = definition.get("input_schema", Dictionary());
 		out.push_back(tool);
 	}
-	cached_request_tools = out;
 	cached_request_tool_tokens = SolersContextManager::estimate_tokens(JSON::stringify(out, "", false, true));
-	cached_tool_catalog_revision = catalog_revision;
-	cached_active_tool_revision = active_tool_revision;
-	return cached_request_tools;
+	return out;
 }
 
 bool SolersAgentSession::_refresh_active_model_limits() {
@@ -615,7 +400,6 @@ Error SolersAgentSession::_dispatch_model_request() {
 		_finish_turn("failed", error.get("message", "The selected provider is unavailable."), error);
 		return ERR_UNAVAILABLE;
 	}
-	_append_background_asset_deltas(false);
 	_flush_pending_steering();
 	// Drop prior-turn usage so compaction headroom is not computed from a
 	// stale prompt total that already included the previous max_output reserve.
@@ -958,15 +742,13 @@ Dictionary SolersAgentSession::_surface_tool_call(const Dictionary &p_call) {
 	}
 
 	const String canonical_name = call.get("canonical_name", String());
-	const Dictionary definition = tool_registry ? tool_registry->get_tool_definition(StringName(canonical_name)) : Dictionary();
-	call["timeline_visible"] = definition.get("timeline_visible", true);
+	const bool already_announced = call.get("ui_announced", false);
 	call["ui_announced"] = true;
 	streamed_tool_calls[id] = call;
-	const String arguments = call.get("arguments", String());
-	if (!(bool)call["timeline_visible"]) {
-		return call;
+	if (!already_announced) {
+		const String arguments = call.get("arguments", String());
+		emit_signal(SNAME("tool_call_started"), id, canonical_name, arguments);
 	}
-	emit_signal(SNAME("tool_call_started"), id, canonical_name, arguments);
 	return call;
 }
 
@@ -1011,8 +793,6 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 	if (prompt.is_empty() && turn_attachments.is_empty()) {
 		return _error("EMPTY_PROMPT", "Prompt is empty.");
 	}
-	background_resume_suppressed = false;
-	waiting_background_asset_ids.clear();
 	active_provider = settings_service->resolve_active_provider();
 	const String provider_id = active_provider.get("provider", String());
 	const String model = active_provider.get("model", String());
@@ -1090,7 +870,6 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 	current_provider_metadata.clear();
 	pending_tool_calls.clear();
 	streamed_tool_calls.clear();
-	failed_resource_accesses.clear();
 	last_usage.clear();
 	overflow_compaction_attempts = 0;
 	retry_attempt = 0;
@@ -1104,7 +883,6 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 	turn_output_tokens = 0;
 	turn_reasoning_tokens = 0;
 	turn_wire_body_bytes = 0;
-	turn_successful_mutations = 0;
 	_ensure_godot_log_audit(true);
 
 	Dictionary turn_started;
@@ -1146,38 +924,8 @@ void SolersAgentSession::poll() {
 		_begin_provider_request(retry_request, retry_profile);
 		return;
 	}
-	if (phase == PHASE_WAITING) {
-		return;
-	}
-	if (phase == PHASE_AWAITING_APPROVAL || phase == PHASE_TOOL_EXECUTING || phase == PHASE_TOOLS) {
-		// Drive the tool queue on the main loop: MAIN_THREAD tools still run
-		// one-at-a-time (single execution slot). Pending/parked calls release
-		// the slot so the next non-conflicting call can start; WORKER_THREAD
-		// tools and unresolved approvals stop this bounded drive loop.
-		const int drive_budget = MAX(8, tool_queue.size() * 4 + pending_tool_executions.size() * 2);
-		for (int i = 0; i < drive_budget && running; i++) {
-			const Phase before_phase = phase;
-			const int before_queue = tool_queue_index;
-			const int before_delivery = tool_delivery_index;
-			const int before_pending = pending_tool_executions.size();
-			const uint64_t before_token = tool_exec_token;
-			if (phase == PHASE_AWAITING_APPROVAL) {
-				_poll_awaiting_approval();
-			} else if (phase == PHASE_TOOL_EXECUTING) {
-				_poll_tool_executing();
-			} else if (phase == PHASE_TOOLS) {
-				_poll_tool_queue();
-			} else {
-				break;
-			}
-			if (phase == PHASE_STREAMING || phase == PHASE_COMPACTING || !running) {
-				break;
-			}
-			const bool progressed = phase != before_phase || tool_queue_index != before_queue || tool_delivery_index != before_delivery || pending_tool_executions.size() != before_pending || tool_exec_token != before_token;
-			if (!progressed) {
-				break;
-			}
-		}
+	if (phase == PHASE_TOOLS) {
+		_poll_tool_queue();
 		return;
 	}
 	if (phase == PHASE_COMPACTING) {
@@ -1319,90 +1067,41 @@ void SolersAgentSession::_on_model_turn_complete() {
 		emit_signal(SNAME("assistant_message"), current_text);
 	}
 
-	tool_queue = pending_tool_calls.duplicate();
+	tool_queue = pending_tool_calls.duplicate(true);
 	const uint64_t queued_msec = OS::get_singleton()->get_ticks_msec();
 	for (int i = 0; i < tool_queue.size(); i++) {
 		Dictionary call = tool_queue[i];
 		call["queued_msec"] = (int64_t)queued_msec;
-		const String model_name = call.get("name", String());
-		const String canonical_name = call.get("canonical_name", model_name);
-		const String requested_name = call.get("requested_name", model_name);
-		const String arguments = call.get("arguments", "{}");
-		Dictionary preflight_result;
 		Dictionary parsed_args;
-		if (canonical_name.is_empty()) {
-			preflight_result = _tool_denied_result("TOOL_NOT_FOUND", vformat("Model requested an unknown Solers tool: %s.", requested_name));
-		} else if (!active_tool_names.has(StringName(canonical_name))) {
-			preflight_result = _tool_denied_result("TOOL_NOT_ACTIVE", vformat("Solers tool is not active for this request: %s.", requested_name));
+		Ref<JSON> json;
+		json.instantiate();
+		const String arguments = call.get("arguments", "{}");
+		if (json->parse(arguments.is_empty() ? "{}" : arguments) == OK && json->get_data().get_type() == Variant::DICTIONARY) {
+			parsed_args = json->get_data();
 		} else {
-			Ref<JSON> json;
-			json.instantiate();
-			const Error parse_error = json->parse(arguments.is_empty() ? "{}" : arguments);
-			const Variant parsed = parse_error == OK ? json->get_data() : Variant();
-			if (parse_error != OK || parsed.get_type() != Variant::DICTIONARY) {
-				preflight_result = _tool_denied_result("TOOL_ARGUMENT_INVALID", "Tool arguments must be a complete JSON object.");
-			} else if (!tool_registry) {
-				preflight_result = _tool_denied_result("AGENT_UNCONFIGURED", "Tool registry unavailable.");
-			} else {
-				parsed_args = parsed;
-				SolersToolContext context;
-				context.call_id = call.get("id", String());
-				context.session_id = session_id;
-				context.project_path = project_path;
-				context.mentions = turn_mentions;
-				context.authored_revision = authored_revision;
-				Dictionary normalized_args;
-				preflight_result = tool_registry->_preflight_tool_call(StringName(canonical_name), parsed_args, context, normalized_args);
-			}
+			call["preflight_result"] = _tool_denied_result("TOOL_ARGUMENT_INVALID", "Tool arguments must be a complete JSON object.");
 		}
 		call["parsed_args"] = parsed_args;
-		if (!preflight_result.is_empty()) {
-			call["preflight_result"] = preflight_result;
-		}
 		tool_queue[i] = call;
 	}
-	int observation_count = 0;
-	for (int i = 0; i < tool_queue.size(); i++) {
-		const Dictionary call = tool_queue[i];
-		if (!call.has("preflight_result") && tool_registry && tool_registry->is_read_only(StringName(call.get("canonical_name", String())), call.get("parsed_args", Dictionary()))) {
-			observation_count++;
-		}
-	}
-	if (observation_count > 0 && context_manager && context_window > 0) {
-		_collect_tools();
-		int remaining = MAX(0, context_window - max_output_tokens - context_manager->get_token_count_with_pending(messages, system_prompt, cached_request_tool_tokens));
-		for (int i = 0; i < tool_queue.size(); i++) {
-			Dictionary call = tool_queue[i];
-			if (!call.has("preflight_result") && tool_registry->is_read_only(StringName(call.get("canonical_name", String())), call.get("parsed_args", Dictionary()))) {
-				const int share = CLAMP(remaining / observation_count, 1, SolersContextManager::TOOL_RESULT_MAX_TOKENS);
-				call["result_token_budget"] = share;
-				remaining = MAX(0, remaining - share);
-				observation_count--;
-				tool_queue[i] = call;
-			}
-		}
-	}
 	tool_queue_index = 0;
-	tool_delivery_index = 0;
-	completed_tool_results.clear();
-	failed_resource_accesses.clear();
-	tool_started_announced = false;
+	active_tool_call_id = String();
+	active_tool_model_name = String();
+	active_tool_canonical_name = String();
+	active_tool_args.clear();
+	approval_announced = false;
 	pending_tool_calls.clear();
 	streamed_tool_calls.clear();
 	current_text = String();
 	current_reasoning = String();
 	phase = PHASE_TOOLS;
-	SOLERS_TRACE("session.tools", vformat("entering tool queue (%d call(s))", tool_queue.size()));
+	SOLERS_TRACE("session.tools", vformat("entering serial tool queue (%d call(s))", tool_queue.size()));
 }
 
 void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_message, const Dictionary &p_error) {
 	if (compaction_id > 0) {
 		_write_transcript_compaction(p_outcome == "aborted" ? "cancelled" : "failed", p_error);
 		emit_signal(SNAME("timeline_entry_committed"), compaction_timeline_event_id, "context_compaction");
-	}
-	if (tool_thread_state) {
-		tool_cancel_requested.set();
-		_collect_tool_thread_result(true);
 	}
 	_cancel_undelivered_tools();
 	// Steering that never reached a dispatch still belongs to the
@@ -1433,7 +1132,6 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	usage["output_tokens"] = turn_output_tokens;
 	usage["reasoning_tokens"] = turn_reasoning_tokens;
 	usage["wire_body_bytes"] = turn_wire_body_bytes;
-	usage["effective_mutations"] = turn_successful_mutations;
 	data["turn_usage"] = usage;
 
 	Dictionary transcript;
@@ -1454,8 +1152,6 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	}
 	_write_transcript_event("turn_outcome", transcript);
 	solers_transcript_flush(session_id);
-	current_plan.clear();
-	emit_signal(SNAME("plan_updated"), String(), Array());
 	godot_log_turn_active = false;
 	last_outcome = outcome;
 	running = false;
@@ -1463,21 +1159,11 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	pending_tool_calls.clear();
 	streamed_tool_calls.clear();
 	tool_queue.clear();
-	_clear_pending_tools();
-	completed_tool_results.clear();
-	failed_resource_accesses.clear();
-	if (tool_registry) {
-		tool_registry->clear_task_state(session_id);
-	}
 	tool_queue_index = 0;
-	tool_delivery_index = 0;
-	tool_started_announced = false;
 	tool_queued_msec = 0;
 	tool_started_msec = 0;
 	tool_completed_msec = 0;
-	deferred_queue_index = -1;
-	awaiting_call.clear();
-	awaiting_approval_id = 0;
+	approval_announced = false;
 	retry_attempt = 0;
 	retry_resume_msec = 0;
 	retry_request.clear();
@@ -1486,29 +1172,17 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	compaction_id = 0;
 	compaction_timeline_event_id = 0;
 	overflow_compaction_attempts = 0;
-	tool_exec_token++;
-	tool_exec_requested = false;
 	last_progress_call_id = String();
 	last_progress_msec = 0;
-	deferred_done = false;
-	deferred_result.clear();
-	deferred_args.clear();
-	deferred_initial_args.clear();
-	deferred_resource_accesses.clear();
-	deferred_is_resume = false;
-	deferred_polling = false;
-	deferred_call_id = String();
-	deferred_model_name = String();
-	deferred_canonical_name = String();
+	active_tool_call_id = String();
+	active_tool_model_name = String();
+	active_tool_canonical_name = String();
+	active_tool_args.clear();
 	current_text = String();
 	current_reasoning = String();
 	turn_attachments.clear();
 	turn_mentions.clear();
-	waiting_background_asset_ids.clear();
 	turn_runtime_owned = false;
-	if (outcome == "aborted") {
-		background_resume_suppressed = true;
-	}
 	if (outcome == "failed") {
 		_record("agent_turn_failed", data);
 		emit_signal(SNAME("turn_failed"), error);
@@ -1525,18 +1199,8 @@ void SolersAgentSession::abort() {
 	if (client) {
 		client->abort();
 	}
-	if (tool_thread_state) {
-		tool_cancel_requested.set();
-		_collect_tool_thread_result(true);
-	}
-	if (deferred_prepared_call) {
-		if (tool_registry) {
-			const Dictionary cancelled = tool_registry->_finalize_prepared_result(*deferred_prepared_call, _tool_denied_result("TOOL_CANCELLED", "The turn was aborted while the tool was running."));
-			tool_registry->_complete_prepared_tool(*deferred_prepared_call, cancelled);
-		}
-		_write_prepared_journal_event(deferred_prepared_call);
-		memdelete(deferred_prepared_call);
-		deferred_prepared_call = nullptr;
+	if (tool_executor && tool_executor->is_active()) {
+		tool_executor->cancel();
 	}
 	_finish_turn("aborted", "Turn aborted.");
 }
@@ -1559,28 +1223,18 @@ void SolersAgentSession::reset_conversation() {
 	_release_godot_log_audit();
 	_reset_session_derived_state();
 	messages.clear();
-	_load_active_tools(Array());
 	timeline_entries.clear();
 	open_timeline_tools.clear();
 	transcript_event_sequence = 0;
 	pending_steering_messages.clear();
-	current_plan.clear();
 	last_outcome = String();
 	last_stop_reason = String();
 	last_usage.clear();
 	last_request_usage.clear();
-	pending_background_assets.clear();
-	delivered_background_assets.clear();
-	waiting_background_asset_ids.clear();
-	background_resume_suppressed = false;
 	if (context_manager) {
 		context_manager->reset();
 	}
-	if (tool_registry) {
-		tool_registry->restore_session_reversals(session_id, Array());
-	}
 	session_id = _make_session_id();
-	authored_revision = 0;
 	if (!project_path.is_empty()) {
 		_ensure_godot_log_audit(false);
 	}
@@ -1596,50 +1250,19 @@ void SolersAgentSession::set_project_path(const String &p_project_path) {
 void SolersAgentSession::set_session(const String &p_project_path, const String &p_session_id) {
 	abort();
 	_release_godot_log_audit();
-	const String previous_session_id = session_id;
 	project_path = p_project_path;
 	_reset_session_derived_state();
 	if (!p_session_id.is_empty()) {
 		session_id = p_session_id;
 	}
-	if (tool_registry && previous_session_id != session_id) {
-		tool_registry->restore_session_reversals(previous_session_id, Array());
-	}
 	transcript_event_sequence = 0;
 	const Dictionary state = _read_transcript_state(project_path, session_id);
 	messages = state.get("messages", Array());
-	_load_active_tools(state.get("added_tool_names", Array()));
 	timeline_entries = state.get("timeline_entries", Array());
 	open_timeline_tools.clear();
-	current_plan = state.get("plan", Dictionary());
 	last_request_usage = state.get("last_request_usage", Dictionary());
 	last_outcome = state.get("outcome", String());
 	turn_id = state.get("turn_id", 0);
-	authored_revision = (int64_t)state.get("session_revision", 0);
-	if (tool_registry) {
-		tool_registry->restore_session_reversals(session_id, state.get("reversals", Array()));
-		for (const Variant &transaction : Array(state.get("committed_rewinds", Array()))) {
-			tool_registry->finish_session_rewind(transaction);
-		}
-		const Dictionary pending_rewind = state.get("pending_rewind", Dictionary());
-		if (!pending_rewind.is_empty()) {
-			const Dictionary recovered = tool_registry->abort_session_rewind(pending_rewind);
-			if ((bool)recovered.get("ok", false)) {
-				Dictionary aborted;
-				aborted["transaction_id"] = pending_rewind.get("transaction_id", String());
-				aborted["reason"] = "Recovered an interrupted historical-message rewind.";
-				int64_t recovery_event_id = 0;
-				_write_transcript_event_durable("rewind_aborted", aborted, recovery_event_id);
-			}
-		}
-	}
-	pending_background_assets = state.get("background_assets", Array());
-	background_resume_suppressed = false;
-	delivered_background_assets.clear();
-	waiting_background_asset_ids.clear();
-	for (int i = 0; i < pending_background_assets.size(); i++) {
-		delivered_background_assets.insert(Dictionary(pending_background_assets[i]).get("asset_id", String()));
-	}
 	if (context_manager) {
 		context_manager->reset();
 		context_manager->set_compaction_count(state.get("compaction_count", 0));
@@ -1647,85 +1270,6 @@ void SolersAgentSession::set_session(const String &p_project_path, const String 
 	if (!project_path.is_empty()) {
 		_ensure_godot_log_audit(false);
 	}
-}
-
-bool SolersAgentSession::enqueue_background_asset(const Dictionary &p_manifest) {
-	const String asset_id = String(p_manifest.get("id", String())).strip_edges();
-	if (asset_id.is_empty() || delivered_background_assets.has(asset_id)) {
-		return false;
-	}
-	const String asset_session_id = String(p_manifest.get("session_id", String())).strip_edges();
-	if (asset_session_id.is_empty() || asset_session_id != session_id) {
-		return false;
-	}
-	Dictionary delivery;
-	delivery["asset_id"] = asset_id;
-	delivery["status"] = p_manifest.get("status", String());
-	delivery["provider"] = p_manifest.get("provider", String());
-	const char *fields[] = { "kind", "name", "stage", "entrypoints", "dimensions", "preview_file", "error", "traits", "animations", "source_provider", "source_asset_id", "source_variant", "source_version", "license", "attribution", "parent_asset_id", "operation_id", "generation_mode", "provider_endpoint", "provider_request", "input_attachment_ids" };
-	for (const char *field : fields) {
-		if (p_manifest.has(field)) {
-			delivery[field] = p_manifest[field];
-		}
-	}
-	Array map_types;
-	if (p_manifest.has("map_files")) {
-		map_types = Dictionary(p_manifest["map_files"]).keys();
-	} else if (p_manifest.get("maps", Variant()).get_type() == Variant::ARRAY) {
-		map_types = p_manifest["maps"];
-	}
-	if (!map_types.is_empty()) {
-		map_types.sort();
-		delivery["map_types"] = map_types;
-	}
-	_write_transcript_event("background_asset_delivery", delivery);
-	delivered_background_assets.insert(asset_id);
-	pending_background_assets.push_back(delivery);
-	return true;
-}
-
-void SolersAgentSession::resume_background_assets() {
-	_resume_next_background_asset();
-}
-
-bool SolersAgentSession::_append_background_asset_deltas(bool p_waited_only) {
-	if (pending_background_assets.is_empty()) {
-		return false;
-	}
-	Array deliveries;
-	Array remaining;
-	for (int i = 0; i < pending_background_assets.size(); i++) {
-		const Dictionary delivery = pending_background_assets[i];
-		const String asset_id = delivery.get("asset_id", String());
-		if (p_waited_only && !waiting_background_asset_ids.has(asset_id)) {
-			remaining.push_back(delivery);
-			continue;
-		}
-		deliveries.push_back(delivery);
-		waiting_background_asset_ids.erase(asset_id);
-		Dictionary consumed;
-		consumed["asset_id"] = asset_id;
-		_write_transcript_event("background_asset_consumed", consumed);
-	}
-	if (deliveries.is_empty()) {
-		return false;
-	}
-	pending_background_assets = remaining;
-	Dictionary message;
-	message["role"] = SolersContextManager::MODEL_CONTEXT_ROLE;
-	message["content"] = "Background job terminal delta. Continue the original task using these persisted facts; call asset.status only if you need more detail from a job that has already reached a project-import terminal state:\n" + JSON::stringify(deliveries, "", false, true);
-	message["origin"] = "background_job_delta";
-	message["ephemeral"] = true;
-	messages.push_back(message);
-	_write_transcript_event("model_context", message);
-	return true;
-}
-
-void SolersAgentSession::_resume_next_background_asset() {
-	if (!is_waiting_for_background_assets() || background_resume_suppressed || !_append_background_asset_deltas(true)) {
-		return;
-	}
-	_dispatch_model_request();
 }
 
 Array SolersAgentSession::get_messages() const {
@@ -1760,17 +1304,12 @@ Dictionary SolersAgentSession::get_status() const {
 	status["project_path"] = project_path;
 	status["session_id"] = session_id;
 	status["compacting"] = phase == PHASE_COMPACTING;
-	status["waiting_for_background"] = is_waiting_for_background_assets();
-	status["waiting_background_asset_count"] = waiting_background_asset_ids.size();
-	status["plan"] = current_plan.duplicate(true);
 	status["last_outcome"] = last_outcome;
-	status["pending_background_asset_count"] = pending_background_assets.size();
 	{
 		MutexLock lock(godot_log_mutex);
 		status["godot_log_errors"] = godot_log_error_count;
 		status["godot_log_warnings"] = godot_log_warning_count;
 	}
-	status["session_revision"] = (int64_t)authored_revision;
 	status["runtime_epoch"] = runtime_observation ? runtime_observation->get_runtime_status().get("runtime_epoch", 0) : Variant((int64_t)0);
 	if (context_manager) {
 		status["context_tokens"] = context_manager->get_last_estimated_tokens();
@@ -1779,31 +1318,13 @@ Dictionary SolersAgentSession::get_status() const {
 	return status;
 }
 
-bool SolersAgentSession::is_admitting_tool_calls() const {
-	if (!running) {
-		return false;
-	}
-	if (phase == PHASE_TOOL_EXECUTING) {
-		return !deferred_polling;
-	}
-	if (phase != PHASE_TOOLS || tool_queue_index >= tool_queue.size()) {
-		return false;
-	}
-	const Dictionary call = tool_queue[tool_queue_index];
-	const String canonical_name = call.get("canonical_name", call.get("name", String()));
-	Ref<JSON> json;
-	json.instantiate();
-	const String arguments = call.get("arguments", "{}");
-	if (canonical_name.is_empty() || json->parse(arguments.is_empty() ? "{}" : arguments) != OK || json->get_data().get_type() != Variant::DICTIONARY) {
-		return true;
-	}
-	const Dictionary args = json->get_data();
-	const Array accesses = tool_registry ? tool_registry->resolve_resource_access(StringName(canonical_name), args) : Array();
-	return !_conflicts_with_pending(accesses);
+bool SolersAgentSession::is_executing_tool() const {
+	return running && phase == PHASE_TOOLS && tool_executor && tool_executor->is_active();
 }
 
 SolersAgentSession::SolersAgentSession() {
 	session_id = _make_session_id();
+	tool_executor = memnew(SolersToolExecutor);
 	protocol_registry = memnew(SolersLLMProtocolRegistry);
 	protocol_registry->register_builtin_protocols();
 	client = memnew(SolersLLMClient);
@@ -1816,13 +1337,9 @@ SolersAgentSession::SolersAgentSession() {
 
 SolersAgentSession::~SolersAgentSession() {
 	shutdown();
-	if (tool_thread_state) {
-		tool_cancel_requested.set();
-		_collect_tool_thread_result(true);
-	}
-	if (deferred_prepared_call) {
-		memdelete(deferred_prepared_call);
-		deferred_prepared_call = nullptr;
+	if (tool_executor) {
+		memdelete(tool_executor);
+		tool_executor = nullptr;
 	}
 	if (context_manager) {
 		memdelete(context_manager);
