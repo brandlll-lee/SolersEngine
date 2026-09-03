@@ -604,26 +604,44 @@ TEST_CASE("[SolersMarkdown][SceneTree] streaming preserves current CommonMark st
 	MessageQueue::get_singleton()->flush();
 }
 
-TEST_CASE("[SolersMarkdown][SceneTree] final text replaces pending stream text") {
-	SolersAssistantCell *cell = memnew(SolersAssistantCell);
-	SceneTree::get_singleton()->get_root()->add_child(cell);
-	cell->set_size(Size2(480, 640));
-	cell->append_delta("stale ");
-	cell->append_delta("stream");
-	cell->notification(Node::NOTIFICATION_INTERNAL_PROCESS);
-	cell->finalize("authoritative final");
+TEST_CASE("[SolersMarkdown][SceneTree] completed prose stays visible until the latest layout is ready") {
+	SolersMarkdownView *view = memnew(SolersMarkdownView);
+	SceneTree::get_singleton()->get_root()->add_child(view);
+	view->set_size(Size2(480, 640));
+	view->set_markdown("completed prose", true);
 	MessageQueue::get_singleton()->flush();
 
-	TypedArray<Node> labels = cell->find_children("*", "RichTextLabel", true, false);
+	TypedArray<Node> labels = view->find_children("*", "RichTextLabel", true, false);
 	REQUIRE(labels.size() == 1);
-	RichTextLabel *prose = Object::cast_to<RichTextLabel>(labels[0].operator Object *());
-	REQUIRE(prose != nullptr);
-	prose->get_content_height();
-	prose->wait_until_finished();
-	CHECK(prose->get_parsed_text().contains("authoritative final"));
-	CHECK_FALSE(prose->get_parsed_text().contains("stale stream"));
+	RichTextLabel *visible = Object::cast_to<RichTextLabel>(labels[0].operator Object *());
+	REQUIRE(visible != nullptr);
+	visible->get_content_height();
+	visible->wait_until_finished();
+	MessageQueue::get_singleton()->flush();
 
-	cell->queue_free();
+	view->set_markdown("intermediate prose", true);
+	view->set_markdown("authoritative final", false);
+	labels = view->find_children("*", "RichTextLabel", true, false);
+	REQUIRE(labels.size() == 2);
+	CHECK(visible->is_visible());
+	CHECK(visible->get_parsed_text() == "completed prose");
+
+	RichTextLabel *staged = Object::cast_to<RichTextLabel>(labels[1].operator Object *());
+	REQUIRE(staged != nullptr);
+	CHECK_FALSE(staged->is_visible());
+	staged->wait_until_finished();
+	MessageQueue::get_singleton()->flush();
+	staged->wait_until_finished();
+	MessageQueue::get_singleton()->flush();
+
+	labels = view->find_children("*", "RichTextLabel", true, false);
+	REQUIRE(labels.size() == 1);
+	visible = Object::cast_to<RichTextLabel>(labels[0].operator Object *());
+	REQUIRE(visible != nullptr);
+	CHECK(visible->is_visible());
+	CHECK(visible->get_parsed_text() == "authoritative final");
+
+	view->queue_free();
 	MessageQueue::get_singleton()->flush();
 }
 } // namespace TestSolersEditor

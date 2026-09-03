@@ -87,16 +87,15 @@ class SolersMarkdownView : public VBoxContainer {
 		bool is_code = false;
 		String lang;
 		String source;
+		String staged_source;
 		bool rendered_streaming = false;
 		Control *control = nullptr;
+		RichTextLabel *staged = nullptr;
 	};
 
 	LocalVector<Block> blocks;
 	String target_md;
 	bool target_streaming = false;
-	String rendered_md;
-	bool rendered_streaming = false;
-	bool rendered_md_valid = false;
 
 	static Vector<Segment> _split_segments(const String &p_markdown);
 	RichTextLabel *_make_paragraph_label();

@@ -1041,22 +1041,24 @@ void SolersMarkdownView::_render_segment(int p_index, const Segment &p_segment, 
 	}
 
 	Block &block = blocks[p_index];
-	const bool unchanged = block.is_code == p_segment.is_code && block.source == p_segment.text &&
+	const bool unchanged = block.control && block.is_code == p_segment.is_code && block.source == p_segment.text &&
 			block.lang == p_segment.lang && (!p_segment.is_code || block.rendered_streaming == p_streaming);
-	if (unchanged) {
-		return;
-	}
-	if (block.is_code != p_segment.is_code && block.control) {
+	if (block.control && block.is_code != p_segment.is_code) {
 		memdelete(block.control);
-		block.control = nullptr;
+		if (block.staged) {
+			memdelete(block.staged);
+		}
+		block = Block();
 	}
-
 	block.is_code = p_segment.is_code;
 	block.lang = p_segment.lang;
-	block.source = p_segment.text;
 	block.rendered_streaming = p_segment.is_code && p_streaming;
 
 	if (p_segment.is_code) {
+		block.source = p_segment.text;
+		if (unchanged) {
+			return;
+		}
 		SolersCodeBlock *code_block = Object::cast_to<SolersCodeBlock>(block.control);
 		if (!code_block) {
 			code_block = memnew(SolersCodeBlock);
@@ -1072,8 +1074,40 @@ void SolersMarkdownView::_render_segment(int p_index, const Segment &p_segment, 
 			rtl = _make_paragraph_label();
 			move_child(rtl, p_index);
 			block.control = rtl;
+			block.source = p_segment.text;
+			_render_paragraph(rtl, p_segment.text);
+			return;
 		}
-		_render_paragraph(rtl, p_segment.text);
+
+		if (block.source == p_segment.text) {
+			if (block.staged && !block.staged->is_updating()) {
+				memdelete(block.staged);
+				block.staged = nullptr;
+			}
+			return;
+		}
+		if (!block.staged) {
+			if (rtl->is_updating()) {
+				return;
+			}
+			block.staged = _make_paragraph_label();
+			block.staged->hide();
+			block.staged->set_size(rtl->get_size());
+		} else if (block.staged->is_updating()) {
+			return;
+		} else if (block.staged_source == p_segment.text) {
+			RichTextLabel *staged = block.staged;
+			block.staged = nullptr;
+			block.control = staged;
+			block.source = p_segment.text;
+			staged->show();
+			move_child(staged, p_index);
+			memdelete(rtl);
+			return;
+		}
+		block.staged_source = p_segment.text;
+		_render_paragraph(block.staged, p_segment.text);
+		block.staged->get_content_height();
 	}
 }
 
@@ -1085,36 +1119,28 @@ void SolersMarkdownView::_render_paragraph(RichTextLabel *p_label, const String 
 }
 
 void SolersMarkdownView::set_markdown(const String &p_markdown, bool p_streaming) {
+	if (target_md == p_markdown && target_streaming == p_streaming) {
+		return;
+	}
 	target_md = p_markdown;
 	target_streaming = p_streaming;
 	_render_target();
 }
 
 void SolersMarkdownView::_render_target() {
-	if (rendered_md_valid && target_streaming == rendered_streaming && target_md == rendered_md) {
-		return;
-	}
-	if (!blocks.is_empty()) {
-		RichTextLabel *tail = Object::cast_to<RichTextLabel>(blocks[blocks.size() - 1].control);
-		if (tail && tail->is_updating()) {
-			return;
-		}
-	}
-
-	rendered_md = target_md;
-	rendered_streaming = target_streaming;
-	rendered_md_valid = true;
-
-	const Vector<Segment> segments = _split_segments(rendered_md);
+	const Vector<Segment> segments = _split_segments(target_md);
 
 	for (int i = 0; i < segments.size(); i++) {
-		_render_segment(i, segments[i], rendered_streaming && i == segments.size() - 1);
+		_render_segment(i, segments[i], target_streaming && i == segments.size() - 1);
 	}
 
 	while (int(blocks.size()) > segments.size()) {
 		Block &block = blocks[blocks.size() - 1];
 		if (block.control) {
 			memdelete(block.control);
+		}
+		if (block.staged) {
+			memdelete(block.staged);
 		}
 		blocks.resize(blocks.size() - 1);
 	}
