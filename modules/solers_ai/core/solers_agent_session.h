@@ -37,8 +37,6 @@
 #include "core/variant/array.h"
 #include "core/variant/dictionary.h"
 
-#include <functional>
-
 class SolersContextManager;
 class SolersLLMClient;
 class SolersLLMProtocolRegistry;
@@ -69,8 +67,6 @@ class SolersAgentSession : public Object {
 	SolersProjectObservation *project_observation = nullptr;
 	SolersRuntimeObservation *runtime_observation = nullptr;
 	SolersSceneObservation *scene_observation = nullptr;
-	std::function<bool()> runtime_stop_handler;
-
 	SolersLLMProtocolRegistry *protocol_registry = nullptr;
 	SolersLLMClient *client = nullptr;
 	SolersContextManager *context_manager = nullptr;
@@ -131,7 +127,6 @@ class SolersAgentSession : public Object {
 	Dictionary retry_request;
 	Dictionary retry_profile;
 	int overflow_compaction_attempts = 0;
-	bool turn_runtime_owned = false;
 	String project_path;
 	String session_id;
 	Array turn_attachments;
@@ -210,8 +205,6 @@ public:
 	void set_models_dev(SolersModelsDev *p_models_dev, bool p_owned = false);
 	void set_permission_manager(SolersPermissionManager *p_permission_manager);
 	void set_observations(SolersProjectObservation *p_project, SolersSceneObservation *p_scene, SolersRuntimeObservation *p_runtime);
-	void set_runtime_stop_handler(std::function<bool()> p_handler) { runtime_stop_handler = std::move(p_handler); }
-
 	Dictionary start_turn(const Dictionary &p_args);
 	Dictionary preview_rewind_to_event(int64_t p_event_id) const;
 	Dictionary rewind_to_event(int64_t p_event_id);

@@ -32,6 +32,7 @@
 
 #include "core/config/project_settings.h"
 #include "core/io/dir_access.h"
+#include "editor/settings/editor_settings.h"
 
 inline Dictionary solers_test_find_dictionary(const Array &p_items, const StringName &p_field, const String &p_value) {
 	for (const Variant &item_variant : p_items) {
@@ -42,6 +43,35 @@ inline Dictionary solers_test_find_dictionary(const Array &p_items, const String
 	}
 	return Dictionary();
 }
+
+class ScopedEditorSettings {
+	EditorSettings *settings = nullptr;
+	Array paths;
+	Dictionary values;
+
+public:
+	ScopedEditorSettings(EditorSettings *p_settings, const Array &p_paths) :
+			settings(p_settings), paths(p_paths) {
+		for (const Variant &path_value : paths) {
+			const String path = path_value;
+			if (settings->has_setting(path)) {
+				values[path] = settings->get_setting(path);
+			}
+			settings->erase(path);
+		}
+	}
+
+	~ScopedEditorSettings() {
+		for (const Variant &path_value : paths) {
+			const String path = path_value;
+			settings->erase(path);
+			if (values.has(path)) {
+				settings->set_manually(path, values[path]);
+			}
+		}
+		EditorSettings::save();
+	}
+};
 
 class SolersTestPaths {
 	Vector<String> paths;

@@ -302,17 +302,27 @@ Array SolersOpenAIResponsesProtocol::parse_event(Dictionary &r_state, const Stri
 			const int reasoning_tokens = Dictionary(usage.get("output_tokens_details", Dictionary())).get("reasoning_tokens", 0);
 			events.push_back(SolersLLMEvent::usage(MAX(0, input_tokens - cached_tokens), MAX(0, output_tokens - reasoning_tokens), cached_tokens, -1, reasoning_tokens));
 		}
-		String stop_reason = r_state.get("has_tool_call", false) ? SolersLLMStopReason::TOOL_USE : SolersLLMStopReason::END_TURN;
-		if (type == "response.incomplete") {
-			const Dictionary details = response.get("incomplete_details", Dictionary());
-			if (String(details.get("reason", String())) == "max_output_tokens") {
-				stop_reason = SolersLLMStopReason::MAX_TOKENS;
-			}
+		const String status = response.get("status", type == "response.completed" ? "completed" : "incomplete");
+		const Dictionary incomplete_details = response.get("incomplete_details", Dictionary());
+		const String incomplete_reason = incomplete_details.get("reason", String());
+		if (type == "response.incomplete" && incomplete_reason != "max_output_tokens") {
+			Dictionary details;
+			details["response_id"] = response.get("id", String());
+			details["status"] = status;
+			details["reason"] = incomplete_reason;
+			events.push_back(SolersLLMEvent::error("OPENAI_RESPONSE_INCOMPLETE", "OpenAI Responses ended before completing the response.", String(), false, details));
+			r_state["finished"] = true;
+			return events;
 		}
+		const String stop_reason = type == "response.incomplete" ? SolersLLMStopReason::MAX_TOKENS : (r_state.get("has_tool_call", false) ? SolersLLMStopReason::TOOL_USE : SolersLLMStopReason::END_TURN);
 		Dictionary metadata;
 		Dictionary openai;
 		openai["reasoning_items"] = r_state.get("reasoning_items", Array());
 		openai["response_id"] = response.get("id", String());
+		openai["status"] = status;
+		if (!incomplete_reason.is_empty()) {
+			openai["incomplete_reason"] = incomplete_reason;
+		}
 		metadata["openai_responses"] = openai;
 		events.push_back(SolersLLMEvent::finish(stop_reason, metadata));
 		r_state["finished"] = true;

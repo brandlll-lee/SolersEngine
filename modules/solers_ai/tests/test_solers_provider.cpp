@@ -31,7 +31,6 @@
 #include "core/config/project_settings.h"
 #include "core/io/config_file.h"
 #include "core/os/thread.h"
-#include "editor/settings/editor_settings.h"
 #include "tests/test_macros.h"
 
 #include "modules/solers_ai/core/solers_provider_auth.h"
@@ -39,6 +38,7 @@
 #include "modules/solers_ai/core/solers_secret_store.h"
 #include "modules/solers_ai/core/solers_settings_service.h"
 #include "modules/solers_ai/llm/solers_models_dev.h"
+#include "modules/solers_ai/tests/support/solers_test_state.h"
 
 TEST_FORCE_LINK(test_solers_provider)
 
@@ -81,35 +81,6 @@ public:
 static void _mark_thread_started(void *p_userdata) {
 	*static_cast<bool *>(p_userdata) = true;
 }
-
-class ScopedEditorSettings {
-	EditorSettings *settings = nullptr;
-	Array paths;
-	Dictionary values;
-
-public:
-	ScopedEditorSettings(EditorSettings *p_settings, const Array &p_paths) :
-			settings(p_settings), paths(p_paths) {
-		for (const Variant &path_value : paths) {
-			const String path = path_value;
-			if (settings->has_setting(path)) {
-				values[path] = settings->get_setting(path);
-			}
-			settings->erase(path);
-		}
-	}
-
-	~ScopedEditorSettings() {
-		for (const Variant &path_value : paths) {
-			const String path = path_value;
-			settings->erase(path);
-			if (values.has(path)) {
-				settings->set_manually(path, values[path]);
-			}
-		}
-		EditorSettings::save();
-	}
-};
 
 TEST_CASE("[SolersSecretStore] strict credentials are protected and recoverable") {
 	const String secret = "synthetic-oauth-credential";

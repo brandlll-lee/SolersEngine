@@ -1067,18 +1067,23 @@ void SolersAgentSession::_on_model_turn_complete() {
 	}
 
 	tool_queue = pending_tool_calls.duplicate(true);
+	const bool response_truncated = last_stop_reason == SolersLLMStopReason::MAX_TOKENS;
 	const uint64_t queued_msec = OS::get_singleton()->get_ticks_msec();
 	for (int i = 0; i < tool_queue.size(); i++) {
 		Dictionary call = tool_queue[i];
 		call["queued_msec"] = (int64_t)queued_msec;
 		Dictionary parsed_args;
-		Ref<JSON> json;
-		json.instantiate();
-		const String arguments = call.get("arguments", "{}");
-		if (json->parse(arguments.is_empty() ? "{}" : arguments) == OK && json->get_data().get_type() == Variant::DICTIONARY) {
-			parsed_args = json->get_data();
+		if (response_truncated) {
+			call["preflight_result"] = _tool_denied_result("TOOL_CALL_TRUNCATED", "Tool call was not executed because the model response reached its output token limit. Re-issue the call with complete arguments.");
 		} else {
-			call["preflight_result"] = _tool_denied_result("TOOL_ARGUMENT_INVALID", "Tool arguments must be a complete JSON object.");
+			Ref<JSON> json;
+			json.instantiate();
+			const String arguments = call.get("arguments", "{}");
+			if (json->parse(arguments.is_empty() ? "{}" : arguments) == OK && json->get_data().get_type() == Variant::DICTIONARY) {
+				parsed_args = json->get_data();
+			} else {
+				call["preflight_result"] = _tool_denied_result("TOOL_ARGUMENT_INVALID", "Tool arguments must be a complete JSON object.");
+			}
 		}
 		call["parsed_args"] = parsed_args;
 		tool_queue[i] = call;
@@ -1119,10 +1124,6 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	if (!error.is_empty()) {
 		data["error"] = error;
 	}
-	if (turn_runtime_owned && runtime_stop_handler && runtime_stop_handler()) {
-		data["runtime_stopped"] = true;
-	}
-
 	Dictionary usage;
 	usage["model_requests"] = model_request_index;
 	usage["fresh_input_tokens"] = turn_fresh_input_tokens;
@@ -1181,7 +1182,6 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	current_reasoning = String();
 	turn_attachments.clear();
 	turn_mentions.clear();
-	turn_runtime_owned = false;
 	if (outcome == "failed") {
 		_record("agent_turn_failed", data);
 		emit_signal(SNAME("turn_failed"), error);

@@ -30,8 +30,6 @@
 
 #include "solers_agent_runtime.h"
 
-#include "editor/editor_interface.h"
-
 #include "modules/solers_ai/core/solers_agent_session.h"
 #include "modules/solers_ai/core/solers_asset_service.h"
 #include "modules/solers_ai/core/solers_permission_manager.h"
@@ -80,15 +78,6 @@ SolersAgentRuntime::SolersAgentRuntime() {
 	agent_session->set_tool_registry(tool_registry);
 	agent_session->set_permission_manager(permission_manager);
 	agent_session->set_observations(project_observation, scene_observation, runtime_observation);
-	agent_session->set_runtime_stop_handler([]() {
-		EditorInterface *editor = EditorInterface::get_singleton();
-		if (!editor || !editor->is_playing_scene()) {
-			return false;
-		}
-		editor->stop_playing_scene();
-		return true;
-	});
-
 	scene_observation->set_runtime_observation(runtime_observation);
 	mcp_adapter->set_observations(project_observation, scene_observation, runtime_observation);
 	mcp_adapter->set_tool_registry(tool_registry);

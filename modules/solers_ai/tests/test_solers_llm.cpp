@@ -312,6 +312,27 @@ TEST_CASE("[SolersOpenAIResponsesProtocol] lifts streamed tool calls usage and c
 	CHECK(Array(finish_openai.get("reasoning_items", Array())).size() == 1);
 }
 
+TEST_CASE("[SolersOpenAIResponsesProtocol] preserves incomplete response outcomes") {
+	SolersOpenAIResponsesProtocol protocol;
+	Dictionary truncated_state = protocol.begin_stream(Dictionary());
+	const Array truncated_events = protocol.parse_event(truncated_state, "response.incomplete", R"json({"type":"response.incomplete","response":{"id":"resp_truncated","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}})json");
+	const Dictionary finish = find_event_kind(truncated_events, SolersLLMEventKind::FINISH);
+	CHECK(finish.get("stop_reason", String()) == SolersLLMStopReason::MAX_TOKENS);
+	const Dictionary metadata = finish.get("provider_metadata", Dictionary());
+	const Dictionary openai = metadata.get("openai_responses", Dictionary());
+	CHECK(openai.get("status", String()) == "incomplete");
+	CHECK(openai.get("incomplete_reason", String()) == "max_output_tokens");
+
+	Dictionary failed_state = protocol.begin_stream(Dictionary());
+	const Array failed_events = protocol.parse_event(failed_state, "response.incomplete", R"json({"type":"response.incomplete","response":{"id":"resp_failed","status":"incomplete","incomplete_details":{"reason":"content_filter"}}})json");
+	CHECK(find_event_kind(failed_events, SolersLLMEventKind::FINISH).is_empty());
+	const Dictionary error = find_event_kind(failed_events, SolersLLMEventKind::ERROR);
+	CHECK(error.get("code", String()) == "OPENAI_RESPONSE_INCOMPLETE");
+	const Dictionary details = error.get("details", Dictionary());
+	CHECK(details.get("status", String()) == "incomplete");
+	CHECK(details.get("reason", String()) == "content_filter");
+}
+
 TEST_CASE("[SolersOpenAIChatProtocol] starts chat completions with store disabled") {
 	Array messages;
 	messages.push_back(SolersLLMMessage::user("What is in this project?"));

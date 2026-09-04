@@ -181,13 +181,6 @@ void SolersAgentSession::_deliver_tool_result(const String &p_id, const String &
 	const uint64_t duration = completed_msec >= p_started_msec ? completed_msec - p_started_msec : 0;
 	emit_signal(SNAME("tool_call_finished"), p_id, p_canonical_name, result, (int64_t)duration);
 
-	const Dictionary data = result.get("data", Dictionary());
-	if ((bool)data.get("started_by_call", false)) {
-		turn_runtime_owned = true;
-	}
-	if ((bool)data.get("stopped_by_call", false)) {
-		turn_runtime_owned = false;
-	}
 	messages.push_back(SolersLLMMessage::tool_result(p_id, p_model_name, content, result.get("attachments", Array())));
 }
 
