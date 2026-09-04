@@ -36,7 +36,7 @@
 #include "core/io/json.h"
 #include "core/os/os.h"
 
-#include "modules/solers_ai/generated/solers_model_catalog.gen.h"
+#include "modules/solers_ai/generated/solers_model_catalog_data.h"
 
 static constexpr uint64_t SOLERS_MODELS_DEV_FETCH_BUDGET_MSEC = 30000;
 static constexpr uint64_t SOLERS_MODELS_DEV_REFRESH_TTL_MSEC = 10 * 60 * 1000;
