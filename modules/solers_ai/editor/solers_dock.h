@@ -67,6 +67,8 @@ class SolersToolCell;
 class SolersToolRegistry;
 class SolersUserMessageCell;
 
+String solers_session_age_label(int64_t p_wall, int64_t p_now);
+
 class SolersDock : public PanelContainer {
 	GDCLASS(SolersDock, PanelContainer);
 
@@ -141,8 +143,6 @@ class SolersDock : public PanelContainer {
 	bool scroll_to_bottom_deferred = false;
 
 	Array pending_attachments;
-	String session_project_path;
-	String session_current_id;
 	Array timeline_messages;
 	bool timeline_window_updating = false;
 
@@ -163,7 +163,6 @@ class SolersDock : public PanelContainer {
 	void _toggle_session_sidebar();
 	void _refresh_session_list();
 	void _request_session_list_refresh();
-	void _sync_session_selection();
 	void _on_session_row_pressed(const String &p_session_id);
 	void _append_history_message(const Dictionary &p_message);
 	void _render_timeline();
@@ -255,7 +254,6 @@ public:
 	void load_chat_history(const Array &p_messages);
 	void set_session_select_callback(const Callable &p_callback);
 	void set_new_session_callback(const Callable &p_callback);
-	void set_session_context(const String &p_project_path, const String &p_session_id);
 	void notify_sessions_changed();
 	// Sole settings host (Editor + Project Manager). Category: plugins|llm|quick.
 	void open_provider_settings(const String &p_category = "plugins");

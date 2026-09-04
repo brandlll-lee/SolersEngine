@@ -87,12 +87,10 @@ void solers_load_editor_translation() {
 void SolersEditorPlugin::_select_session(const String &p_session_id) {
 	runtime->set_session(project_path, p_session_id);
 	dock->load_chat_history(runtime->get_timeline_entries());
-	dock->set_session_context(project_path, p_session_id);
 }
 
 void SolersEditorPlugin::_new_session() {
 	dock->start_new_chat();
-	dock->set_session_context(project_path, runtime->get_status().get("session_id", String()));
 }
 
 void SolersEditorPlugin::_translation_changed() {
@@ -226,7 +224,6 @@ SolersEditorPlugin::SolersEditorPlugin() {
 		dock->load_chat_history(runtime->get_timeline_entries());
 		OS::get_singleton()->unset_environment("SOLERS_SESSION_ID");
 	}
-	dock->set_session_context(project_path, session_id);
 	dock->make_visible();
 	set_process(true);
 }

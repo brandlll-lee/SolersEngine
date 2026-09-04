@@ -72,6 +72,7 @@
 #include "modules/solers_ai/editor/solers_asset_grid.h"
 #include "modules/solers_ai/editor/solers_chat_cells.h"
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
+#include "modules/solers_ai/editor/solers_dock.h"
 #include "modules/solers_ai/editor/solers_editor_plugin.h"
 #include "modules/solers_ai/editor/solers_markdown_view.h"
 #include "modules/solers_ai/editor/solers_model_preview.h"
@@ -90,6 +91,13 @@ TEST_CASE("[SolersContextRing] tooltip reports provider and ledger facts") {
 	const String tooltip = ring.get_tooltip_text();
 	CHECK(tooltip.find(String::utf8("\u219122K \u21931K R41K W0 CH96.0% $0.125")) >= 0);
 	CHECK(tooltip.find("2.8%/400K (auto)") >= 0);
+}
+
+TEST_CASE("[SolersDock] session age uses compact labels") {
+	CHECK(solers_session_age_label(100, 159) == "now");
+	CHECK(solers_session_age_label(100, 160) == "1m");
+	CHECK(solers_session_age_label(100, 3700) == "1h");
+	CHECK(solers_session_age_label(100, 86500) == "1d");
 }
 
 static void _stage_schema_image(const Variant &, const Callable &p_callback) {

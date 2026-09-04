@@ -199,7 +199,7 @@ static void solers_style_session_button(Button *p_button, bool p_session_row) {
 	solers_style_model_popup_row(p_button);
 	p_button->set_focus_mode(Control::FOCUS_ALL);
 	p_button->set_toggle_mode(p_session_row);
-	p_button->set_custom_minimum_size(Size2(0, (p_session_row ? 60 : 38) * EDSCALE));
+	p_button->set_custom_minimum_size(Size2(0, (p_session_row ? 36 : 38) * EDSCALE));
 	p_button->add_theme_constant_override("h_separation", int(9 * EDSCALE));
 	p_button->add_theme_style_override("hover", solers_row_styles[5]);
 	p_button->add_theme_style_override("pressed", solers_row_styles[6]);
@@ -837,7 +837,7 @@ void SolersDock::_toggle_session_sidebar() {
 	}
 	// Show the shell this frame; fill the list next idle so a cold index rebuild
 	// cannot stall the toggle click. solers_list_sessions rebuilds if needed.
-	if (show && session_list && session_list->get_child_count() == 0) {
+	if (show) {
 		_request_session_list_refresh();
 	}
 	_sync_layout_widths();
@@ -861,25 +861,12 @@ void SolersDock::_on_new_chat_pressed() {
 	} else {
 		start_new_chat();
 	}
-	_refresh_session_list();
-}
-
-void SolersDock::_sync_session_selection() {
-	if (session_button_group.is_null()) {
-		return;
-	}
-	List<BaseButton *> rows;
-	session_button_group->get_buttons(&rows);
-	for (BaseButton *row : rows) {
-		row->set_pressed_no_signal(String(row->get_meta("session_id", String())) == session_current_id);
-	}
 }
 
 void SolersDock::_on_session_row_pressed(const String &p_session_id) {
 	if (p_session_id.is_empty()) {
 		return;
 	}
-	session_current_id = p_session_id;
 	if (session_select_callback.is_valid()) {
 		session_select_callback.call(p_session_id);
 	}
@@ -926,6 +913,20 @@ static String _solers_session_time_label(int64_t p_wall, int64_t p_time_zone_off
 	return vformat("%d.%d.%02d %02d:%02d", dt.get("year", 0), dt.get("month", 0), dt.get("day", 0), dt.get("hour", 0), dt.get("minute", 0));
 }
 
+String solers_session_age_label(int64_t p_wall, int64_t p_now) {
+	const int64_t elapsed = MAX((int64_t)0, p_now - p_wall);
+	if (elapsed < 60) {
+		return "now";
+	}
+	if (elapsed < 3600) {
+		return itos(elapsed / 60) + "m";
+	}
+	if (elapsed < 86400) {
+		return itos(elapsed / 3600) + "h";
+	}
+	return itos(elapsed / 86400) + "d";
+}
+
 void SolersDock::_refresh_session_list() {
 	if (!session_list) {
 		return;
@@ -937,7 +938,10 @@ void SolersDock::_refresh_session_list() {
 	}
 	session_button_group.instantiate();
 
-	Vector<SolersSessionInfo> sessions = solers_list_sessions(session_project_path);
+	const Dictionary status = agent_session ? agent_session->get_status() : Dictionary();
+	const String current_session = status.get("session_id", String());
+	const bool running = status.get("running", false);
+	Vector<SolersSessionInfo> sessions = solers_list_sessions(status.get("project_path", String()));
 	struct WallSort {
 		bool operator()(const SolersSessionInfo &a, const SolersSessionInfo &b) const {
 			return a.wall > b.wall;
@@ -956,13 +960,14 @@ void SolersDock::_refresh_session_list() {
 			session_list->add_child(header);
 		}
 		const String title = solers_session_display_title(session.title);
-		const String time = _solers_session_time_label(session.wall, time_zone_offset);
+		const String time = solers_session_age_label(session.wall, now);
+		const bool active = session.session_id == current_session;
 		Button *row = memnew(Button);
 		solers_style_session_button(row, true);
 		row->set_button_group(session_button_group);
-		row->set_pressed_no_signal(session.session_id == session_current_id);
+		row->set_pressed_no_signal(active);
 		row->set_tooltip_text(session.title);
-		row->set_accessibility_name(title + ", " + time);
+		row->set_accessibility_name(title + ", " + (active && running ? TTR("Working") : time));
 		row->set_meta("session_id", session.session_id);
 		row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_on_session_row_pressed).bind(session.session_id));
 		session_list->add_child(row);
@@ -972,36 +977,31 @@ void SolersDock::_refresh_session_list() {
 		inset->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
 		inset->add_theme_constant_override("margin_left", 10 * EDSCALE);
 		inset->add_theme_constant_override("margin_right", 10 * EDSCALE);
-		inset->add_theme_constant_override("margin_top", 7 * EDSCALE);
-		inset->add_theme_constant_override("margin_bottom", 7 * EDSCALE);
+		inset->add_theme_constant_override("margin_top", 5 * EDSCALE);
+		inset->add_theme_constant_override("margin_bottom", 5 * EDSCALE);
 		row->add_child(inset);
-		VBoxContainer *content = memnew(VBoxContainer);
+		HBoxContainer *content = memnew(HBoxContainer);
 		content->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
-		content->add_theme_constant_override("separation", 3 * EDSCALE);
+		content->add_theme_constant_override("separation", 8 * EDSCALE);
 		inset->add_child(content);
 		Label *title_label = memnew(Label(title));
 		title_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 		title_label->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
 		title_label->set_theme_type_variation("SolersSessionTitle");
 		content->add_child(title_label);
-		HBoxContainer *time_row = memnew(HBoxContainer);
-		time_row->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
-		time_row->add_theme_constant_override("separation", 5 * EDSCALE);
-		content->add_child(time_row);
-		TextureRect *calendar = memnew(TextureRect);
-		calendar->set_name("SessionCalendar");
-		calendar->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
-		calendar->set_texture(SolersIcons::get(SNAME("calendar"), int(Math::round(12.0f * EDSCALE))));
-		calendar->set_stretch_mode(TextureRect::STRETCH_KEEP_CENTERED);
-		calendar->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
-		calendar->set_self_modulate(SOLERS_TEXT_META);
-		time_row->add_child(calendar);
-		Label *time_label = memnew(Label(time));
-		time_label->set_name("SessionTime");
-		time_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		time_label->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
-		time_label->set_theme_type_variation("SolersSessionMeta");
-		time_row->add_child(time_label);
+		if (active && running) {
+			SolersActivityIndicator *activity = memnew(SolersActivityIndicator);
+			activity->set_name("SessionActivity");
+			activity->set_custom_minimum_size(Size2(18, 18) * EDSCALE);
+			activity->set_self_modulate(SOLERS_TEXT_META);
+			content->add_child(activity);
+		} else {
+			Label *time_label = memnew(Label(time));
+			time_label->set_name("SessionTime");
+			time_label->set_auto_translate_mode(Node::AUTO_TRANSLATE_MODE_DISABLED);
+			time_label->set_theme_type_variation("SolersSessionMeta");
+			content->add_child(time_label);
+		}
 	}
 	if (sessions.is_empty()) {
 		Label *empty = memnew(Label);
@@ -1020,25 +1020,9 @@ void SolersDock::set_new_session_callback(const Callable &p_callback) {
 	new_session_callback = p_callback;
 }
 
-void SolersDock::set_session_context(const String &p_project_path, const String &p_session_id) {
-	const bool project_changed = session_project_path != p_project_path;
-	session_project_path = p_project_path;
-	session_current_id = p_session_id;
-	if (!session_sidebar || !session_sidebar->is_visible()) {
-		return;
-	}
-	// Only a project switch changes which sessions belong in the list.
-	// Same-project session switches only need the selected-row accent.
-	if (project_changed || (session_list && session_list->get_child_count() == 0)) {
-		_request_session_list_refresh();
-	} else {
-		_sync_session_selection();
-	}
-}
-
 void SolersDock::notify_sessions_changed() {
 	if (session_sidebar && session_sidebar->is_visible()) {
-		_request_session_list_refresh();
+		_refresh_session_list();
 	}
 }
 
@@ -1738,7 +1722,6 @@ void SolersDock::_submit_chat_prompt(const String &p_prompt, const Array &p_atta
 			user_row->set_event_id(event_id);
 		}
 		timeline_messages = agent_session->get_timeline_entries();
-		session_current_id = agent_session->get_status().get("session_id", session_current_id);
 		notify_sessions_changed();
 	}
 	_refresh_status();
@@ -3050,6 +3033,7 @@ void SolersDock::_on_agent_turn_failed(const Dictionary &) {
 	}
 	_refresh_status();
 	_update_send_enabled();
+	notify_sessions_changed();
 }
 
 void SolersDock::_on_agent_turn_retrying(int p_attempt, const String &p_message) {
