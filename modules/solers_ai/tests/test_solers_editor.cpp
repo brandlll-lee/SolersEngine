@@ -88,7 +88,7 @@ TEST_CASE("[SolersContextRing] tooltip reports provider and ledger facts") {
 	SolersContextRing ring;
 	ring.set_usage(Dictionary({ { "input_tokens", 22000 }, { "output_tokens", 1100 }, { "cache_read_tokens", 41000 }, { "cache_write_tokens", 0 }, { "cost", 0.125 }, { "last_input_tokens", 1000 }, { "last_cache_read_tokens", 24000 }, { "used_tokens", 11200 }, { "context_window", 400000 }, { "known", true } }));
 	const String tooltip = ring.get_tooltip_text();
-	CHECK(tooltip.find("↑22K ↓1K R41K W0 CH96.0% $0.125") >= 0);
+	CHECK(tooltip.find(String::utf8("\u219122K \u21931K R41K W0 CH96.0% $0.125")) >= 0);
 	CHECK(tooltip.find("2.8%/400K (auto)") >= 0);
 }
 

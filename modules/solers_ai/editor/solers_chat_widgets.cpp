@@ -374,7 +374,7 @@ void SolersContextRing::set_usage(const Dictionary &p_usage) {
 	const int64_t last_cache_read = MAX((int64_t)0, (int64_t)p_usage.get("last_cache_read_tokens", 0));
 	const int64_t last_cache_write = MAX((int64_t)0, (int64_t)p_usage.get("last_cache_write_tokens", 0));
 	const double cache_hit = last_input + last_cache_read + last_cache_write > 0 ? 100.0 * double(last_cache_read) / double(last_input + last_cache_read + last_cache_write) : 0.0;
-	String details = vformat("↑%s ↓%s R%s W%s CH%s%% $%s", _format_tokens(p_usage.get("input_tokens", 0)), _format_tokens(p_usage.get("output_tokens", 0)), _format_tokens(p_usage.get("cache_read_tokens", 0)), _format_tokens(p_usage.get("cache_write_tokens", 0)), String::num(cache_hit, 1), String::num((double)p_usage.get("cost", 0.0), 3));
+	String details = vformat(String::utf8("\u2191%s \u2193%s R%s W%s CH%s%% $%s"), _format_tokens(p_usage.get("input_tokens", 0)), _format_tokens(p_usage.get("output_tokens", 0)), _format_tokens(p_usage.get("cache_read_tokens", 0)), _format_tokens(p_usage.get("cache_write_tokens", 0)), String::num(cache_hit, 1), String::num((double)p_usage.get("cost", 0.0), 3));
 	details += known && total_tokens > 0 ? vformat("\n%s%%/%s (auto)", String::num(usage_ratio * 100.0, 1), _format_tokens(total_tokens)) : "\n?/" + (total_tokens > 0 ? _format_tokens(total_tokens) : String("?")) + " (auto)";
 	set_tooltip_text(details);
 	queue_redraw();
