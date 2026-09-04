@@ -42,22 +42,19 @@ private:
 	int authoritative_tokens = 0;
 	int covered_message_count = 0;
 	int last_estimated_tokens = 0;
-	int compaction_count = 0;
 
 	static int _estimate_message_tokens(const Dictionary &p_message);
-	static String _build_summary_text(const String &p_summary);
 
 public:
 	static constexpr int DEFAULT_OUTPUT_TOKENS = 8192;
 	// Ceiling for one observation, independent of where it lands in the
 	// conversation so identical results stay byte-identical and cacheable.
 	static constexpr int TOOL_RESULT_MAX_TOKENS = 10000;
-	static const char *COMPACTION_SUMMARY_PREFIX;
 	static const char *CANCELLED_TOOL_RESULT;
 	static const char *MODEL_CONTEXT_ROLE;
 
 	static Array repair_tool_pairing(const Array &p_messages);
-	static Array project_completed_turns(const Array &p_messages);
+	static Array project_compacted(const Array &p_messages, const Dictionary &p_compaction);
 	static Array project_tool_evidence(const Array &p_messages);
 
 	static int estimate_tokens(const String &p_text);
@@ -69,11 +66,7 @@ public:
 	// Reserve the provider's declared output capacity. Unknown windows never compact.
 	bool should_compact(int p_used_tokens, int p_context_window, int p_max_output_tokens) const;
 	bool should_compact(const Array &p_messages, const String &p_system_prompt, int p_tool_tokens, int p_context_window, int p_max_output_tokens, int p_transient_tokens = 0);
-	// A zero budget builds the smallest semantic core for unknown-window overflow recovery.
-	Dictionary apply_compaction(const Array &p_messages, const String &p_summary, int p_token_budget);
 	void reset();
 
 	int get_last_estimated_tokens() const { return last_estimated_tokens; }
-	int get_compaction_count() const { return compaction_count; }
-	void set_compaction_count(int p_count) { compaction_count = MAX(0, p_count); }
 };

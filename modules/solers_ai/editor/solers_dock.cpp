@@ -84,7 +84,7 @@
 #include "modules/solers_ai/editor/solers_chat_cells.h"
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
 #include "modules/solers_ai/llm/solers_llm_message.h"
-#include "modules/solers_ai/llm/solers_models_dev.h"
+#include "modules/solers_ai/llm/solers_model_catalog.h"
 constexpr int SOLERS_MENTION_VISIBLE_ROWS = 4;
 // Space reserved for a timeline row that has never been laid out. Only the
 // scrollbar range depends on it: the measured height replaces it the first time
@@ -297,16 +297,16 @@ static String solers_compact_label(const String &p_label) {
 	return label.substr(0, 25) + "...";
 }
 
-static SolersModelsDev *solers_dock_models_dev(SolersSettingsService *p_settings) {
-	return p_settings && p_settings->get_provider_registry() ? p_settings->get_provider_registry()->get_models_dev() : nullptr;
+static SolersModelCatalog *solers_dock_model_catalog(SolersSettingsService *p_settings) {
+	return p_settings && p_settings->get_provider_registry() ? p_settings->get_provider_registry()->get_model_catalog() : nullptr;
 }
 
 static String solers_resolve_model_display(SolersSettingsService *p_settings, const Dictionary &p_provider_data, const String &p_model) {
 	const Dictionary profile = p_provider_data.get("profile", Dictionary());
 	const String provider = String(p_provider_data.get("provider", String())).strip_edges();
 	const String catalog_id = profile.get("catalog_provider", provider);
-	SolersModelsDev *models_dev = solers_dock_models_dev(p_settings);
-	const Dictionary model_info = models_dev ? models_dev->get_model(StringName(catalog_id), p_model) : Dictionary();
+	SolersModelCatalog *model_catalog = solers_dock_model_catalog(p_settings);
+	const Dictionary model_info = model_catalog ? model_catalog->get_model(StringName(catalog_id), p_model) : Dictionary();
 	return solers_model_display_label(p_model, model_info);
 }
 
@@ -469,8 +469,7 @@ void SolersDock::_refresh_status() {
 	_refresh_model_chip();
 	if (context_ring) {
 		const Dictionary status = agent_session ? agent_session->get_status() : Dictionary();
-		const Dictionary usage = status.get("last_request_usage", Dictionary());
-		context_ring->set_usage(usage.get("used_tokens", 0), usage.get("context_window", 0), usage.get("message_count", 0), usage.get("media_reference_count", 0), status.get("compaction_count", 0));
+		context_ring->set_usage(status.get("context_usage", Dictionary()));
 	}
 }
 
@@ -1072,10 +1071,10 @@ void SolersDock::_on_model_chip_pressed() {
 	solers_clear_children(model_menu_box);
 	model_menu_model_row = nullptr;
 	model_menu_effort_row = nullptr;
-	SolersModelsDev *models_dev = solers_dock_models_dev(settings_service);
-	if (models_dev) {
-		models_dev->refresh();
-		model_catalog_revision = models_dev->get_catalog_revision();
+	SolersModelCatalog *model_catalog = solers_dock_model_catalog(settings_service);
+	if (model_catalog) {
+		model_catalog->refresh();
+		model_catalog_revision = model_catalog->get_catalog_revision();
 	}
 
 	const Dictionary provider_data = settings_service ? Dictionary(settings_service->get_provider_config().get("data", Dictionary())) : Dictionary();
@@ -1092,8 +1091,8 @@ void SolersDock::_on_model_chip_pressed() {
 	model_menu_model_row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_open_model_submenu).bind(SOLERS_SUBMENU_MODEL));
 	model_menu_box->add_child(model_menu_model_row);
 
-	const Dictionary active_model_info = models_dev ? models_dev->get_model(StringName(active_catalog_id), active_model) : Dictionary();
-	const Array efforts = SolersModelsDev::reasoning_efforts(active_model_info);
+	const Dictionary active_model_info = model_catalog ? model_catalog->get_model(StringName(active_catalog_id), active_model) : Dictionary();
+	const Array efforts = SolersModelCatalog::reasoning_efforts(active_model_info);
 	if (provider_data.get("available", false) && !active_model.is_empty() && !efforts.is_empty()) {
 		model_menu_effort_row = solers_make_model_menu_parent_row(Ref<Texture2D>(), TTR("Effort"), solers_reasoning_effort_label(active_effort));
 		model_menu_effort_row->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_open_model_submenu).bind(SOLERS_SUBMENU_EFFORT));
@@ -1207,9 +1206,9 @@ void SolersDock::_open_model_submenu(int p_kind) {
 		solers_clear_children(model_submenu_list);
 		const Dictionary active_profile = provider_data.get("profile", Dictionary());
 		const String active_catalog_id = active_profile.get("catalog_provider", active_provider);
-		SolersModelsDev *models_dev = solers_dock_models_dev(settings_service);
-		const Dictionary active_model_info = models_dev ? models_dev->get_model(StringName(active_catalog_id), active_model) : Dictionary();
-		const Array efforts = SolersModelsDev::reasoning_efforts(active_model_info);
+		SolersModelCatalog *model_catalog = solers_dock_model_catalog(settings_service);
+		const Dictionary active_model_info = model_catalog ? model_catalog->get_model(StringName(active_catalog_id), active_model) : Dictionary();
+		const Array efforts = SolersModelCatalog::reasoning_efforts(active_model_info);
 
 		Button *default_effort = solers_make_model_popup_row("Default", String(), active_effort.is_empty());
 		default_effort->connect(SceneStringName(pressed), callable_mp(this, &SolersDock::_set_reasoning_effort_from_popup).bind(String()));
@@ -1243,13 +1242,13 @@ void SolersDock::_open_provider_models(const Dictionary &p_config, Button *p_anc
 	const String active_provider = active.get("provider", String());
 	const String active_model = active.get("model", String());
 	SolersProviderRegistry *registry = settings_service->get_provider_registry();
-	SolersModelsDev *models_dev = solers_dock_models_dev(settings_service);
+	SolersModelCatalog *model_catalog = solers_dock_model_catalog(settings_service);
 
 	Array models;
 	HashSet<String> seen_models;
 	solers_add_unique_model(models, seen_models, p_config.get("model", String()));
-	if (models_dev) {
-		for (const Variant &model_id : models_dev->list_model_ids(catalog_name)) {
+	if (model_catalog) {
+		for (const Variant &model_id : model_catalog->list_model_ids(catalog_name)) {
 			solers_add_unique_model(models, seen_models, model_id);
 		}
 	}
@@ -1261,7 +1260,7 @@ void SolersDock::_open_provider_models(const Dictionary &p_config, Button *p_anc
 		if (registry && !registry->is_model_allowed(provider, model_id)) {
 			continue;
 		}
-		const Dictionary model_info = models_dev ? models_dev->get_model(catalog_name, model_id) : Dictionary();
+		const Dictionary model_info = model_catalog ? model_catalog->get_model(catalog_name, model_id) : Dictionary();
 		Dictionary entry;
 		entry["provider"] = provider;
 		entry["model_id"] = model_id;
@@ -2409,9 +2408,9 @@ void SolersDock::_notification(int p_what) {
 			_refresh_session_list();
 		} break;
 		case NOTIFICATION_INTERNAL_PROCESS: {
-			SolersModelsDev *models_dev = solers_dock_models_dev(settings_service);
-			if (models_dev && model_popup_overlay && model_popup_overlay->is_visible()) {
-				const uint64_t revision = models_dev->get_catalog_revision();
+			SolersModelCatalog *model_catalog = solers_dock_model_catalog(settings_service);
+			if (model_catalog && model_popup_overlay && model_popup_overlay->is_visible()) {
+				const uint64_t revision = model_catalog->get_catalog_revision();
 				if (revision != model_catalog_revision) {
 					_hide_model_popup();
 					_on_model_chip_pressed();

@@ -38,11 +38,12 @@
 #include "editor/settings/editor_settings.h"
 
 #include "modules/solers_ai/core/solers_codex_auth.h"
+#include "modules/solers_ai/core/solers_context_manager.h"
 #include "modules/solers_ai/core/solers_provider_registry.h"
 #include "modules/solers_ai/core/solers_secret_store.h"
-#include "modules/solers_ai/llm/solers_models_dev.h"
+#include "modules/solers_ai/llm/solers_model_catalog.h"
 
-static constexpr int SOLERS_PROVIDER_SETTINGS_VERSION = 6;
+static constexpr int SOLERS_PROVIDER_SETTINGS_VERSION = 7;
 
 void SolersSettingsService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_provider_registry", "provider_registry"), &SolersSettingsService::set_provider_registry);
@@ -86,6 +87,26 @@ String SolersSettingsService::_setting_path(const String &p_key) const {
 
 String SolersSettingsService::_provider_setting_path(const String &p_provider, const String &p_key) const {
 	return _setting_path("providers/" + p_provider + "/" + p_key);
+}
+
+String SolersSettingsService::_model_setting_key(const String &p_provider, const String &p_model) const {
+	const Dictionary profile = provider_registry ? provider_registry->get_provider_profile(p_provider) : Dictionary();
+	return String(profile.get("catalog_provider", p_provider)) + "/" + p_model;
+}
+
+Dictionary SolersSettingsService::_get_model_overrides() const {
+	EditorSettings *settings = EditorSettings::get_singleton();
+	if (!settings || !settings->has_setting(_setting_path("model_overrides"))) {
+		return Dictionary();
+	}
+	const Variant value = settings->get_setting(_setting_path("model_overrides"));
+	return value.get_type() == Variant::DICTIONARY ? Dictionary(value).duplicate(true) : Dictionary();
+}
+
+void SolersSettingsService::_sync_model_catalog() const {
+	if (provider_registry && provider_registry->get_model_catalog()) {
+		provider_registry->get_model_catalog()->set_model_overrides(_get_model_overrides());
+	}
 }
 
 void SolersSettingsService::_migrate_provider_settings() {
@@ -149,8 +170,8 @@ void SolersSettingsService::_migrate_provider_settings() {
 		}
 	}
 	if (version < 5) {
-		// Single alias authority: SolersModelsDev::canonical_provider_id.
-		SolersModelsDev *md = provider_registry ? provider_registry->get_models_dev() : nullptr;
+		// Single alias authority: SolersModelCatalog::canonical_provider_id.
+		SolersModelCatalog *md = provider_registry ? provider_registry->get_model_catalog() : nullptr;
 		if (md) {
 			static const char *PROVIDER_KEYS[] = { "configured", "model", "base_url", "api_key", "oauth", "reasoning_effort" };
 			for (const Variant &from_v : md->list_legacy_provider_ids()) {
@@ -179,6 +200,42 @@ void SolersSettingsService::_migrate_provider_settings() {
 	}
 	if (settings->has_setting(_setting_path("custom_provider_ids"))) {
 		settings->erase(_setting_path("custom_provider_ids"));
+	}
+	if (version < 7) {
+		Dictionary overrides = _get_model_overrides();
+		List<PropertyInfo> properties;
+		settings->get_property_list(&properties);
+		const String prefix = _setting_path("providers/");
+		for (const PropertyInfo &property : properties) {
+			const String path = property.name;
+			if (!path.begins_with(prefix)) {
+				continue;
+			}
+			const String rest = path.substr(prefix.length());
+			const int slash = rest.find("/");
+			if (slash <= 0 || rest.substr(slash + 1) != "model") {
+				continue;
+			}
+			const String id = rest.substr(0, slash);
+			const String model = settings->get_setting(path);
+			if (model.is_empty()) {
+				continue;
+			}
+			Dictionary override;
+			for (const String &field : { String("base_url"), String("context_window"), String("max_tokens") }) {
+				const String old_path = _provider_setting_path(id, field);
+				if (!settings->has_setting(old_path)) {
+					continue;
+				}
+				const String target = field == "base_url" ? "provider_api" : (field == "context_window" ? "context" : "output");
+				override[target] = settings->get_setting(old_path);
+				settings->erase(old_path);
+			}
+			if (!override.is_empty()) {
+				overrides[_model_setting_key(id, model)] = override;
+			}
+		}
+		settings->set_manually(_setting_path("model_overrides"), overrides);
 	}
 	settings->set_manually(_setting_path("settings_version"), SOLERS_PROVIDER_SETTINGS_VERSION);
 	EditorSettings::save();
@@ -270,13 +327,13 @@ Dictionary SolersSettingsService::_get_provider_config(const String &p_provider,
 	data["configured"] = settings->has_setting(_provider_setting_path(p_provider, "configured")) && (bool)settings->get_setting(_provider_setting_path(p_provider, "configured"));
 	data["model"] = settings->has_setting(_provider_setting_path(p_provider, "model")) ? String(settings->get_setting(_provider_setting_path(p_provider, "model"))) : String(profile.get("default_model", String()));
 	data["reasoning_effort"] = settings->has_setting(_provider_setting_path(p_provider, "reasoning_effort")) ? String(settings->get_setting(_provider_setting_path(p_provider, "reasoning_effort"))) : String();
-	data["base_url"] = settings->has_setting(_provider_setting_path(p_provider, "base_url")) ? String(settings->get_setting(_provider_setting_path(p_provider, "base_url"))) : String(profile.get("default_base_url", String()));
-	for (const String &key : { String("context_window"), String("max_tokens") }) {
-		const String path = _provider_setting_path(p_provider, key);
-		if (settings->has_setting(path) && (int)settings->get_setting(path) > 0) {
-			data[key] = settings->get_setting(path);
-		}
-	}
+	const String model_id = data["model"];
+	const Dictionary model = provider_registry->get_model_catalog()->get_model(StringName(profile.get("catalog_provider", p_provider)), model_id);
+	data["base_url"] = model.get("provider_api", profile.get("default_base_url", String()));
+	data["protocol"] = model.get("protocol", profile.get("protocol", String()));
+	data["context_window"] = model.get("context", model_id.is_empty() ? 0 : 128000);
+	data["max_tokens"] = model.get("output", SolersContextManager::DEFAULT_OUTPUT_TOKENS);
+	data["cost"] = model.get("cost", Dictionary());
 
 	// Credential PRESENCE only: a stored blob / env var existing is the
 	// authoritative signal that a credential was configured. Decryption
@@ -339,6 +396,7 @@ Dictionary SolersSettingsService::_get_provider_config(const String &p_provider,
 void SolersSettingsService::set_provider_registry(SolersProviderRegistry *p_provider_registry) {
 	provider_registry = p_provider_registry;
 	_migrate_provider_settings();
+	_sync_model_catalog();
 }
 
 bool SolersSettingsService::get_local_models_only() const {
@@ -387,20 +445,76 @@ Dictionary SolersSettingsService::set_provider_config(const Dictionary &p_args) 
 	if (!provider_registry) {
 		return _error("PROVIDER_REGISTRY_UNAVAILABLE", "Solers provider registry is not initialized.", false);
 	}
-	if (p_args.has("model") && !provider_registry->is_model_allowed(provider, String(p_args["model"]))) {
-		return _error("MODEL_NOT_ALLOWED", "The selected model is not available through this provider connection.");
-	}
 	const Dictionary profile = provider_registry->get_provider_profile(provider);
 	if (profile.is_empty()) {
 		return _error("PROVIDER_CONNECTION_UNDECLARED", "Choose a catalog provider or the Custom OpenAI-compatible connection.");
 	}
 	const bool was_connected = _get_provider_config(provider, false).get("connected", false);
+	const String model = p_args.has("model") ? String(p_args["model"]).strip_edges() : String(profile.get("default_model", String()));
+	const String overrides_path = _setting_path("model_overrides");
+	const bool had_overrides = settings->has_setting(overrides_path);
+	const Dictionary previous_overrides = _get_model_overrides();
+	bool catalog_changed = false;
+	if (!model.is_empty()) {
+		Dictionary overrides = previous_overrides.duplicate(true);
+		const String key = _model_setting_key(provider, model);
+		Dictionary model_override = overrides.get(key, Dictionary());
+		if (p_args.has("protocol")) {
+			model_override["protocol"] = p_args["protocol"];
+		}
+		if (p_args.has("base_url")) {
+			const String base_url = String(p_args["base_url"]).strip_edges();
+			if (base_url.is_empty()) {
+				model_override.erase("provider_api");
+			} else {
+				model_override["provider_api"] = base_url;
+			}
+		}
+		static const char *SOURCE_FIELDS[] = { "context_window", "max_tokens" };
+		static const char *MODEL_FIELDS[] = { "context", "output" };
+		for (int i = 0; i < 2; i++) {
+			if (!p_args.has(SOURCE_FIELDS[i])) {
+				continue;
+			}
+			const int value = p_args.get(SOURCE_FIELDS[i], 0);
+			if (value > 0) {
+				model_override[MODEL_FIELDS[i]] = value;
+			} else {
+				model_override.erase(MODEL_FIELDS[i]);
+			}
+		}
+		const Variant cost_value = p_args.get("cost", Variant());
+		if (cost_value.get_type() == Variant::DICTIONARY) {
+			const StringName catalog_provider = StringName(profile.get("catalog_provider", provider));
+			Dictionary cost = provider_registry->get_model_catalog()->get_model(catalog_provider, model).get("cost", Dictionary());
+			cost.merge(Dictionary(cost_value), true);
+			model_override["cost"] = cost;
+		}
+		if (model_override.is_empty()) {
+			overrides.erase(key);
+		} else {
+			overrides[key] = model_override;
+		}
+		settings->set_manually(overrides_path, overrides);
+		_sync_model_catalog();
+		catalog_changed = true;
+	}
+	if (!model.is_empty() && !provider_registry->is_model_allowed(provider, model)) {
+		if (catalog_changed) {
+			if (had_overrides) {
+				settings->set_manually(overrides_path, previous_overrides);
+			} else {
+				settings->erase(overrides_path);
+			}
+			_sync_model_catalog();
+		}
+		return _error("MODEL_NOT_ALLOWED", "The selected model is not available through this provider connection.");
+	}
 	settings->set_manually(_setting_path("provider"), provider);
 	settings->set_manually(_provider_setting_path(provider, "configured"), true);
 	if (p_args.has("model")) {
 		const String model_path = _provider_setting_path(provider, "model");
 		const String previous_model = settings->has_setting(model_path) ? String(settings->get_setting(model_path)) : String(provider_registry->get_provider_profile(provider).get("default_model", String()));
-		const String model = String(p_args["model"]);
 		settings->set_manually(model_path, model);
 		if (model != previous_model && !p_args.has("reasoning_effort")) {
 			settings->erase(_provider_setting_path(provider, "reasoning_effort"));
@@ -413,21 +527,6 @@ Dictionary SolersSettingsService::set_provider_config(const Dictionary &p_args) 
 			settings->erase(effort_path);
 		} else {
 			settings->set_manually(effort_path, effort);
-		}
-	}
-	if (p_args.has("base_url")) {
-		settings->set_manually(_provider_setting_path(provider, "base_url"), String(p_args["base_url"]));
-	}
-	for (const String &key : { String("context_window"), String("max_tokens") }) {
-		if (!p_args.has(key)) {
-			continue;
-		}
-		const String path = _provider_setting_path(provider, key);
-		const int value = p_args[key];
-		if (value > 0) {
-			settings->set_manually(path, value);
-		} else {
-			settings->erase(path);
 		}
 	}
 	if (p_args.has("api_key") && !String(p_args["api_key"]).is_empty()) {
@@ -448,7 +547,7 @@ Dictionary SolersSettingsService::set_provider_config(const Dictionary &p_args) 
 Dictionary SolersSettingsService::disconnect_provider(const String &p_provider) {
 	EditorSettings *settings = EditorSettings::get_singleton();
 	ERR_FAIL_NULL_V(settings, _error("EDITOR_SETTINGS_UNAVAILABLE", "EditorSettings is not available.", false));
-	static const char *KEYS[] = { "configured", "model", "reasoning_effort", "base_url", "context_window", "max_tokens", "api_key", "oauth" };
+	static const char *KEYS[] = { "configured", "model", "reasoning_effort", "api_key", "oauth" };
 	for (const char *key : KEYS) {
 		const String path = _provider_setting_path(p_provider, key);
 		if (settings->has_setting(path)) {
@@ -556,7 +655,7 @@ Dictionary SolersSettingsService::list_connected_provider_configs() const {
 
 Dictionary SolersSettingsService::list_provider_view() const {
 	ERR_FAIL_NULL_V(provider_registry, _error("PROVIDER_REGISTRY_UNAVAILABLE", "Solers provider registry is not initialized.", false));
-	if (SolersModelsDev *md = provider_registry->get_models_dev()) {
+	if (SolersModelCatalog *md = provider_registry->get_model_catalog()) {
 		md->refresh();
 	}
 

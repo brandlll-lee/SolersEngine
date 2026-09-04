@@ -161,13 +161,21 @@ static void _solers_remove_projected_after(Array &r_values, int64_t p_event_id) 
 	}
 }
 
+static void _solers_accumulate_usage(Dictionary &r_total, const Dictionary &p_usage) {
+	for (const char *field : { "input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_write_tokens" }) {
+		r_total[field] = (int64_t)r_total.get(field, 0) + MAX((int64_t)0, (int64_t)p_usage.get(field, 0));
+	}
+	r_total["cost"] = (double)r_total.get("cost", 0.0) + MAX(0.0, (double)p_usage.get("cost", 0.0));
+}
+
 Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_path, const String &p_session_id) const {
 	Array restored;
 	Array restored_timeline;
 	HashMap<String, Dictionary> open_tools;
-	Dictionary restored_last_request_usage;
+	Dictionary restored_session_usage;
+	Dictionary restored_context_usage;
+	Dictionary restored_compaction;
 	String restored_outcome;
-	int restored_compaction_count = 0;
 	int restored_turn_id = 0;
 	int64_t sequence = 0;
 
@@ -181,13 +189,14 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 		Array *messages;
 		Array *timeline;
 		HashMap<String, Dictionary> *open_tools;
-		Dictionary *last_usage;
+		Dictionary *session_usage;
+		Dictionary *context_usage;
+		Dictionary *compaction;
 		String *outcome;
-		int *compaction_count;
 		int *turn_id;
 		int64_t *sequence;
 	};
-	ScanState scan{ &p_project_path, &p_session_id, &restored, &restored_timeline, &open_tools, &restored_last_request_usage, &restored_outcome, &restored_compaction_count, &restored_turn_id, &sequence };
+	ScanState scan{ &p_project_path, &p_session_id, &restored, &restored_timeline, &open_tools, &restored_session_usage, &restored_context_usage, &restored_compaction, &restored_outcome, &restored_turn_id, &sequence };
 
 	solers_transcript_foreach_session(p_session_id, &scan, [](void *p_userdata, const String &p_record) -> bool {
 		ScanState &scan = *static_cast<ScanState *>(p_userdata);
@@ -211,19 +220,28 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 				_solers_remove_projected_after(*scan.messages, target);
 				_solers_remove_projected_after(*scan.timeline, target);
 				scan.open_tools->clear();
+				if ((int64_t)scan.compaction->get("event_id", 0) >= target) {
+					scan.compaction->clear();
+					scan.context_usage->clear();
+				}
 			}
 			return true;
 		}
 		if (type == "context_compaction" && String(event.get("phase", String())) == "completed") {
-			(*scan.compaction_count)++;
-			const Array compacted = event.get("messages", Array());
-			if (!compacted.is_empty()) {
-				*scan.messages = compacted.duplicate(true);
+			*scan.compaction = event.duplicate(true);
+			scan.context_usage->clear();
+			const Dictionary usage = event.get("usage", Dictionary());
+			if (!usage.is_empty()) {
+				_solers_accumulate_usage(*scan.session_usage, usage);
 			}
 		}
 		const Dictionary usage = event.get("usage", Dictionary());
-		if (!usage.is_empty()) {
-			*scan.last_usage = usage.duplicate(true);
+		if (type == "model_response" && !usage.is_empty()) {
+			_solers_accumulate_usage(*scan.session_usage, usage);
+			for (const char *field : { "input_tokens", "cache_read_tokens", "cache_write_tokens" }) {
+				(*scan.session_usage)[String("last_") + field] = usage.get(field, 0);
+			}
+			*scan.context_usage = usage.duplicate(true);
 		}
 		_solers_project_timeline_event(event, *scan.timeline, *scan.open_tools);
 
@@ -288,9 +306,10 @@ Dictionary SolersAgentSession::_read_transcript_state(const String &p_project_pa
 	Dictionary state;
 	state["messages"] = restored;
 	state["timeline_entries"] = restored_timeline;
-	state["last_request_usage"] = restored_last_request_usage;
+	state["session_usage"] = restored_session_usage;
+	state["context_usage"] = restored_context_usage;
+	state["compaction"] = restored_compaction;
 	state["outcome"] = restored_outcome;
-	state["compaction_count"] = restored_compaction_count;
 	state["turn_id"] = restored_turn_id;
 	return state;
 }
@@ -364,7 +383,7 @@ int64_t SolersAgentSession::_write_transcript_compaction(const String &p_phase, 
 	return _write_transcript_event("context_compaction", event);
 }
 
-void SolersAgentSession::_write_transcript_tool(const String &p_call_id, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result, const String &p_delivered_content, const Array &p_added_tool_names) const {
+int64_t SolersAgentSession::_write_transcript_tool(const String &p_call_id, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result, const String &p_delivered_content, const Array &p_added_tool_names) const {
 	Dictionary event;
 	event["role"] = "tool";
 	event["call_id"] = p_call_id;
@@ -385,7 +404,7 @@ void SolersAgentSession::_write_transcript_tool(const String &p_call_id, const S
 	if (result_data.has("artifact")) {
 		event["artifact"] = result_data["artifact"];
 	}
-	_write_transcript_event("tool_result", event);
+	return _write_transcript_event("tool_result", event);
 }
 
 void SolersAgentSession::_ensure_godot_log_audit(bool p_turn_active) {
@@ -543,6 +562,11 @@ Dictionary SolersAgentSession::rewind_to_event(int64_t p_event_id) {
 		}
 	}
 	_solers_remove_projected_after(timeline_entries, p_event_id);
+	if ((int64_t)latest_compaction.get("event_id", 0) >= p_event_id) {
+		latest_compaction.clear();
+		context_usage.clear();
+		context_covered_message_count = 0;
+	}
 	_write_transcript_event("conversation_rewind", Dictionary({ { "target_event_id", p_event_id }, { "project_state_unchanged", true } }));
 	Dictionary data = preview.get("data", Dictionary()).duplicate(true);
 	data["rewound"] = true;

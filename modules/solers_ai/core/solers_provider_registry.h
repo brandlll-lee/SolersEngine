@@ -34,7 +34,7 @@
 #include "core/variant/array.h"
 #include "core/variant/dictionary.h"
 
-class SolersModelsDev;
+class SolersModelCatalog;
 
 // Assembles transport profiles from catalog entries with declared connection
 // facts plus the small AuthHook/custom overlay table. Metadata-only catalog
@@ -42,10 +42,10 @@ class SolersModelsDev;
 class SolersProviderRegistry : public Object {
 	GDCLASS(SolersProviderRegistry, Object);
 
-	SolersModelsDev *models_dev = nullptr; // Owned.
+	SolersModelCatalog *model_catalog = nullptr; // Owned.
 	Dictionary overlays; // id -> special profile (AuthHooks).
 	Array overlay_order;
-	bool owns_models_dev = true;
+	bool owns_model_catalog = true;
 
 	Dictionary _ok(const Variant &p_data) const;
 	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
@@ -59,8 +59,8 @@ protected:
 	static void _bind_methods();
 
 public:
-	SolersModelsDev *get_models_dev() const { return models_dev; }
-	void set_models_dev(SolersModelsDev *p_models_dev, bool p_owned = false);
+	SolersModelCatalog *get_model_catalog() const { return model_catalog; }
+	void set_model_catalog(SolersModelCatalog *p_model_catalog, bool p_owned = false);
 
 	Dictionary get_provider_profile(const String &p_provider) const;
 	Dictionary resolve_provider_profile(const String &p_provider, const String &p_base_url_override = String(), const String &p_model = String()) const;

@@ -176,12 +176,14 @@ void SolersAgentSession::_deliver_tool_result(const String &p_id, const String &
 		result["diagnostics"] = diagnostics;
 	}
 	const String content = SolersContextManager::clamp_to_tokens(JSON::stringify(result, "", false, true), SolersContextManager::TOOL_RESULT_MAX_TOKENS);
-	_write_transcript_tool(p_id, p_canonical_name, p_args, result, content);
+	const int64_t event_id = _write_transcript_tool(p_id, p_canonical_name, p_args, result, content);
 	const uint64_t completed_msec = tool_completed_msec > 0 ? tool_completed_msec : OS::get_singleton()->get_ticks_msec();
 	const uint64_t duration = completed_msec >= p_started_msec ? completed_msec - p_started_msec : 0;
 	emit_signal(SNAME("tool_call_finished"), p_id, p_canonical_name, result, (int64_t)duration);
 
-	messages.push_back(SolersLLMMessage::tool_result(p_id, p_model_name, content, result.get("attachments", Array())));
+	Dictionary message = SolersLLMMessage::tool_result(p_id, p_model_name, content, result.get("attachments", Array()));
+	message["event_id"] = event_id;
+	messages.push_back(message);
 }
 
 void SolersAgentSession::_cancel_undelivered_tools() {

@@ -40,7 +40,7 @@
 class SolersContextManager;
 class SolersLLMClient;
 class SolersLLMProtocolRegistry;
-class SolersModelsDev;
+class SolersModelCatalog;
 class SolersPermissionManager;
 class SolersProjectObservation;
 class SolersRuntimeObservation;
@@ -70,8 +70,8 @@ class SolersAgentSession : public Object {
 	SolersLLMProtocolRegistry *protocol_registry = nullptr;
 	SolersLLMClient *client = nullptr;
 	SolersContextManager *context_manager = nullptr;
-	SolersModelsDev *models_dev = nullptr;
-	bool owns_models_dev = true;
+	SolersModelCatalog *model_catalog = nullptr;
+	bool owns_model_catalog = true;
 
 	int context_window = 0;
 	int max_output_tokens = 8192;
@@ -88,7 +88,10 @@ class SolersAgentSession : public Object {
 	Dictionary streamed_tool_calls;
 	String last_stop_reason;
 	Dictionary last_usage;
-	Dictionary last_request_usage;
+	Dictionary session_usage;
+	Dictionary context_usage;
+	Dictionary latest_compaction;
+	int context_covered_message_count = 0;
 	String last_outcome;
 	Dictionary active_provider;
 	bool running = false;
@@ -124,6 +127,8 @@ class SolersAgentSession : public Object {
 	Array compaction_source_messages;
 	int64_t compaction_id = 0;
 	int64_t compaction_timeline_event_id = 0;
+	int64_t compaction_first_kept_event_id = 0;
+	int compaction_tokens_before = 0;
 	Dictionary retry_request;
 	Dictionary retry_profile;
 	int overflow_compaction_attempts = 0;
@@ -165,6 +170,8 @@ class SolersAgentSession : public Object {
 	Dictionary _provider_dispatch_error() const;
 	Error _begin_provider_request(const Dictionary &p_request, const Dictionary &p_profile);
 	void _record_request_usage(const Dictionary &p_usage);
+	double _usage_cost(const Dictionary &p_usage) const;
+	void _accumulate_usage(const Dictionary &p_usage);
 	Error _dispatch_model_request();
 	Error _dispatch_compaction_request();
 	Error _begin_compaction(bool p_from_overflow);
@@ -189,7 +196,7 @@ class SolersAgentSession : public Object {
 	bool _flush_pending_steering();
 
 	int64_t _write_transcript_message(const String &p_role, const String &p_content, const Array &p_mentions = Array(), const Array &p_tool_calls = Array(), const String &p_reasoning = String(), const Array &p_attachments = Array(), int64_t p_event_id = 0) const;
-	void _write_transcript_tool(const String &p_call_id, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result, const String &p_delivered_content, const Array &p_added_tool_names = Array()) const;
+	int64_t _write_transcript_tool(const String &p_call_id, const String &p_canonical_name, const Dictionary &p_args, const Dictionary &p_result, const String &p_delivered_content, const Array &p_added_tool_names = Array()) const;
 	int64_t _write_transcript_compaction(const String &p_phase, const Dictionary &p_payload) const;
 	void _record(const String &p_event, const Dictionary &p_payload) const;
 	Dictionary _ok(const Variant &p_data) const;
@@ -202,7 +209,7 @@ public:
 	void set_tool_registry(SolersToolRegistry *p_tool_registry);
 	SolersToolExecutor *get_tool_executor() const { return tool_executor; }
 	void set_settings_service(SolersSettingsService *p_settings_service) { settings_service = p_settings_service; }
-	void set_models_dev(SolersModelsDev *p_models_dev, bool p_owned = false);
+	void set_model_catalog(SolersModelCatalog *p_model_catalog, bool p_owned = false);
 	void set_permission_manager(SolersPermissionManager *p_permission_manager);
 	void set_observations(SolersProjectObservation *p_project, SolersSceneObservation *p_scene, SolersRuntimeObservation *p_runtime);
 	Dictionary start_turn(const Dictionary &p_args);

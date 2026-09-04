@@ -52,7 +52,7 @@
 #include "modules/solers_ai/llm/solers_llm_message.h"
 #include "modules/solers_ai/llm/solers_llm_protocol.h"
 #include "modules/solers_ai/llm/solers_llm_retry.h"
-#include "modules/solers_ai/llm/solers_models_dev.h"
+#include "modules/solers_ai/llm/solers_model_catalog.h"
 
 void SolersAgentSession::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("start_turn", "args"), &SolersAgentSession::start_turn);
@@ -116,12 +116,12 @@ void SolersAgentSession::set_observations(SolersProjectObservation *p_project, S
 	runtime_observation = p_runtime;
 }
 
-void SolersAgentSession::set_models_dev(SolersModelsDev *p_models_dev, bool p_owned) {
-	if (owns_models_dev && models_dev && models_dev != p_models_dev) {
-		memdelete(models_dev);
+void SolersAgentSession::set_model_catalog(SolersModelCatalog *p_model_catalog, bool p_owned) {
+	if (owns_model_catalog && model_catalog && model_catalog != p_model_catalog) {
+		memdelete(model_catalog);
 	}
-	models_dev = p_models_dev;
-	owns_models_dev = p_owned && p_models_dev != nullptr;
+	model_catalog = p_model_catalog;
+	owns_model_catalog = p_owned && p_model_catalog != nullptr;
 }
 
 static Array _solers_enrich_mentions(const Array &p_mentions, SolersProjectObservation *p_observation) {
@@ -295,14 +295,14 @@ Array SolersAgentSession::_collect_tools() {
 }
 
 bool SolersAgentSession::_refresh_active_model_limits() {
-	if (!settings_service || !models_dev) {
+	if (!settings_service || !model_catalog) {
 		return false;
 	}
 	const String provider_id = active_provider.get("provider", String());
 	const String model_id = active_provider.get("model", String());
 	const Dictionary profile = settings_service->resolve_provider_profile(provider_id, active_provider.get("base_url", String()), model_id);
 	const StringName catalog_provider = StringName(profile.get("catalog_provider", provider_id));
-	const Dictionary model = models_dev->get_model(catalog_provider, model_id);
+	const Dictionary model = model_catalog->get_model(catalog_provider, model_id);
 
 	const bool explicit_context = active_provider.has("context_window");
 	const bool explicit_output = active_provider.has("max_tokens");
@@ -324,25 +324,22 @@ bool SolersAgentSession::_refresh_active_model_limits() {
 
 	const int previous_context = context_window;
 	const int previous_output = max_output_tokens;
-	context_window = resolved_context > 0 ? resolved_context : 0;
-	// Keep catalog output from consuming the usable input budget.
-	static constexpr int SOLERS_OUTPUT_TOKEN_MAX = 32000;
+	context_window = resolved_context > 0 ? resolved_context : (model_id.is_empty() ? 0 : 128000);
 	if (resolved_output <= 0) {
 		resolved_output = SolersContextManager::DEFAULT_OUTPUT_TOKENS;
 	}
-	resolved_output = MIN(resolved_output, SOLERS_OUTPUT_TOKEN_MAX);
 	max_output_tokens = resolved_output;
 	return context_window != previous_context || max_output_tokens != previous_output;
 }
 
 int SolersAgentSession::_active_model_input_support(const String &p_modality) const {
-	if (!settings_service || !models_dev) {
+	if (!settings_service || !model_catalog) {
 		return -1;
 	}
 	const String provider_id = active_provider.get("provider", String());
 	const Dictionary profile = settings_service->resolve_provider_profile(provider_id, active_provider.get("base_url", String()), active_provider.get("model", String()));
 	const StringName catalog_provider = StringName(profile.get("catalog_provider", provider_id));
-	return SolersModelsDev::input_modality_support(models_dev->get_model(catalog_provider, active_provider.get("model", String())), p_modality);
+	return SolersModelCatalog::input_modality_support(model_catalog->get_model(catalog_provider, active_provider.get("model", String())), p_modality);
 }
 
 Dictionary SolersAgentSession::_build_request(const Array &p_messages, const String &p_request_system_prompt, const Array &p_tools) const {
@@ -365,8 +362,8 @@ Dictionary SolersAgentSession::_build_request(const Array &p_messages, const Str
 		const String provider_id = active_provider.get("provider", String());
 		const Dictionary active_profile = settings_service ? settings_service->resolve_provider_profile(provider_id, active_provider.get("base_url", String()), active_provider.get("model", String())) : Dictionary();
 		const StringName catalog_provider = StringName(active_profile.get("catalog_provider", provider_id));
-		const Dictionary model = models_dev ? models_dev->get_model(catalog_provider, active_provider.get("model", String())) : Dictionary();
-		if (SolersModelsDev::reasoning_efforts(model).has(reasoning_effort)) {
+		const Dictionary model = model_catalog ? model_catalog->get_model(catalog_provider, active_provider.get("model", String())) : Dictionary();
+		if (SolersModelCatalog::reasoning_efforts(model).has(reasoning_effort)) {
 			request["reasoning_effort"] = reasoning_effort;
 		}
 	}
@@ -420,7 +417,10 @@ Error SolersAgentSession::_dispatch_model_request() {
 		system_prompt = _default_system_prompt();
 	}
 	const Array tools = _collect_tools();
-	Array request_messages = context_manager ? context_manager->project_tool_evidence(messages) : messages.duplicate(true);
+	Array request_messages = context_manager ? context_manager->project_compacted(messages, latest_compaction) : messages.duplicate(true);
+	if (context_manager) {
+		request_messages = context_manager->project_tool_evidence(request_messages);
+	}
 	// Dynamic engine facts ride at the end. Attachment projection then replaces
 	// previously consumed image bytes with stable hash references; the system,
 	// tools, and text history remain cacheable.
@@ -433,12 +433,9 @@ Error SolersAgentSession::_dispatch_model_request() {
 		request_transient_tokens = SolersContextManager::estimate_messages_tokens(transient);
 	}
 	if (context_manager && context_manager->should_compact(request_messages, system_prompt, cached_request_tool_tokens, context_window, max_output_tokens, request_transient_tokens)) {
-		if (phase == PHASE_COMPACTING) {
-			const Dictionary error = _error("COMPACTION_TARGET_NOT_REACHED", "The accepted context projection no longer fits the current engine state.").get("error", Dictionary());
-			_finish_turn("failed", error.get("message", String()), error);
-			return ERR_OUT_OF_MEMORY;
+		if (phase != PHASE_COMPACTING) {
+			return _begin_compaction(false);
 		}
-		return _begin_compaction(false);
 	}
 	Dictionary request = _build_request(request_messages, system_prompt, tools);
 	phase = PHASE_STREAMING;
@@ -478,6 +475,16 @@ Error SolersAgentSession::_begin_compaction(bool p_from_overflow) {
 	if (!context_manager || messages.is_empty()) {
 		return ERR_UNAVAILABLE;
 	}
+	int64_t first_kept_event_id = 0;
+	for (int i = messages.size() - 1; i >= 0; i--) {
+		const Dictionary message = messages[i];
+		if (String(message.get("role", String())) == SolersLLMRole::USER && (int)message.get("turn_id", 0) == turn_id) {
+			first_kept_event_id = message.get("event_id", 0);
+		}
+	}
+	if (first_kept_event_id <= 0) {
+		return ERR_INVALID_DATA;
+	}
 	compaction_source_messages = messages.duplicate(true);
 	current_text = String();
 	current_reasoning = String();
@@ -485,10 +492,13 @@ Error SolersAgentSession::_begin_compaction(bool p_from_overflow) {
 	streamed_tool_calls.clear();
 	last_stop_reason = String();
 	phase = PHASE_COMPACTING;
+	compaction_first_kept_event_id = first_kept_event_id;
 	Dictionary payload;
 	payload["source"] = p_from_overflow ? "overflow" : "auto";
 	_collect_tools();
-	payload["tokens_before"] = context_manager->get_token_count_with_pending(messages, system_prompt, cached_request_tool_tokens, request_transient_tokens);
+	const Array projection = SolersContextManager::project_tool_evidence(SolersContextManager::project_compacted(messages, latest_compaction));
+	compaction_tokens_before = context_manager->get_token_count_with_pending(projection, system_prompt, cached_request_tool_tokens, request_transient_tokens);
+	payload["tokens_before"] = compaction_tokens_before;
 	compaction_id = ++transcript_event_sequence;
 	compaction_timeline_event_id = _write_transcript_compaction("started", payload);
 	emit_signal(SNAME("timeline_entry_committed"), compaction_timeline_event_id, "context_compaction");
@@ -500,14 +510,37 @@ void SolersAgentSession::_record_request_usage(const Dictionary &p_usage) {
 	last_usage["context_window"] = context_window;
 	last_usage["provider"] = active_provider.get("provider", String());
 	last_usage["model"] = active_provider.get("model", String());
-	const Array request_messages = retry_request.get("messages", Array());
-	int media_reference_count = 0;
-	for (const Variant &message_variant : request_messages) {
-		media_reference_count += Array(Dictionary(message_variant).get("attachments", Array())).size();
+	last_usage["cost"] = _usage_cost(last_usage);
+}
+
+double SolersAgentSession::_usage_cost(const Dictionary &p_usage) const {
+	if (!model_catalog || !settings_service) {
+		return 0.0;
 	}
-	last_usage["message_count"] = request_messages.size();
-	last_usage["media_reference_count"] = media_reference_count;
-	last_request_usage = last_usage.duplicate(true);
+	const String provider_id = active_provider.get("provider", String());
+	const String model_id = active_provider.get("model", String());
+	const Dictionary profile = settings_service->resolve_provider_profile(provider_id, active_provider.get("base_url", String()), model_id);
+	const Dictionary model = model_catalog->get_model(StringName(profile.get("catalog_provider", provider_id)), model_id);
+	Dictionary cost = model.get("cost", Dictionary());
+	const int64_t prompt_tokens = MAX((int64_t)0, (int64_t)p_usage.get("input_tokens", 0)) + MAX((int64_t)0, (int64_t)p_usage.get("cache_read_tokens", 0)) + MAX((int64_t)0, (int64_t)p_usage.get("cache_write_tokens", 0));
+	for (const Variant &tier_value : Array(cost.get("tiers", Array()))) {
+		const Dictionary tier = tier_value;
+		if (prompt_tokens > (int64_t)tier.get("input_tokens_above", INT64_MAX)) {
+			cost.merge(tier, true);
+		}
+	}
+	const double input = MAX(0.0, (double)p_usage.get("input_tokens", 0)) * (double)cost.get("input", 0.0);
+	const double output = (MAX(0.0, (double)p_usage.get("output_tokens", 0)) + MAX(0.0, (double)p_usage.get("reasoning_tokens", 0))) * (double)cost.get("output", 0.0);
+	const double cache_read = MAX(0.0, (double)p_usage.get("cache_read_tokens", 0)) * (double)cost.get("cache_read", 0.0);
+	const double cache_write = MAX(0.0, (double)p_usage.get("cache_write_tokens", 0)) * (double)cost.get("cache_write", 0.0);
+	return (input + output + cache_read + cache_write) / 1000000.0;
+}
+
+void SolersAgentSession::_accumulate_usage(const Dictionary &p_usage) {
+	for (const char *field : { "input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_write_tokens" }) {
+		session_usage[field] = (int64_t)session_usage.get(field, 0) + MAX((int64_t)0, (int64_t)p_usage.get(field, 0));
+	}
+	session_usage["cost"] = (double)session_usage.get("cost", 0.0) + MAX(0.0, (double)p_usage.get("cost", 0.0));
 }
 
 Error SolersAgentSession::_dispatch_compaction_request() {
@@ -534,15 +567,15 @@ Error SolersAgentSession::_dispatch_compaction_request() {
 ## Key Decisions
 ## Next Steps
 ## Critical Context
-Current user instructions override conflicting history. Preserve exact paths, API names, errors, and attachment ids. The structured Godot checkpoint is authoritative: never invent engine state or rewrite hashes, ObjectIDs, revisions, or receipts. Return text only.)";
+Current user instructions override conflicting history. Preserve exact paths, API names, errors, and attachment ids. Never invent engine state or rewrite hashes, ObjectIDs, revisions, or receipts. Return text only.)";
 	Array history;
-	const Array projection = SolersContextManager::project_completed_turns(compaction_source_messages);
+	const Array projection = SolersContextManager::project_tool_evidence(SolersContextManager::project_compacted(compaction_source_messages, latest_compaction));
 	for (int i = 0; i < projection.size(); i++) {
 		const Dictionary message = projection[i];
 		const String origin = message.get("origin", String());
 		const String role = message.get("role", String());
-		if (origin == "turn_checkpoint" || origin == "compaction_summary") {
-			history.push_back(SolersLLMMessage::user((origin == "turn_checkpoint" ? "Authoritative Godot checkpoint:\n" : "Previous continuation:\n") + String(message.get("content", String()))));
+		if (origin == "compaction_summary" || origin == "tool_evidence") {
+			history.push_back(SolersLLMMessage::user(String(message.get("content", String()))));
 		} else if (role == SolersLLMRole::USER) {
 			String content = SolersMention::strip_prompt_block(message.get("content", String()));
 			PackedStringArray attachment_ids;
@@ -611,6 +644,10 @@ void SolersAgentSession::_poll_compaction() {
 			current_text += String(event.get("text", String()));
 		} else if (kind == SolersLLMEventKind::REASONING_DELTA) {
 			current_reasoning += String(event.get("text", String()));
+		} else if (kind == SolersLLMEventKind::TOOL_INPUT_START || kind == SolersLLMEventKind::TOOL_INPUT_DELTA) {
+			_merge_streamed_tool_call(_tool_call_from_event(event));
+		} else if (kind == SolersLLMEventKind::TOOL_CALL) {
+			pending_tool_calls.push_back(_merge_streamed_tool_call(_tool_call_from_event(event)));
 		} else if (kind == SolersLLMEventKind::USAGE) {
 			_record_request_usage(event);
 			turn_fresh_input_tokens += MAX(0, (int)event.get("input_tokens", 0));
@@ -638,7 +675,7 @@ void SolersAgentSession::_poll_compaction() {
 	if (!client->is_done()) {
 		return;
 	}
-	if (current_text.strip_edges().is_empty()) {
+	if (last_stop_reason == SolersLLMStopReason::MAX_TOKENS || !pending_tool_calls.is_empty() || !streamed_tool_calls.is_empty() || current_text.strip_edges().is_empty()) {
 		const Dictionary error = _error("COMPACTION_FAILED", "The model did not produce a usable context summary.").get("error", Dictionary());
 		_finish_turn("failed", String(error.get("message", "Context compaction failed.")), error);
 		return;
@@ -648,28 +685,27 @@ void SolersAgentSession::_poll_compaction() {
 }
 
 void SolersAgentSession::_on_compaction_complete() {
-	const int projection_budget = context_window > 0 ? context_window - max_output_tokens - SolersContextManager::estimate_tokens(system_prompt) - cached_request_tool_tokens - request_transient_tokens - SolersContextManager::TOOL_RESULT_MAX_TOKENS : 0;
-	if (context_window > 0 && projection_budget <= 0) {
-		const Dictionary error = _error("MODEL_CONTEXT_BUDGET_INVALID", "The model context cannot fit the system prompt, tools, output, engine state, and one observation.").get("error", Dictionary());
-		_finish_turn("failed", error.get("message", String()), error);
-		return;
+	Dictionary bookmark;
+	bookmark["summary"] = current_text.strip_edges();
+	bookmark["first_kept_event_id"] = compaction_first_kept_event_id;
+	bookmark["tokens_before"] = compaction_tokens_before;
+	if (!last_usage.is_empty()) {
+		bookmark["usage"] = last_usage;
+		_accumulate_usage(last_usage);
 	}
-	const Dictionary result = context_manager->apply_compaction(compaction_source_messages, current_text, projection_budget);
-	if (!(bool)result.get("accepted", false)) {
-		Dictionary error = _error("COMPACTION_TARGET_NOT_REACHED", "Context compaction did not produce a smaller projection within the request budget.").get("error", Dictionary());
-		error["tokens_before"] = result.get("tokens_before", 0);
-		error["tokens_after"] = result.get("tokens_after", 0);
-		error["target_tokens"] = result.get("target_tokens", 0);
-		_finish_turn("failed", error.get("message", String()), error);
-		return;
-	}
-	messages = result.get("messages", Array());
-	_write_transcript_compaction("completed", result);
+	const int64_t bookmark_event_id = _write_transcript_compaction("completed", bookmark);
+	bookmark["event_id"] = bookmark_event_id;
+	latest_compaction = bookmark;
+	context_usage.clear();
+	context_covered_message_count = 0;
+	context_manager->reset();
 	emit_signal(SNAME("timeline_entry_committed"), compaction_timeline_event_id, "context_compaction");
 
 	compaction_source_messages.clear();
 	compaction_id = 0;
 	compaction_timeline_event_id = 0;
+	compaction_first_kept_event_id = 0;
+	compaction_tokens_before = 0;
 	retry_attempt = 0;
 	retry_resume_msec = 0;
 	current_text = String();
@@ -808,8 +844,8 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 		emit_signal(SNAME("turn_failed"), e.get("error", Dictionary()));
 		return e;
 	}
-	if (models_dev) {
-		models_dev->refresh();
+	if (model_catalog) {
+		model_catalog->refresh();
 	}
 	if (model.is_empty()) {
 		Dictionary e = _error("NO_MODEL", "No model is configured. Choose one from a connected provider in the Chat panel.");
@@ -860,10 +896,6 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 	if (!turn_mentions.is_empty()) {
 		user_message["mentions"] = turn_mentions.duplicate(true);
 	}
-	if (context_manager) {
-		context_manager->reset();
-	}
-	messages.push_back(user_message);
 	current_text = String();
 	current_reasoning = String();
 	current_provider_metadata.clear();
@@ -894,6 +926,8 @@ Dictionary SolersAgentSession::start_turn(const Dictionary &p_args) {
 	_record("agent_turn_started", turn_started);
 	// Persist the same enriched mentions + attachment ids the model received (display still strips the prompt block).
 	const int64_t user_event_id = _write_transcript_message("user", prompt, turn_mentions, Array(), String(), turn_attachments);
+	user_message["event_id"] = user_event_id;
+	messages.push_back(user_message);
 
 	const Error err = _dispatch_model_request();
 	if (err != OK) {
@@ -969,7 +1003,11 @@ void SolersAgentSession::poll() {
 				turn_fresh_input_tokens += fresh_tokens;
 				turn_cache_read_tokens += cache_read_tokens;
 				turn_cache_write_tokens += cache_write_tokens;
-				context_manager->record_usage(prompt_tokens, messages.size(), request_transient_tokens);
+				if (latest_compaction.is_empty()) {
+					context_manager->record_usage(prompt_tokens, messages.size(), request_transient_tokens);
+				} else {
+					context_manager->reset();
+				}
 			}
 		} else if (kind == SolersLLMEventKind::FINISH) {
 			last_stop_reason = e.get("stop_reason", String());
@@ -1012,6 +1050,12 @@ void SolersAgentSession::_on_model_turn_complete() {
 		response_event["usage"] = last_usage;
 	}
 	_write_transcript_event("model_response", response_event);
+	if (!last_usage.is_empty()) {
+		_accumulate_usage(last_usage);
+		for (const char *field : { "input_tokens", "cache_read_tokens", "cache_write_tokens" }) {
+			session_usage[String("last_") + field] = last_usage.get(field, 0);
+		}
+	}
 	HashSet<String> operation_ids;
 	for (int i = 0; i < pending_tool_calls.size(); i++) {
 		const String operation_id = String(Dictionary(pending_tool_calls[i]).get("id", String())).strip_edges();
@@ -1045,10 +1089,19 @@ void SolersAgentSession::_on_model_turn_complete() {
 		return;
 	}
 	overflow_compaction_attempts = 0;
-	messages.push_back(SolersLLMMessage::assistant(current_text, pending_tool_calls, current_provider_metadata));
+	Dictionary assistant_message = SolersLLMMessage::assistant(current_text, pending_tool_calls, current_provider_metadata);
 	if (!current_text.is_empty() || !pending_tool_calls.is_empty() || !current_reasoning.is_empty()) {
 		const int64_t event_id = _write_transcript_message("assistant", current_text, Array(), pending_tool_calls, current_reasoning);
+		assistant_message["event_id"] = event_id;
+		if (!current_reasoning.is_empty()) {
+			assistant_message["reasoning"] = current_reasoning;
+		}
+		messages.push_back(assistant_message);
 		emit_signal(SNAME("timeline_entry_committed"), event_id, SolersLLMRole::ASSISTANT);
+	}
+	if (!last_usage.is_empty()) {
+		context_usage = last_usage.duplicate(true);
+		context_covered_message_count = messages.size();
 	}
 	if (pending_tool_calls.is_empty()) {
 		const String final_text = current_text;
@@ -1171,6 +1224,8 @@ void SolersAgentSession::_finish_turn(const String &p_outcome, const String &p_m
 	compaction_source_messages.clear();
 	compaction_id = 0;
 	compaction_timeline_event_id = 0;
+	compaction_first_kept_event_id = 0;
+	compaction_tokens_before = 0;
 	overflow_compaction_attempts = 0;
 	last_progress_call_id = String();
 	last_progress_msec = 0;
@@ -1229,7 +1284,10 @@ void SolersAgentSession::reset_conversation() {
 	last_outcome = String();
 	last_stop_reason = String();
 	last_usage.clear();
-	last_request_usage.clear();
+	session_usage.clear();
+	context_usage.clear();
+	latest_compaction.clear();
+	context_covered_message_count = 0;
 	if (context_manager) {
 		context_manager->reset();
 	}
@@ -1259,12 +1317,14 @@ void SolersAgentSession::set_session(const String &p_project_path, const String 
 	messages = state.get("messages", Array());
 	timeline_entries = state.get("timeline_entries", Array());
 	open_timeline_tools.clear();
-	last_request_usage = state.get("last_request_usage", Dictionary());
+	session_usage = state.get("session_usage", Dictionary());
+	context_usage = state.get("context_usage", Dictionary());
+	latest_compaction = state.get("compaction", Dictionary());
+	context_covered_message_count = messages.size();
 	last_outcome = state.get("outcome", String());
 	turn_id = state.get("turn_id", 0);
 	if (context_manager) {
 		context_manager->reset();
-		context_manager->set_compaction_count(state.get("compaction_count", 0));
 	}
 	if (!project_path.is_empty()) {
 		_ensure_godot_log_audit(false);
@@ -1279,6 +1339,11 @@ Array SolersAgentSession::get_messages() const {
 }
 
 Dictionary SolersAgentSession::get_status() const {
+	int status_context_window = context_window;
+	if (!running && settings_service) {
+		const Dictionary configured = settings_service->get_provider_config().get("data", Dictionary());
+		status_context_window = configured.get("context_window", 0);
+	}
 	Dictionary status;
 	status["running"] = running;
 	status["turn_id"] = turn_id;
@@ -1292,14 +1357,21 @@ Dictionary SolersAgentSession::get_status() const {
 	status["output_tokens"] = turn_output_tokens;
 	status["reasoning_tokens"] = turn_reasoning_tokens;
 	status["wire_body_bytes"] = turn_wire_body_bytes;
-	status["context_window"] = context_window;
+	status["context_window"] = status_context_window;
 	status["max_output_tokens"] = max_output_tokens;
-	status["model_limits_known"] = context_window > 0;
-	Dictionary usage = last_request_usage.duplicate(true);
-	if (!usage.is_empty()) {
-		usage["used_tokens"] = MAX(0, (int64_t)usage.get("input_tokens", 0)) + MAX(0, (int64_t)usage.get("output_tokens", 0)) + MAX(0, (int64_t)usage.get("reasoning_tokens", 0)) + MAX(0, (int64_t)usage.get("cache_read_tokens", 0)) + MAX(0, (int64_t)usage.get("cache_write_tokens", 0));
+	status["model_limits_known"] = status_context_window > 0;
+	Dictionary usage = session_usage.duplicate(true);
+	usage["output_tokens"] = (int64_t)usage.get("output_tokens", 0) + (int64_t)usage.get("reasoning_tokens", 0);
+	usage["context_window"] = status_context_window;
+	usage["known"] = !context_usage.is_empty();
+	if (!context_usage.is_empty()) {
+		int64_t used_tokens = MAX((int64_t)0, (int64_t)context_usage.get("input_tokens", 0)) + MAX((int64_t)0, (int64_t)context_usage.get("output_tokens", 0)) + MAX((int64_t)0, (int64_t)context_usage.get("reasoning_tokens", 0)) + MAX((int64_t)0, (int64_t)context_usage.get("cache_read_tokens", 0)) + MAX((int64_t)0, (int64_t)context_usage.get("cache_write_tokens", 0));
+		if (context_covered_message_count < messages.size()) {
+			used_tokens += SolersContextManager::estimate_messages_tokens(messages.slice(context_covered_message_count));
+		}
+		usage["used_tokens"] = used_tokens;
 	}
-	status["last_request_usage"] = usage;
+	status["context_usage"] = usage;
 	status["project_path"] = project_path;
 	status["session_id"] = session_id;
 	status["compacting"] = phase == PHASE_COMPACTING;
@@ -1312,7 +1384,6 @@ Dictionary SolersAgentSession::get_status() const {
 	status["runtime_epoch"] = runtime_observation ? runtime_observation->get_runtime_status().get("runtime_epoch", 0) : Variant((int64_t)0);
 	if (context_manager) {
 		status["context_tokens"] = context_manager->get_last_estimated_tokens();
-		status["compaction_count"] = context_manager->get_compaction_count();
 	}
 	return status;
 }
@@ -1329,9 +1400,9 @@ SolersAgentSession::SolersAgentSession() {
 	client = memnew(SolersLLMClient);
 	client->set_protocol_registry(protocol_registry);
 	context_manager = memnew(SolersContextManager);
-	models_dev = memnew(SolersModelsDev);
-	models_dev->initialize();
-	owns_models_dev = true;
+	model_catalog = memnew(SolersModelCatalog);
+	model_catalog->initialize();
+	owns_model_catalog = true;
 }
 
 SolersAgentSession::~SolersAgentSession() {
@@ -1348,11 +1419,11 @@ SolersAgentSession::~SolersAgentSession() {
 		memdelete(client);
 		client = nullptr;
 	}
-	if (owns_models_dev && models_dev) {
-		memdelete(models_dev);
-		models_dev = nullptr;
+	if (owns_model_catalog && model_catalog) {
+		memdelete(model_catalog);
+		model_catalog = nullptr;
 	} else {
-		models_dev = nullptr;
+		model_catalog = nullptr;
 	}
 	if (protocol_registry) {
 		memdelete(protocol_registry);

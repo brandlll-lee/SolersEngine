@@ -52,6 +52,9 @@ class SolersSettingsService : public Object {
 	Dictionary _error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
 	String _setting_path(const String &p_key) const;
 	String _provider_setting_path(const String &p_provider, const String &p_key) const;
+	String _model_setting_key(const String &p_provider, const String &p_model) const;
+	Dictionary _get_model_overrides() const;
+	void _sync_model_catalog() const;
 	void _migrate_provider_settings();
 	Dictionary _get_provider_config(const String &p_provider, bool p_include_secret) const;
 	Dictionary _get_stored_auth(const String &p_provider) const;

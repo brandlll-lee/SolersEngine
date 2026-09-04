@@ -64,7 +64,7 @@ SolersAgentRuntime::SolersAgentRuntime() {
 	tool_registry = memnew(SolersToolRegistry);
 
 	settings_service->set_provider_registry(provider_registry);
-	agent_session->set_models_dev(provider_registry->get_models_dev(), false);
+	agent_session->set_model_catalog(provider_registry->get_model_catalog(), false);
 	tool_registry->set_project_observation(project_observation);
 	tool_registry->set_runtime_observation(runtime_observation);
 	tool_registry->set_scene_observation(scene_observation);

@@ -48,17 +48,15 @@ TEST_FORCE_LINK(test_solers_agent)
 
 namespace TestSolersAgent {
 
-TEST_CASE("[SolersContextManager] compaction preserves the current instruction") {
-	SolersContextManager context;
+TEST_CASE("[SolersContextManager] compaction is a bookmark projection") {
 	Array messages;
-	messages.push_back(Dictionary({ { "role", "user" }, { "content", String("old ").repeat(3000) }, { "turn_id", 1 } }));
-	messages.push_back(Dictionary({ { "role", "user" }, { "content", "current instruction" }, { "turn_id", 2 } }));
-	const Dictionary result = context.apply_compaction(messages, "Continue from current engine state.", 2000);
-	REQUIRE((bool)result.get("accepted", false));
-	const Array compacted = result.get("messages", Array());
-	REQUIRE(compacted.size() >= 2);
-	CHECK(String(Dictionary(compacted[0]).get("content", String())).find("Continue from current engine state.") >= 0);
-	CHECK(context.get_compaction_count() == 1);
+	messages.push_back(Dictionary({ { "role", "user" }, { "content", "old" }, { "event_id", 1 } }));
+	messages.push_back(Dictionary({ { "role", "user" }, { "content", "current instruction" }, { "event_id", 2 } }));
+	const Array projected = SolersContextManager::project_compacted(messages, Dictionary({ { "summary", "Continue from current engine state." }, { "first_kept_event_id", 2 } }));
+	REQUIRE(projected.size() == 2);
+	CHECK(String(Dictionary(projected[0]).get("content", String())).find("Continue from current engine state.") >= 0);
+	CHECK((int64_t)Dictionary(projected[1]).get("event_id", 0) == 2);
+	CHECK(messages.size() == 2);
 }
 
 TEST_CASE("[SolersContextManager] open-turn tool evidence stays on the ledger") {
@@ -73,9 +71,6 @@ TEST_CASE("[SolersContextManager] open-turn tool evidence stays on the ledger") 
 	}
 	CHECK(kept);
 	CHECK(evidence.size() >= 3);
-	const Array projected = SolersContextManager::project_completed_turns(messages);
-	CHECK(projected.size() < evidence.size());
-	CHECK(String(Dictionary(projected[projected.size() - 1]).get("tool_call_id", String())) != "c1");
 }
 
 TEST_CASE("[Editor][SolersAgentSession] truncated responses return tool failures without execution") {
@@ -87,7 +82,7 @@ TEST_CASE("[Editor][SolersAgentSession] truncated responses return tool failures
 	REQUIRE(editor_settings != nullptr);
 	const String prefix = "solers/ai/";
 	const String provider = "custom_openai_compatible";
-	Array paths({ prefix + "provider", prefix + "local_models_only" });
+	Array paths({ prefix + "provider", prefix + "local_models_only", prefix + "model_overrides" });
 	for (const String &key : { String("configured"), String("model"), String("base_url"), String("api_key") }) {
 		paths.push_back(prefix + "providers/" + provider + "/" + key);
 	}
@@ -110,9 +105,10 @@ TEST_CASE("[Editor][SolersAgentSession] truncated responses return tool failures
 
 	SolersTestPaths cleanup;
 	SolersAgentSession session;
-	session.set_models_dev(nullptr);
+	session.set_model_catalog(nullptr);
 	cleanup.add("res://.solers/sessions/" + String(session.get_status().get("session_id", String())).sha256_text() + ".jsonl");
 	session.set_settings_service(&settings);
+	CHECK((int)session.get_status().get("context_window", 0) == 128000);
 	session.set_tool_registry(&tools);
 	session.set_permission_manager(&permissions);
 	REQUIRE(session.start_turn(Dictionary({ { "prompt", "write" } })).get("ok", false));

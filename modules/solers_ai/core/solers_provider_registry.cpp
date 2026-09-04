@@ -34,7 +34,7 @@
 #include "core/os/os.h"
 #include "core/templates/hash_set.h"
 
-#include "modules/solers_ai/llm/solers_models_dev.h"
+#include "modules/solers_ai/llm/solers_model_catalog.h"
 
 void SolersProviderRegistry::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_provider_profile", "provider"), &SolersProviderRegistry::get_provider_profile);
@@ -96,8 +96,8 @@ Dictionary SolersProviderRegistry::_profile_from_catalog(const Dictionary &p_cat
 	const bool local = p_catalog.get("local", false);
 	profile["local"] = local;
 	profile["auth_type"] = local ? "none" : "api_key";
-	profile["auth_header"] = p_catalog.get("auth_header", String());
-	profile["auth_prefix"] = p_catalog.get("auth_prefix", String());
+	profile["auth_header"] = p_catalog.get("auth_header", protocol == "anthropic-messages" ? String("x-api-key") : String("Authorization"));
+	profile["auth_prefix"] = p_catalog.get("auth_prefix", protocol == "anthropic-messages" ? String() : String("Bearer "));
 	profile["api_key_required"] = !local;
 	const Array env = p_catalog.get("env", Array());
 	profile["api_key_env"] = env.is_empty() ? String() : String(env[0]);
@@ -154,7 +154,7 @@ void SolersProviderRegistry::_register_auth_hooks() {
 	codex["label"] = "ChatGPT Codex";
 	codex["protocol"] = "openai-responses";
 	codex["default_base_url"] = "https://chatgpt.com/backend-api/codex";
-	codex["catalog_provider"] = "openai";
+	codex["catalog_provider"] = "openai-codex";
 	codex["local"] = false;
 	codex["auth_type"] = "oauth";
 	Dictionary browser_auth;
@@ -183,12 +183,12 @@ void SolersProviderRegistry::_register_auth_hooks() {
 	overlay_order.push_back("custom_openai_compatible");
 }
 
-void SolersProviderRegistry::set_models_dev(SolersModelsDev *p_models_dev, bool p_owned) {
-	if (owns_models_dev && models_dev && models_dev != p_models_dev) {
-		memdelete(models_dev);
+void SolersProviderRegistry::set_model_catalog(SolersModelCatalog *p_model_catalog, bool p_owned) {
+	if (owns_model_catalog && model_catalog && model_catalog != p_model_catalog) {
+		memdelete(model_catalog);
 	}
-	models_dev = p_models_dev;
-	owns_models_dev = p_owned && p_models_dev != nullptr;
+	model_catalog = p_model_catalog;
+	owns_model_catalog = p_owned && p_model_catalog != nullptr;
 }
 
 Dictionary SolersProviderRegistry::get_provider_profile(const String &p_provider) const {
@@ -197,8 +197,8 @@ Dictionary SolersProviderRegistry::get_provider_profile(const String &p_provider
 	}
 	if (overlays.has(p_provider)) {
 		Dictionary profile = overlays[p_provider];
-		if (models_dev) {
-			const Dictionary catalog = models_dev->get_provider(StringName(profile.get("catalog_provider", p_provider)));
+		if (model_catalog) {
+			const Dictionary catalog = model_catalog->get_provider(StringName(profile.get("catalog_provider", p_provider)));
 			const String default_model = _default_model_for_catalog(catalog);
 			if (!default_model.is_empty()) {
 				profile["default_model"] = default_model;
@@ -206,15 +206,15 @@ Dictionary SolersProviderRegistry::get_provider_profile(const String &p_provider
 		}
 		return profile;
 	}
-	if (models_dev) {
-		const Dictionary catalog = models_dev->get_provider(StringName(p_provider));
+	if (model_catalog) {
+		const Dictionary catalog = model_catalog->get_provider(StringName(p_provider));
 		if (!catalog.is_empty()) {
 			return _profile_from_catalog(catalog);
 		}
 		// Logo / catalog id aliases (data map, not behavior branches).
-		const String canonical = models_dev->canonical_provider_id(p_provider);
+		const String canonical = model_catalog->canonical_provider_id(p_provider);
 		if (canonical != p_provider) {
-			const Dictionary aliased = models_dev->get_provider(StringName(canonical));
+			const Dictionary aliased = model_catalog->get_provider(StringName(canonical));
 			if (!aliased.is_empty()) {
 				Dictionary profile = _profile_from_catalog(aliased);
 				profile["id"] = p_provider;
@@ -232,10 +232,13 @@ Dictionary SolersProviderRegistry::resolve_provider_profile(const String &p_prov
 		return Dictionary();
 	}
 	String default_url = String(profile.get("default_base_url", String())).trim_suffix("/");
-	if (!p_model.is_empty() && models_dev) {
-		const Dictionary model = models_dev->get_model(StringName(profile.get("catalog_provider", p_provider)), p_model);
+	if (!p_model.is_empty() && model_catalog) {
+		const Dictionary model = model_catalog->get_model(StringName(profile.get("catalog_provider", p_provider)), p_model);
+		const String declared_protocol = model.get("protocol", String());
 		const String package = model.get("provider_npm", String());
-		if (!package.is_empty()) {
+		if (!declared_protocol.is_empty()) {
+			profile["protocol"] = declared_protocol;
+		} else if (!package.is_empty()) {
 			profile["protocol"] = _protocol_for_package(package);
 		}
 		const String model_url = model.get("provider_api", String());
@@ -275,7 +278,7 @@ Array SolersProviderRegistry::list_provider_profiles() const {
 }
 
 Array SolersProviderRegistry::list_popular_provider_ids() const {
-	return models_dev ? models_dev->list_popular_provider_ids() : Array();
+	return model_catalog ? model_catalog->list_popular_provider_ids() : Array();
 }
 
 Array SolersProviderRegistry::list_overlay_provider_ids() const {
@@ -283,14 +286,14 @@ Array SolersProviderRegistry::list_overlay_provider_ids() const {
 }
 
 bool SolersProviderRegistry::is_model_allowed(const String &p_provider, const String &p_model) const {
-	if (!models_dev) {
+	if (!model_catalog) {
 		return true;
 	}
 	const Dictionary profile = get_provider_profile(p_provider);
 	if (profile.is_empty()) {
 		return true;
 	}
-	const Dictionary model = models_dev->get_model(StringName(profile.get("catalog_provider", p_provider)), p_model);
+	const Dictionary model = model_catalog->get_model(StringName(profile.get("catalog_provider", p_provider)), p_model);
 	if (model.is_empty()) {
 		return profile.get("local", false) || String(profile.get("source_kind", String())) == "custom";
 	}
@@ -362,15 +365,15 @@ Dictionary SolersProviderRegistry::validate_config(const Dictionary &p_config) c
 }
 
 SolersProviderRegistry::SolersProviderRegistry() {
-	models_dev = memnew(SolersModelsDev);
-	models_dev->initialize();
-	owns_models_dev = true;
+	model_catalog = memnew(SolersModelCatalog);
+	model_catalog->initialize();
+	owns_model_catalog = true;
 	_register_auth_hooks();
 }
 
 SolersProviderRegistry::~SolersProviderRegistry() {
-	if (owns_models_dev && models_dev) {
-		memdelete(models_dev);
-		models_dev = nullptr;
+	if (owns_model_catalog && model_catalog) {
+		memdelete(model_catalog);
+		model_catalog = nullptr;
 	}
 }

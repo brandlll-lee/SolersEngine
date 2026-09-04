@@ -33,11 +33,12 @@
 #include "core/os/thread.h"
 #include "tests/test_macros.h"
 
+#include "modules/solers_ai/core/solers_context_manager.h"
 #include "modules/solers_ai/core/solers_provider_auth.h"
 #include "modules/solers_ai/core/solers_provider_registry.h"
 #include "modules/solers_ai/core/solers_secret_store.h"
 #include "modules/solers_ai/core/solers_settings_service.h"
-#include "modules/solers_ai/llm/solers_models_dev.h"
+#include "modules/solers_ai/llm/solers_model_catalog.h"
 #include "modules/solers_ai/tests/support/solers_test_state.h"
 
 TEST_FORCE_LINK(test_solers_provider)
@@ -210,9 +211,9 @@ TEST_CASE("[SolersCodexAuth] Godot Thread returns an assigned ID on success") {
 TEST_CASE("[SolersProviderRegistry] overlay models follow catalog semantics") {
 	SolersProviderRegistry registry;
 	const Dictionary profile = registry.get_provider_profile("openai_codex");
-	SolersModelsDev *catalog = registry.get_models_dev();
+	SolersModelCatalog *catalog = registry.get_model_catalog();
 	REQUIRE(catalog != nullptr);
-	const Array model_ids = catalog->list_model_ids("openai");
+	const Array model_ids = catalog->list_model_ids(profile.get("catalog_provider", String()));
 	REQUIRE_FALSE(model_ids.is_empty());
 
 	const String model_id = model_ids[0];
@@ -223,6 +224,13 @@ TEST_CASE("[SolersProviderRegistry] overlay models follow catalog semantics") {
 	CHECK(registry.is_model_allowed("openai_codex", model_id));
 	CHECK_FALSE(registry.is_model_allowed("openai_codex", "synthetic-model-not-in-catalog"));
 	CHECK(catalog->get_catalog_revision() > 0);
+	const String catalog_provider = profile.get("catalog_provider", String());
+	const int builtin_context = Dictionary(catalog->get_model(catalog_provider, model_id)).get("context", 0);
+	REQUIRE(builtin_context > 0);
+	catalog->set_model_overrides(Dictionary({ { catalog_provider + "/" + model_id, Dictionary({ { "context", 400000 } }) } }));
+	CHECK((int)catalog->get_model(catalog_provider, model_id).get("context", 0) == 400000);
+	catalog->set_model_overrides(Dictionary());
+	CHECK((int)catalog->get_model(catalog_provider, model_id).get("context", 0) == builtin_context);
 }
 
 TEST_CASE("[SolersProviderRegistry] requires an explicit connection profile") {
@@ -250,7 +258,7 @@ TEST_CASE("[SolersProviderRegistry] requires an explicit connection profile") {
 	CHECK(Dictionary(accepted.get("error", Dictionary())).get("code", String()) == "PROVIDER_CONNECTION_UNDECLARED");
 }
 
-TEST_CASE("[Editor][SolersSettingsService] v6 migrates one explicit custom connection") {
+TEST_CASE("[Editor][SolersSettingsService] v7 migrates one explicit custom connection") {
 	EditorSettings *settings = EditorSettings::get_singleton();
 	REQUIRE(settings != nullptr);
 
@@ -261,6 +269,7 @@ TEST_CASE("[Editor][SolersSettingsService] v6 migrates one explicit custom conne
 	paths.push_back(prefix + "local_models_only");
 	paths.push_back(prefix + "provider");
 	paths.push_back(prefix + "custom_provider_ids");
+	paths.push_back(prefix + "model_overrides");
 	for (const String &provider : { legacy_id, String("custom_openai_compatible") }) {
 		for (const String &key : { String("configured"), String("model"), String("reasoning_effort"), String("base_url"), String("api_key") }) {
 			paths.push_back(prefix + "providers/" + provider + "/" + key);
@@ -282,7 +291,7 @@ TEST_CASE("[Editor][SolersSettingsService] v6 migrates one explicit custom conne
 
 	SolersSettingsService service;
 	service.set_provider_registry(&registry);
-	CHECK((int)settings->get_setting(prefix + "settings_version") == 6);
+	CHECK((int)settings->get_setting(prefix + "settings_version") == 7);
 	CHECK(String(settings->get_setting(prefix + "provider")) == "custom_openai_compatible");
 	CHECK_FALSE(settings->has_setting(prefix + "custom_provider_ids"));
 	CHECK_FALSE(settings->has_setting(prefix + "providers/" + legacy_id + "/configured"));
@@ -309,14 +318,15 @@ TEST_CASE("[Editor][SolersSettingsService] v6 migrates one explicit custom conne
 	CHECK(String(settings->get_setting(prefix + "provider")) == "anthropic");
 }
 
-TEST_CASE("[Editor][SolersSettingsService] explicit token limits persist and clear") {
+TEST_CASE("[Editor][SolersSettingsService] model overrides are global and use catalog defaults") {
 	EditorSettings *settings = EditorSettings::get_singleton();
 	REQUIRE(settings != nullptr);
 	const String prefix = "solers/ai/";
 	const String provider = "custom_openai_compatible";
 	Array paths;
 	paths.push_back(prefix + "provider");
-	for (const String &key : { String("configured"), String("model"), String("base_url"), String("context_window"), String("max_tokens"), String("api_key") }) {
+	paths.push_back(prefix + "model_overrides");
+	for (const String &key : { String("configured"), String("model"), String("api_key") }) {
 		paths.push_back(prefix + "providers/" + provider + "/" + key);
 	}
 	ScopedEditorSettings restore(settings, paths);
@@ -331,34 +341,40 @@ TEST_CASE("[Editor][SolersSettingsService] explicit token limits persist and cle
 	config["api_key"] = "synthetic-key";
 	config["context_window"] = 272000;
 	config["max_tokens"] = 32000;
+	config["protocol"] = "openai-chat";
+	config["cost"] = Dictionary({ { "input", 1.0 }, { "output", 2.0 } });
 	CHECK(service.set_provider_config(config).get("ok", false));
 	Dictionary stored = service.get_provider_config().get("data", Dictionary());
 	CHECK((int)stored.get("context_window", 0) == 272000);
 	CHECK((int)stored.get("max_tokens", 0) == 32000);
+	CHECK(String(stored.get("base_url", String())) == "https://gateway.example/v1");
+	CHECK(String(stored.get("protocol", String())) == "openai-chat");
+	CHECK((double)Dictionary(stored.get("cost", Dictionary())).get("output", 0.0) == doctest::Approx(2.0));
+	CHECK(Dictionary(settings->get_setting(prefix + "model_overrides")).has(provider + "/synthetic-model"));
 
 	config["context_window"] = 0;
 	config["max_tokens"] = 0;
 	CHECK(service.set_provider_config(config).get("ok", false));
 	stored = service.get_provider_config().get("data", Dictionary());
-	CHECK_FALSE(stored.has("context_window"));
-	CHECK_FALSE(stored.has("max_tokens"));
+	CHECK((int)stored.get("context_window", 0) == 128000);
+	CHECK((int)stored.get("max_tokens", 0) == SolersContextManager::DEFAULT_OUTPUT_TOKENS);
 }
 
-TEST_CASE("[SolersModelsDev] input modality support is model-level and unknown is permissive") {
+TEST_CASE("[SolersModelCatalog] input modality support is model-level and unknown is permissive") {
 	Dictionary vision_model;
 	Array modalities;
 	modalities.push_back("text");
 	modalities.push_back("image");
 	vision_model["input_modalities"] = modalities;
-	CHECK(SolersModelsDev::input_modality_support(vision_model, "image") == 1);
+	CHECK(SolersModelCatalog::input_modality_support(vision_model, "image") == 1);
 
 	modalities.erase("image");
 	vision_model["input_modalities"] = modalities;
-	CHECK(SolersModelsDev::input_modality_support(vision_model, "image") == 0);
-	CHECK(SolersModelsDev::input_modality_support(Dictionary(), "image") == -1);
+	CHECK(SolersModelCatalog::input_modality_support(vision_model, "image") == 0);
+	CHECK(SolersModelCatalog::input_modality_support(Dictionary(), "image") == -1);
 }
 
-TEST_CASE("[SolersModelsDev] reasoning effort options are model-declared") {
+TEST_CASE("[SolersModelCatalog] reasoning effort options are model-declared") {
 	Dictionary effort_option;
 	effort_option["type"] = "effort";
 	Array declared_values;
@@ -370,13 +386,13 @@ TEST_CASE("[SolersModelsDev] reasoning effort options are model-declared") {
 	Dictionary declared_model;
 	declared_model["reasoning"] = true;
 	declared_model["reasoning_options"] = reasoning_options;
-	CHECK(SolersModelsDev::reasoning_efforts(declared_model) == declared_values);
+	CHECK(SolersModelCatalog::reasoning_efforts(declared_model) == declared_values);
 
 	Dictionary non_reasoning_model;
 	non_reasoning_model["reasoning"] = false;
-	CHECK(SolersModelsDev::reasoning_efforts(non_reasoning_model).is_empty());
+	CHECK(SolersModelCatalog::reasoning_efforts(non_reasoning_model).is_empty());
 
-	CHECK(SolersModelsDev::reasoning_efforts(Dictionary()).is_empty());
+	CHECK(SolersModelCatalog::reasoning_efforts(Dictionary()).is_empty());
 }
 
 } // namespace TestSolersProvider

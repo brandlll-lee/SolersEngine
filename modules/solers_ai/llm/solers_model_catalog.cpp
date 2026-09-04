@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  solers_models_dev.cpp                                                 */
+/*  solers_model_catalog.cpp                                              */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -28,120 +28,30 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#include "solers_models_dev.h"
+#include "solers_model_catalog.h"
 
-#include "core/config/project_settings.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/http_client.h"
 #include "core/io/json.h"
 #include "core/os/os.h"
 
+#include "modules/solers_ai/generated/solers_model_catalog.gen.h"
+
 static constexpr uint64_t SOLERS_MODELS_DEV_FETCH_BUDGET_MSEC = 30000;
 static constexpr uint64_t SOLERS_MODELS_DEV_REFRESH_TTL_MSEC = 10 * 60 * 1000;
 
-static Dictionary _seed_model(const String &p_id, const String &p_name, int p_context, int p_output, bool p_reasoning, bool p_tool_call, bool p_image_input) {
-	Dictionary m;
-	m["id"] = p_id;
-	m["name"] = p_name;
-	m["context"] = p_context;
-	m["output"] = p_output;
-	m["reasoning"] = p_reasoning;
-	m["tool_call"] = p_tool_call;
-	m["attachment"] = false;
-	Array input_modalities;
-	input_modalities.push_back("text");
-	if (p_image_input) {
-		input_modalities.push_back("image");
-	}
-	m["input_modalities"] = input_modalities;
-	return m;
+String SolersModelCatalog::_resolve_cache_path() {
+	return OS::get_singleton()->get_data_path().path_join(OS::get_singleton()->get_godot_dir_name()).path_join("solers/models.json");
 }
 
-String SolersModelsDev::_resolve_cache_path() {
-	return "user://solers_ai/models_dev.json";
+void SolersModelCatalog::_load_builtin() {
+	const Variant parsed = JSON::parse_string(SOLERS_BUILTIN_MODEL_CATALOG);
+	ERR_FAIL_COND(parsed.get_type() != Variant::DICTIONARY);
+	_merge_catalog(parsed, builtin_providers);
 }
 
-void SolersModelsDev::_load_seed() {
-	MutexLock lock(providers_mutex);
-	// Minimal authored offline fallback (our data, not a models.dev copy). The
-	// background fetch enriches this with the full models.dev dataset. Limits
-	// here are conservative fallbacks; fetched data is authoritative.
-	struct SeedProvider {
-		const char *id;
-		const char *name;
-		const char *api;
-		const char *npm;
-		const char *env;
-		const char *protocol;
-		const char *auth_header;
-		const char *auth_prefix;
-		bool local;
-	};
-	static const SeedProvider seeds[] = {
-		{ "openai", "OpenAI", "https://api.openai.com/v1", "@ai-sdk/openai", "OPENAI_API_KEY", "openai-responses", "Authorization", "Bearer ", false },
-		{ "anthropic", "Anthropic", "https://api.anthropic.com", "@ai-sdk/anthropic", "ANTHROPIC_API_KEY", "anthropic-messages", "x-api-key", "", false },
-		{ "google", "Google", "https://generativelanguage.googleapis.com/v1beta/openai", "@ai-sdk/openai-compatible", "GEMINI_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
-		{ "deepseek", "DeepSeek", "https://api.deepseek.com", "@ai-sdk/openai-compatible", "DEEPSEEK_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
-		{ "openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "@openrouter/ai-sdk-provider", "OPENROUTER_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
-		{ "qwen", "Qwen / DashScope", "https://dashscope.aliyuncs.com/compatible-mode/v1", "@ai-sdk/openai-compatible", "DASHSCOPE_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
-		{ "minimax", "MiniMax", "https://api.minimax.io/anthropic/v1", "@ai-sdk/anthropic", "MINIMAX_API_KEY", "anthropic-messages", "x-api-key", "", false },
-		{ "moonshotai", "Moonshot AI", "https://api.moonshot.ai/v1", "@ai-sdk/openai-compatible", "MOONSHOT_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
-		{ "xai", "xAI", "https://api.x.ai/v1", "@ai-sdk/xai", "XAI_API_KEY", "openai-responses", "Authorization", "Bearer ", false },
-		{ "zhipuai", "Z.AI", "https://open.bigmodel.cn/api/paas/v4", "@ai-sdk/openai-compatible", "ZHIPU_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
-		{ "zai-coding-plan", "Z.AI Coding Plan", "https://api.z.ai/api/coding/paas/v4", "@ai-sdk/openai-compatible", "ZHIPU_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
-		{ "opencode", "OpenCode Zen", "https://opencode.ai/zen/v1", "@ai-sdk/openai-compatible", "OPENCODE_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
-		{ "opencode-go", "OpenCode Go", "https://opencode.ai/zen/go/v1", "@ai-sdk/openai-compatible", "OPENCODE_API_KEY", "openai-chat", "Authorization", "Bearer ", false },
-		{ "ollama", "Ollama", "http://127.0.0.1:11434/v1", "@ai-sdk/openai-compatible", "", "openai-chat", "", "", true },
-		{ "lmstudio", "LM Studio", "http://127.0.0.1:1234/v1", "@ai-sdk/openai-compatible", "", "openai-chat", "", "", true },
-	};
-	for (const SeedProvider &seed : seeds) {
-		Dictionary provider;
-		provider["id"] = String(seed.id);
-		provider["name"] = String(seed.name);
-		provider["api"] = String(seed.api);
-		provider["npm"] = String(seed.npm);
-		provider["protocol"] = String(seed.protocol);
-		provider["auth_header"] = String(seed.auth_header);
-		provider["auth_prefix"] = String(seed.auth_prefix);
-		Array env;
-		if (seed.env[0] != '\0') {
-			env.push_back(String(seed.env));
-		}
-		provider["env"] = env;
-		provider["local"] = seed.local;
-		provider["models"] = Dictionary();
-		providers[StringName(seed.id)] = provider;
-	}
-
-	// A few representative models so context limits resolve offline. Fetched
-	// models.dev data supersedes these as soon as the refresh completes.
-	{
-		Dictionary openai_models;
-		openai_models["gpt-4o"] = _seed_model("gpt-4o", "GPT-4o", 128000, 16384, false, true, true);
-		openai_models["gpt-4o-mini"] = _seed_model("gpt-4o-mini", "GPT-4o mini", 128000, 16384, false, true, true);
-		Dictionary p = providers[StringName("openai")];
-		p["models"] = openai_models;
-		providers[StringName("openai")] = p;
-	}
-	{
-		Dictionary anthropic_models;
-		anthropic_models["claude-3-5-sonnet-latest"] = _seed_model("claude-3-5-sonnet-latest", "Claude 3.5 Sonnet", 200000, 8192, false, true, true);
-		Dictionary p = providers[StringName("anthropic")];
-		p["models"] = anthropic_models;
-		providers[StringName("anthropic")] = p;
-	}
-	catalog_revision++;
-}
-
-void SolersModelsDev::_ingest(const Dictionary &p_root) {
-	// Overlay fetched catalog entries without deleting offline seed providers
-	// that the remote catalog does not declare (notably local endpoints).
-	HashMap<StringName, Dictionary> next;
-	{
-		MutexLock lock(providers_mutex);
-		next = providers;
-	}
+void SolersModelCatalog::_merge_catalog(const Dictionary &p_root, HashMap<StringName, Dictionary> &r_providers) const {
 	const Array provider_ids = p_root.keys();
 	for (int i = 0; i < provider_ids.size(); i++) {
 		const String provider_id = provider_ids[i];
@@ -152,7 +62,7 @@ void SolersModelsDev::_ingest(const Dictionary &p_root) {
 		const Dictionary po = provider_value;
 
 		Dictionary out_provider;
-		if (const Dictionary *seed = next.getptr(StringName(provider_id))) {
+		if (const Dictionary *seed = r_providers.getptr(StringName(provider_id))) {
 			out_provider = *seed;
 		}
 		out_provider["id"] = po.get("id", provider_id);
@@ -164,8 +74,13 @@ void SolersModelsDev::_ingest(const Dictionary &p_root) {
 		}
 		out_provider["env"] = po.get("env", Array());
 		out_provider["local"] = po.get("local", false);
+		for (const String &field : { String("protocol"), String("auth_header"), String("auth_prefix") }) {
+			if (po.has(field)) {
+				out_provider[field] = po[field];
+			}
+		}
 
-		Dictionary models_out;
+		Dictionary models_out = out_provider.get("models", Dictionary());
 		const Variant models_value = po.get("models", Dictionary());
 		if (models_value.get_type() == Variant::DICTIONARY) {
 			const Dictionary models_in = models_value;
@@ -181,11 +96,27 @@ void SolersModelsDev::_ingest(const Dictionary &p_root) {
 				if (mo.get("limit", Dictionary()).get_type() == Variant::DICTIONARY) {
 					limit = mo.get("limit", Dictionary());
 				}
-				Dictionary model;
+				Dictionary model = Dictionary(models_out.get(model_id, Dictionary())).duplicate(true);
 				model["id"] = mo.get("id", model_id);
 				model["name"] = mo.get("name", model_id);
 				model["context"] = (int)limit.get("context", 0);
 				model["output"] = (int)limit.get("output", 0);
+				Dictionary cost = mo.get("cost", Dictionary());
+				Array tiers;
+				for (const Variant &tier_value : Array(cost.get("tiers", Array()))) {
+					Dictionary tier = tier_value;
+					const Dictionary threshold = tier.get("tier", Dictionary());
+					const String threshold_type = threshold.get("type", String());
+					if (!tier.has("input_tokens_above") && (threshold_type == "input" || threshold_type == "context")) {
+						tier["input_tokens_above"] = threshold.get("size", 0);
+					}
+					tier.erase("tier");
+					tiers.push_back(tier);
+				}
+				if (!tiers.is_empty()) {
+					cost["tiers"] = tiers;
+				}
+				model["cost"] = cost;
 				model["reasoning"] = mo.get("reasoning", false);
 				model["reasoning_options"] = mo.get("reasoning_options", Array());
 				model["tool_call"] = mo.get("tool_call", true);
@@ -194,30 +125,77 @@ void SolersModelsDev::_ingest(const Dictionary &p_root) {
 				const Dictionary modalities = mo.get("modalities", Dictionary());
 				model["input_modalities"] = modalities.get("input", Array());
 				model["output_modalities"] = modalities.get("output", Array());
+				const String protocol = mo.get("protocol", String());
+				if (!protocol.is_empty()) {
+					model["protocol"] = protocol;
+				}
 				const Dictionary model_provider = mo.get("provider", Dictionary());
-				model["provider_npm"] = model_provider.get("npm", String());
-				model["provider_api"] = model_provider.get("api", String());
+				const String provider_npm = model_provider.get("npm", String());
+				const String provider_api = model_provider.get("api", String());
+				if (!provider_npm.is_empty()) {
+					model["provider_npm"] = provider_npm;
+				}
+				if (!provider_api.is_empty()) {
+					model["provider_api"] = provider_api;
+				}
 				models_out[model_id] = model;
 			}
 		}
 		out_provider["models"] = models_out;
-		next[StringName(provider_id)] = out_provider;
+		r_providers[StringName(provider_id)] = out_provider;
+	}
+}
+
+void SolersModelCatalog::_rebuild() {
+	HashMap<StringName, Dictionary> next;
+	Dictionary remote;
+	Dictionary overrides;
+	{
+		MutexLock lock(providers_mutex);
+		for (const KeyValue<StringName, Dictionary> &kv : builtin_providers) {
+			next[kv.key] = kv.value.duplicate(true);
+		}
+		remote = remote_catalog;
+		overrides = model_overrides;
+	}
+	_merge_catalog(remote, next);
+	for (const Variant &key_value : overrides.keys()) {
+		const String key = key_value;
+		const int separator = key.find("/");
+		if (separator <= 0 || separator == key.length() - 1) {
+			continue;
+		}
+		const StringName provider_id = key.substr(0, separator);
+		const String model_id = key.substr(separator + 1);
+		if (overrides[key].get_type() != Variant::DICTIONARY) {
+			continue;
+		}
+		Dictionary *provider = next.getptr(provider_id);
+		if (!provider) {
+			Dictionary created;
+			created["id"] = String(provider_id);
+			created["name"] = String(provider_id);
+			created["models"] = Dictionary();
+			next[provider_id] = created;
+			provider = next.getptr(provider_id);
+		}
+		Dictionary models = provider->get("models", Dictionary());
+		Dictionary model = models.get(model_id, Dictionary());
+		model["id"] = model_id;
+		model.merge(Dictionary(overrides[key]), true);
+		models[model_id] = model;
+		(*provider)["models"] = models;
 	}
 	MutexLock lock(providers_mutex);
 	providers = next;
 	catalog_revision++;
 }
 
-void SolersModelsDev::_load_cache() {
-	String path = cache_path;
-	const String legacy_path = "user://solers_ai/models_dev.json";
-	if (!FileAccess::exists(path) && path != legacy_path && FileAccess::exists(legacy_path)) {
-		path = legacy_path;
-	}
-	if (!FileAccess::exists(path)) {
+void SolersModelCatalog::_load_cache() {
+	if (!FileAccess::exists(cache_path)) {
 		return;
 	}
-	const String json = FileAccess::get_file_as_string(path);
+	const String json = FileAccess::get_file_as_string(cache_path);
 	if (json.is_empty()) {
 		return;
 	}
@@ -225,16 +203,25 @@ void SolersModelsDev::_load_cache() {
 	if (parsed.get_type() != Variant::DICTIONARY) {
 		return;
 	}
-	_ingest(parsed);
+	remote_catalog = parsed;
 }
 
-void SolersModelsDev::initialize() {
+void SolersModelCatalog::initialize() {
 	cache_path = _resolve_cache_path();
-	_load_seed();
+	_load_builtin();
 	_load_cache();
+	_rebuild();
 }
 
-void SolersModelsDev::refresh() {
+void SolersModelCatalog::set_model_overrides(const Dictionary &p_overrides) {
+	{
+		MutexLock lock(providers_mutex);
+		model_overrides = p_overrides.duplicate(true);
+	}
+	_rebuild();
+}
+
+void SolersModelCatalog::refresh() {
 	if (refresh_started.is_set()) {
 		return;
 	}
@@ -250,21 +237,21 @@ void SolersModelsDev::refresh() {
 		refresh_thread.wait_to_finish();
 	}
 	refresh_started.set();
-	if (refresh_thread.start(&SolersModelsDev::_refresh_func, this) == Thread::UNASSIGNED_ID) {
+	if (refresh_thread.start(&SolersModelCatalog::_refresh_func, this) == Thread::UNASSIGNED_ID) {
 		refresh_started.clear();
 		MutexLock lock(providers_mutex);
 		last_refresh_msec = 0;
 	}
 }
 
-void SolersModelsDev::_refresh_func(void *p_userdata) {
-	SolersModelsDev *models_dev = static_cast<SolersModelsDev *>(p_userdata);
-	models_dev->_run_refresh();
-	models_dev->refresh_started.clear();
+void SolersModelCatalog::_refresh_func(void *p_userdata) {
+	SolersModelCatalog *catalog = static_cast<SolersModelCatalog *>(p_userdata);
+	catalog->_run_refresh();
+	catalog->refresh_started.clear();
 }
 
-void SolersModelsDev::_run_refresh() {
-	// Best-effort background refresh. Any failure leaves the seed/cache
+void SolersModelCatalog::_run_refresh() {
+	// Best-effort background refresh. Any failure leaves the built-in/cache
 	// untouched; valid data becomes visible to the current session immediately.
 	Ref<HTTPClient> http = HTTPClient::create();
 	if (http.is_null()) {
@@ -334,22 +321,26 @@ void SolersModelsDev::_run_refresh() {
 	if (parsed.get_type() != Variant::DICTIONARY) {
 		return;
 	}
-	_ingest(parsed);
+	{
+		MutexLock lock(providers_mutex);
+		remote_catalog = parsed;
+	}
+	_rebuild();
 
 	const String path = cache_path;
-	DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(path.get_base_dir()));
+	DirAccess::make_dir_recursive_absolute(path.get_base_dir());
 	Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
 	if (file.is_valid()) {
 		file->store_string(json);
 	}
 }
 
-uint64_t SolersModelsDev::get_catalog_revision() const {
+uint64_t SolersModelCatalog::get_catalog_revision() const {
 	MutexLock lock(providers_mutex);
 	return catalog_revision;
 }
 
-bool SolersModelsDev::has_provider(const StringName &p_id) const {
+bool SolersModelCatalog::has_provider(const StringName &p_id) const {
 	MutexLock lock(providers_mutex);
 	return providers.has(p_id);
 }
@@ -364,8 +355,11 @@ static Dictionary _solers_provider_meta(const Dictionary &p_provider) {
 	out["env"] = Array(p_provider.get("env", Array())).duplicate();
 	out["local"] = p_provider.get("local", false);
 	out["protocol"] = p_provider.get("protocol", String());
-	out["auth_header"] = p_provider.get("auth_header", String());
-	out["auth_prefix"] = p_provider.get("auth_prefix", String());
+	for (const String &field : { String("auth_header"), String("auth_prefix") }) {
+		if (p_provider.has(field)) {
+			out[field] = p_provider[field];
+		}
+	}
 	const Variant models_v = p_provider.get("models", Dictionary());
 	if (models_v.get_type() == Variant::DICTIONARY) {
 		const Array ids = Dictionary(models_v).keys();
@@ -376,13 +370,13 @@ static Dictionary _solers_provider_meta(const Dictionary &p_provider) {
 	return out;
 }
 
-Dictionary SolersModelsDev::get_provider(const StringName &p_id) const {
+Dictionary SolersModelCatalog::get_provider(const StringName &p_id) const {
 	MutexLock lock(providers_mutex);
 	const Dictionary *found = providers.getptr(p_id);
 	return found ? _solers_provider_meta(*found) : Dictionary();
 }
 
-Dictionary SolersModelsDev::get_model(const StringName &p_provider, const String &p_model) const {
+Dictionary SolersModelCatalog::get_model(const StringName &p_provider, const String &p_model) const {
 	MutexLock lock(providers_mutex);
 	const Dictionary *found = providers.getptr(p_provider);
 	if (!found) {
@@ -393,7 +387,7 @@ Dictionary SolersModelsDev::get_model(const StringName &p_provider, const String
 	return model.get_type() == Variant::DICTIONARY ? Dictionary(model).duplicate(true) : Dictionary();
 }
 
-int SolersModelsDev::input_modality_support(const Dictionary &p_model, const String &p_modality) {
+int SolersModelCatalog::input_modality_support(const Dictionary &p_model, const String &p_modality) {
 	const Variant declared = p_model.get("input_modalities", Variant());
 	if (declared.get_type() != Variant::ARRAY || Array(declared).is_empty()) {
 		return -1;
@@ -401,7 +395,7 @@ int SolersModelsDev::input_modality_support(const Dictionary &p_model, const Str
 	return Array(declared).has(p_modality) ? 1 : 0;
 }
 
-Array SolersModelsDev::reasoning_efforts(const Dictionary &p_model) {
+Array SolersModelCatalog::reasoning_efforts(const Dictionary &p_model) {
 	Array efforts;
 	for (const Variant &option_value : Array(p_model.get("reasoning_options", Array()))) {
 		if (option_value.get_type() != Variant::DICTIONARY) {
@@ -421,7 +415,7 @@ Array SolersModelsDev::reasoning_efforts(const Dictionary &p_model) {
 	return efforts;
 }
 
-Array SolersModelsDev::list_providers() const {
+Array SolersModelCatalog::list_providers() const {
 	MutexLock lock(providers_mutex);
 	Array result;
 	Vector<String> ids;
@@ -440,7 +434,7 @@ Array SolersModelsDev::list_providers() const {
 	return result;
 }
 
-Array SolersModelsDev::list_model_ids(const StringName &p_provider) const {
+Array SolersModelCatalog::list_model_ids(const StringName &p_provider) const {
 	MutexLock lock(providers_mutex);
 	const Dictionary *found = providers.getptr(p_provider);
 	if (!found) {
@@ -463,7 +457,7 @@ static const SolersProviderAlias SOLERS_PROVIDER_ALIASES[] = {
 };
 } // namespace
 
-Array SolersModelsDev::list_popular_provider_ids() const {
+Array SolersModelCatalog::list_popular_provider_ids() const {
 	// Catalog ordering data, not a behavior switch.
 	static const char *POPULAR[] = {
 		"openai",
@@ -489,7 +483,7 @@ Array SolersModelsDev::list_popular_provider_ids() const {
 	return ids;
 }
 
-Array SolersModelsDev::list_legacy_provider_ids() const {
+Array SolersModelCatalog::list_legacy_provider_ids() const {
 	Array ids;
 	for (const SolersProviderAlias &alias : SOLERS_PROVIDER_ALIASES) {
 		ids.push_back(String(alias.from));
@@ -497,7 +491,7 @@ Array SolersModelsDev::list_legacy_provider_ids() const {
 	return ids;
 }
 
-String SolersModelsDev::canonical_provider_id(const String &p_id) const {
+String SolersModelCatalog::canonical_provider_id(const String &p_id) const {
 	for (const SolersProviderAlias &alias : SOLERS_PROVIDER_ALIASES) {
 		if (p_id == alias.from) {
 			return String(alias.to);
@@ -506,9 +500,9 @@ String SolersModelsDev::canonical_provider_id(const String &p_id) const {
 	return p_id;
 }
 
-SolersModelsDev::SolersModelsDev() {}
+SolersModelCatalog::SolersModelCatalog() {}
 
-SolersModelsDev::~SolersModelsDev() {
+SolersModelCatalog::~SolersModelCatalog() {
 	if (refresh_thread.is_started()) {
 		refresh_thread.wait_to_finish();
 	}

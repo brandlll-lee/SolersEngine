@@ -520,7 +520,12 @@ void SolersPMAIView::_refresh_form(bool p_load_stored) {
 	model_edit->show();
 	base_url_label->show();
 	base_url_edit->show();
+	protocol_label->show();
+	protocol_edit->show();
+	cost_label->show();
+	cost_row->show();
 	api_key_label->show();
+	api_key_row->show();
 	api_key_edit->set_editable(true);
 	api_key_reveal->show();
 
@@ -534,6 +539,10 @@ void SolersPMAIView::_refresh_form(bool p_load_stored) {
 		provider_notes->set_text(String(profile.get("description", String())));
 		model_label->hide();
 		model_edit->hide();
+		protocol_label->hide();
+		protocol_edit->hide();
+		cost_label->hide();
+		cost_row->hide();
 		base_url_edit->set_placeholder(default_base_url);
 		if (p_load_stored) {
 			base_url_edit->set_text(_stored_asset_string(selected_provider, "base_url", default_base_url));
@@ -557,11 +566,12 @@ void SolersPMAIView::_refresh_form(bool p_load_stored) {
 	const Dictionary config = settings_service->get_provider_config_for(selected_provider).get("data", Dictionary());
 	provider_title->set_text(TTRGET(String(profile.get("label", selected_provider))));
 	provider_notes->set_text(TTRGET(String(profile.get("notes", String()))));
-	if (_uses_oauth(selected_provider)) {
-		connection_grid->hide();
+	const bool oauth = _uses_oauth(selected_provider);
+	if (oauth) {
+		api_key_label->hide();
+		api_key_row->hide();
 		env_hint->hide();
 		oauth_box->show();
-		save_btn->hide();
 		const Dictionary auth_status = settings_service->get_auth_status(selected_provider);
 		const String auth_state = auth_status.get("state", "idle");
 		const bool connected = auth_status.get("connected", false);
@@ -594,7 +604,6 @@ void SolersPMAIView::_refresh_form(bool p_load_stored) {
 		oauth_cancel_btn->set_visible(active);
 		oauth_disconnect_btn->set_visible(connected && !active);
 		set_process_internal(active);
-		return;
 	}
 
 	const String default_model = profile.get("default_model", String());
@@ -602,14 +611,30 @@ void SolersPMAIView::_refresh_form(bool p_load_stored) {
 	const String env_name = profile.get("api_key_env", String());
 	const bool local = profile.get("local", false);
 	const bool configured = config.get("configured", false);
-	disconnect_btn->set_visible(configured || (bool)config.get("connected", false));
+	disconnect_btn->set_visible(!oauth && (configured || (bool)config.get("connected", false)));
 	model_edit->set_text(configured && p_load_stored ? String(config.get("model", String())) : String());
 	model_edit->set_placeholder(default_model.is_empty() ? TTR("Model id (e.g. gpt-5)") : default_model);
 	base_url_edit->set_text(configured && p_load_stored ? String(config.get("base_url", String())) : String());
 	base_url_edit->set_placeholder(default_base_url.is_empty() ? TTR("https://your-gateway.example/v1") : default_base_url);
+	const String protocol = config.get("protocol", profile.get("protocol", "openai-chat"));
+	for (int i = 0; i < protocol_edit->get_item_count(); i++) {
+		if (String(protocol_edit->get_item_metadata(i)) == protocol) {
+			protocol_edit->select(i);
+			break;
+		}
+	}
 	context_window_edit->set_value(configured && p_load_stored ? (int)config.get("context_window", 0) : 0);
 	max_tokens_edit->set_value(configured && p_load_stored ? (int)config.get("max_tokens", 0) : 0);
+	const Dictionary cost = config.get("cost", Dictionary());
+	input_cost_edit->set_value(cost.get("input", 0.0));
+	output_cost_edit->set_value(cost.get("output", 0.0));
+	cache_read_cost_edit->set_value(cost.get("cache_read", 0.0));
+	cache_write_cost_edit->set_value(cost.get("cache_write", 0.0));
 	api_key_edit->set_text(String());
+	if (oauth) {
+		env_hint->hide();
+		return;
+	}
 	if (local) {
 		api_key_edit->set_placeholder(TTR("Not required for local runtimes"));
 	} else if (config.get("api_key_configured", false)) {
@@ -760,7 +785,7 @@ void SolersPMAIView::_save() {
 		}
 		return;
 	}
-	if (_uses_oauth(selected_provider) || !settings_service) {
+	if (!settings_service) {
 		return;
 	}
 	const Dictionary profile = registry->get_provider_profile(selected_provider);
@@ -769,8 +794,15 @@ void SolersPMAIView::_save() {
 	const String model = model_edit->get_text().strip_edges();
 	config["model"] = model.is_empty() ? String(profile.get("default_model", String())) : model;
 	config["base_url"] = base_url_edit->get_text().strip_edges();
+	config["protocol"] = protocol_edit->get_item_metadata(protocol_edit->get_selected());
 	config["context_window"] = (int)context_window_edit->get_value();
 	config["max_tokens"] = (int)max_tokens_edit->get_value();
+	config["cost"] = Dictionary({
+			{ "input", input_cost_edit->get_value() },
+			{ "output", output_cost_edit->get_value() },
+			{ "cache_read", cache_read_cost_edit->get_value() },
+			{ "cache_write", cache_write_cost_edit->get_value() },
+	});
 	const String new_key = api_key_edit->get_text().strip_edges();
 	if (!new_key.is_empty()) {
 		config["api_key"] = new_key;
@@ -1237,6 +1269,18 @@ SolersPMAIView::SolersPMAIView() {
 	base_url_edit->connect(SceneStringName(text_changed), callable_mp(this, &SolersPMAIView::_on_field_changed));
 	connection_grid->add_child(base_url_edit);
 
+	protocol_label = add_form_label(TTR("Protocol"));
+	protocol_edit = memnew(OptionButton);
+	static const char *PROTOCOL_LABELS[] = { "OpenAI Responses", "OpenAI Chat", "Anthropic Messages" };
+	static const char *PROTOCOL_IDS[] = { "openai-responses", "openai-chat", "anthropic-messages" };
+	for (int i = 0; i < 3; i++) {
+		protocol_edit->add_item(PROTOCOL_LABELS[i]);
+		protocol_edit->set_item_metadata(protocol_edit->get_item_count() - 1, PROTOCOL_IDS[i]);
+	}
+	protocol_edit->set_h_size_flags(SIZE_EXPAND_FILL);
+	protocol_edit->connect(SceneStringName(item_selected), callable_mp(this, &SolersPMAIView::_on_field_changed).unbind(1));
+	connection_grid->add_child(protocol_edit);
+
 	auto add_token_limit = [&](const String &p_label, const String &p_tooltip) -> SpinBox * {
 		add_form_label(p_label);
 		SpinBox *input = memnew(SpinBox);
@@ -1253,26 +1297,47 @@ SolersPMAIView::SolersPMAIView() {
 	context_window_edit = add_token_limit(TTR("Context window"), TTR("Use 0 for the provider catalog, or unknown on custom endpoints."));
 	max_tokens_edit = add_token_limit(TTR("Maximum output"), TTR("Use 0 for the provider or Solers request default."));
 
+	cost_label = add_form_label(TTR("Cost / 1M tokens"));
+	cost_row = memnew(HBoxContainer);
+	cost_row->set_h_size_flags(SIZE_EXPAND_FILL);
+	connection_grid->add_child(cost_row);
+	auto add_cost = [&](const String &p_prefix, const String &p_tooltip) -> SpinBox * {
+		SpinBox *input = memnew(SpinBox);
+		input->set_min(0.0);
+		input->set_max(1000000.0);
+		input->set_step(0.001);
+		input->set_prefix(p_prefix);
+		input->set_tooltip_text(p_tooltip);
+		input->set_h_size_flags(SIZE_EXPAND_FILL);
+		input->get_line_edit()->connect(SceneStringName(text_changed), callable_mp(this, &SolersPMAIView::_on_field_changed));
+		cost_row->add_child(input);
+		return input;
+	};
+	input_cost_edit = add_cost("In ", TTR("Input cost per million tokens"));
+	output_cost_edit = add_cost("Out ", TTR("Output cost per million tokens"));
+	cache_read_cost_edit = add_cost("R ", TTR("Cache read cost per million tokens"));
+	cache_write_cost_edit = add_cost("W ", TTR("Cache write cost per million tokens"));
+
 	api_key_label = add_form_label(TTR("API Key"));
 	{
-		HBoxContainer *key_row = memnew(HBoxContainer);
-		key_row->set_h_size_flags(SIZE_EXPAND_FILL);
-		key_row->add_theme_constant_override("separation", 6 * EDSCALE);
-		connection_grid->add_child(key_row);
+		api_key_row = memnew(HBoxContainer);
+		api_key_row->set_h_size_flags(SIZE_EXPAND_FILL);
+		api_key_row->add_theme_constant_override("separation", 6 * EDSCALE);
+		connection_grid->add_child(api_key_row);
 
 		api_key_edit = memnew(LineEdit);
 		api_key_edit->set_secret(true);
 		api_key_edit->set_h_size_flags(SIZE_EXPAND_FILL);
 		api_key_edit->set_accessibility_name(TTR("API Key"));
 		api_key_edit->connect(SceneStringName(text_changed), callable_mp(this, &SolersPMAIView::_on_field_changed));
-		key_row->add_child(api_key_edit);
+		api_key_row->add_child(api_key_edit);
 
 		api_key_reveal = memnew(Button);
 		api_key_reveal->set_toggle_mode(true);
 		api_key_reveal->set_tooltip_text(TTR("Show the key while typing"));
 		api_key_reveal->set_accessibility_name(TTR("Show API Key"));
 		api_key_reveal->connect(SceneStringName(toggled), callable_mp(this, &SolersPMAIView::_on_reveal_toggled));
-		key_row->add_child(api_key_reveal);
+		api_key_row->add_child(api_key_reveal);
 	}
 
 	oauth_box = memnew(VBoxContainer);
