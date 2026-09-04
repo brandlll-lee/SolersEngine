@@ -77,6 +77,7 @@ class SolersPMAIView : public HBoxContainer {
 	GridContainer *connection_grid = nullptr;
 	Label *model_label = nullptr;
 	LineEdit *model_edit = nullptr;
+	OptionButton *model_option = nullptr;
 	Label *base_url_label = nullptr;
 	LineEdit *base_url_edit = nullptr;
 	Label *protocol_label = nullptr;
@@ -154,6 +155,7 @@ class SolersPMAIView : public HBoxContainer {
 	void _refresh_form(bool p_load_stored);
 	void _refresh_status();
 	void _add_status_row(const String &p_text, const Color &p_dot_color);
+	void _on_model_selected(int p_index);
 	void _on_field_changed(const String &p_ignored = String());
 	void _on_local_models_only_toggled(bool p_pressed);
 	void _on_reveal_toggled(bool p_pressed);

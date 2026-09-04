@@ -62,6 +62,7 @@
 #include "modules/solers_ai/core/solers_secret_store.h"
 #include "modules/solers_ai/core/solers_settings_service.h"
 #include "modules/solers_ai/editor/solers_chat_widgets.h"
+#include "modules/solers_ai/llm/solers_model_catalog.h"
 #include "modules/solers_ai/plugins/solers_plugin.h"
 #endif
 
@@ -157,7 +158,8 @@ Dictionary SolersPMAIView::_provider_status(const String &p_id, bool p_live_form
 	String base_url = String(stored.get("base_url", String())).strip_edges();
 	bool key_configured = stored.get("api_key_configured", false);
 	if (p_live_form && model_edit && base_url_edit && api_key_edit) {
-		const String live_model = model_edit->get_text().strip_edges();
+		const int selected_model = model_option && model_option->is_visible() ? model_option->get_selected() : -1;
+		const String live_model = selected_model >= 0 ? String(model_option->get_item_metadata(selected_model)) : model_edit->get_text().strip_edges();
 		const String live_url = base_url_edit->get_text().strip_edges();
 		if (!live_model.is_empty()) {
 			model = live_model;
@@ -518,6 +520,7 @@ void SolersPMAIView::_refresh_form(bool p_load_stored) {
 	disconnect_btn->hide();
 	model_label->show();
 	model_edit->show();
+	model_option->hide();
 	base_url_label->show();
 	base_url_edit->show();
 	protocol_label->show();
@@ -612,8 +615,28 @@ void SolersPMAIView::_refresh_form(bool p_load_stored) {
 	const bool local = profile.get("local", false);
 	const bool configured = config.get("configured", false);
 	disconnect_btn->set_visible(!oauth && (configured || (bool)config.get("connected", false)));
-	model_edit->set_text(configured && p_load_stored ? String(config.get("model", String())) : String());
+	const String selected_model = config.get("model", default_model);
+	model_edit->set_text(configured && p_load_stored ? selected_model : String());
 	model_edit->set_placeholder(default_model.is_empty() ? TTR("Model id (e.g. gpt-5)") : default_model);
+	model_option->clear();
+	const StringName catalog_provider = StringName(profile.get("catalog_provider", selected_provider));
+	const Array model_ids = registry->get_model_catalog()->list_model_ids(catalog_provider);
+	for (const Variant &model_value : model_ids) {
+		const String model_id = model_value;
+		if (!registry->is_model_allowed(selected_provider, model_id)) {
+			continue;
+		}
+		model_option->add_item(registry->get_model_catalog()->get_model(catalog_provider, model_id).get("name", model_id));
+		const int index = model_option->get_item_count() - 1;
+		model_option->set_item_metadata(index, model_id);
+		if (model_id == selected_model) {
+			model_option->select(index);
+		}
+	}
+	if (model_option->get_item_count() > 0) {
+		model_edit->hide();
+		model_option->show();
+	}
 	base_url_edit->set_text(configured && p_load_stored ? String(config.get("base_url", String())) : String());
 	base_url_edit->set_placeholder(default_base_url.is_empty() ? TTR("https://your-gateway.example/v1") : default_base_url);
 	const String protocol = config.get("protocol", profile.get("protocol", "openai-chat"));
@@ -630,6 +653,7 @@ void SolersPMAIView::_refresh_form(bool p_load_stored) {
 	output_cost_edit->set_value(cost.get("output", 0.0));
 	cache_read_cost_edit->set_value(cost.get("cache_read", 0.0));
 	cache_write_cost_edit->set_value(cost.get("cache_write", 0.0));
+	_on_model_selected(model_option->is_visible() ? model_option->get_selected() : -1);
 	api_key_edit->set_text(String());
 	if (oauth) {
 		env_hint->hide();
@@ -684,6 +708,23 @@ void SolersPMAIView::_refresh_status() {
 	_add_status_row(st.get("text", String()), Color(st.get("color", SOLERS_AI_COL_WARNING)));
 	save_btn->set_disabled(false);
 #endif
+}
+
+void SolersPMAIView::_on_model_selected(int p_index) {
+	if (!registry || p_index < 0) {
+		return;
+	}
+	const String model_id = model_option->get_item_metadata(p_index);
+	const Dictionary profile = registry->get_provider_profile(selected_provider);
+	const Dictionary model = registry->get_model_catalog()->get_model(StringName(profile.get("catalog_provider", selected_provider)), model_id);
+	context_window_edit->set_value(model.get("context", 0));
+	max_tokens_edit->set_value(model.get("output", 0));
+	const Dictionary cost = model.get("cost", Dictionary());
+	input_cost_edit->set_value(cost.get("input", 0.0));
+	output_cost_edit->set_value(cost.get("output", 0.0));
+	cache_read_cost_edit->set_value(cost.get("cache_read", 0.0));
+	cache_write_cost_edit->set_value(cost.get("cache_write", 0.0));
+	_on_field_changed();
 }
 
 void SolersPMAIView::_on_field_changed(const String &p_ignored) {
@@ -791,7 +832,8 @@ void SolersPMAIView::_save() {
 	const Dictionary profile = registry->get_provider_profile(selected_provider);
 	Dictionary config;
 	config["provider"] = selected_provider;
-	const String model = model_edit->get_text().strip_edges();
+	const int selected_model = model_option->is_visible() ? model_option->get_selected() : -1;
+	const String model = selected_model >= 0 ? String(model_option->get_item_metadata(selected_model)) : model_edit->get_text().strip_edges();
 	config["model"] = model.is_empty() ? String(profile.get("default_model", String())) : model;
 	config["base_url"] = base_url_edit->get_text().strip_edges();
 	config["protocol"] = protocol_edit->get_item_metadata(protocol_edit->get_selected());
@@ -1256,11 +1298,17 @@ SolersPMAIView::SolersPMAIView() {
 	};
 
 	model_label = add_form_label(TTR("Model"));
+	VBoxContainer *model_controls = memnew(VBoxContainer);
+	model_controls->set_h_size_flags(SIZE_EXPAND_FILL);
+	connection_grid->add_child(model_controls);
 	model_edit = memnew(LineEdit);
-	model_edit->set_h_size_flags(SIZE_EXPAND_FILL);
 	model_edit->set_accessibility_name(TTR("Model"));
 	model_edit->connect(SceneStringName(text_changed), callable_mp(this, &SolersPMAIView::_on_field_changed));
-	connection_grid->add_child(model_edit);
+	model_controls->add_child(model_edit);
+	model_option = memnew(OptionButton);
+	model_option->set_fit_to_longest_item(false);
+	model_option->connect(SceneStringName(item_selected), callable_mp(this, &SolersPMAIView::_on_model_selected));
+	model_controls->add_child(model_option);
 
 	base_url_label = add_form_label(TTR("Base URL"));
 	base_url_edit = memnew(LineEdit);
