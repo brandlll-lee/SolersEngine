@@ -131,12 +131,12 @@ void SolersModelCatalog::_merge_catalog(const Dictionary &p_root, HashMap<String
 				}
 				const Dictionary model_provider = mo.get("provider", Dictionary());
 				const String provider_npm = model_provider.get("npm", String());
-				const String provider_api = model_provider.get("api", String());
+				const String model_api = model_provider.get("api", String());
 				if (!provider_npm.is_empty()) {
 					model["provider_npm"] = provider_npm;
 				}
-				if (!provider_api.is_empty()) {
-					model["provider_api"] = provider_api;
+				if (!model_api.is_empty()) {
+					model["provider_api"] = model_api;
 				}
 				models_out[model_id] = model;
 			}
