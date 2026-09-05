@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "core/input/input_event.h"
 #include "core/object/ref_counted.h"
 #include "core/templates/vector.h"
 #include "core/variant/dictionary.h"
@@ -37,6 +38,7 @@
 #include <functional>
 
 class SolersScriptContext;
+class Image;
 
 struct SolersNativeScriptJob {
 	StringName id;
@@ -66,8 +68,14 @@ class SolersScriptContext : public RefCounted {
 	bool changed = false;
 	bool reimport = false;
 	bool import_controls = false;
+	bool finished = false;
+	int physics_frames = 0;
+	Vector<Ref<InputEvent>> held_inputs;
+	Array captures;
 
 	void _write_progress(float p_completion, const String &p_message) const;
+	void _physics_frame();
+	void _capture_frame();
 
 protected:
 	static void _bind_methods();
@@ -93,6 +101,14 @@ public:
 	Array list_native_jobs(Object *p_target) const;
 	Dictionary run_native_job(const StringName &p_id, Object *p_target, const Dictionary &p_args);
 	bool is_cancelled() const;
+	bool input_event(const Ref<InputEvent> &p_event);
+	Signal wait_physics_frames(int p_frames);
+	Signal capture();
+	void finish();
+	Array get_captures() const { return captures; }
+	static Dictionary store_image(const Ref<Image> &p_image, const String &p_target, const String &p_capture_id);
+	static Dictionary capture_runtime_image(const String &p_capture_id);
+	~SolersScriptContext();
 
 	bool has_changed() const { return changed; }
 	bool needs_reimport() const { return reimport; }

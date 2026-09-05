@@ -663,6 +663,7 @@ TEST_CASE("[SolersTransaction] editor tools share native history and persist loa
 	REQUIRE(DirAccess::make_dir_recursive_absolute(directory.path_join("addons/contract")) == OK);
 	FileAccess::open(directory.path_join("project.godot"), FileAccess::WRITE)->store_string("config_version=5\n[editor_plugins]\nenabled=PackedStringArray(\"res://addons/contract/plugin.cfg\")\n");
 	FileAccess::open(directory.path_join("addons/contract/plugin.cfg"), FileAccess::WRITE)->store_string("[plugin]\nname=\"Contract\"\nscript=\"contract.gd\"\n");
+	FileAccess::open(directory.path_join("imported.gltf"), FileAccess::WRITE)->store_string(R"({"asset":{"version":"2.0"},"nodes":[{"name":"Imported"}],"scenes":[{"nodes":[0]}],"scene":0})");
 	FileAccess::open(directory.path_join("addons/contract/contract.gd"), FileAccess::WRITE)->store_string(R"(@tool
 extends EditorPlugin
 var tools = SolersToolRegistry.new()
@@ -670,12 +671,26 @@ var permissions = SolersPermissionManager.new()
 var reflection = SolersReflectionService.new()
 var scenes = SolersSceneObservation.new()
 var resources = SolersResourceService.new()
+var scripts = SolersScriptService.new()
 func _enter_tree():
-	run.call_deferred()
+	if not OS.get_cmdline_args().has("--script"):
+		run.call_deferred()
 func state():
 	return tools.call_tool("scene.inspect", {}).data.state
 func edit(operations, save_path = ""):
 	return tools.call_tool("scene.edit", {"expected_state": state(), "operations": operations, "save_path": save_path})
+func script_result(started):
+	if not started.ok:
+		return started
+	var args = started.data.poll_args
+	while true:
+		await get_tree().process_frame
+		var result = scripts.poll_authority_script(args)
+		if not result.ok or result.data.get("status", "") != "pending":
+			scripts.complete_authority_script(args)
+			return result
+func script_start(path, body):
+	return scripts.start_script("scene", {"target_path": path, "source": "@tool\nextends RefCounted\nfunc run(ctx):\n" + body}, "contract")
 func run():
 	await get_tree().process_frame
 	while EditorInterface.get_resource_filesystem().is_scanning():
@@ -691,6 +706,7 @@ func run():
 		{"type": "create", "class_name": "Node3D", "name": "Root"},
 		{"type": "create", "class_name": "Node3D", "name": "Parent"},
 		{"type": "create", "class_name": "Node3D", "name": "Child", "parent_path": "Parent"},
+		{"type": "instantiate", "source_path": "res://imported.gltf", "name": "Instance"},
 		{"type": "update", "node_path": "Parent/Child", "properties": {"visible": false}}
 	], "res://world.tscn")
 	if not created.ok:
@@ -725,15 +741,55 @@ func run():
 	failed = tools.call_tool("resource.edit", {"path": "res://empty.tscn", "class_name": "PackedScene", "expected_state": {"exists": false}})
 	checks.append(not failed.ok and failed.error.code == "SCENE_ROOT_REQUIRED")
 	checks.append(not FileAccess.file_exists("res://empty.tscn"))
+	var imported_digest = FileAccess.get_sha256("res://imported.gltf")
+	var read = await script_result(script_start("res://imported.gltf", "\treturn ctx.get_subject().name\n"))
+	checks.append(read.ok and not read.data.authored_state_changed)
+	checks.append(FileAccess.get_sha256("res://imported.gltf") == imported_digest)
+	var modified = await script_result(script_start("res://world.tscn", "\tctx.get_subject().get_node('Parent/Child').visible = true\n\tctx.mark_changed()\n"))
+	if not modified.ok:
+		print(modified)
+	checks.append(modified.ok and EditorInterface.get_edited_scene_root().get_node("Parent/Child").visible)
+	checks.append(EditorInterface.get_edited_scene_root().get_node("Instance").scene_file_path == "res://imported.gltf")
+	checks.append(EditorInterface.get_unsaved_scenes().is_empty())
+	checks.append(native_history.undo() and EditorInterface.get_edited_scene_root() == root_node)
+	checks.append(not root_node.get_node("Parent/Child").visible)
+	checks.append(native_history.redo() and EditorInterface.get_edited_scene_root().get_node("Parent/Child").visible)
+	checks.append(EditorInterface.save_scene() == OK)
+	var pending = script_start("res://world.tscn", "\tctx.get_subject().get_node('Parent/Child').visible = false\n\tctx.mark_changed()\n")
+	checks.append(edit([{"type": "update", "node_path": "Parent", "properties": {"visible": false}}]).ok)
+	var conflict = await script_result(pending)
+	checks.append(not conflict.ok and conflict.error.code == "STATE_CONFLICT")
+	checks.append(EditorInterface.get_edited_scene_root().get_node("Parent/Child").visible)
+	checks.append(EditorInterface.save_scene() == OK)
+	digest = FileAccess.get_sha256("res://world.tscn")
+	pending = script_start("res://world.tscn", "\tctx.mark_changed()\n")
+	var disk = FileAccess.open("res://world.tscn", FileAccess.READ_WRITE)
+	disk.seek_end()
+	disk.store_string("\n")
+	disk.close()
+	conflict = await script_result(pending)
+	checks.append(not conflict.ok and conflict.error.code == "STATE_CONFLICT")
+	checks.append(FileAccess.get_sha256("res://world.tscn") != digest)
+	checks.append(EditorInterface.save_scene() == OK)
+	checks.append(edit([{"type": "update", "node_path": "Parent", "properties": {"visible": true}}]).ok)
+	var second = PackedScene.new()
+	var second_root = Node.new()
+	second.pack(second_root)
+	ResourceSaver.save(second, "res://second.tscn")
+	second_root.free()
+	EditorInterface.open_scene_from_path("res://second.tscn")
+	var unsaved = script_start("res://world.tscn", "\tctx.mark_changed()\n")
+	checks.append(not unsaved.ok and unsaved.error.code == "SCENE_HAS_UNSAVED_CHANGES")
 	print("SOLERS_SCENE_CONTRACT_OK" if not checks.has(false) else str(checks))
 	tools.free()
 	permissions.free()
 	reflection.free()
 	scenes.free()
 	resources.free()
+	scripts.free()
 	get_tree().quit(1 if checks.has(false) else 0)
 )");
-	List<String> args = { "--headless", "--editor", "--path", directory, "--quit-after", "600" };
+	List<String> args = { "--headless", "--editor", "--path", directory, "--quit-after", "18000" };
 	String output;
 	int exit_code = -1;
 	REQUIRE(OS::get_singleton()->execute(OS::get_singleton()->get_executable_path(), args, &output, &exit_code, true) == OK);

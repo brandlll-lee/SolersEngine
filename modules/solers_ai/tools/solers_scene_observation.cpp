@@ -31,10 +31,8 @@
 #include "modules/solers_ai/core/solers_scene_observation.h"
 
 #include "core/config/engine.h"
-#include "core/config/project_settings.h"
 #include "core/debugger/debugger_marshalls.h"
 #include "core/input/input_map.h"
-#include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/image.h"
 #include "core/io/json.h"
@@ -55,7 +53,6 @@
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/file_system/editor_file_system.h"
 #include "editor/run/editor_run_bar.h"
-#include "editor/run/game_view_plugin.h"
 #include "editor/scene/3d/node_3d_editor_plugin.h"
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/light_3d.h"
@@ -76,6 +73,7 @@
 #include "modules/solers_ai/core/solers_path_utils.h"
 #include "modules/solers_ai/core/solers_resource_service.h"
 #include "modules/solers_ai/core/solers_runtime_observation.h"
+#include "modules/solers_ai/core/solers_script_context.h"
 #include "modules/solers_ai/core/solers_tool.h"
 #include "modules/solers_ai/core/solers_trace.h"
 
@@ -401,7 +399,17 @@ bool SolersSceneObservation::_is_runtime_visual_ready() const {
 }
 
 bool SolersSceneObservation::_request_runtime_screenshot(const String &p_capture_id) {
-	return GameViewDebugger::request_root_viewport_screenshot(callable_mp(this, &SolersSceneObservation::_runtime_screenshot_ready).bind(p_capture_id));
+	EditorDebuggerNode *node = EditorDebuggerNode::get_singleton();
+	ScriptEditorDebugger *debugger = node ? node->get_current_debugger() : nullptr;
+	if (!debugger || !debugger->is_session_active()) {
+		return false;
+	}
+	const Callable callback = callable_mp(this, &SolersSceneObservation::_runtime_screenshot_ready);
+	if (!debugger->is_connected(SNAME("debug_data"), callback)) {
+		debugger->connect(SNAME("debug_data"), callback);
+	}
+	debugger->send_message("solers:capture", { p_capture_id, (int64_t)_runtime_epoch() });
+	return true;
 }
 
 void SolersSceneObservation::_render_frame_post_draw() {
@@ -427,66 +435,6 @@ Dictionary SolersSceneObservation::_runtime_capture_unavailable() const {
 	return failure;
 }
 
-Dictionary SolersSceneObservation::_capture_image(const Ref<Image> &p_image, const String &p_target, const String &p_capture_id) {
-	if (p_image.is_null() || p_image->get_width() <= 1 || p_image->get_height() <= 1) {
-		return _capture_error("VIEWPORT_IMAGE_UNAVAILABLE", "The viewport has not produced a readable frame.", true);
-	}
-
-	Ref<Image> image = p_image;
-	const int max_dimension = MAX(image->get_width(), image->get_height());
-	if (max_dimension > SOLERS_CAPTURE_MAX_DIMENSION) {
-		image = p_image->duplicate();
-		const double scale = (double)SOLERS_CAPTURE_MAX_DIMENSION / (double)max_dimension;
-		image->resize(MAX(1, (int)(image->get_width() * scale)), MAX(1, (int)(image->get_height() * scale)), Image::INTERPOLATE_LANCZOS);
-	}
-
-	const String capture_dir = ProjectSettings::get_singleton()->globalize_path(ProjectSettings::get_singleton()->get_project_data_path().path_join("solers/captures"));
-	const Error directory_error = DirAccess::make_dir_recursive_absolute(capture_dir);
-	if (directory_error != OK) {
-		return _capture_error("CAPTURE_DIRECTORY_FAILED", vformat("Could not create the capture directory: %s", capture_dir), false);
-	}
-	const String temporary_path = capture_dir.path_join(p_capture_id + ".tmp.png");
-	const Error save_error = image->save_png(temporary_path);
-	if (save_error != OK) {
-		return _capture_error("CAPTURE_SAVE_FAILED", vformat("Could not save the viewport capture: %s", temporary_path), false);
-	}
-	const String content_sha256 = FileAccess::get_sha256(temporary_path);
-	const String absolute_path = capture_dir.path_join(content_sha256 + ".png");
-	if (FileAccess::exists(absolute_path)) {
-		DirAccess::remove_absolute(temporary_path);
-	} else if (DirAccess::rename_absolute(temporary_path, absolute_path) != OK) {
-		return _capture_error("CAPTURE_SAVE_FAILED", "Could not commit content-addressed viewport evidence.", false);
-	}
-
-	Dictionary attachment;
-	attachment["id"] = p_capture_id;
-	attachment["source"] = "tool_capture";
-	attachment["target"] = p_target;
-	attachment["type"] = "image";
-	attachment["mime_type"] = "image/png";
-	attachment["local_path"] = absolute_path;
-	attachment["width"] = image->get_width();
-	attachment["height"] = image->get_height();
-
-	Dictionary data;
-	data["status"] = "complete";
-	data["target"] = p_target;
-	data["capture_id"] = p_capture_id;
-	data["width"] = image->get_width();
-	data["height"] = image->get_height();
-	data["content_sha256"] = content_sha256;
-	attachment["content_sha256"] = content_sha256;
-	data["attachment"] = attachment;
-
-	Array attachments;
-	attachments.push_back(attachment);
-	Dictionary result;
-	result["ok"] = true;
-	result["data"] = data;
-	result["attachments"] = attachments;
-	return result;
-}
-
 Dictionary SolersSceneObservation::_attach_render_receipt(Dictionary p_result, const Dictionary &p_pending) {
 	if (!(bool)p_result.get("ok", false)) {
 		return p_result;
@@ -499,6 +447,10 @@ Dictionary SolersSceneObservation::_attach_render_receipt(Dictionary p_result, c
 	receipt["target"] = target;
 	receipt["runtime_epoch"] = p_pending.get("runtime_epoch", 0);
 	receipt["image_sha256"] = data.get("content_sha256", String());
+	if (target == "runtime") {
+		receipt["runtime_frame"] = data.get("runtime_frame", 0);
+		receipt["physics_frame"] = data.get("physics_frame", 0);
+	}
 	if (target != "runtime") {
 		receipt["source_state"] = p_pending.get("source_state", Dictionary());
 		receipt["render_state_sha256"] = p_pending.get("render_state_sha256", String());
@@ -571,33 +523,18 @@ Dictionary SolersSceneObservation::_render_state_for_pending(const Dictionary &p
 	return describe_render_state(viewport, camera, editor ? editor->get_edited_scene_root() : nullptr);
 }
 
-void SolersSceneObservation::_runtime_screenshot_ready(int64_t, int64_t, const String &p_path, const Rect2i &, const String &p_capture_id) {
-	const Dictionary *entry = pending_captures.getptr(p_capture_id);
-	// Ignore screenshots from expired requests or earlier runtime epochs.
-	const Dictionary pending_data = entry ? Dictionary(entry->get("data", Dictionary())) : Dictionary();
-	const uint64_t requested_epoch = (uint64_t)(int64_t)pending_data.get("runtime_epoch", 0);
-	if (!entry || requested_epoch != _runtime_epoch()) {
-		if (!p_path.is_empty()) {
-			DirAccess::remove_absolute(p_path);
-		}
+void SolersSceneObservation::_runtime_screenshot_ready(const String &p_message, const Array &p_data) {
+	if (p_message != "solers:capture_result" || p_data.size() != 1 || p_data[0].get_type() != Variant::DICTIONARY) {
 		return;
 	}
-	Ref<Image> image = p_path.is_empty() ? Ref<Image>() : Image::load_from_file(p_path);
-	if (!p_path.is_empty()) {
-		DirAccess::remove_absolute(p_path);
-	}
-	// Compressed or empty images cannot serve as pixel evidence.
-	if (image.is_null() || image->is_empty() || image->is_compressed()) {
-		pending_captures[p_capture_id] = _capture_error("RUNTIME_CAPTURE_DECODE_FAILED", "The runtime returned an unreadable screenshot.", true);
+	const Dictionary result = p_data[0];
+	const String capture_id = result.get("call_id", String());
+	const Dictionary *entry = pending_captures.getptr(capture_id);
+	const Dictionary pending = entry ? Dictionary(entry->get("data", Dictionary())) : Dictionary();
+	if (!entry || (int64_t)result.get("runtime_epoch", 0) != (int64_t)pending.get("runtime_epoch", 0) || (uint64_t)(int64_t)result.get("runtime_epoch", 0) != _runtime_epoch()) {
 		return;
 	}
-	Dictionary result = _capture_image(image, "runtime", p_capture_id);
-	if ((bool)result.get("ok", false)) {
-		Dictionary data = result.get("data", Dictionary());
-		data["frame_valid"] = true;
-		result["data"] = data;
-	}
-	pending_captures[p_capture_id] = _attach_render_receipt(result, pending_data);
+	pending_captures[capture_id] = _attach_render_receipt(result, pending);
 }
 
 static void _solers_free_capture_viewport(const Dictionary &p_data) {
@@ -713,7 +650,7 @@ Dictionary SolersSceneObservation::_finish_frame_gated_capture(const String &p_c
 		if (!editor_viewport || !editor_viewport->get_viewport_node()) {
 			return _capture_error("EDITOR_VIEWPORT_UNAVAILABLE", "The active 3D editor viewport is unavailable.", true);
 		}
-		Dictionary result = _capture_image(editor_viewport->get_viewport_node()->get_texture()->get_image(), "editor", p_capture_id);
+		Dictionary result = SolersScriptContext::store_image(editor_viewport->get_viewport_node()->get_texture()->get_image(), "editor", p_capture_id);
 		if ((bool)result.get("ok", false)) {
 			Dictionary data = result.get("data", Dictionary());
 			const Dictionary viewport_state = _editor_3d_viewport_state();
@@ -743,7 +680,7 @@ Dictionary SolersSceneObservation::_finish_frame_gated_capture(const String &p_c
 		return _capture_error("CAPTURE_VIEWPORT_LOST", "The transient capture viewport was freed before the frame rendered.", true);
 	}
 	viewport->set_update_mode(SubViewport::UPDATE_DISABLED);
-	Dictionary result = _capture_image(viewport->get_texture()->get_image(), target, p_capture_id);
+	Dictionary result = SolersScriptContext::store_image(viewport->get_texture()->get_image(), target, p_capture_id);
 	viewport->queue_free();
 	if ((bool)result.get("ok", false)) {
 		Dictionary data = result.get("data", Dictionary());

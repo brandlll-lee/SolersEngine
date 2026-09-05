@@ -33,6 +33,7 @@
 #include "core/io/resource_saver.h"
 #include "editor/editor_data.h"
 #include "editor/editor_node.h"
+#include "editor/editor_undo_redo_manager.h"
 #include "editor/file_system/editor_file_system.h"
 #include "scene/main/node.h"
 #include "scene/main/scene_tree.h"
@@ -50,10 +51,10 @@ static Dictionary _authority_error(const String &p_code, const String &p_message
 	return Dictionary({ { "ok", false }, { "error", Dictionary({ { "code", p_code }, { "message", p_message }, { "recoverable", true } }) } });
 }
 
-static void _publish_authority_files(const String &p_source_path, const Dictionary &p_result) {
+static Dictionary _publish_authority_files(const String &p_source_path, const Dictionary &p_result) {
 	EditorFileSystem *filesystem = EditorFileSystem::get_singleton();
 	if (!filesystem) {
-		return;
+		return p_result;
 	}
 	filesystem->update_file(p_source_path);
 	const Dictionary data = p_result.get("data", Dictionary());
@@ -63,21 +64,29 @@ static void _publish_authority_files(const String &p_source_path, const Dictiona
 			filesystem->update_file(path);
 		}
 	}
+	return p_result;
 }
 
 static Dictionary _validate_scene_authority(const String &p_path) {
-	EditorNode *editor = EditorNode::get_singleton();
-	Node *edited_scene = editor ? editor->get_edited_scene() : nullptr;
 	EditorData &editor_data = EditorNode::get_editor_data();
-	if (edited_scene && edited_scene->get_scene_file_path() == p_path && editor_data.is_scene_changed(editor_data.get_edited_scene())) {
-		return _authority_error("SCENE_HAS_UNSAVED_CHANGES", "Save or revert the open scene before running scene.script on it.");
+	EditorUndoRedoManager *history = EditorUndoRedoManager::get_singleton();
+	Array scenes;
+	for (int i = 0; i < editor_data.get_edited_scene_count(); i++) {
+		if (editor_data.get_scene_path(i) != p_path) {
+			continue;
+		}
+		const int id = editor_data.get_scene_history_id(i);
+		if (history->is_history_unsaved(id)) {
+			return _authority_error("SCENE_HAS_UNSAVED_CHANGES", "Save or revert the open scene before running an editor script on it.");
+		}
+		scenes.push_back(Dictionary({ { "root", (int64_t)editor_data.get_edited_scene_root(i)->get_instance_id() }, { "history_id", id }, { "version", (int64_t)history->get_history_undo_redo(id)->get_version() } }));
 	}
-	return _authority_ok();
+	return _authority_ok(Dictionary({ { "scenes", scenes } }));
 }
 
 static Dictionary _prepare_scene_authority(const String &p_path) {
 	const Ref<PackedScene> scene = ResourceLoader::load(p_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE_DEEP);
-	Node *root = scene.is_valid() ? scene->instantiate(PackedScene::GEN_EDIT_STATE_DISABLED) : nullptr;
+	Node *root = scene.is_valid() ? scene->instantiate(PackedScene::GEN_EDIT_STATE_MAIN) : nullptr;
 	SceneTree *tree = SceneTree::get_singleton();
 	if (!root || !tree || !tree->get_root()) {
 		if (root) {
@@ -89,13 +98,62 @@ static Dictionary _prepare_scene_authority(const String &p_path) {
 	return _authority_ok(Dictionary({ { "subject", root }, { "import_controls", false } }));
 }
 
-static Dictionary _commit_scene_authority(const Ref<SolersScriptContext> &p_context) {
+static Dictionary _commit_scene_authority(const Ref<SolersScriptContext> &p_context, const String &p_staging_path) {
+	if (!p_context->has_changed()) {
+		return _authority_ok();
+	}
+	if (ResourceLoader::is_imported(p_context->get_source_path())) {
+		return _authority_error("IMPORTED_SCENE_READ_ONLY", "Instantiate the imported scene through scene.edit before authoring changes.");
+	}
 	Node *root = Object::cast_to<Node>(p_context->get_subject());
 	Ref<PackedScene> packed;
 	packed.instantiate();
 	const Error pack_error = root ? packed->pack(root) : ERR_INVALID_DATA;
-	const Error save_error = pack_error == OK ? ResourceSaver::save(packed, p_context->get_source_path()) : pack_error;
-	return save_error == OK ? _authority_ok() : _authority_error("SCENE_SAVE_FAILED", vformat("Failed to save scripted scene transaction, error code %d.", save_error));
+	const Error save_error = pack_error == OK ? ResourceSaver::save(packed, p_staging_path) : pack_error;
+	return save_error == OK ? _authority_ok(Dictionary({ { "staged_scene", p_staging_path } })) : _authority_error("SCENE_SAVE_FAILED", vformat("Failed to stage scripted scene, error code %d.", save_error));
+}
+
+static Dictionary _publish_scene_authority(const String &p_path, const Dictionary &p_result) {
+	Dictionary data = p_result.get("data", Dictionary());
+	if (!(bool)data.get("authored_state_changed", false)) {
+		return p_result;
+	}
+	const Ref<PackedScene> packed = ResourceLoader::load(data.get("staged_scene", String()), "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE_DEEP);
+	Node *root = packed.is_valid() ? packed->instantiate(PackedScene::GEN_EDIT_STATE_MAIN) : nullptr;
+	if (!root) {
+		return _authority_error("SCENE_LOAD_FAILED", "The staged scene could not be instantiated.");
+	}
+	EditorNode *editor = EditorNode::get_singleton();
+	const Error opened = editor->open_scene(p_path);
+	if (opened != OK) {
+		memdelete(root);
+		return _authority_error("SCENE_OPEN_FAILED", vformat("Could not open the target scene (error %d).", opened));
+	}
+	Node *previous = editor->get_edited_scene();
+	root->set_scene_file_path(p_path);
+	EditorUndoRedoManager *history = EditorUndoRedoManager::get_singleton();
+	const int id = EditorNode::get_editor_data().get_current_edited_scene_history_id();
+	history->create_action_for_history("Edit Scene", id);
+	history->force_fixed_history();
+	history->add_do_method(editor, "set_edited_scene", root);
+	history->add_undo_method(editor, "set_edited_scene", previous);
+	history->add_do_reference(root);
+	history->add_undo_reference(previous);
+	history->commit_action();
+	const Error saved = editor->save_scene_to_path(p_path, false);
+	if (saved != OK) {
+		history->undo_history(id);
+		history->get_history_undo_redo(id)->discard_redo();
+		history->set_history_as_saved(id);
+		return _authority_error("SCENE_SAVE_FAILED", vformat("Could not save the scripted scene (error %d).", saved));
+	}
+	data.erase("staged_scene");
+	data["saved"] = true;
+	data["history_id"] = id;
+	data["version"] = (int64_t)history->get_history_undo_redo(id)->get_version();
+	Dictionary result = p_result.duplicate();
+	result["data"] = data;
+	return _publish_authority_files(p_path, result);
 }
 
 static void _release_scene_authority(const Ref<SolersScriptContext> &p_context) {
@@ -125,7 +183,7 @@ static Dictionary _prepare_asset_authority(const String &p_path) {
 	return _authority_ok(Dictionary({ { "subject", resource }, { "import_options", options }, { "import_controls", true } }));
 }
 
-static Dictionary _commit_asset_authority(const Ref<SolersScriptContext> &p_context) {
+static Dictionary _commit_asset_authority(const Ref<SolersScriptContext> &p_context, const String &) {
 	if (!p_context->has_changed() && !p_context->needs_reimport()) {
 		return _authority_ok();
 	}
@@ -155,12 +213,12 @@ static Dictionary _commit_asset_authority(const Ref<SolersScriptContext> &p_cont
 void solers_script_authorities_initialize() {
 	SolersScriptAuthority scene;
 	scene.target_argument = SNAME("target_path");
-	scene.description = "An existing saved PackedScene; ctx.get_subject() is its root Node. Mark changes with ctx.mark_changed(); the host packs and saves the scene.";
+	scene.description = "Read an existing PackedScene, including imported scenes. ctx.get_subject() is its root Node. For editable scenes, ctx.mark_changed() stages changes for a version-checked editor transaction and save. Reads do not save.";
 	scene.validate = _validate_scene_authority;
 	scene.prepare = _prepare_scene_authority;
 	scene.commit = _commit_scene_authority;
 	scene.release = _release_scene_authority;
-	scene.publish = _publish_authority_files;
+	scene.publish = _publish_scene_authority;
 	SolersScriptService::register_authority(SNAME("scene"), scene);
 
 	SolersScriptAuthority asset;

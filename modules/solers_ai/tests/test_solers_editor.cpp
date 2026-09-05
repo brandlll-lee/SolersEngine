@@ -65,6 +65,7 @@
 #include "tests/test_utils.h"
 
 #include "modules/modules_enabled.gen.h"
+#include "modules/solers_ai/core/solers_script_context.h"
 #ifdef MODULE_GLTF_ENABLED
 #include "modules/gltf/gltf_document.h"
 #include "modules/gltf/gltf_state.h"
@@ -84,6 +85,32 @@
 TEST_FORCE_LINK(test_solers_editor)
 
 namespace TestSolersEditor {
+
+TEST_CASE("[SolersCapture][SceneTree] image receipts identify the actual encoded pixels") {
+	Ref<Image> image = Image::create_empty(64, 32, false, Image::FORMAT_RGBA8);
+	image->fill(Color(0.25, 0.5, 0.75, 1));
+	const String temporary = TestUtils::get_temp_path("solers_capture_expected.png");
+	REQUIRE(image->save_png(temporary) == OK);
+	const String sha = FileAccess::get_sha256(temporary);
+	DirAccess::remove_absolute(temporary);
+	const String path = ProjectSettings::get_singleton()->globalize_path(ProjectSettings::get_singleton()->get_project_data_path().path_join("solers/captures/" + sha + ".png"));
+	const bool existed = FileAccess::exists(path);
+	const Dictionary result = SolersScriptContext::store_image(image, "runtime", "capture_contract");
+	REQUIRE(result.get("ok", false));
+	const Dictionary data = result["data"];
+	const Dictionary attachment = Array(result["attachments"])[0];
+	CHECK(data["content_sha256"] == sha);
+	CHECK(attachment["local_path"] == path);
+	CHECK((int)attachment["width"] == 64);
+	CHECK((int)attachment["height"] == 32);
+	const Ref<Image> decoded = Image::load_from_file(path);
+	REQUIRE(decoded.is_valid());
+	CHECK(decoded->get_data() == image->get_data());
+	CHECK_FALSE(SolersScriptContext::store_image(Ref<Image>(), "runtime", "empty").get("ok", true));
+	if (!existed) {
+		DirAccess::remove_absolute(path);
+	}
+}
 
 TEST_CASE("[SolersContextRing] tooltip reports provider and ledger facts") {
 	SolersContextRing ring;

@@ -45,9 +45,9 @@ struct SolersScriptAuthority {
 	String description;
 	std::function<Dictionary(const String &)> validate;
 	std::function<Dictionary(const String &)> prepare;
-	std::function<Dictionary(const Ref<SolersScriptContext> &)> commit;
+	std::function<Dictionary(const Ref<SolersScriptContext> &, const String &)> commit;
 	std::function<void(const Ref<SolersScriptContext> &)> release;
-	std::function<void(const String &, const Dictionary &)> publish;
+	std::function<Dictionary(const String &, const Dictionary &)> publish;
 };
 
 class SolersScriptService : public Object {
@@ -63,6 +63,9 @@ class SolersScriptService : public Object {
 		String cancel_path;
 		String source_path;
 		StringName authority;
+		String source_sha256;
+		Dictionary source_state;
+		Dictionary result;
 	};
 
 	static HashMap<StringName, SolersScriptAuthority> authorities;
@@ -103,7 +106,8 @@ public:
 	Dictionary edit_project_with_context(const Dictionary &p_args, const SolersToolContext &p_context);
 	Dictionary edit_script(const Dictionary &p_args);
 	Dictionary validate_script(const Dictionary &p_args) const;
-	Dictionary start_authority_script(const StringName &p_authority, const Dictionary &p_args, const String &p_call_id, const SolersToolContext *p_context = nullptr);
+	Dictionary start_authority_script(const StringName &p_authority, const Dictionary &p_args, const String &p_call_id, const SolersToolContext *p_context);
+	Dictionary start_script(const StringName &p_authority, const Dictionary &p_args, const String &p_call_id) { return start_authority_script(p_authority, p_args, p_call_id, nullptr); }
 	Dictionary poll_authority_script(const Dictionary &p_args);
 	bool is_authority_script_ready(const Dictionary &p_args) const;
 	void complete_authority_script(const Dictionary &p_args);

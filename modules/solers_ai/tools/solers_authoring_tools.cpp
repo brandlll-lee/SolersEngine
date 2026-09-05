@@ -43,7 +43,7 @@ void SolersToolRegistry::_register_script_tools() {
 		return service->edit_project_with_context(args, ctx);
 	});
 
-	_add("edit", "Atomically create, replace, write, or remove one project path. Registered script languages are parser-validated before commit; expected_sha256 rejects stale file content.", R"({"type":"object","properties":{"operation":{"type":"string","enum":["create","replace","write","create_directory","remove"]},"path":{"type":"string","minLength":6},"content":{"type":"string","writeOnly":true},"old_text":{"type":"string","minLength":1,"writeOnly":true},"new_text":{"type":"string","writeOnly":true},"expected_sha256":{"type":"string","minLength":64,"maxLength":64}},"required":["operation","path"],"additionalProperties":false})", [service](const SolersToolContext &ctx, const Dictionary &a) {
+	_add("edit", "Atomically edit project text files. Use scene.edit for scenes and resource.edit for other serialized resources. Script languages are parser-validated; expected_sha256 rejects stale content.", R"({"type":"object","properties":{"operation":{"type":"string","enum":["create","replace","write","create_directory","remove"]},"path":{"type":"string","minLength":6},"content":{"type":"string","writeOnly":true},"old_text":{"type":"string","minLength":1,"writeOnly":true},"new_text":{"type":"string","writeOnly":true},"expected_sha256":{"type":"string","minLength":64,"maxLength":64}},"required":["operation","path"],"additionalProperties":false})", [service](const SolersToolContext &ctx, const Dictionary &a) {
 		return service->edit_path_with_context(a, ctx);
 	});
 

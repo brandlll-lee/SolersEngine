@@ -107,6 +107,9 @@ void SolersScriptService::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("edit_project", "args"), &SolersScriptService::edit_project);
 	ClassDB::bind_method(D_METHOD("edit_script", "args"), &SolersScriptService::edit_script);
 	ClassDB::bind_method(D_METHOD("validate_script", "args"), &SolersScriptService::validate_script);
+	ClassDB::bind_method(D_METHOD("start_script", "authority", "args", "call_id"), &SolersScriptService::start_script);
+	ClassDB::bind_method(D_METHOD("poll_authority_script", "args"), &SolersScriptService::poll_authority_script);
+	ClassDB::bind_method(D_METHOD("complete_authority_script", "args"), &SolersScriptService::complete_authority_script);
 	ClassDB::bind_method(D_METHOD("prepare_script_task", "request_path"), &SolersScriptService::prepare_script_task);
 	ClassDB::bind_method(D_METHOD("call_script_task", "instance", "context"), &SolersScriptService::call_script_task);
 	ClassDB::bind_method(D_METHOD("finish_script_task", "context", "request_path"), &SolersScriptService::finish_script_task);
@@ -293,7 +296,7 @@ Dictionary SolersScriptService::_write_file(const Dictionary &p_args, const Sole
 		return _error("EDITOR_OWNED_FILE", "Modify project.godot through project.settings so live ProjectSettings stays synchronized.");
 	}
 	if (_solers_is_native_serialized_resource_path(res_path)) {
-		return _error("NATIVE_RESOURCE_WRITE_BLOCKED", "Godot serialized resources must be edited through resource.edit, not raw file writes.");
+		return _error("NATIVE_RESOURCE_WRITE_BLOCKED", "Use scene.edit for scenes and resource.edit for other serialized resources.");
 	}
 
 	const bool existed_before = FileAccess::exists(res_path);
@@ -424,7 +427,7 @@ Dictionary SolersScriptService::_patch_file(const Dictionary &p_args, const Sole
 		return _error("FILE_NOT_FOUND", vformat("File does not exist: %s.%s", res_path, solers_file_suggestions(res_path)));
 	}
 	if (_solers_is_native_serialized_resource_path(res_path)) {
-		return _error("NATIVE_RESOURCE_PATCH_BLOCKED", "Godot serialized resources must be edited through resource.edit, not text replacement.");
+		return _error("NATIVE_RESOURCE_PATCH_BLOCKED", "Use scene.edit for scenes and resource.edit for other serialized resources.");
 	}
 
 	Error read_err = OK;
@@ -889,9 +892,12 @@ void SolersScriptService::_write_task_result(const Dictionary &p_request, const 
 	if (result_path.is_empty()) {
 		return;
 	}
-	Ref<FileAccess> file = FileAccess::open(result_path, FileAccess::WRITE);
+	const String temporary = result_path + ".tmp";
+	Ref<FileAccess> file = FileAccess::open(temporary, FileAccess::WRITE);
 	if (file.is_valid()) {
 		file->store_string(JSON::stringify(JSON::from_native(p_result)));
+		file.unref();
+		DirAccess::rename_absolute(temporary, result_path);
 	}
 }
 
@@ -928,11 +934,17 @@ Dictionary SolersScriptService::start_authority_script(const StringName &p_autho
 	if (!target.valid || !FileAccess::exists(target.value)) {
 		return _error("INVALID_PATH", target.valid ? vformat("Target does not exist: %s", target.value) : target.error);
 	}
+	const String source_sha256 = FileAccess::get_sha256(target.value);
+	if (p_args.has("expected_sha256") && String(p_args["expected_sha256"]) != source_sha256) {
+		return _error("STATE_CONFLICT", "The script target changed since it was read.");
+	}
+	Dictionary source_state;
 	if (authority->validate) {
 		const Dictionary validation = authority->validate(target.value);
 		if (!(bool)validation.get("ok", false)) {
 			return validation;
 		}
+		source_state = validation.get("data", Dictionary());
 	}
 
 	String source;
@@ -1013,6 +1025,8 @@ Dictionary SolersScriptService::start_authority_script(const StringName &p_autho
 	task.cancel_path = global_directory.path_join("cancel");
 	task.source_path = target.value;
 	task.authority = p_authority;
+	task.source_sha256 = source_sha256;
+	task.source_state = source_state;
 	task.deadline_msec = OS::get_singleton()->get_ticks_msec() + timeout_msec;
 
 	Dictionary request;
@@ -1022,7 +1036,7 @@ Dictionary SolersScriptService::start_authority_script(const StringName &p_autho
 	request["result_path"] = task.result_path;
 	request["progress_path"] = task.progress_path;
 	request["cancel_path"] = task.cancel_path;
-	request["deadline_msec"] = (int64_t)task.deadline_msec;
+	request["timeout_msec"] = timeout_msec;
 	request["outputs"] = outputs;
 	const String runner = "extends SceneTree\n\nconst REQUEST_PATH = " + JSON::stringify(request_path) + "\n\nfunc _initialize():\n    call_deferred(\"_run\")\n\nfunc _run():\n    var service = SolersScriptService.new()\n    var prepared = service.prepare_script_task(REQUEST_PATH)\n    if not prepared.get(\"ok\", false):\n        quit(1)\n        return\n    var context = prepared.data.context\n    var script = load(prepared.data.script_path)\n    if script == null:\n        context.fail(\"SCRIPT_LOAD_FAILED\", \"Godot could not load the authority script.\")\n    else:\n        var instance = RefCounted.new()\n        instance.set_script(script)\n        if not instance.has_method(\"run\"):\n            context.fail(\"SCRIPT_ENTRYPOINT_MISSING\", \"Authority scripts must define func run(ctx).\")\n        else:\n            var called = service.call_script_task(instance, context)\n            if not called.get(\"ok\", false):\n                context.fail(called.error.code, called.error.message)\n            else:\n                context.set_result(await called.data)\n    service.finish_script_task(context, REQUEST_PATH)\n    quit()\n";
 	if (_solers_write_script_task_file(script_path, source) != OK ||
@@ -1063,13 +1077,24 @@ Dictionary SolersScriptService::poll_authority_script(const Dictionary &p_args) 
 	if (!task) {
 		return _error("SCRIPT_TASK_NOT_FOUND", "The authority script task is no longer available.", false);
 	}
+	if (!task->result.is_empty()) {
+		return task->result;
+	}
 	const Dictionary result = _read_json_file(task->result_path);
 	if (!result.is_empty()) {
+		task->result = result;
 		const SolersScriptAuthority *authority = _get_authority(task->authority);
 		if ((bool)result.get("ok", false) && authority && authority->publish) {
-			authority->publish(task->source_path, result);
+			if ((bool)Dictionary(result.get("data", Dictionary())).get("authored_state_changed", false)) {
+				const Dictionary current = authority->validate ? authority->validate(task->source_path) : _ok(Dictionary());
+				if (!(bool)current.get("ok", false) || !Dictionary(current.get("data", Dictionary())).recursive_equal(task->source_state, 0) || FileAccess::get_sha256(task->source_path) != task->source_sha256) {
+					task->result = _error("STATE_CONFLICT", "The target changed while the script ran; its staged scene was not committed.");
+					return task->result;
+				}
+			}
+			task->result = authority->publish(task->source_path, result);
 		}
-		return result;
+		return task->result;
 	}
 	const bool running = OS::get_singleton()->is_process_running(task->process_id);
 	if (running && OS::get_singleton()->get_ticks_msec() >= task->deadline_msec) {
@@ -1139,7 +1164,7 @@ Dictionary SolersScriptService::prepare_script_task(const String &p_request_path
 	context.instantiate();
 	context->initialize(authority, prepared_data.get("subject", Variant()), target_path, prepared_data.get("import_options", Dictionary()),
 			prepared_data.get("import_controls", false), outputs, request.get("progress_path", String()), request.get("cancel_path", String()),
-			(uint64_t)(int64_t)request.get("deadline_msec", 0));
+			OS::get_singleton()->get_ticks_msec() + (uint64_t)(int64_t)request.get("timeout_msec", 30000));
 	return _ok(Dictionary({ { "context", context }, { "script_path", request.get("script_path", String()) } }));
 }
 
@@ -1186,7 +1211,7 @@ Dictionary SolersScriptService::finish_script_task(const Ref<SolersScriptContext
 	data["source_path"] = target_path;
 	data["logs"] = p_context->get_logs();
 	data["result"] = p_context->get_result();
-	const Dictionary committed = authority->commit(p_context);
+	const Dictionary committed = authority->commit(p_context, String(request.get("result_path", String())).get_base_dir().path_join("scene.tscn"));
 	if (!(bool)committed.get("ok", false)) {
 		release();
 		_write_task_result(request, committed);
@@ -1208,7 +1233,7 @@ Dictionary SolersScriptService::finish_script_task(const Ref<SolersScriptContext
 		output_receipts.push_back(receipt);
 	}
 	data["outputs"] = output_receipts;
-	data["authored_state_changed"] = true;
+	data["authored_state_changed"] = p_context->has_changed();
 	const Dictionary result = _ok(data);
 	_write_task_result(request, result);
 	return result;

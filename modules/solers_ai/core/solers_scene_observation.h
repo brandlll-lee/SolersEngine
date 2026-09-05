@@ -36,7 +36,6 @@
 #include "scene/main/node.h"
 
 class Camera3D;
-class Image;
 class SolersRuntimeObservation;
 class Viewport;
 
@@ -53,7 +52,6 @@ class SolersSceneObservation : public Object {
 	void _render_frame_post_draw();
 	Dictionary _capture_error(const String &p_code, const String &p_message, bool p_recoverable = true) const;
 	Dictionary _runtime_capture_unavailable() const;
-	Dictionary _capture_image(const Ref<Image> &p_image, const String &p_target, const String &p_capture_id = String());
 	Dictionary _render_state_for_pending(const Dictionary &p_pending) const;
 	Dictionary _attach_render_receipt(Dictionary p_result, const Dictionary &p_pending);
 	Dictionary _register_pending_capture(const String &p_target, const Dictionary &p_extra);
@@ -61,7 +59,7 @@ class SolersSceneObservation : public Object {
 	Dictionary _finish_frame_gated_capture(const String &p_capture_id, const Dictionary &p_data);
 	Dictionary _begin_scene_view_capture(const String &p_target, const Dictionary &p_args);
 	Dictionary _editor_3d_viewport_state() const;
-	void _runtime_screenshot_ready(int64_t p_width, int64_t p_height, const String &p_path, const Rect2i &p_rect, const String &p_capture_id);
+	void _runtime_screenshot_ready(const String &p_message, const Array &p_data);
 	bool _is_runtime_visual_ready() const;
 	bool _request_runtime_screenshot(const String &p_capture_id);
 

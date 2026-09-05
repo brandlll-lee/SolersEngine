@@ -28,7 +28,14 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
+#include "core/debugger/engine_debugger.h"
+#include "core/input/input.h"
+#include "core/object/callable_mp.h"
+#include "core/object/message_queue.h"
 #include "core/variant/dictionary.h"
+#include "scene/main/scene_tree.h"
+#include "scene/main/window.h"
+#include "servers/rendering/rendering_server.h"
 #include "tests/test_macros.h"
 
 #include "modules/solers_ai/core/solers_permission_manager.h"
@@ -37,6 +44,7 @@
 #include "modules/solers_ai/core/solers_resource_service.h"
 #include "modules/solers_ai/core/solers_runtime_observation.h"
 #include "modules/solers_ai/core/solers_scene_observation.h"
+#include "modules/solers_ai/core/solers_script_context.h"
 #include "modules/solers_ai/core/solers_script_service.h"
 #include "modules/solers_ai/core/solers_tool.h"
 #include "modules/solers_ai/core/solers_tool_executor.h"
@@ -46,6 +54,99 @@
 TEST_FORCE_LINK(test_solers_tools)
 
 namespace TestSolersTools {
+
+class RuntimeReceipts : public EngineDebugger {
+public:
+	Array receipts;
+	RuntimeReceipts() { singleton = this; }
+	void send_message(const String &, const Array &p_data) override { receipts.append_array(p_data); }
+	void send_error(const String &, const String &, int, const String &, const String &, bool, ErrorHandlerType) override {}
+	void debug(bool, bool) override {}
+};
+
+TEST_CASE("[SolersRuntime][SceneTree] queued frame requests produce native debugger receipts") {
+	REQUIRE(EngineDebugger::get_singleton() == nullptr);
+	RuntimeReceipts debugger;
+	bool captured = false;
+	CHECK(debugger.capture_parse("solers", "observe_frame", Array({ "first", 1, Array() }), captured) == OK);
+	CHECK(captured);
+	CHECK(debugger.capture_parse("solers", "observe_frame", Array({ "second", 1, Array() }), captured) == OK);
+	CHECK(captured);
+	RenderingServer::get_singleton()->draw(false);
+	MessageQueue::get_singleton()->flush();
+	REQUIRE(debugger.receipts.size() == 2);
+	CHECK(String(Dictionary(debugger.receipts[0])["call_id"]) == "first");
+	CHECK(String(Dictionary(debugger.receipts[1])["call_id"]) == "second");
+	CHECK((int)Dictionary(debugger.receipts[0])["runtime_epoch"] == 1);
+	CHECK((bool)Dictionary(debugger.receipts[0])["ok"]);
+}
+
+class RuntimeReceiver : public Node {
+	GDCLASS(RuntimeReceiver, Node);
+
+protected:
+	void _notification(int p_what) {
+		if (p_what == NOTIFICATION_PHYSICS_PROCESS) {
+			frames++;
+		}
+	}
+
+public:
+	int frames = 0;
+	int after = 0;
+	void completed() { after = frames; }
+};
+
+TEST_CASE("[SolersRuntime][SceneTree] native events reach input callbacks and complete physics frames") {
+	RuntimeReceiver *receiver = memnew(RuntimeReceiver);
+	receiver->set_physics_process(true);
+	static int events = 0;
+	events = 0;
+	Input::get_singleton()->set_event_dispatch_function([](const Ref<InputEvent> &) { events++; });
+	SceneTree *tree = SceneTree::get_singleton();
+	Window *root = tree->get_root();
+	root->add_child(receiver);
+	Ref<SolersScriptContext> context;
+	context.instantiate();
+	context->initialize("runtime", root, String(), Dictionary(), false, PackedStringArray(), String(), String(), 0);
+	Ref<InputEventKey> key;
+	key.instantiate();
+	key->set_keycode(Key::F8);
+	key->set_pressed(true);
+	CHECK(context->input_event(key));
+	CHECK(Input::get_singleton()->is_key_pressed(Key::F8));
+	CHECK(events == 1);
+	key = key->duplicate();
+	key->set_echo(true);
+	CHECK(context->input_event(key));
+	Ref<InputEventMouseButton> mouse;
+	mouse.instantiate();
+	mouse->set_button_index(MouseButton::LEFT);
+	mouse->set_pressed(true);
+	CHECK(context->input_event(mouse));
+	Ref<InputEventJoypadMotion> axis;
+	axis.instantiate();
+	axis->set_device(7);
+	axis->set_axis(JoyAxis::LEFT_X);
+	axis->set_axis_value(0.75);
+	CHECK(context->input_event(axis));
+	CHECK(Input::get_singleton()->get_joy_axis(7, JoyAxis::LEFT_X) == doctest::Approx(0.75));
+	Signal wait = context->wait_physics_frames(2);
+	wait.connect(callable_mp(receiver, &RuntimeReceiver::completed));
+	tree->physics_process(1.0 / 60.0);
+	CHECK(receiver->after == 0);
+	tree->physics_process(1.0 / 60.0);
+	CHECK(receiver->after == 2);
+	context->finish();
+	CHECK_FALSE(Input::get_singleton()->is_key_pressed(Key::F8));
+	CHECK_FALSE(Input::get_singleton()->is_mouse_button_pressed(MouseButton::LEFT));
+	CHECK(Input::get_singleton()->get_joy_axis(7, JoyAxis::LEFT_X) == 0);
+	CHECK(context->is_cancelled());
+	CHECK_FALSE(context->input_event(key));
+	CHECK(events >= 7);
+	Input::get_singleton()->set_event_dispatch_function(nullptr);
+	memdelete(receiver);
+}
 
 static void configure_registry(SolersToolRegistry &r_registry, SolersPermissionManager &r_permissions,
 		SolersProjectObservation &r_project, SolersReflectionService &r_reflection,

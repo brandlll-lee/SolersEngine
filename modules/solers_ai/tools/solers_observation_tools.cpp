@@ -126,33 +126,6 @@ Dictionary SolersToolRegistry::_run_control(const Dictionary &p_args, const Stri
 		return p_context ? p_context->require_permission(SolersPermissionManager::PERMISSION_RUN_PROJECT, p_args) : Dictionary();
 	};
 	bool command_accepted = false;
-	if (action == "set_input_actions") {
-		ERR_FAIL_NULL_V(runtime_observation, _error("RUNTIME_OBSERVATION_UNAVAILABLE", "Runtime observation is not available.", false));
-		if (!debugger || !debugger->is_session_active()) {
-			return _error("RUNTIME_NOT_CONNECTED", "Start the project before setting runtime input.");
-		}
-		const int64_t epoch = p_args.get("runtime_epoch", 0);
-		const int64_t current_epoch = runtime_observation->get_runtime_status().get("runtime_epoch", 0);
-		const int physics_frames = p_args.get("physics_frames", 0);
-		const Variant observations = p_args.get("observations", Variant());
-		if (p_call_id.is_empty() || epoch <= 0 || epoch != current_epoch || !p_args.has("actions") || physics_frames <= 0 || observations.get_type() != Variant::ARRAY || Array(observations).is_empty()) {
-			return _error("STALE_RUNTIME_EPOCH", "set_input_actions requires actions, positive physics_frames, observations, and the current runtime_epoch returned by runtime.observe.");
-		}
-		const Dictionary denied = require_run_permission();
-		if (!denied.is_empty()) {
-			return denied;
-		}
-		runtime_observation->clear_runtime_control_result();
-		debugger->send_message("solers:set_input_actions", { p_call_id, epoch, p_args["actions"], physics_frames, observations });
-		Dictionary poll_args;
-		poll_args["action"] = action;
-		poll_args["call_id"] = p_call_id;
-		poll_args["runtime_epoch"] = epoch;
-		Dictionary pending;
-		pending["status"] = "pending";
-		pending["poll_args"] = poll_args;
-		return _ok(pending);
-	}
 	if (action == "set_property") {
 		ERR_FAIL_NULL_V(runtime_observation, _error("RUNTIME_OBSERVATION_UNAVAILABLE", "Runtime observation is not available.", false));
 		if (!debugger || !debugger->is_session_active()) {
@@ -287,16 +260,6 @@ Dictionary SolersToolRegistry::_run_control(const Dictionary &p_args, const Stri
 
 bool SolersToolRegistry::_is_runtime_control_ready(const Dictionary &p_args) const {
 	const String action = p_args.get("action", String());
-	if (action == "set_input_actions") {
-		if (!runtime_observation) {
-			return true;
-		}
-		EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
-		ScriptEditorDebugger *debugger = debugger_node ? debugger_node->get_current_debugger() : nullptr;
-		return !debugger || !debugger->is_session_active() ||
-				(int64_t)runtime_observation->get_runtime_status().get("runtime_epoch", 0) != (int64_t)p_args.get("runtime_epoch", 0) ||
-				!runtime_observation->get_runtime_control_result(p_args.get("call_id", String())).is_empty();
-	}
 	if (action == "set_property") {
 		return !runtime_observation || runtime_observation->is_runtime_observation_ready(p_args);
 	}
@@ -305,37 +268,6 @@ bool SolersToolRegistry::_is_runtime_control_ready(const Dictionary &p_args) con
 
 Dictionary SolersToolRegistry::_poll_runtime_control(const Dictionary &p_args, const SolersToolContext *p_context) const {
 	const String action = p_args.get("action", String());
-	if (action == "set_input_actions") {
-		ERR_FAIL_NULL_V(runtime_observation, _error("RUNTIME_OBSERVATION_UNAVAILABLE", "Runtime observation is not available.", false));
-		EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
-		ScriptEditorDebugger *debugger = debugger_node ? debugger_node->get_current_debugger() : nullptr;
-		const int64_t epoch = p_args.get("runtime_epoch", 0);
-		if (!debugger || !debugger->is_session_active()) {
-			return _error("RUNTIME_NOT_CONNECTED", "The runtime stopped before applying input.");
-		}
-		if ((int64_t)runtime_observation->get_runtime_status().get("runtime_epoch", 0) != epoch) {
-			return _error("STALE_RUNTIME_EPOCH", "The runtime epoch changed before applying input.");
-		}
-		const Dictionary result = runtime_observation->get_runtime_control_result(p_args.get("call_id", String()));
-		if (result.is_empty()) {
-			Dictionary pending;
-			pending["status"] = "pending";
-			pending["poll_args"] = p_args;
-			return _ok(pending);
-		}
-		if (!(bool)result.get("ok", false)) {
-			return _error(result.get("code", "RUNTIME_INPUT_REJECTED"), result.get("message", "The runtime rejected the input state."));
-		}
-		Dictionary data;
-		data["action"] = action;
-		data["runtime_epoch"] = epoch;
-		data["input_state_applied"] = true;
-		data["physics_frames"] = result.get("physics_frames", 0);
-		data["before"] = result.get("before", Array());
-		data["after"] = result.get("after", Array());
-		data["availability"] = result.get("availability", Dictionary());
-		return _ok(data);
-	}
 	if (action == "set_property") {
 		ERR_FAIL_NULL_V(runtime_observation, _error("RUNTIME_OBSERVATION_UNAVAILABLE", "Runtime observation is not available.", false));
 		Dictionary observed = runtime_observation->observe_runtime(p_args);
@@ -439,12 +371,12 @@ void SolersToolRegistry::_register_runtime_tools() {
 	SolersRuntimeObservation *runtime = runtime_observation;
 	_add("runtime.observe", "Observe one canonical runtime snapshot through Godot's native debugger. Every result carries the current runtime_epoch.", R"({"type":"object","properties":{"target":{"type":"string","enum":["scene","spatial","stack","performance"]},"node_paths":{"type":"array","items":{"type":"string"},"maxItems":64,"uniqueItems":true},"focus_paths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":32,"uniqueItems":true},"path_prefix":{"type":"string"},"name_contains":{"type":"string"},"class_name":{"type":"string"},"cursor":{"type":"integer","minimum":0},"properties":{"type":"array","items":{"type":"string","minLength":1},"maxItems":64,"uniqueItems":true},"max_results":{"type":"integer","minimum":1}},"required":["target"],"additionalProperties":false})", [runtime](const SolersToolContext &ctx, const Dictionary &a) { return Dictionary({ { "ok", true }, { "data", runtime->observe_runtime(a, ctx.result_token_budget) } }); }, [runtime](const SolersToolContext &ctx, const Dictionary &a) { return Dictionary({ { "ok", true }, { "data", runtime->observe_runtime(a, ctx.result_token_budget) } }); }, [runtime](const SolersToolContext &, const Dictionary &a) { return runtime->is_runtime_observation_ready(a); });
 
-	_add("runtime.control", "Control the active debugger or make one runtime-only property change guarded by runtime_epoch, ObjectID, and observation_id.", R"({"type":"object","properties":{"action":{"type":"string","enum":["play_current_scene","stop","suspend","resume","next_frame","debug_break","debug_continue","debug_step","debug_next","debug_out","set_input_actions","set_property"]},"runtime_epoch":{"type":"integer","minimum":0},"actions":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"object","properties":{"name":{"type":"string","minLength":1},"strength":{"type":"number","exclusiveMinimum":0,"maximum":1}},"required":["name","strength"],"additionalProperties":false}},"physics_frames":{"type":"integer","minimum":1},"observations":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","properties":{"node_path":{"type":"string"},"properties":{"type":"array","minItems":1,"maxItems":32,"uniqueItems":true,"items":{"type":"string","minLength":1}}},"required":["node_path","properties"],"additionalProperties":false}},"node_path":{"type":"string"},"object_id":{"type":"string"},"property":{"type":"string","minLength":1},"observation_id":{"type":"string","minLength":64,"maxLength":64},"value":{}},"required":["action"],"additionalProperties":false})", [this](const SolersToolContext &ctx, const Dictionary &a) { return _run_control(a, ctx.call_id, &ctx); }, [this](const SolersToolContext &ctx, const Dictionary &a) { return _poll_runtime_control(a, &ctx); }, [this](const SolersToolContext &, const Dictionary &a) { return _is_runtime_control_ready(a); });
+	_add("runtime.control", "Control the active debugger or make one runtime-only property change guarded by runtime_epoch, ObjectID, and observation_id.", R"({"type":"object","properties":{"action":{"type":"string","enum":["play_current_scene","stop","suspend","resume","next_frame","debug_break","debug_continue","debug_step","debug_next","debug_out","set_property"]},"runtime_epoch":{"type":"integer","minimum":0},"node_path":{"type":"string"},"object_id":{"type":"string"},"property":{"type":"string","minLength":1},"observation_id":{"type":"string","minLength":64,"maxLength":64},"value":{}},"required":["action"],"additionalProperties":false})", [this](const SolersToolContext &ctx, const Dictionary &a) { return _run_control(a, ctx.call_id, &ctx); }, [this](const SolersToolContext &ctx, const Dictionary &a) { return _poll_runtime_control(a, &ctx); }, [this](const SolersToolContext &, const Dictionary &a) { return _is_runtime_control_ready(a); });
 
 	if (!script_service) {
 		return;
 	}
-	_add("runtime.script", "Run bounded GDScript inside the real game process for the exact supplied runtime_epoch.", R"({"type":"object","properties":{"runtime_epoch":{"type":"integer","minimum":1},"source":{"type":"string","minLength":1,"writeOnly":true},"timeout_msec":{"type":"integer","minimum":1000,"maximum":600000}},"required":["runtime_epoch","source"],"additionalProperties":false})", [this, runtime](const SolersToolContext &ctx, const Dictionary &a) {
+	_add("runtime.script", "Run extends RefCounted with func run(ctx) in the real game process for runtime_epoch. ctx.get_subject() is the root Window. ctx.input_event(event) dispatches native InputEvents and releases held input on completion. await ctx.wait_physics_frames(count) observes completed physics processing; await ctx.capture() returns post-draw pixel evidence and attaches the image. Inspect SolersScriptContext through engine.describe. Timeout or cancellation stops the game.", R"({"type":"object","properties":{"runtime_epoch":{"type":"integer","minimum":1},"source":{"type":"string","minLength":1,"writeOnly":true},"timeout_msec":{"type":"integer","minimum":1000,"maximum":600000}},"required":["runtime_epoch","source"],"additionalProperties":false})", [this, runtime](const SolersToolContext &ctx, const Dictionary &a) {
 		const Dictionary validation = script_service->validate_script(Dictionary({ { "path", "res://solers_runtime_script.gd" }, { "source", a.get("source", String()) } }));
 		if (!(bool)validation.get("ok", false) || !(bool)Dictionary(validation.get("data", Dictionary())).get("valid", false)) {
 			Dictionary failure = _error("SCRIPT_VALIDATION_FAILED", "runtime.script did not pass Godot's registered GDScript parser.");

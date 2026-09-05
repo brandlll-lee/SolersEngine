@@ -50,7 +50,6 @@ class SolersRuntimeObservation : public Object {
 	uint64_t runtime_query_sequence = 0;
 	int runtime_result_token_budget = INT32_MAX;
 	Dictionary runtime_query;
-	Dictionary runtime_control_result;
 	Dictionary runtime_script;
 	Dictionary runtime_object_cache;
 	Array runtime_stack_frames;
@@ -85,8 +84,6 @@ public:
 	Dictionary observe_runtime(const Dictionary &p_args, int p_token_budget = INT32_MAX);
 	bool is_runtime_observation_ready(const Dictionary &p_args) const;
 	bool has_runtime_query() const { return !runtime_query.is_empty(); }
-	void clear_runtime_control_result();
-	Dictionary get_runtime_control_result(const String &p_call_id) const;
 	Dictionary start_runtime_script(const Dictionary &p_args, const String &p_call_id, const SolersToolContext *p_context = nullptr);
 	Dictionary poll_runtime_script(const Dictionary &p_args);
 	bool is_runtime_script_ready(const Dictionary &p_args) const;

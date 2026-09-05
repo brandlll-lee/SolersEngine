@@ -30,14 +30,11 @@
 
 #include "core/config/engine.h"
 #include "core/debugger/engine_debugger.h"
-#include "core/input/input.h"
-#include "core/input/input_map.h"
 #include "core/io/json.h"
 #include "core/io/resource.h"
 #include "core/math/math_funcs.h"
 #include "core/object/callable_mp.h"
 #include "core/os/os.h"
-#include "core/templates/hash_set.h"
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/physics/collision_shape_3d.h"
 #include "scene/3d/visual_instance_3d.h"
@@ -56,8 +53,6 @@
 #include "modules/gdscript/gdscript.h"
 #include "modules/gdscript/gdscript_function.h"
 #endif
-
-static HashSet<StringName> solers_owned_input_actions;
 
 static void _solers_send_runtime_result(const String &p_message, const Dictionary &p_result) {
 	if (EngineDebugger *debugger = EngineDebugger::get_singleton()) {
@@ -166,42 +161,8 @@ static Dictionary _solers_runtime_spatial_facts(Node *p_focus, Camera3D *p_camer
 
 static Variant _solers_runtime_wire_value(const Variant &p_value);
 
-static Dictionary _solers_runtime_property_snapshot(const Array &p_requests) {
-	Array values;
-	Array missing;
-	Window *root = SceneTree::get_singleton() ? SceneTree::get_singleton()->get_root() : nullptr;
-	for (int i = 0; i < p_requests.size(); i++) {
-		if (p_requests[i].get_type() != Variant::DICTIONARY) {
-			missing.push_back(Dictionary({ { "request_index", i }, { "reason", "invalid_observation" } }));
-			continue;
-		}
-		const Dictionary request = p_requests[i];
-		const String path = request.get("node_path", String());
-		Node *node = root ? root->get_node_or_null(NodePath(path)) : nullptr;
-		if (!node) {
-			missing.push_back(Dictionary({ { "node_path", path }, { "reason", "node_not_found" } }));
-			continue;
-		}
-		Dictionary properties;
-		const Array names = request.get("properties", Array());
-		for (int property_index = 0; property_index < names.size(); property_index++) {
-			const StringName name = names[property_index];
-			bool valid = false;
-			const Variant value = _solers_runtime_wire_value(node->get(name, &valid));
-			if (valid) {
-				properties[name] = value;
-			} else {
-				missing.push_back(Dictionary({ { "node_path", path }, { "property", name }, { "reason", "property_not_found" } }));
-			}
-		}
-		values.push_back(Dictionary({ { "node_path", path }, { "object_id", solers_object_id_to_string(node->get_instance_id()) }, { "properties", properties } }));
-	}
-	return Dictionary({ { "values", values }, { "missing", missing } });
-}
-
 class SolersRuntimeBridge : public Object {
 	Array pending_frames;
-	Array pending_inputs;
 	bool frame_callback_requested = false;
 
 #ifdef MODULE_GDSCRIPT_ENABLED
@@ -230,6 +191,8 @@ class SolersRuntimeBridge : public Object {
 		}
 		Dictionary result({ { "call_id", p_call_id }, { "runtime_epoch",
 							   task->runtime_epoch } });
+		task->context->finish();
+		result["attachments"] = task->context->get_captures();
 		if (task->context->has_failed()) {
 			result["ok"] = false;
 			result["error"] = task->context->get_failure();
@@ -256,6 +219,7 @@ class SolersRuntimeBridge : public Object {
 		}
 		for (const String &call_id : expired) {
 			const int64_t epoch = runtime_scripts[call_id].runtime_epoch;
+			runtime_scripts[call_id].context->finish();
 			runtime_scripts.erase(call_id);
 			_send_script_error(call_id, epoch, "SCRIPT_TIMEOUT", "runtime.script exceeded its declared timeout.");
 		}
@@ -267,7 +231,7 @@ class SolersRuntimeBridge : public Object {
 #endif
 
 public:
-	void request_script(const String &p_call_id, int64_t p_runtime_epoch, const String &p_source, uint64_t p_deadline_msec) {
+	void request_script(const String &p_call_id, int64_t p_runtime_epoch, const String &p_source, uint64_t p_timeout_msec) {
 #ifdef MODULE_GDSCRIPT_ENABLED
 		if (runtime_scripts.has(p_call_id)) {
 			_send_script_error(p_call_id, p_runtime_epoch, "RUNTIME_SCRIPT_BUSY", "This runtime script call is already active.");
@@ -281,7 +245,7 @@ public:
 		}
 		RuntimeScriptTask task;
 		task.runtime_epoch = p_runtime_epoch;
-		task.deadline_msec = p_deadline_msec;
+		task.deadline_msec = OS::get_singleton()->get_ticks_msec() + p_timeout_msec;
 		task.script.instantiate();
 		task.script->set_source_code(p_source);
 		if (task.script->reload() != OK) {
@@ -289,7 +253,7 @@ public:
 			return;
 		}
 		task.context.instantiate();
-		task.context->initialize(SNAME("runtime"), root, root->get_scene_file_path(), Dictionary(), false, PackedStringArray(), String(), String(), p_deadline_msec);
+		task.context->initialize(SNAME("runtime"), root, root->get_scene_file_path(), Dictionary(), false, PackedStringArray(), String(), String(), task.deadline_msec);
 		task.instance.instantiate();
 		task.instance->set_script(task.script);
 		if (!task.instance->has_method(SNAME("run"))) {
@@ -301,6 +265,7 @@ public:
 		Callable::CallError call_error;
 		const Variant value = task.instance->callp(SNAME("run"), arguments, 1, call_error);
 		if (call_error.error != Callable::CallError::CALL_OK) {
+			task.context->finish();
 			_send_script_error(p_call_id, p_runtime_epoch, "SCRIPT_CALL_FAILED", "Godot could not call runtime.script run(ctx).");
 			return;
 		}
@@ -325,18 +290,21 @@ public:
 
 	void cancel_script(const String &p_call_id) {
 #ifdef MODULE_GDSCRIPT_ENABLED
+		if (runtime_scripts.has(p_call_id)) {
+			runtime_scripts[p_call_id].context->finish();
+		}
 		runtime_scripts.erase(p_call_id);
 #endif
 	}
 
-	void request_frame(const String &p_call_id, int64_t p_runtime_epoch, const Array &p_focus_paths) {
+	void request_frame(const String &p_call_id, int64_t p_runtime_epoch, const Array &p_focus_paths, bool p_capture = false) {
 		RenderingServer *rendering = RenderingServer::get_singleton();
 		if (!rendering) {
 			Dictionary result({ { "call_id", p_call_id }, { "runtime_epoch", p_runtime_epoch }, { "ok", false }, { "code", "RENDERING_UNAVAILABLE" }, { "message", "RenderingServer is unavailable." } });
 			_solers_send_runtime_result("solers:frame_result", result);
 			return;
 		}
-		pending_frames.push_back(Dictionary({ { "call_id", p_call_id }, { "runtime_epoch", p_runtime_epoch }, { "focus_paths", p_focus_paths } }));
+		pending_frames.push_back(Dictionary({ { "call_id", p_call_id }, { "runtime_epoch", p_runtime_epoch }, { "focus_paths", p_focus_paths }, { "capture", p_capture } }));
 		if (!frame_callback_requested) {
 			frame_callback_requested = true;
 			rendering->request_frame_drawn_callback(callable_mp(this, &SolersRuntimeBridge::frame_drawn));
@@ -345,12 +313,19 @@ public:
 
 	void frame_drawn() {
 		frame_callback_requested = false;
-		const Array requests = pending_frames;
+		const Array requests = pending_frames.duplicate();
 		pending_frames.clear();
 		Window *root = SceneTree::get_singleton() ? SceneTree::get_singleton()->get_root() : nullptr;
 		Camera3D *camera = root ? root->get_camera_3d() : nullptr;
 		for (int request_index = 0; request_index < requests.size(); request_index++) {
 			const Dictionary request = requests[request_index];
+			if ((bool)request.get("capture", false)) {
+				Dictionary receipt = SolersScriptContext::capture_runtime_image(request["call_id"]);
+				receipt["call_id"] = request["call_id"];
+				receipt["runtime_epoch"] = request["runtime_epoch"];
+				_solers_send_runtime_result("solers:capture_result", receipt);
+				continue;
+			}
 			Dictionary result;
 			result["call_id"] = request.get("call_id", String());
 			result["runtime_epoch"] = request.get("runtime_epoch", 0);
@@ -373,38 +348,6 @@ public:
 			result["spatial"] = spatial;
 			result["spatial_sha256"] = JSON::stringify(spatial, "", false, true).sha256_text();
 			_solers_send_runtime_result("solers:frame_result", result);
-		}
-	}
-
-	void request_input(const String &p_call_id, int64_t p_runtime_epoch, int p_physics_frames, const Array &p_observations) {
-		SceneTree *tree = SceneTree::get_singleton();
-		ERR_FAIL_NULL(tree);
-		pending_inputs.push_back(Dictionary({ { "call_id", p_call_id }, { "runtime_epoch", p_runtime_epoch }, { "remaining_frames", p_physics_frames }, { "physics_frames", p_physics_frames }, { "observations", p_observations }, { "before", _solers_runtime_property_snapshot(p_observations) } }));
-		if (!tree->is_connected(SNAME("physics_frame"), callable_mp(this, &SolersRuntimeBridge::physics_frame))) {
-			tree->connect(SNAME("physics_frame"), callable_mp(this, &SolersRuntimeBridge::physics_frame));
-		}
-	}
-
-	void physics_frame() {
-		for (int i = pending_inputs.size() - 1; i >= 0; i--) {
-			Dictionary request = pending_inputs[i];
-			const int remaining = (int)request.get("remaining_frames", 1) - 1;
-			if (remaining > 0) {
-				request["remaining_frames"] = remaining;
-				pending_inputs[i] = request;
-				continue;
-			}
-			const Dictionary after = _solers_runtime_property_snapshot(request.get("observations", Array()));
-			const Dictionary before = request.get("before", Dictionary());
-			Array missing = before.get("missing", Array());
-			missing.append_array(Array(after.get("missing", Array())));
-			Dictionary result({ { "call_id", request.get("call_id", String()) }, { "runtime_epoch", request.get("runtime_epoch", 0) }, { "physics_frames", request.get("physics_frames", 0) } });
-			result["before"] = before.get("values", Array());
-			result["after"] = after.get("values", Array());
-			result["availability"] = Dictionary({ { "state", missing.is_empty() ? "complete" : "partial" }, { "missing", missing } });
-			result["ok"] = true;
-			_solers_send_runtime_result("solers:input_result", result);
-			pending_inputs.remove_at(i);
 		}
 	}
 };
@@ -505,23 +448,18 @@ static void _solers_observe_runtime_objects(const String &p_call_id, int64_t p_r
 	_solers_send_runtime_result("solers:objects_result", result);
 }
 
-static void _solers_send_input_error(const String &p_call_id, int64_t p_runtime_epoch, const String &p_code, const String &p_message) {
-	Dictionary result;
-	result["call_id"] = p_call_id;
-	result["runtime_epoch"] = p_runtime_epoch;
-	result["ok"] = false;
-	result["code"] = p_code;
-	result["message"] = p_message;
-	_solers_send_runtime_result("solers:input_result", result);
-}
-
 static Error _solers_capture_runtime(void *, const String &p_message, const Array &p_args, bool &r_captured) {
-	r_captured = p_message == "set_input_actions" || p_message == "observe_frame" || p_message == "observe_objects" || p_message == "run_script" || p_message == "cancel_script";
+	r_captured = p_message == "capture" || p_message == "observe_frame" || p_message == "observe_objects" || p_message == "run_script" || p_message == "cancel_script";
 	if (!r_captured) {
 		return OK;
 	}
 	const String call_id = p_args.size() > 0 ? String(p_args[0]) : String();
 	const int64_t runtime_epoch = p_args.size() > 1 ? (int64_t)p_args[1] : 0;
+	if (p_message == "capture") {
+		ERR_FAIL_COND_V(p_args.size() != 2 || call_id.is_empty() || runtime_epoch <= 0 || !solers_runtime_bridge, ERR_INVALID_PARAMETER);
+		solers_runtime_bridge->request_frame(call_id, runtime_epoch, Array(), true);
+		return OK;
+	}
 	if (p_message == "run_script") {
 		if (p_args.size() != 4 || call_id.is_empty() || runtime_epoch <= 0 || p_args[2].get_type() != Variant::STRING || p_args[3].get_type() != Variant::INT || !solers_runtime_bridge) {
 			Dictionary result({ { "call_id", call_id }, { "runtime_epoch", runtime_epoch }, { "ok", false }, { "error", Dictionary({ { "code", "INVALID_SCRIPT_REQUEST" }, { "message", "runtime.script requires call_id, runtime_epoch, source, and deadline." }, { "recoverable", true } }) } });
@@ -550,52 +488,6 @@ static Error _solers_capture_runtime(void *, const String &p_message, const Arra
 		}
 		return OK;
 	}
-	if (p_args.size() != 5 || call_id.is_empty() || runtime_epoch <= 0 || p_args[2].get_type() != Variant::ARRAY || p_args[3].get_type() != Variant::INT || (int64_t)p_args[3] <= 0 || p_args[4].get_type() != Variant::ARRAY || !solers_runtime_bridge) {
-		_solers_send_input_error(call_id, runtime_epoch, "INVALID_INPUT_REQUEST", "set_input_actions requires call_id, runtime_epoch, actions, positive physics_frames, and observations.");
-		return OK;
-	}
-
-	Input *input = Input::get_singleton();
-	InputMap *input_map = InputMap::get_singleton();
-	if (!input || !input_map) {
-		_solers_send_input_error(call_id, runtime_epoch, "INPUT_UNAVAILABLE", "Godot Input and InputMap must be initialized.");
-		return OK;
-	}
-
-	const Array actions = p_args[2];
-	HashSet<StringName> next_actions;
-	for (int i = 0; i < actions.size(); i++) {
-		if (actions[i].get_type() != Variant::DICTIONARY) {
-			_solers_send_input_error(call_id, runtime_epoch, "INVALID_INPUT_ACTION", "Every input action must be an object with name and strength.");
-			return OK;
-		}
-		const Dictionary action = actions[i];
-		const StringName name = action.get("name", StringName());
-		const Variant strength_value = action.get("strength", Variant());
-		if (name.is_empty() || (strength_value.get_type() != Variant::INT && strength_value.get_type() != Variant::FLOAT)) {
-			_solers_send_input_error(call_id, runtime_epoch, "INVALID_INPUT_ACTION", "Every input action requires a non-empty name and numeric strength.");
-			return OK;
-		}
-		const double strength = strength_value;
-		if (!Math::is_finite(strength) || strength <= 0.0 || strength > 1.0 || next_actions.has(name) || !input_map->has_action(name)) {
-			_solers_send_input_error(call_id, runtime_epoch, "INVALID_INPUT_ACTION", vformat("Input action '%s' is unknown, duplicated, or has strength outside (0, 1].", name));
-			return OK;
-		}
-		next_actions.insert(name);
-	}
-
-	const Array observations = p_args[4];
-	for (const StringName &action : solers_owned_input_actions) {
-		if (!next_actions.has(action) && input_map->has_action(action)) {
-			input->action_release(action);
-		}
-	}
-	for (int i = 0; i < actions.size(); i++) {
-		const Dictionary action = actions[i];
-		input->action_press(action.get("name", StringName()), (double)action.get("strength", 0.0));
-	}
-	solers_owned_input_actions = next_actions;
-	solers_runtime_bridge->request_input(call_id, runtime_epoch, (int64_t)p_args[3], observations);
 	return OK;
 }
 
@@ -609,14 +501,6 @@ void solers_runtime_bridge_initialize() {
 }
 
 void solers_runtime_bridge_uninitialize() {
-	Input *input = Input::get_singleton();
-	InputMap *input_map = InputMap::get_singleton();
-	for (const StringName &action : solers_owned_input_actions) {
-		if (input && input_map && input_map->has_action(action)) {
-			input->action_release(action);
-		}
-	}
-	solers_owned_input_actions.clear();
 	if (solers_runtime_bridge) {
 		memdelete(solers_runtime_bridge);
 		solers_runtime_bridge = nullptr;

@@ -31,17 +31,14 @@
 #include "modules/solers_ai/core/solers_reflection_service.h"
 
 #include "core/config/project_settings.h"
-#include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/json.h"
 #include "core/io/resource.h"
 #include "core/io/resource_loader.h"
-#include "core/io/resource_saver.h"
 #include "core/math/geometry_3d.h"
 #include "core/math/random_pcg.h"
 #include "core/object/class_db.h"
 #include "core/object/script_language.h"
-#include "core/os/os.h"
 #include "editor/doc/editor_help.h"
 #include "editor/editor_interface.h"
 #include "editor/editor_node.h"
@@ -850,36 +847,12 @@ Dictionary SolersReflectionService::edit_scene(const Dictionary &p_args, const S
 		results.push_back(result.get("data", Dictionary()));
 	}
 	if (!save_path_arg.is_empty()) {
-		Node *root = SceneTree::get_singleton()->get_edited_scene_root();
-		Ref<PackedScene> packed;
-		packed.instantiate();
-		Error error = root ? packed->pack(root) : ERR_DOES_NOT_EXIST;
-		const String temporary = save_path.value.get_basename() + "." + String::num_uint64(OS::get_singleton()->get_ticks_usec()) + "." + save_path.value.get_extension();
-		if (error == OK) {
-			error = ResourceSaver::save(packed, temporary);
-		}
-		const ResourceUID::ID uid = FileAccess::exists(save_path.value) ? ResourceLoader::get_resource_uid(save_path.value) : ResourceUID::INVALID_ID;
-		if (error == OK && uid != ResourceUID::INVALID_ID) {
-			error = ResourceSaver::set_uid(temporary, uid);
-		}
-		if (error == OK) {
-			const Ref<PackedScene> loaded = ResourceLoader::load(temporary, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE_DEEP, &error);
-			if (loaded.is_null() || !loaded->can_instantiate()) {
-				error = ERR_FILE_CORRUPT;
-			}
-		}
-		if (error == OK) {
-			error = DirAccess::rename_absolute(temporary, save_path.value);
-		}
+		const Error error = EditorNode::get_singleton()->save_scene_to_path(save_path.value, false);
 		if (error != OK) {
-			DirAccess::remove_absolute(temporary);
 			Dictionary failure = _error("SCENE_SAVE_FAILED", vformat("Scene save failed (error %d).", error));
 			failure["data"] = Dictionary({ { "rolled_back", rollback() }, { "state", get_scene_state() } });
 			return failure;
 		}
-		root->set_scene_file_path(save_path.value);
-		ResourceLoader::load(save_path.value, "PackedScene", ResourceFormatLoader::CACHE_MODE_REPLACE);
-		EditorFileSystem::get_singleton()->update_file(save_path.value);
 	}
 	manager->commit_action(false);
 	if (!save_path_arg.is_empty()) {

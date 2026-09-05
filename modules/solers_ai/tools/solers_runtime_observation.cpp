@@ -29,7 +29,6 @@
 /**************************************************************************/
 
 #include "modules/solers_ai/core/solers_runtime_observation.h"
-#include "modules/solers_ai/core/solers_tool.h"
 
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
@@ -162,7 +161,6 @@ bool SolersRuntimeObservation::_request_runtime_objects(const String &p_call_id,
 void SolersRuntimeObservation::_runtime_started() {
 	runtime_epoch++;
 	runtime_query.clear();
-	runtime_control_result.clear();
 	runtime_object_cache.clear();
 	runtime_stack_frames.clear();
 	performance_sample_cursor = 0;
@@ -174,7 +172,6 @@ void SolersRuntimeObservation::_runtime_stopped() {
 	performance_monitor_names.clear();
 	performance_monitor_types.clear();
 	runtime_query.clear();
-	runtime_control_result.clear();
 	if (!runtime_script.is_empty() && !runtime_script.has("result")) {
 		runtime_script["result"] = Dictionary({ { "ok", false }, { "error", Dictionary({ { "code", "RUNTIME_STOPPED" }, { "message", "The game process stopped before runtime.script completed." }, { "recoverable", true } }) } });
 	}
@@ -223,10 +220,6 @@ void SolersRuntimeObservation::_runtime_debug_data(const String &p_message, cons
 		if ((uint64_t)(int64_t)result.get("runtime_epoch", 0) == runtime_epoch && String(result.get("call_id", String())) == String(runtime_script.get("call_id", String()))) {
 			runtime_script["result"] = result;
 		}
-		return;
-	}
-	if (p_message == "solers:input_result" && p_data.size() == 1 && p_data[0].get_type() == Variant::DICTIONARY) {
-		runtime_control_result = Dictionary(p_data[0]).duplicate(true);
 		return;
 	}
 	if (p_message == "solers:frame_result" && p_data.size() == 1 && p_data[0].get_type() == Variant::DICTIONARY) {
@@ -733,17 +726,6 @@ bool SolersRuntimeObservation::get_runtime_property(uint64_t p_epoch, const Node
 	return true;
 }
 
-void SolersRuntimeObservation::clear_runtime_control_result() {
-	runtime_control_result.clear();
-}
-
-Dictionary SolersRuntimeObservation::get_runtime_control_result(const String &p_call_id) const {
-	if (String(runtime_control_result.get("call_id", String())) != p_call_id) {
-		return Dictionary();
-	}
-	return runtime_control_result.duplicate(true);
-}
-
 Dictionary SolersRuntimeObservation::start_runtime_script(const Dictionary &p_args, const String &p_call_id, const SolersToolContext *p_context) {
 	_bind_runtime_debugger();
 	EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
@@ -771,7 +753,7 @@ Dictionary SolersRuntimeObservation::start_runtime_script(const Dictionary &p_ar
 	runtime_script["call_id"] = p_call_id;
 	runtime_script["runtime_epoch"] = (int64_t)epoch;
 	runtime_script["deadline_msec"] = (int64_t)(OS::get_singleton()->get_ticks_msec() + timeout_msec);
-	debugger->send_message("solers:run_script", { p_call_id, (int64_t)epoch, p_args.get("source", String()), runtime_script["deadline_msec"] });
+	debugger->send_message("solers:run_script", { p_call_id, (int64_t)epoch, p_args.get("source", String()), timeout_msec });
 	return Dictionary({ { "ok", true }, { "data", Dictionary({ { "status", "pending" }, { "poll_args", Dictionary({ { "call_id", p_call_id } }) } }) } });
 }
 
@@ -790,19 +772,13 @@ Dictionary SolersRuntimeObservation::poll_runtime_script(const Dictionary &p_arg
 	if (runtime_script.has("result")) {
 		Dictionary result = runtime_script.get("result", Dictionary());
 		result.erase("call_id");
-		result.erase("runtime_epoch");
+		Dictionary data = result.get("data", Dictionary());
+		data["runtime_epoch"] = result.get("runtime_epoch", runtime_script.get("runtime_epoch", 0));
+		result["data"] = data;
 		return result;
 	}
 	if (OS::get_singleton()->get_ticks_msec() >= (uint64_t)(int64_t)runtime_script.get("deadline_msec", 0)) {
-		EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
-		ScriptEditorDebugger *debugger = debugger_node ? debugger_node->get_current_debugger() : nullptr;
-		if (debugger && debugger->is_session_active()) {
-			debugger->send_message("solers:cancel_script", { call_id, runtime_script.get("runtime_epoch", 0) });
-		}
-		EditorRunBar *run_bar = EditorRunBar::get_singleton();
-		if (run_bar && run_bar->is_playing()) {
-			run_bar->stop_playing();
-		}
+		clear_runtime_script(call_id);
 		return Dictionary({ { "ok", false }, { "error", Dictionary({ { "code", "SCRIPT_TIMEOUT" }, { "message", "runtime.script exceeded its declared timeout, so the isolated game process was stopped." }, { "recoverable", true } }) } });
 	}
 	return Dictionary({ { "ok", true }, { "data", Dictionary({ { "status", "pending" }, { "poll_args", p_args } }) } });
@@ -810,7 +786,17 @@ Dictionary SolersRuntimeObservation::poll_runtime_script(const Dictionary &p_arg
 
 void SolersRuntimeObservation::clear_runtime_script(const String &p_call_id) {
 	if (p_call_id.is_empty() || String(runtime_script.get("call_id", String())) == p_call_id) {
+		const Dictionary result = runtime_script.get("result", Dictionary());
+		const bool stop = !runtime_script.is_empty() && (result.is_empty() || String(Dictionary(result.get("error", Dictionary())).get("code", String())) == "SCRIPT_TIMEOUT");
+		EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
+		ScriptEditorDebugger *debugger = debugger_node ? debugger_node->get_current_debugger() : nullptr;
+		if (stop && debugger && debugger->is_session_active()) {
+			debugger->send_message("solers:cancel_script", { runtime_script["call_id"], runtime_script["runtime_epoch"] });
+		}
 		runtime_script.clear();
+		if (stop && EditorRunBar::get_singleton() && EditorRunBar::get_singleton()->is_playing()) {
+			EditorRunBar::get_singleton()->stop_playing();
+		}
 	}
 }
 
