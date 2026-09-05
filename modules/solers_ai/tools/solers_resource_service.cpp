@@ -745,13 +745,19 @@ Dictionary SolersResourceService::get_resource_info(const Dictionary &p_args) co
 	data["import_group_file"] = ResourceLoader::get_import_group_file(path);
 	if ((bool)data["resource_exists"]) {
 		Error load_error = OK;
-		const Ref<Resource> resource = ResourceLoader::load(path, String(), ResourceFormatLoader::CACHE_MODE_REUSE, &load_error);
+		const Ref<Resource> resource = ResourceLoader::load(path, String(), p_args.get("reload", false) ? ResourceFormatLoader::CACHE_MODE_IGNORE_DEEP : ResourceFormatLoader::CACHE_MODE_REUSE, &load_error);
+		if (load_error != OK || resource.is_null()) {
+			return _error("RESOURCE_LOAD_FAILED", vformat("Failed to load '%s' (error %d).", path, load_error));
+		}
 		const Ref<Mesh> mesh = resource;
 		const Ref<PackedScene> scene = resource;
 		if (load_error == OK && mesh.is_valid()) {
 			data["geometry"] = solers_describe_mesh(mesh);
 		} else if (load_error == OK && scene.is_valid()) {
 			Node *root = scene->instantiate(PackedScene::GEN_EDIT_STATE_DISABLED);
+			if (!root) {
+				return _error("SCENE_INSTANTIATION_FAILED", vformat("Scene has no valid root: %s", path));
+			}
 			if (root) {
 				data["geometry"] = solers_describe_geometry(root);
 				Array animation_players;
@@ -923,6 +929,10 @@ Dictionary SolersResourceService::_create_resource(const Dictionary &p_args, con
 		}
 	}
 
+	const Ref<PackedScene> scene = resource;
+	if (scene.is_valid() && !scene->can_instantiate()) {
+		return _error("SCENE_ROOT_REQUIRED", "A PackedScene must be packed from a root Node. Create and save the live scene through scene.edit.");
+	}
 	Error dir_err = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(path.get_base_dir()));
 	if (dir_err != OK) {
 		return _error("DIRECTORY_CREATE_FAILED", vformat("Failed to create parent directory, error code %d.", dir_err));
@@ -1039,10 +1049,11 @@ Dictionary SolersResourceService::edit_resource(const Dictionary &p_args, const 
 		return result;
 	}
 	Dictionary data = result.get("data", Dictionary());
-	const Dictionary receipt = get_resource_info(Dictionary({ { "path", path.value }, { "include_dependencies", false } }));
-	if ((bool)receipt.get("ok", false)) {
-		data["state"] = receipt.get("data", Dictionary());
+	const Dictionary receipt = get_resource_info(Dictionary({ { "path", path.value }, { "include_dependencies", false }, { "reload", true } }));
+	if (!(bool)receipt.get("ok", false)) {
+		return receipt;
 	}
+	data["state"] = receipt.get("data", Dictionary());
 	result["data"] = data;
 	return result;
 }

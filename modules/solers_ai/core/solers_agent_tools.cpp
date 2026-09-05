@@ -175,7 +175,7 @@ void SolersAgentSession::_deliver_tool_result(const String &p_id, const String &
 	if (!diagnostics.is_empty()) {
 		result["diagnostics"] = diagnostics;
 	}
-	const String content = SolersContextManager::clamp_to_tokens(JSON::stringify(result, "", false, true), SolersContextManager::TOOL_RESULT_MAX_TOKENS);
+	const String content = JSON::stringify(result, "", false, true);
 	const int64_t event_id = _write_transcript_tool(p_id, p_canonical_name, p_args, result, content);
 	const uint64_t completed_msec = tool_completed_msec > 0 ? tool_completed_msec : OS::get_singleton()->get_ticks_msec();
 	const uint64_t duration = completed_msec >= p_started_msec ? completed_msec - p_started_msec : 0;

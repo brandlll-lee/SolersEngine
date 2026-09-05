@@ -62,7 +62,7 @@ static void configure_registry(SolersToolRegistry &r_registry, SolersPermissionM
 	r_registry.register_default_tools();
 }
 
-TEST_CASE("[SolersToolRegistry] default surface is exactly sixteen tools") {
+TEST_CASE("[SolersToolRegistry] script authority schema follows native registrations") {
 	SolersPermissionManager permissions;
 	SolersProjectObservation project;
 	SolersReflectionService reflection;
@@ -73,20 +73,22 @@ TEST_CASE("[SolersToolRegistry] default surface is exactly sixteen tools") {
 	SolersToolRegistry registry;
 	configure_registry(registry, permissions, project, reflection, resource, runtime, scene, script);
 
-	const PackedStringArray expected = {
-		"search", "read", "edit", "project.settings", "script.validate", "engine.describe",
-		"object.inspect", "scene.inspect", "scene.open", "scene.edit", "resource.edit", "render.capture",
-		"editor.script", "runtime.observe", "runtime.control", "runtime.script"
-	};
-	CHECK(registry.get_tool_count() == expected.size());
-	for (const String &name : expected) {
-		const Dictionary definition = registry.get_tool_definition(name);
-		REQUIRE_FALSE(definition.is_empty());
-		CHECK_FALSE(definition.has("permission"));
-		CHECK_FALSE(definition.has("exposure"));
-		CHECK_FALSE(definition.has("mutation_domains"));
-		CHECK_FALSE(definition.has("execution_policy"));
-	}
+	const Dictionary definition = registry.get_tool_definition("editor.script");
+	const Dictionary properties = Dictionary(definition["input_schema"])["properties"];
+	CHECK(Dictionary(properties["authority"]) == SolersScriptService::get_authority_schema());
+	CHECK_FALSE(String(Dictionary(properties["authority"])["description"]).is_empty());
+	const Dictionary rejected = registry.call_tool("editor.script", Dictionary({ { "authority", "synthetic.unknown" }, { "source", "" }, { "target_path", "res://subject" } }));
+	CHECK_FALSE(rejected.get("ok", true));
+	CHECK(Dictionary(rejected["error"])["code"] == "TOOL_ARGUMENT_INVALID");
+	Array classes({ Dictionary({ { "class_name", "Node" } }), Dictionary({ { "class_name", "Resource" } }) });
+	const Dictionary first = registry.call_tool("engine.describe", Dictionary({ { "classes", classes }, { "max_results", 1 } }));
+	REQUIRE(first.get("ok", false));
+	const Dictionary page = first["data"];
+	CHECK_FALSE(page["complete"]);
+	const Dictionary second = registry.call_tool("engine.describe", Dictionary({ { "classes", classes }, { "cursor", page["next_cursor"] } }));
+	REQUIRE(second.get("ok", false));
+	CHECK(Dictionary(second["data"])["complete"]);
+	CHECK((int)Dictionary(Array(Dictionary(second["data"])["classes"])[0])["request_index"] == 1);
 }
 
 TEST_CASE("[SolersToolRegistry] schema validation and writeOnly audit redaction are authoritative") {

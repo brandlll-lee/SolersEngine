@@ -32,7 +32,6 @@
 
 #include "core/io/json.h"
 #include "core/templates/hash_map.h"
-#include "core/templates/hash_set.h"
 
 #include "modules/solers_ai/core/solers_mention.h"
 #include "modules/solers_ai/llm/solers_llm_message.h"
@@ -161,66 +160,6 @@ Array SolersContextManager::project_compacted(const Array &p_messages, const Dic
 		}
 	}
 	return repair_tool_pairing(projected);
-}
-
-Array SolersContextManager::project_tool_evidence(const Array &p_messages) {
-	HashSet<String> completed_calls;
-	HashMap<String, String> retained_evidence;
-	int remaining_evidence_tokens = TOOL_RESULT_MAX_TOKENS;
-	bool has_later_assistant = false;
-	for (int i = p_messages.size() - 1; i >= 0; i--) {
-		const Dictionary message = p_messages[i];
-		const String role = message.get("role", String());
-		if (role == String(SolersLLMRole::ASSISTANT)) {
-			has_later_assistant = true;
-		} else if (role == String(SolersLLMRole::TOOL) && has_later_assistant) {
-			const String call_id = message.get("tool_call_id", String());
-			if (!call_id.is_empty()) {
-				completed_calls.insert(call_id);
-				if (remaining_evidence_tokens > 0) {
-					const String content = clamp_to_tokens(message.get("content", String()), remaining_evidence_tokens);
-					retained_evidence[call_id] = content;
-					remaining_evidence_tokens -= estimate_tokens(content);
-				}
-			}
-		}
-	}
-
-	Array projected;
-	for (int i = 0; i < p_messages.size(); i++) {
-		Dictionary message = Dictionary(p_messages[i]).duplicate(true);
-		const String role = message.get("role", String());
-		if (role == String(SolersLLMRole::ASSISTANT)) {
-			const Array calls = message.get("tool_calls", Array());
-			Array active_calls;
-			for (int call_index = 0; call_index < calls.size(); call_index++) {
-				const Dictionary call = calls[call_index];
-				if (!completed_calls.has(call.get("id", String()))) {
-					active_calls.push_back(call);
-				}
-			}
-			if (active_calls.is_empty()) {
-				message.erase("tool_calls");
-			} else {
-				message["tool_calls"] = active_calls;
-			}
-		} else if (role == String(SolersLLMRole::TOOL)) {
-			if (completed_calls.has(message.get("tool_call_id", String()))) {
-				const String call_id = message.get("tool_call_id", String());
-				const String *content = retained_evidence.getptr(call_id);
-				if (!content) {
-					continue;
-				}
-				message["content"] = *content;
-				message["role"] = MODEL_CONTEXT_ROLE;
-				message["origin"] = "tool_evidence";
-				message.erase("tool_call_id");
-				message.erase("name");
-			}
-		}
-		projected.push_back(message);
-	}
-	return projected;
 }
 
 void SolersContextManager::record_usage(int p_input_tokens, int p_covered_message_count, int p_transient_tokens) {

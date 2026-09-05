@@ -51,13 +51,8 @@ void SolersToolRegistry::_register_script_tools() {
 		return service->validate_script(a);
 	});
 
-	_add("editor.script", "Run a bounded GDScript transaction against an authority registered by the editor host. target_path and outputs are project paths; the authority resolves the native Godot subject.", R"({"type":"object","properties":{"authority":{"type":"string","minLength":1},"target_path":{"type":"string","minLength":6},"source":{"type":"string","minLength":1,"writeOnly":true},"script_path":{"type":"string","minLength":6},"outputs":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","minLength":6}},"expected_sha256":{"type":"string","minLength":64,"maxLength":64},"timeout_msec":{"type":"integer","minimum":1000,"maximum":600000}},"required":["authority","target_path"],"additionalProperties":false})", [service](const SolersToolContext &ctx, const Dictionary &a) {
-		return service->start_authority_script(StringName(a.get("authority", String())), a, ctx.call_id, &ctx);
-	}, [service](const SolersToolContext &, const Dictionary &a) {
-		return service->poll_authority_script(a);
-	}, [service](const SolersToolContext &, const Dictionary &a) {
-		return service->is_authority_script_ready(a);
-	}, [service](const SolersToolContext &ctx, const Dictionary &, const Dictionary &) {
-		service->complete_authority_script(Dictionary({ { "call_id", ctx.call_id } }));
-	});
+	Dictionary schema = _schema(R"({"type":"object","properties":{"target_path":{"type":"string","minLength":6},"source":{"type":"string","minLength":1,"writeOnly":true},"script_path":{"type":"string","minLength":6},"outputs":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","minLength":6}},"expected_sha256":{"type":"string","minLength":64,"maxLength":64},"timeout_msec":{"type":"integer","minimum":1000,"maximum":600000}},"required":["authority","target_path"],"additionalProperties":false})");
+	Dictionary properties = schema["properties"];
+	properties["authority"] = service->get_authority_schema();
+	_register(memnew(SolersFunctionTool("editor.script", "Run @tool extends RefCounted with func run(ctx). ctx is SolersScriptContext: get_subject() returns the native target; log(value), fail(code, message), set_result(value), and mark_changed() report execution. Provide exactly one of source or script_path. Inspect SolersScriptContext through engine.describe for native jobs and output contracts.", schema, [service](const SolersToolContext &ctx, const Dictionary &a) { return service->start_authority_script(StringName(a.get("authority", String())), a, ctx.call_id, &ctx); }, [service](const SolersToolContext &, const Dictionary &a) { return service->poll_authority_script(a); }, [service](const SolersToolContext &, const Dictionary &a) { return service->is_authority_script_ready(a); }, [service](const SolersToolContext &ctx, const Dictionary &, const Dictionary &) { service->complete_authority_script(Dictionary({ { "call_id", ctx.call_id } })); })));
 }

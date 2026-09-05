@@ -656,23 +656,92 @@ TEST_CASE("[SolersReflectionService] member_query reports unmatched tokens from 
 	CHECK(saw_sun_disk);
 }
 
-TEST_CASE("[SolersTransaction][SceneTree][UndoRedo] update properties remain one native action") {
-	Node3D *target = memnew(Node3D);
-	SceneTree::get_singleton()->get_root()->add_child(target);
-	UndoRedo undo_redo;
-	undo_redo.create_action("Solers: Update");
-	undo_redo.add_do_property(target, SNAME("position"), Vector3(1, 2, 3));
-	undo_redo.add_undo_property(target, SNAME("position"), target->get_position());
-	undo_redo.add_do_property(target, SNAME("visible"), false);
-	undo_redo.add_undo_property(target, SNAME("visible"), target->is_visible());
-	undo_redo.commit_action();
-	CHECK((target->get_position() == Vector3(1, 2, 3) && !target->is_visible()));
-	REQUIRE(undo_redo.undo());
-	CHECK((target->get_position() == Vector3() && target->is_visible()));
-	REQUIRE(undo_redo.redo());
-	CHECK((target->get_position() == Vector3(1, 2, 3) && !target->is_visible()));
-	target->queue_free();
-	MessageQueue::get_singleton()->flush();
+TEST_CASE("[SolersTransaction] editor tools share native history and persist loadable scenes") {
+	const String directory = TestUtils::get_temp_path("solers_scene_contract");
+	SolersTestPaths cleanup;
+	cleanup.add(directory);
+	REQUIRE(DirAccess::make_dir_recursive_absolute(directory.path_join("addons/contract")) == OK);
+	FileAccess::open(directory.path_join("project.godot"), FileAccess::WRITE)->store_string("config_version=5\n[editor_plugins]\nenabled=PackedStringArray(\"res://addons/contract/plugin.cfg\")\n");
+	FileAccess::open(directory.path_join("addons/contract/plugin.cfg"), FileAccess::WRITE)->store_string("[plugin]\nname=\"Contract\"\nscript=\"contract.gd\"\n");
+	FileAccess::open(directory.path_join("addons/contract/contract.gd"), FileAccess::WRITE)->store_string(R"(@tool
+extends EditorPlugin
+var tools = SolersToolRegistry.new()
+var permissions = SolersPermissionManager.new()
+var reflection = SolersReflectionService.new()
+var scenes = SolersSceneObservation.new()
+var resources = SolersResourceService.new()
+func _enter_tree():
+	run.call_deferred()
+func state():
+	return tools.call_tool("scene.inspect", {}).data.state
+func edit(operations, save_path = ""):
+	return tools.call_tool("scene.edit", {"expected_state": state(), "operations": operations, "save_path": save_path})
+func run():
+	await get_tree().process_frame
+	while EditorInterface.get_resource_filesystem().is_scanning():
+		await get_tree().process_frame
+	permissions.set_auto_approve_all(true)
+	tools.set_permission_manager(permissions)
+	tools.set_reflection_service(reflection)
+	tools.set_scene_observation(scenes)
+	tools.set_resource_service(resources)
+	tools.register_default_tools()
+	var checks = [not state().has_root]
+	var created = edit([
+		{"type": "create", "class_name": "Node3D", "name": "Root"},
+		{"type": "create", "class_name": "Node3D", "name": "Parent"},
+		{"type": "create", "class_name": "Node3D", "name": "Child", "parent_path": "Parent"},
+		{"type": "update", "node_path": "Parent/Child", "properties": {"visible": false}}
+	], "res://world.tscn")
+	if not created.ok:
+		print(created)
+		get_tree().quit(1)
+		return
+	var root_node = EditorInterface.get_edited_scene_root()
+	var history = EditorInterface.get_editor_undo_redo()
+	var native_history = history.get_history_undo_redo(created.data.state.history_id)
+	checks.append(created.data.saved and root_node.get_node("Parent/Child").owner == root_node)
+	checks.append(not root_node.get_node("Parent/Child").visible)
+	checks.append(native_history.get_version() == created.data.state.version)
+	checks.append(native_history.undo() and EditorInterface.get_edited_scene_root() == null)
+	checks.append(native_history.redo() and root_node.get_node("Parent/Child").owner == root_node)
+	checks.append(not tools.call_tool("scene.edit", {"expected_state": created.data.state_before, "operations": [{"type": "remove", "node_path": "Parent"}]}).ok)
+	var failed = edit([{"type": "remove", "node_path": "Parent"}, {"type": "update", "node_path": "missing", "properties": {"visible": true}}])
+	checks.append(not failed.ok and failed.data.rolled_back)
+	checks.append(root_node.get_node("Parent/Child").owner == root_node)
+	checks.append(state().version == created.data.state.version and EditorInterface.get_unsaved_scenes().is_empty())
+	checks.append(edit([{"type": "reparent", "node_path": "Parent/Child", "new_parent_path": "."}]).ok)
+	checks.append(native_history.undo() and root_node.get_node("Parent/Child").owner == root_node)
+	checks.append(native_history.redo() and root_node.get_node("Child").owner == root_node)
+	checks.append(edit([{"type": "reparent", "node_path": "Child", "new_parent_path": "Parent"}]).ok)
+	checks.append(edit([], "res://world.tscn").ok)
+	var loaded = ResourceLoader.load("res://world.tscn", "PackedScene", ResourceLoader.CACHE_MODE_IGNORE_DEEP).instantiate()
+	checks.append(loaded.get_node("Parent/Child").owner == loaded and not loaded.get_node("Parent/Child").visible)
+	loaded.free()
+	var digest = FileAccess.get_sha256("res://world.tscn")
+	failed = edit([{"type": "update", "node_path": "Parent/Child", "properties": {"visible": true}}], "res://missing/world.tscn")
+	checks.append(not failed.ok and failed.data.rolled_back and not root_node.get_node("Parent/Child").visible)
+	checks.append(FileAccess.get_sha256("res://world.tscn") == digest)
+	failed = tools.call_tool("resource.edit", {"path": "res://empty.tscn", "class_name": "PackedScene", "expected_state": {"exists": false}})
+	checks.append(not failed.ok and failed.error.code == "SCENE_ROOT_REQUIRED")
+	checks.append(not FileAccess.file_exists("res://empty.tscn"))
+	print("SOLERS_SCENE_CONTRACT_OK" if not checks.has(false) else str(checks))
+	tools.free()
+	permissions.free()
+	reflection.free()
+	scenes.free()
+	resources.free()
+	get_tree().quit(1 if checks.has(false) else 0)
+)");
+	List<String> args = { "--headless", "--editor", "--path", directory, "--quit-after", "600" };
+	String output;
+	int exit_code = -1;
+	REQUIRE(OS::get_singleton()->execute(OS::get_singleton()->get_executable_path(), args, &output, &exit_code, true) == OK);
+	if (exit_code != 0 || !output.contains("SOLERS_SCENE_CONTRACT_OK")) {
+		print_line(output);
+	}
+	CHECK(exit_code == 0);
+	CHECK(output.contains("SOLERS_SCENE_CONTRACT_OK"));
 }
 
 TEST_CASE("[SolersResourceService] nearest names rank containment above similarity") {

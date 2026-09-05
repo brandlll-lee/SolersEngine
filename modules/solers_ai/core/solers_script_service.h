@@ -42,6 +42,7 @@ struct SolersToolContext;
 
 struct SolersScriptAuthority {
 	StringName target_argument;
+	String description;
 	std::function<Dictionary(const String &)> validate;
 	std::function<Dictionary(const String &)> prepare;
 	std::function<Dictionary(const Ref<SolersScriptContext> &)> commit;
@@ -88,6 +89,7 @@ protected:
 public:
 	static void register_authority(const StringName &p_name, const SolersScriptAuthority &p_authority);
 	static void clear_authorities();
+	static Dictionary get_authority_schema();
 
 	Dictionary write_file(const Dictionary &p_args);
 	Dictionary write_file_with_context(const Dictionary &p_args, const SolersToolContext &p_context);

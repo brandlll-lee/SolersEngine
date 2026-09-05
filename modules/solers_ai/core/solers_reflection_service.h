@@ -48,7 +48,6 @@ class SolersReflectionService : public Object {
 
 	Node *_resolve_node(const String &p_node_path, String &r_error) const;
 
-	bool _coerce_value(Node *p_node, const StringName &p_property, const Variant &p_value, Variant &r_out, String &r_error) const;
 	bool _prepare_property_change(Node *p_node, const String &p_property, const Variant &p_value, Variant &r_old, Variant &r_value, NodePath &r_indexed_path, String &r_error) const;
 	bool _apply_initial_properties(Node *p_node, const Dictionary &p_properties, Dictionary &r_applied, String &r_error) const;
 
@@ -63,6 +62,13 @@ class SolersReflectionService : public Object {
 	String _instance_scene_path(Node *p_node) const;
 
 	Dictionary _list_signal_connections(const Dictionary &p_args);
+	Dictionary create_node(const Dictionary &p_args);
+	Dictionary instantiate_scene(const Dictionary &p_args);
+	Dictionary update_node(const Dictionary &p_args);
+	Dictionary reparent_node(const Dictionary &p_args);
+	Dictionary connect_signal(const Dictionary &p_args);
+	Dictionary attach_script(const Dictionary &p_args);
+	Dictionary remove_node(const Dictionary &p_args);
 
 protected:
 	static void _bind_methods();
@@ -75,13 +81,6 @@ public:
 	Dictionary get_scene_state() const;
 	Dictionary inspect_nodes(const Dictionary &p_args);
 	Dictionary edit_scene(const Dictionary &p_args, const SolersToolContext *p_context = nullptr);
-	Dictionary create_node(const Dictionary &p_args, bool p_commit = true);
-	Dictionary instantiate_scene(const Dictionary &p_args, bool p_commit = true);
-	Dictionary update_node(const Dictionary &p_args, bool p_commit = true);
-	Dictionary reparent_node(const Dictionary &p_args, bool p_commit = true);
-	Dictionary connect_signal(const Dictionary &p_args, bool p_commit = true);
-	Dictionary attach_script(const Dictionary &p_args, bool p_commit = true);
-	Dictionary remove_node(const Dictionary &p_args, bool p_commit = true);
 	Dictionary measure_spatial_relations(const Dictionary &p_args) const;
 	Dictionary open_scene(const Dictionary &p_args);
 	Dictionary open_scene_with_context(const Dictionary &p_args, const SolersToolContext *p_context);

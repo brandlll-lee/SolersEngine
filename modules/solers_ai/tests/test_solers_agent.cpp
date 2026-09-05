@@ -59,21 +59,30 @@ TEST_CASE("[SolersContextManager] compaction is a bookmark projection") {
 	CHECK(messages.size() == 2);
 }
 
-TEST_CASE("[SolersContextManager] open-turn tool evidence stays on the ledger") {
+TEST_CASE("[SolersContextManager] compaction preserves complete tool pairs across turns") {
 	Array messages;
-	messages.push_back(SolersLLMMessage::user("lights?"));
-	messages.push_back(SolersLLMMessage::assistant(String(), Array({ Dictionary({ { "id", "c1" }, { "name", "scene_inspect" }, { "arguments", "{}" } }) })));
-	messages.push_back(SolersLLMMessage::tool_result("c1", "scene.inspect", "{\"ok\":true,\"data\":{}}"));
-	const Array evidence = SolersContextManager::project_tool_evidence(messages);
-	bool kept = false;
-	for (int i = 0; i < evidence.size(); i++) {
-		kept = kept || String(Dictionary(evidence[i]).get("tool_call_id", String())) == "c1";
+	messages.push_back(SolersLLMMessage::user("inspect"));
+	messages.push_back(SolersLLMMessage::assistant(String(), Array({ Dictionary({ { "id", "c1" }, { "name", "synthetic.inspect" }, { "arguments", "{\"cursor\":7}" } }) })));
+	messages.push_back(SolersLLMMessage::tool_result("c1", "synthetic.inspect", "{\"ok\":false,\"error\":{\"code\":\"STALE\"}}"));
+	messages.push_back(SolersLLMMessage::assistant("Inspect again.", Array()));
+	messages.push_back(SolersLLMMessage::user("continue"));
+	for (int i = 0; i < messages.size(); i++) {
+		Dictionary message = messages[i];
+		message["event_id"] = i + 1;
 	}
-	CHECK(kept);
-	CHECK(evidence.size() >= 3);
+	const Array projected = SolersContextManager::project_compacted(messages, Dictionary({ { "summary", "Earlier work" }, { "first_kept_event_id", 2 } }));
+	REQUIRE(projected.size() == messages.size());
+	for (int i = 1; i < messages.size(); i++) {
+		CHECK(projected[i] == messages[i]);
+	}
 }
 
-TEST_CASE("[Editor][SolersAgentSession] truncated responses return tool failures without execution") {
+TEST_CASE("[Editor][SolersAgentSession] protocol completion controls execution and preserves tool results") {
+	bool truncated = true;
+	SUBCASE("truncated arguments are not executed") {}
+	SUBCASE("complete results retain structured content beyond the text budget") {
+		truncated = false;
+	}
 	Ref<TCPServer> server;
 	server.instantiate();
 	REQUIRE(server->listen(0, IPAddress("127.0.0.1")) == OK);
@@ -95,12 +104,13 @@ TEST_CASE("[Editor][SolersAgentSession] truncated responses return tool failures
 	REQUIRE(settings.set_provider_config(config).get("ok", false));
 
 	int executions = 0;
+	const Dictionary payload({ { "ok", true }, { "data", String("value").repeat(SolersContextManager::TOOL_RESULT_MAX_TOKENS) } });
 	SolersPermissionManager permissions;
 	SolersToolRegistry tools;
 	tools.set_permission_manager(&permissions);
-	tools.register_tool(memnew(SolersFunctionTool("synthetic.write", "Synthetic write", Dictionary({ { "type", "object" }, { "properties", Dictionary() } }), [&executions](const SolersToolContext &, const Dictionary &) {
+	tools.register_tool(memnew(SolersFunctionTool("synthetic.write", "Synthetic write", Dictionary({ { "type", "object" }, { "properties", Dictionary() } }), [&executions, &payload](const SolersToolContext &, const Dictionary &) {
 		executions++;
-		return Dictionary({ { "ok", true } });
+		return payload;
 	})));
 
 	SolersTestPaths cleanup;
@@ -114,7 +124,8 @@ TEST_CASE("[Editor][SolersAgentSession] truncated responses return tool failures
 	REQUIRE(session.start_turn(Dictionary({ { "prompt", "write" } })).get("ok", false));
 
 	const String body = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"synthetic.write\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n";
-	const String response = vformat("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", body.utf8().length(), body);
+	const String completed_body = truncated ? body : body.replace("\"length\"", "\"tool_calls\"");
+	const String response = vformat("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", completed_body.utf8().length(), completed_body);
 	Dictionary tool_result;
 	Ref<StreamPeerTCP> connection;
 	const uint64_t started = OS::get_singleton()->get_ticks_msec();
@@ -130,9 +141,14 @@ TEST_CASE("[Editor][SolersAgentSession] truncated responses return tool failures
 		OS::get_singleton()->delay_usec(1000);
 	}
 	REQUIRE_FALSE(tool_result.is_empty());
-	CHECK(executions == 0);
+	CHECK(executions == (truncated ? 0 : 1));
 	const Dictionary delivered = JSON::parse_string(tool_result.get("content", String()));
-	CHECK(Dictionary(delivered.get("error", Dictionary())).get("code", String()) == "TOOL_CALL_TRUNCATED");
+	if (truncated) {
+		CHECK(Dictionary(delivered.get("error", Dictionary())).get("code", String()) == "TOOL_CALL_TRUNCATED");
+	} else {
+		CHECK((bool)delivered.get("ok", false));
+		CHECK(String(delivered.get("data", String())).sha256_text() == String(payload["data"]).sha256_text());
+	}
 	session.abort();
 }
 

@@ -65,10 +65,10 @@
 #include "modules/gdscript/gdscript_parser.h"
 #endif
 #include "modules/solers_ai/core/solers_path_utils.h"
+#include "modules/solers_ai/core/solers_permission_manager.h"
 #include "modules/solers_ai/core/solers_resource_service.h"
 #include "modules/solers_ai/core/solers_script_context.h"
 #include "modules/solers_ai/core/solers_tool.h"
-#include "modules/solers_ai/core/solers_permission_manager.h"
 
 HashMap<StringName, SolersScriptAuthority> SolersScriptService::authorities;
 
@@ -84,6 +84,19 @@ void SolersScriptService::clear_authorities() {
 
 const SolersScriptAuthority *SolersScriptService::_get_authority(const StringName &p_name) {
 	return authorities.getptr(p_name);
+}
+
+Dictionary SolersScriptService::get_authority_schema() {
+	Array names;
+	for (const KeyValue<StringName, SolersScriptAuthority> &entry : authorities) {
+		names.push_back(String(entry.key));
+	}
+	names.sort();
+	String description;
+	for (const Variant &name : names) {
+		description += String(name) + ": " + authorities[StringName(name)].description + "\n";
+	}
+	return Dictionary({ { "type", "string" }, { "enum", names }, { "description", description } });
 }
 
 void SolersScriptService::_bind_methods() {
@@ -902,7 +915,9 @@ void SolersScriptService::_remove_task_files(const ScriptTask &p_task) const {
 Dictionary SolersScriptService::start_authority_script(const StringName &p_authority, const Dictionary &p_args, const String &p_call_id, const SolersToolContext *p_context) {
 	const SolersScriptAuthority *authority = _get_authority(p_authority);
 	if (!authority) {
-		return _error("INVALID_AUTHORITY", vformat("Unknown editor script authority: %s", p_authority), false);
+		Dictionary failure = _error("INVALID_AUTHORITY", vformat("Unknown editor script authority: %s", p_authority));
+		failure["data"] = get_authority_schema();
+		return failure;
 	}
 	const bool has_source = p_args.has("source") && !String(p_args.get("source", String())).is_empty();
 	const bool has_script_path = p_args.has("script_path") && !String(p_args.get("script_path", String())).is_empty();

@@ -48,6 +48,7 @@
 #include "scene/main/node.h"
 #include "scene/main/scene_tree.h"
 
+#include "modules/solers_ai/core/solers_context_manager.h"
 #include "modules/solers_ai/core/solers_project_observation.h"
 #include "modules/solers_ai/core/solers_reflection_service.h"
 #include "modules/solers_ai/core/solers_resource_service.h"
@@ -69,30 +70,36 @@ Dictionary SolersToolRegistry::_inspect_engine(const Dictionary &p_args) {
 	}
 	Array inspected_classes;
 	Array errors;
-	for (int i = 0; i < classes.size(); i++) {
-		const Variant value = classes[i];
-		Dictionary request = value;
+	int tokens = 0;
+	int cursor = CLAMP((int)p_args.get("cursor", 0), 0, classes.size());
+	for (; cursor < classes.size(); cursor++) {
+		Dictionary request = Dictionary(classes[cursor]).duplicate();
 		if (!request.has("max_members") && p_args.has("max_members")) {
 			request["max_members"] = p_args["max_members"];
 		}
 		const Dictionary inspected = reflection_service->introspect_class(request);
 		if (!(bool)inspected.get("ok", false)) {
 			Dictionary error;
-			error["request_index"] = i;
-			error["class_name"] = Dictionary(value).get("class_name", String());
+			error["request_index"] = cursor;
+			error["class_name"] = request.get("class_name", String());
 			error["error"] = inspected.get("error", Dictionary());
 			errors.push_back(error);
 			continue;
 		}
 		Dictionary class_data = inspected.get("data", Dictionary());
-		class_data["request_index"] = i;
-		inspected_classes.push_back(class_data);
+		class_data["request_index"] = cursor;
+		if (!SolersContextManager::append_bounded(inspected_classes, class_data, p_args.get("max_results", 32), SolersContextManager::TOOL_RESULT_MAX_TOKENS, tokens)) {
+			break;
+		}
 	}
 	Dictionary data;
 	data["classes"] = inspected_classes;
 	data["errors"] = errors;
 	data["requested_count"] = classes.size();
-	data["complete"] = errors.is_empty();
+	data["complete"] = errors.is_empty() && cursor == classes.size();
+	if (cursor < classes.size()) {
+		data["next_cursor"] = cursor;
+	}
 	return _ok(data);
 }
 
@@ -421,13 +428,7 @@ void SolersToolRegistry::_register_observation_tools() {
 	}
 	if (scene_observation) {
 		SolersSceneObservation *scene = scene_observation;
-		_add("render.capture", "Capture content-addressed pixels from an explicit editor or runtime state. Receipts bind editor pixels to UndoRedo identity and runtime pixels to runtime_epoch.", R"({"type":"object","properties":{"target":{"type":"string","enum":["editor","camera","focus","top_down","orthographic","runtime"]},"source_state":{"type":"object","properties":{"history_id":{"type":"integer"},"version":{"type":"integer","minimum":0},"root_object_id":{"type":"string"}},"required":["history_id","version"],"additionalProperties":true},"camera_path":{"type":"string"},"axis":{"type":"string","enum":["x","y","z"]},"direction":{"type":"string","enum":["positive","negative"]},"focus_paths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":32,"uniqueItems":true},"include_render_state":{"type":"boolean"},"section_position":{"type":"number"},"debug_draw":{"type":"integer","minimum":0}},"required":["target"],"additionalProperties":false})", [scene](const SolersToolContext &, const Dictionary &a) {
-			return scene->capture_viewport(a);
-		}, [scene](const SolersToolContext &, const Dictionary &a) {
-			return scene->poll_viewport_capture(a);
-		}, [scene](const SolersToolContext &, const Dictionary &a) {
-			return scene->is_viewport_capture_ready(a);
-		});
+		_add("render.capture", "Capture content-addressed pixels from an explicit editor or runtime state. Receipts bind editor pixels to UndoRedo identity and runtime pixels to runtime_epoch.", R"({"type":"object","properties":{"target":{"type":"string","enum":["editor","camera","focus","top_down","orthographic","runtime"]},"source_state":{"type":"object","properties":{"history_id":{"type":"integer"},"version":{"type":"integer","minimum":0},"root_object_id":{"type":"string"}},"required":["history_id","version"],"additionalProperties":true},"camera_path":{"type":"string"},"axis":{"type":"string","enum":["x","y","z"]},"direction":{"type":"string","enum":["positive","negative"]},"focus_paths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":32,"uniqueItems":true},"include_render_state":{"type":"boolean"},"section_position":{"type":"number"},"debug_draw":{"type":"integer","minimum":0}},"required":["target"],"additionalProperties":false})", [scene](const SolersToolContext &, const Dictionary &a) { return scene->capture_viewport(a); }, [scene](const SolersToolContext &, const Dictionary &a) { return scene->poll_viewport_capture(a); }, [scene](const SolersToolContext &, const Dictionary &a) { return scene->is_viewport_capture_ready(a); });
 	}
 }
 
@@ -436,21 +437,9 @@ void SolersToolRegistry::_register_runtime_tools() {
 		return;
 	}
 	SolersRuntimeObservation *runtime = runtime_observation;
-	_add("runtime.observe", "Observe one canonical runtime snapshot through Godot's native debugger. Every result carries the current runtime_epoch.", R"({"type":"object","properties":{"target":{"type":"string","enum":["scene","spatial","stack","performance"]},"node_paths":{"type":"array","items":{"type":"string"},"maxItems":64,"uniqueItems":true},"focus_paths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":32,"uniqueItems":true},"path_prefix":{"type":"string"},"name_contains":{"type":"string"},"class_name":{"type":"string"},"cursor":{"type":"integer","minimum":0},"properties":{"type":"array","items":{"type":"string","minLength":1},"maxItems":64,"uniqueItems":true},"max_results":{"type":"integer","minimum":1}},"required":["target"],"additionalProperties":false})", [runtime](const SolersToolContext &ctx, const Dictionary &a) {
-		return Dictionary({ { "ok", true }, { "data", runtime->observe_runtime(a, ctx.result_token_budget) } });
-	}, [runtime](const SolersToolContext &ctx, const Dictionary &a) {
-		return Dictionary({ { "ok", true }, { "data", runtime->observe_runtime(a, ctx.result_token_budget) } });
-	}, [runtime](const SolersToolContext &, const Dictionary &a) {
-		return runtime->is_runtime_observation_ready(a);
-	});
+	_add("runtime.observe", "Observe one canonical runtime snapshot through Godot's native debugger. Every result carries the current runtime_epoch.", R"({"type":"object","properties":{"target":{"type":"string","enum":["scene","spatial","stack","performance"]},"node_paths":{"type":"array","items":{"type":"string"},"maxItems":64,"uniqueItems":true},"focus_paths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":32,"uniqueItems":true},"path_prefix":{"type":"string"},"name_contains":{"type":"string"},"class_name":{"type":"string"},"cursor":{"type":"integer","minimum":0},"properties":{"type":"array","items":{"type":"string","minLength":1},"maxItems":64,"uniqueItems":true},"max_results":{"type":"integer","minimum":1}},"required":["target"],"additionalProperties":false})", [runtime](const SolersToolContext &ctx, const Dictionary &a) { return Dictionary({ { "ok", true }, { "data", runtime->observe_runtime(a, ctx.result_token_budget) } }); }, [runtime](const SolersToolContext &ctx, const Dictionary &a) { return Dictionary({ { "ok", true }, { "data", runtime->observe_runtime(a, ctx.result_token_budget) } }); }, [runtime](const SolersToolContext &, const Dictionary &a) { return runtime->is_runtime_observation_ready(a); });
 
-	_add("runtime.control", "Control the active debugger or make one runtime-only property change guarded by runtime_epoch, ObjectID, and observation_id.", R"({"type":"object","properties":{"action":{"type":"string","enum":["play_current_scene","stop","suspend","resume","next_frame","debug_break","debug_continue","debug_step","debug_next","debug_out","set_input_actions","set_property"]},"runtime_epoch":{"type":"integer","minimum":0},"actions":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"object","properties":{"name":{"type":"string","minLength":1},"strength":{"type":"number","exclusiveMinimum":0,"maximum":1}},"required":["name","strength"],"additionalProperties":false}},"physics_frames":{"type":"integer","minimum":1},"observations":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","properties":{"node_path":{"type":"string"},"properties":{"type":"array","minItems":1,"maxItems":32,"uniqueItems":true,"items":{"type":"string","minLength":1}}},"required":["node_path","properties"],"additionalProperties":false}},"node_path":{"type":"string"},"object_id":{"type":"string"},"property":{"type":"string","minLength":1},"observation_id":{"type":"string","minLength":64,"maxLength":64},"value":{}},"required":["action"],"additionalProperties":false})", [this](const SolersToolContext &ctx, const Dictionary &a) {
-		return _run_control(a, ctx.call_id, &ctx);
-	}, [this](const SolersToolContext &ctx, const Dictionary &a) {
-		return _poll_runtime_control(a, &ctx);
-	}, [this](const SolersToolContext &, const Dictionary &a) {
-		return _is_runtime_control_ready(a);
-	});
+	_add("runtime.control", "Control the active debugger or make one runtime-only property change guarded by runtime_epoch, ObjectID, and observation_id.", R"({"type":"object","properties":{"action":{"type":"string","enum":["play_current_scene","stop","suspend","resume","next_frame","debug_break","debug_continue","debug_step","debug_next","debug_out","set_input_actions","set_property"]},"runtime_epoch":{"type":"integer","minimum":0},"actions":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"object","properties":{"name":{"type":"string","minLength":1},"strength":{"type":"number","exclusiveMinimum":0,"maximum":1}},"required":["name","strength"],"additionalProperties":false}},"physics_frames":{"type":"integer","minimum":1},"observations":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","properties":{"node_path":{"type":"string"},"properties":{"type":"array","minItems":1,"maxItems":32,"uniqueItems":true,"items":{"type":"string","minLength":1}}},"required":["node_path","properties"],"additionalProperties":false}},"node_path":{"type":"string"},"object_id":{"type":"string"},"property":{"type":"string","minLength":1},"observation_id":{"type":"string","minLength":64,"maxLength":64},"value":{}},"required":["action"],"additionalProperties":false})", [this](const SolersToolContext &ctx, const Dictionary &a) { return _run_control(a, ctx.call_id, &ctx); }, [this](const SolersToolContext &ctx, const Dictionary &a) { return _poll_runtime_control(a, &ctx); }, [this](const SolersToolContext &, const Dictionary &a) { return _is_runtime_control_ready(a); });
 
 	if (!script_service) {
 		return;
@@ -462,14 +451,7 @@ void SolersToolRegistry::_register_runtime_tools() {
 			failure["data"] = validation.get("data", Dictionary());
 			return failure;
 		}
-		return runtime->start_runtime_script(a, ctx.call_id, &ctx);
-	}, [runtime](const SolersToolContext &, const Dictionary &a) {
-		return runtime->poll_runtime_script(a);
-	}, [runtime](const SolersToolContext &, const Dictionary &a) {
-		return runtime->is_runtime_script_ready(a);
-	}, [runtime](const SolersToolContext &ctx, const Dictionary &, const Dictionary &) {
-		runtime->clear_runtime_script(ctx.call_id);
-	});
+		return runtime->start_runtime_script(a, ctx.call_id, &ctx); }, [runtime](const SolersToolContext &, const Dictionary &a) { return runtime->poll_runtime_script(a); }, [runtime](const SolersToolContext &, const Dictionary &a) { return runtime->is_runtime_script_ready(a); }, [runtime](const SolersToolContext &ctx, const Dictionary &, const Dictionary &) { runtime->clear_runtime_script(ctx.call_id); });
 }
 
 void SolersToolRegistry::_register_reflection_tools() {
@@ -478,7 +460,7 @@ void SolersToolRegistry::_register_reflection_tools() {
 	}
 	SolersReflectionService *reflection = reflection_service;
 
-	_add("engine.describe", "Search ClassDB or inspect exact classes and typed members from the running editor.", R"({"type":"object","properties":{"query":{"type":"string","minLength":1},"inherits":{"type":"string"},"max_results":{"type":"integer","minimum":1,"maximum":200},"max_members":{"type":"integer","minimum":1,"maximum":256},"classes":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","properties":{"class_name":{"type":"string","minLength":1},"include_inherited":{"type":"boolean"},"member_query":{"type":"string"},"cursor":{"type":"integer","minimum":0},"max_members":{"type":"integer","minimum":1,"maximum":256}},"required":["class_name"],"additionalProperties":false}}},"additionalProperties":false})", [this](const SolersToolContext &, const Dictionary &a) {
+	_add("engine.describe", "Search ClassDB or inspect exact classes and typed members from the running editor.", R"({"type":"object","properties":{"query":{"type":"string","minLength":1},"inherits":{"type":"string"},"cursor":{"type":"integer","minimum":0},"max_results":{"type":"integer","minimum":1,"maximum":200},"max_members":{"type":"integer","minimum":1,"maximum":256},"classes":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","properties":{"class_name":{"type":"string","minLength":1},"include_inherited":{"type":"boolean"},"member_query":{"type":"string"},"cursor":{"type":"integer","minimum":0},"max_members":{"type":"integer","minimum":1,"maximum":256}},"required":["class_name"],"additionalProperties":false}}},"additionalProperties":false})", [this](const SolersToolContext &, const Dictionary &a) {
 		return _inspect_engine(a);
 	});
 
@@ -487,7 +469,7 @@ void SolersToolRegistry::_register_reflection_tools() {
 		_add("scene.inspect", "Inspect live edited-scene nodes, typed properties, connections, spatial relations, and the native UndoRedo/ObjectID receipt.", R"({"type":"object","properties":{"include_selection":{"type":"boolean"},"node_paths":{"type":"array","items":{"type":"string"},"uniqueItems":true,"minItems":1,"maxItems":64},"path_prefix":{"type":"string"},"name_contains":{"type":"string"},"class_name":{"type":"string"},"script_path":{"type":"string"},"cursor":{"type":"integer","minimum":0},"max_results":{"type":"integer","minimum":1},"include_connections":{"type":"boolean"},"properties":{"type":"array","items":{"type":"string"},"uniqueItems":true,"maxItems":128},"relations":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a","b"],"additionalProperties":false}}},"additionalProperties":false})", [this, reflection, scene](const SolersToolContext &ctx, const Dictionary &a) {
 			Node *edited_root = SceneTree::get_singleton()->get_edited_scene_root();
 			if (!edited_root) {
-				return _error("NO_EDITED_SCENE", "Open a scene before inspecting its live nodes.");
+				return _ok(Dictionary({ { "nodes", Array() }, { "count", 0 }, { "state", reflection->get_scene_state() } }));
 			}
 			Dictionary query_args = a.duplicate(true);
 			query_args.erase("relations");
@@ -593,7 +575,7 @@ void SolersToolRegistry::_register_reflection_tools() {
 	_add("scene.open", "Open one editable PackedScene through EditorInterface and return its live ObjectID/UndoRedo receipt.", R"({"type":"object","properties":{"path":{"type":"string","minLength":6}},"required":["path"],"additionalProperties":false})", [reflection](const SolersToolContext &ctx, const Dictionary &a) {
 		return reflection->open_scene_with_context(a, &ctx);
 	});
-	_add("scene.edit", "Apply an ordered batch of structural live-scene operations as one Godot UndoRedo transaction guarded by an exact scene receipt.", R"({"type":"object","properties":{"expected_state":{"type":"object","properties":{"has_root":{"type":"boolean"},"root_object_id":{"type":"string"},"scene_path":{"type":"string"},"history_id":{"type":"integer"},"version":{"type":"integer","minimum":0}},"required":["has_root","history_id","version"],"additionalProperties":false},"operations":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"object","properties":{"type":{"type":"string","enum":["create","instantiate","update","reparent","remove","connect_signal","attach_script"]},"node_path":{"type":"string"},"parent_path":{"type":"string"},"new_parent_path":{"type":"string"},"class_name":{"type":"string"},"name":{"type":"string"},"source_path":{"type":"string"},"target_path":{"type":"string"},"signal":{"type":"string"},"method":{"type":"string"},"script_path":{"type":"string"},"properties":{"type":"object","writeOnly":true},"position":{"type":"integer"},"flags":{"type":"integer"}},"required":["type"],"additionalProperties":false}}},"required":["expected_state","operations"],"additionalProperties":false})", [reflection](const SolersToolContext &ctx, const Dictionary &a) {
+	_add("scene.edit", "Apply an ordered batch of structural live-scene operations as one native UndoRedo transaction using the current scene receipt and NodePaths from scene.inspect. Optional save_path persists the edited root.", R"({"type":"object","properties":{"expected_state":{"type":"object","properties":{"has_root":{"type":"boolean"},"root_object_id":{"type":"string"},"scene_path":{"type":"string"},"history_id":{"type":"integer"},"version":{"type":"integer","minimum":0}},"required":["has_root","history_id","version"],"additionalProperties":false},"save_path":{"type":"string"},"operations":{"type":"array","maxItems":128,"items":{"type":"object","properties":{"type":{"type":"string","enum":["create","instantiate","update","reparent","remove","connect_signal","attach_script"]},"node_path":{"type":"string"},"parent_path":{"type":"string"},"new_parent_path":{"type":"string"},"class_name":{"type":"string"},"name":{"type":"string"},"source_path":{"type":"string"},"target_path":{"type":"string"},"signal":{"type":"string"},"method":{"type":"string"},"script_path":{"type":"string"},"properties":{"type":"object","writeOnly":true},"position":{"type":"integer"},"flags":{"type":"integer"}},"required":["type"],"additionalProperties":false}}},"required":["expected_state"],"additionalProperties":false})", [reflection](const SolersToolContext &ctx, const Dictionary &a) {
 		return reflection->edit_scene(a, &ctx);
 	});
 }

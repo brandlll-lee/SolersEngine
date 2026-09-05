@@ -155,6 +155,7 @@ static Dictionary _commit_asset_authority(const Ref<SolersScriptContext> &p_cont
 void solers_script_authorities_initialize() {
 	SolersScriptAuthority scene;
 	scene.target_argument = SNAME("target_path");
+	scene.description = "An existing saved PackedScene; ctx.get_subject() is its root Node. Mark changes with ctx.mark_changed(); the host packs and saves the scene.";
 	scene.validate = _validate_scene_authority;
 	scene.prepare = _prepare_scene_authority;
 	scene.commit = _commit_scene_authority;
@@ -164,6 +165,7 @@ void solers_script_authorities_initialize() {
 
 	SolersScriptAuthority asset;
 	asset.target_argument = SNAME("target_path");
+	asset.description = "An existing imported Resource; ctx.get_subject() is the resource. Use ctx.get_import_options(), ctx.set_import_option(name, value), and ctx.request_reimport().";
 	asset.prepare = _prepare_asset_authority;
 	asset.commit = _commit_asset_authority;
 	asset.release = [](const Ref<SolersScriptContext> &) {};

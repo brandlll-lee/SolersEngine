@@ -213,7 +213,7 @@ String SolersAgentSession::_default_system_prompt() const {
 			"- Choose the smallest available tool that advances the task. Search, read, inspect, capture, edit, and validate are independent operations; no observation unlocks an action.\n"
 			"- The live Registry is the complete current tool surface. Read built-in skills through read(skill://name); skills provide domain knowledge and never grant capabilities.\n"
 			"- Tool results are bounded pages with native identities, cursors, hashes, epochs, receipts, and errors. Continue from those facts when more detail is needed.\n"
-			"- Mutations request permission from their concrete paths and side effects at execution time. Supply current native receipts; never invent state or a separate save step.\n"
+			"- Mutations request permission from their concrete paths and side effects at execution time. Supply current native receipts and verify the returned persistence state.\n"
 			"- Prefer the smallest coherent native change. Use ClassDB metadata and native documentation for unfamiliar engine types.\n"
 			"- Tool errors and Godot diagnostics are authoritative. Change the cause before retrying; never repeat an identical failed call.\n"
 			"- For project-scale tasks, map relevant files, live objects, runtime state, and pixels as needed; "
@@ -418,9 +418,6 @@ Error SolersAgentSession::_dispatch_model_request() {
 	}
 	const Array tools = _collect_tools();
 	Array request_messages = context_manager ? context_manager->project_compacted(messages, latest_compaction) : messages.duplicate(true);
-	if (context_manager) {
-		request_messages = context_manager->project_tool_evidence(request_messages);
-	}
 	// Dynamic engine facts ride at the end. Attachment projection then replaces
 	// previously consumed image bytes with stable hash references; the system,
 	// tools, and text history remain cacheable.
@@ -496,7 +493,7 @@ Error SolersAgentSession::_begin_compaction(bool p_from_overflow) {
 	Dictionary payload;
 	payload["source"] = p_from_overflow ? "overflow" : "auto";
 	_collect_tools();
-	const Array projection = SolersContextManager::project_tool_evidence(SolersContextManager::project_compacted(messages, latest_compaction));
+	const Array projection = SolersContextManager::project_compacted(messages, latest_compaction);
 	compaction_tokens_before = context_manager->get_token_count_with_pending(projection, system_prompt, cached_request_tool_tokens, request_transient_tokens);
 	payload["tokens_before"] = compaction_tokens_before;
 	compaction_id = ++transcript_event_sequence;
@@ -569,7 +566,7 @@ Error SolersAgentSession::_dispatch_compaction_request() {
 ## Critical Context
 Current user instructions override conflicting history. Preserve exact paths, API names, errors, and attachment ids. Never invent engine state or rewrite hashes, ObjectIDs, revisions, or receipts. Return text only.)";
 	Array history;
-	const Array projection = SolersContextManager::project_tool_evidence(SolersContextManager::project_compacted(compaction_source_messages, latest_compaction));
+	const Array projection = SolersContextManager::project_compacted(compaction_source_messages, latest_compaction);
 	for (int i = 0; i < projection.size(); i++) {
 		const Dictionary message = projection[i];
 		const String origin = message.get("origin", String());
